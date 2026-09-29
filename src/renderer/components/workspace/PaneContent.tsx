@@ -52,6 +52,7 @@ interface PaneContentProps {
   onCloseTerminal?: (id: string, tabId: string) => void
   onRenameTerminal?: (id: string, name: string) => void
   onCloseEditorTab?: (filePath: string) => void
+  onCloseTabs?: (tabs: WorkspaceTab[]) => void
   closingTerminalIds?: string[]
   defaultShell?: string
 }
@@ -63,6 +64,7 @@ export function PaneContent({
   onCloseTerminal,
   onRenameTerminal,
   onCloseEditorTab,
+  onCloseTabs,
   closingTerminalIds = [],
   defaultShell
 }: PaneContentProps): React.JSX.Element {
@@ -223,6 +225,7 @@ export function PaneContent({
           onCloseTerminal={onCloseTerminal}
           onRenameTerminal={onRenameTerminal}
           onCloseEditorTab={onCloseEditorTab}
+          onCloseTabs={onCloseTabs}
           defaultShell={defaultShell}
         />
       )}
