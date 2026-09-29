@@ -1077,6 +1077,59 @@ function lastUserIndex(messages: ChatMessage[]): number {
   return -1
 }
 
+/** Concatenated text of a message's text blocks (cross-dialect twin compare). */
+function transcriptText(message: ChatMessage): string {
+  let text = ''
+  for (const block of message.blocks) {
+    if (block.type === 'text') text += block.text ?? ''
+  }
+  return text
+}
+
+/**
+ * Slack (in messages) for the streaming-prefix twin rule, measured as
+ * `liveDistFromEnd - candidateDistFromEnd`. The persisted/live overlap ends
+ * at "now" on both sides, so real twin pairs sit at matching distances; a
+ * positive-only slack absorbs live bubbles appended after the payload read
+ * (chunks that arrived mid-fold) without letting the prefix rule reach deep
+ * history, where a short streaming text could collide with an unrelated
+ * earlier message.
+ */
+const TWIN_SEAM_SLACK = 4
+
+/**
+ * True when `persisted` is the durable copy of a bubble already in the live
+ * window. Id and seq dialects legitimately diverge across the live/persisted
+ * boundary — the desktop host logs `user:seq-*` for a `turn:*` optimistic
+ * bubble, and `snapshot:<role>:*` folds a `msg-*` live stream — so scroll-up
+ * backfill must dedupe by content, not just id. A still-streaming live
+ * bubble may be a strict prefix of its persisted twin (the host logged more
+ * chunks before the read); `seamAligned` restricts that looser rule to pairs
+ * near the live/persisted seam. Empty-text bubbles (e.g. an image-only
+ * prompt) fall back to full block equality.
+ */
+function isPersistedTwin(
+  persisted: ChatMessage,
+  liveMessage: ChatMessage,
+  seamAligned: boolean
+): boolean {
+  if (persisted.role !== liveMessage.role) return false
+  const persistedText = transcriptText(persisted)
+  const liveText = transcriptText(liveMessage)
+  if (persistedText === liveText) {
+    return (
+      persistedText.length > 0 ||
+      JSON.stringify(persisted.blocks) === JSON.stringify(liveMessage.blocks)
+    )
+  }
+  return (
+    seamAligned &&
+    liveMessage.streaming === true &&
+    liveText.length > 0 &&
+    persistedText.startsWith(liveText)
+  )
+}
+
 /**
  * True when `messages` ends with an in-progress assistant reply to the latest
  * user message. Covers late chunks delivered after `finalizeStreaming` cleared
@@ -6127,10 +6180,40 @@ export const useAcpStore = create<AcpState>((set, get) => ({
       if (older.length === 0) return
       set((s) => {
         const live = s.messages[sessionId] ?? []
-        // Deduplicate against the live window (a chunk may have arrived
-        // between the payload read and this set).
+        // Deduplicate against the live window — by id AND by content. The id
+        // check catches restored bubbles; the content check catches the
+        // live-only id dialects (`turn:*` optimistic prompts, `msg-*`
+        // streams) whose persisted twins carry `user:seq-*`/`snapshot:*`
+        // ids — otherwise a seq-anchored backfill re-renders the in-flight
+        // turn above the live copy. Matches are consumed seam-ward (the end
+        // of `older` first) so identical repeated content deeper in history
+        // — e.g. the same prompt sent twice — keeps its own copy, and a
+        // chunk arriving between the payload read and this set can't
+        // double-render.
         const liveIds = new Set(live.map((m) => m.id))
-        const deduped = older.filter((m) => !liveIds.has(m.id))
+        const twinUsed = new Array<boolean>(live.length).fill(false)
+        const deduped: ChatMessage[] = []
+        for (let i = older.length - 1; i >= 0; i -= 1) {
+          const candidate = older[i]
+          if (liveIds.has(candidate.id)) continue
+          const candidateDistFromEnd = older.length - 1 - i
+          const twin = live.findIndex(
+            (m, index) =>
+              !twinUsed[index] &&
+              isPersistedTwin(
+                candidate,
+                m,
+                live.length - 1 - index - candidateDistFromEnd >= 0 &&
+                  live.length - 1 - index - candidateDistFromEnd <= TWIN_SEAM_SLACK
+              )
+          )
+          if (twin !== -1) {
+            twinUsed[twin] = true
+            continue
+          }
+          deduped.push(candidate)
+        }
+        deduped.reverse()
         if (deduped.length === 0) return {}
         // Grow the retained window by the number of older messages actually
         // prepended so the next coalesced flush keeps them (no load→trim thrash
