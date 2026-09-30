@@ -42,6 +42,7 @@ import { spawnAcpLoginTerminal } from '@/components/agents/launcher/spawn-acp-lo
 import {
   emptyPendingLauncherOptions,
   hasPendingLauncherOptions,
+  optionsToPending,
   overlayPendingLauncherOptions,
   type PendingLauncherOptions
 } from '@/components/agents/pending-launcher-options'
@@ -1376,12 +1377,22 @@ export function AgentLauncher({ paneId, className }: AgentLauncherProps): React.
     if (!selectedConfig || selectedEntry?.status !== 'ready' || launchInFlightRef.current) return
 
     launchInFlightRef.current = true
-    const pendingSnapshot = pendingOptions
     const attachmentsSnapshot = [...attachments]
     const appOwnedPaths = appOwnedTempPaths()
     const modelsSnapshot = effectiveModels
     const modesSnapshot = effectiveModes
     const configOptionsSnapshot = effectiveConfigOptions
+    // The launch payload is the EFFECTIVE DISPLAYED option snapshot, not the
+    // unflushed `pendingOptions` queue — that queue drains once picks were
+    // applied live to a warm session, and a worktree launch always binds a
+    // fresh session. Deriving from the display snapshot keeps the invariant
+    // "what you see is what the session gets" independent of which session
+    // object ends up owning the chat (or when the flush ran).
+    const pendingSnapshot = optionsToPending({
+      models: modelsSnapshot,
+      modes: modesSnapshot,
+      configOptions: configOptionsSnapshot
+    })
     const preparedKeySnapshot = preparedKey
     const configSnapshot = selectedConfig
     const paneSnapshot = paneId
@@ -1499,17 +1510,17 @@ export function AgentLauncher({ paneId, className }: AgentLauncherProps): React.
           await saveAgentConfig(configSnapshot)
         }
         persistSelection(configSnapshot.id)
-        // Persist the final composer selections snapshot (model/mode/config
-        // + worktree isolation + base branch) so the next chat starts with
-        // the user's last pick. The store setters already persisted
-        // running-chatbox changes; this catches the pre-launch pending
-        // options that never went through a store setter (no prepared session).
+        // Persist only the user's PICKED values (the not-yet-flushed pending
+        // queue), never the displayed snapshot: picks that already flushed to
+        // a warm session were persisted at pick time, and persisting
+        // untouched agent defaults would pin them as "last picks" forever,
+        // masking any future agent-side default change.
         persistComposerOptions(configSnapshot.id, {
-          modelId: pendingSnapshot.modelId,
-          modeId: pendingSnapshot.modeId,
+          modelId: pendingOptions.modelId,
+          modeId: pendingOptions.modeId,
           configValues:
-            Object.keys(pendingSnapshot.configValues).length > 0
-              ? pendingSnapshot.configValues
+            Object.keys(pendingOptions.configValues).length > 0
+              ? pendingOptions.configValues
               : undefined,
           isolationMode,
           baseBranch: isolationMode === 'worktree' ? baseBranch : null
@@ -1530,6 +1541,7 @@ export function AgentLauncher({ paneId, className }: AgentLauncherProps): React.
         // file pills. Dedupe by path (matching `dedupeAttachmentBlocks`).
         blocks.push(...fileBlocks)
         const wireBlocks = dedupeAttachmentBlocks(blocks)
+        const pendingPayload = hasPendingLauncherOptions(pendingSnapshot) ? pendingSnapshot : null
 
         const liveStore = useAcpStore.getState()
         let realId = sessionId
@@ -1540,7 +1552,7 @@ export function AgentLauncher({ paneId, className }: AgentLauncherProps): React.
             cwd: launchCwd,
             projectId: projectIdSnapshot,
             mcpServers: undefined,
-            pending: hasPendingLauncherOptions(pendingSnapshot) ? pendingSnapshot : null,
+            pending: pendingPayload,
             initialText: null,
             initialBlocks: wireBlocks.length > 0 ? wireBlocks : null,
             adoptSession: (from, to) => {
@@ -1550,10 +1562,7 @@ export function AgentLauncher({ paneId, className }: AgentLauncherProps): React.
             worktreeBranch
           })
         } else {
-          await liveStore.applyPendingLauncherOptions(
-            realId,
-            hasPendingLauncherOptions(pendingSnapshot) ? pendingSnapshot : null
-          )
+          await liveStore.applyPendingLauncherOptions(realId, pendingPayload)
           if (wireBlocks.length > 0) {
             await liveStore.sendPromptBlocks(realId, wireBlocks, {
               skipUserAppend: seededOptimistic
