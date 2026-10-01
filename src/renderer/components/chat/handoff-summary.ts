@@ -87,6 +87,54 @@ const GENERIC_AGENT_LABEL = 'the previous agent'
 /** Placeholder for a user turn that carried only non-text blocks. */
 const ATTACHMENT_ONLY = '[shared an attachment]'
 const HANDOFF_HEADER = '# Conversation handoff'
+/** Wire separator between the handoff summary and the pending draft. */
+const HANDOFF_DRAFT_SEP = '\n\n---\n\n'
+
+/** Exact producer framing: header line followed by a blank line. A bare
+ * `startsWith('# Conversation handoff')` would also match user-authored text
+ * like `# Conversation handoff!` — gate on the emitted prefix only. */
+const HANDOFF_PREFIX = `${HANDOFF_HEADER}\n\n`
+
+/**
+ * spec-agent-switch-separator-redesign: strip a handoff preamble from a
+ * persisted/replayed `user_prompt` text block. Legacy (pre-fix) records stored
+ * the wire framing verbatim — `summary + --- + draft`; on replay the bubble
+ * must show only the draft. `null` when the record IS the summary (a
+ * summary-only switch's echo) → the caller drops the whole user row.
+ * Non-handoff text returns unchanged.
+ */
+export function stripHandoffPreamble(text: string): string | null {
+  if (!text.startsWith(HANDOFF_PREFIX)) return text
+  const sep = text.indexOf(HANDOFF_DRAFT_SEP)
+  if (sep === -1) return null
+  const draft = text.slice(sep + HANDOFF_DRAFT_SEP.length).trim()
+  return draft.length > 0 ? draft : null
+}
+
+/** The wire preamble line between the header and the turn list. */
+const HANDOFF_PREAMBLE_RE =
+  /^You are taking over a conversation previously handled by .+ Summary of the prior conversation:$/
+
+/**
+ * Strip the wire framing from a handoff summary for the summary card — the
+ * `# Conversation handoff` header line AND the `You are taking over a
+ * conversation previously handled by <agent>. Summary of the prior
+ * conversation:` preamble. The card's `old → new` chip already carries the
+ * handoff identity; rendering the wire sentence again reads as a stray log
+ * line, not a label. Single canonical definition — the Rust fold keys off
+ * the same `header + '\n\n'` prefix. Non-handoff text returns unchanged.
+ */
+export function stripHandoffHeader(text: string): string {
+  if (!text.startsWith(HANDOFF_PREFIX)) return text
+  const body = text.slice(HANDOFF_PREFIX.length)
+  // Drop a leading wire preamble line (matches the emitted
+  // `preamble + '\n\n'` exactly — a corrupt/empty preamble stays as body
+  // rather than eating a real turn line).
+  const firstBreak = body.indexOf('\n\n')
+  if (firstBreak === -1) return body
+  const firstLine = body.slice(0, firstBreak)
+  return HANDOFF_PREAMBLE_RE.test(firstLine) ? body.slice(firstBreak + 2) : body
+}
 
 type HandoffItem = { kind: 'message'; message: ChatMessage } | { kind: 'tool'; tool: ToolCall }
 
