@@ -96,8 +96,31 @@ export function baseName(p: string): string {
   return idx >= 0 ? trimmed.slice(idx + 1) : trimmed
 }
 
-/** Diff path + aggregate add/remove counts from structured content, if any. */
-function diffInfo(content: ToolCallContent[]): {
+/** First diff item's path — a path-only lookup that never runs the diff. */
+function firstDiffPath(content: ToolCallContent[]): string | undefined {
+  for (const item of content) {
+    if (item.type === 'diff') {
+      const d = item as { path?: string }
+      if (d.path) return d.path
+    }
+  }
+  return undefined
+}
+
+/**
+ * Diff path + aggregate add/remove counts — the expensive half of
+ * `describeToolCall` (it diffs full file contents). Cached on the content
+ * array's identity: tool-call updates replace the array wholesale, so a
+ * repeat look at an unchanged call is free and a changed call recomputes.
+ * `ChatChangedFilesPanel` re-extracts files on every store commit — this
+ * keeps that O(calls × file size) scan from repeating the diff itself.
+ */
+const diffInfoCache = new WeakMap<
+  ToolCallContent[],
+  { path?: string; added: number; removed: number; hasDiff: boolean }
+>()
+
+function diffInfoUncached(content: ToolCallContent[]): {
   path?: string
   added: number
   removed: number
@@ -120,10 +143,23 @@ function diffInfo(content: ToolCallContent[]): {
   return { path, added, removed, hasDiff }
 }
 
+function diffInfo(content: ToolCallContent[]): {
+  path?: string
+  added: number
+  removed: number
+  hasDiff: boolean
+} {
+  const cached = diffInfoCache.get(content)
+  if (cached) return cached
+  const result = diffInfoUncached(content)
+  diffInfoCache.set(content, result)
+  return result
+}
+
 /**
  * Shared best-effort file-path resolver for a tool call. Checks `locations`
  * (the canonical ACP follow-along field) first, then `rawInput` against
- * `PATH_KEYS`, then falls back to `diffInfo(content).path`. Used by both
+ * `PATH_KEYS`, then the first diff item's path. Used by both
  * `describeToolCall` (chip label) and `ToolCallCard`'s open-file action
  * so they stay in sync.
  */
@@ -134,7 +170,7 @@ export function toolCallPath(toolCall: ToolCall): string | undefined {
   const fromInput = firstString(input, PATH_KEYS)
   if (fromInput) return fromInput
   const content = toolCall.content ?? []
-  return diffInfo(content).path
+  return firstDiffPath(content)
 }
 
 /** "L<start>-<end>" from common range keys, or null when not derivable. */

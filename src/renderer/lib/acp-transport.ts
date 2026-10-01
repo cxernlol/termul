@@ -34,7 +34,7 @@ import {
   wsTierOf
 } from '@shared/types/web-protocol.types'
 import { invoke } from '@tauri-apps/api/core'
-import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { listen } from '@tauri-apps/api/event'
 import type {
   AcpRegistrySnapshot,
   AgentConfig,
@@ -333,6 +333,56 @@ export function toTauriEventName(wsType: string): string {
   return wsType.startsWith('acp:') ? wsType : `acp:${wsType}`
 }
 
+// --- Batched desktop events -------------------------------------------------
+//
+// The Rust `TauriEventSink` emits bursts as ONE `acp:events` frame carrying
+// `{events:[{type:'acp:<name>', payload}]}`. One Tauri `listen` covers the
+// whole stream; each inner event fans out to the listeners of its `acp:*`
+// name, so subscribers keep the same `onEvent('acp:message_chunk', …)` API.
+
+const TAURI_EVENTS_BATCH = 'acp:events'
+
+interface TauriBatchInner {
+  type?: string
+  payload?: unknown
+}
+
+const tauriEventListeners = new Map<string, Set<(payload: unknown) => void>>()
+let tauriListenersInstalled = false
+
+function fanOutTauriEvent(name: string, payload: unknown): void {
+  const set = tauriEventListeners.get(name)
+  if (!set) return
+  for (const cb of set) {
+    try {
+      cb(payload)
+    } catch (err) {
+      console.error('[acp-transport] listener error', err)
+    }
+  }
+}
+
+function installTauriEventListeners(): void {
+  if (tauriListenersInstalled) return
+  tauriListenersInstalled = true
+  void listen<{ events?: TauriBatchInner[] }>(TAURI_EVENTS_BATCH, (event) => {
+    const events = event.payload?.events
+    if (!Array.isArray(events)) return
+    for (const inner of events) {
+      if (inner && typeof inner.type === 'string') {
+        fanOutTauriEvent(inner.type, inner.payload)
+      }
+    }
+  }).catch(console.error)
+}
+
+/** Test seam: clear the registry + install flag between tests so a mock
+ * `listen` swap observes fresh installs and no callbacks leak across tests. */
+export function _resetTauriEventRegistryForTests(): void {
+  tauriEventListeners.clear()
+  tauriListenersInstalled = false
+}
+
 // ---------------------------------------------------------------------------
 // Tauri transport
 // ---------------------------------------------------------------------------
@@ -444,28 +494,27 @@ function createTauriAcpTransport(): AcpTransport {
     deliverAuthRedirect: (agentId, url) =>
       invoke<number>('acp_auth_deliver_redirect', { agentId, url }),
     onEvent<T>(eventName: string, callback: (payload: T, eventSeq?: number) => void): () => void {
-      let resolvedUnlisten: UnlistenFn | null = null
-      let unlistenCalledEarly = false
-
-      void listen<T>(eventName, (event) => {
-        callback(event.payload)
-      })
-        .then((unlisten) => {
-          if (unlistenCalledEarly) {
-            unlisten()
-            return
-          }
-          resolvedUnlisten = unlisten
-        })
-        .catch(console.error)
-
+      // Listener registry: one Tauri `listen` per event name, fanning out to
+      // all subscribers. Required for `acp:events` batches — the fan-out is
+      // registry-keyed, so a per-call `listen` would never see inner events.
+      installTauriEventListeners()
+      let set = tauriEventListeners.get(eventName)
+      if (!set) {
+        set = new Set()
+        tauriEventListeners.set(eventName, set)
+        void listen<T>(eventName, (event) => {
+          fanOutTauriEvent(eventName, event.payload)
+        }).catch(console.error)
+      }
+      const cb = callback as (payload: unknown) => void
+      set.add(cb)
       return () => {
-        if (resolvedUnlisten) {
-          resolvedUnlisten()
-          resolvedUnlisten = null
-        } else {
-          unlistenCalledEarly = true
-        }
+        set.delete(cb)
+        // Keep the entry even when empty: its native `listen` above is never
+        // unhooked (one IPC hook per event name — a dead listen would unhook
+        // every subscriber). Deleting it while the native listener stays armed
+        // would let a later `onEvent` install a SECOND native listener, and
+        // both would fan out each emitted event to the new subscriber.
       }
     },
     connect: async () => {
@@ -607,6 +656,16 @@ export class WsAcpTransport implements AcpTransport {
     recovery: SessionSnapshotEvent | { sessionId: string; degraded: true },
     reopenGeneration?: number
   ) => Promise<void>
+  /**
+   * Serializes `handleEvent` dispatch across WebSocket frames. Each frame's
+   * events chain onto this tail so a frame that `await`s (e.g. the
+   * `subscribeSession` hop in `handleEvent`) cannot yield to a later frame
+   * and let a higher `seq` advance `lastSeq` before the earlier event
+   * delivers — the ordering `deliverContiguous` assumes from FIFO wire
+   * delivery. Replies bypass the queue (they resolve `pending`, they don't
+   * sequence events).
+   */
+  private eventTail: Promise<void> = Promise.resolve()
   private recoveryGenerationProvider?: (sessionId: SessionId) => number
   private reconnectPriorityProvider?: () => SessionId[]
   private readonly wsUrl: string
@@ -1713,15 +1772,27 @@ export class WsAcpTransport implements AcpTransport {
       return
     }
 
+    if (obj.type === 'events' && Array.isArray(obj.events)) {
+      const events = obj.events
+      this.eventTail = this.eventTail.then(async () => {
+        for (const inner of events) {
+          await this.handleEvent(inner as unknown as WsEvent)
+        }
+      })
+      return this.eventTail
+    }
+
     // Event frame: has `type` + `seq`
     if (typeof obj.type === 'string' && typeof obj.seq === 'number') {
-      await this.handleEvent(obj as unknown as WsEvent)
+      this.eventTail = this.eventTail.then(() => this.handleEvent(obj as unknown as WsEvent))
+      return this.eventTail
     }
   }
 
   private handleReply(reply: WsReply): void {
     const pending = this.pending.get(reply.id)
     if (!pending) return
+    // `timer` is `number | null`; the guard narrows to a live handle.
     if (pending.timer) clearTimeout(pending.timer)
     this.pending.delete(reply.id)
     if (reply.ok) {
