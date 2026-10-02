@@ -48,6 +48,8 @@ import {
   type AgentSwitchEvent,
   type AskUserQuestionEvent,
   acpApi,
+  type BrowserAgentTabEvent,
+  type BrowserConsentRequestEvent,
   type BrowserOpenRequestEvent,
   type CommandsUpdateEvent,
   type ConfigOptionsUpdateEvent,
@@ -598,6 +600,12 @@ export function initAcpEventListeners(): () => void {
     ),
     acpApi.onEvent<BrowserOpenRequestEvent>(ACP_EVENTS.browserOpenRequest, (e) =>
       useAcpStore.getState()._onBrowserOpenRequest(e)
+    ),
+    acpApi.onEvent<BrowserAgentTabEvent>(ACP_EVENTS.browserAgentTab, (e) =>
+      useAcpStore.getState()._onBrowserAgentTab(e)
+    ),
+    acpApi.onEvent<BrowserConsentRequestEvent>(ACP_EVENTS.browserConsentRequest, (e) =>
+      useAcpStore.getState()._onBrowserConsentRequest(e)
     )
   ]
   return () => {

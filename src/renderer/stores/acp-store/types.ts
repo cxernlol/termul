@@ -19,6 +19,8 @@ import type {
   AuthMethod,
   AvailableCommand,
   acpApi,
+  BrowserAgentTabEvent,
+  BrowserConsentRequestEvent,
   BrowserOpenRequestEvent,
   CommandsUpdateEvent,
   ConfigOptionsUpdateEvent,
@@ -283,6 +285,13 @@ export interface AcpState {
    * disconnect — a stale URL must never outlive the flow that produced it.
    */
   pendingBrowserOpen: Record<AgentId, string>
+  /**
+   * Agent browser automation consent prompts keyed by `requestId`
+   * (`acp:browser_consent_request`). Once-per-session grant; the dialog
+   * resolves each entry via `respondBrowserConsent`. Entries are host-side
+   * deduped per session.
+   */
+  pendingBrowserConsents: Record<string, BrowserConsentRequestEvent>
   /**
    * Applied-update versions awaiting a user-facing chat (configId → applied
    * version). Set by `applyAgentUpdate`; cleared when a non-ephemeral chat
@@ -793,6 +802,16 @@ export interface AcpState {
    * tried to open so the launcher can show the BrowserAuthDialog.
    */
   _onBrowserOpenRequest: (e: BrowserOpenRequestEvent) => void
+  /**
+   * Agent browser automation (`browser` tool): host asks the renderer to
+   * open/close a visible agent-controlled browser tab.
+   */
+  _onBrowserAgentTab: (e: BrowserAgentTabEvent) => void
+  /**
+   * `acp:browser_consent_request` — queue the once-per-session grant prompt.
+   */
+  _onBrowserConsentRequest: (e: BrowserConsentRequestEvent) => void
+  respondBrowserConsent: (requestId: string, allowed: boolean) => void
 }
 
 export type TurnEndSetter = (

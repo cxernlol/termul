@@ -72,6 +72,14 @@ export function BrowserTabInline({
           >
             {label}
           </span>
+          {browserTab?.agentControlled && (
+            <span
+              title="This tab is being driven by the agent — closing it revokes control"
+              className="ml-1.5 shrink-0 rounded bg-primary-fill/15 px-1 text-[9px] font-semibold uppercase tracking-wide text-primary"
+            >
+              Agent
+            </span>
+          )}
         </div>
         <TabCloseReveal pinned={isActive}>
           <button

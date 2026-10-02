@@ -3,12 +3,23 @@
  */
 
 import type { StateCreator } from 'zustand'
-import { type AgentId, type AuthMethod, acpApi, type SessionId } from '@/lib/acp-api'
+import {
+  type AgentId,
+  type AuthMethod,
+  acpApi,
+  type BrowserAgentTabEvent,
+  type BrowserConsentRequestEvent,
+  browserConsentRespond,
+  type SessionId
+} from '@/lib/acp-api'
 import { saveAuthMethodMemory as saveAuthMethodMemoryToDisk } from '@/lib/acp-auth-method-memory'
 import { AmbiguousAuthError, isAmbiguousAuthError } from '@/lib/agents/acp-spawn-errors'
 import { factoryKeyApi } from '@/lib/factory-key-api'
 import { logFrontendError } from '@/lib/log-api'
+import { isTauriContext } from '@/lib/tauri-runtime'
+import { useBrowserSessionStore } from '@/stores/browser-session-store'
 import { useProjectStore } from '@/stores/project-store'
+import { useWorkspaceStore, browserTabId as workspaceBrowserTabId } from '@/stores/workspace-store'
 import { isDetachedReuseKey, parseReuseKey } from '../../acp-reuse-keys'
 import {
   authPickerUnavailableError,
@@ -451,6 +462,7 @@ type AgentSliceState = Pick<
   | 'agents'
   | 'agentStatus'
   | 'pendingBrowserOpen'
+  | 'pendingBrowserConsents'
   | 'pendingRestartVersions'
   | 'spawnAgent'
   | 'killAgent'
@@ -462,12 +474,16 @@ type AgentSliceState = Pick<
   | '_onAgentCrashed'
   | '_onAgentDisconnected'
   | '_onBrowserOpenRequest'
+  | '_onBrowserAgentTab'
+  | '_onBrowserConsentRequest'
+  | 'respondBrowserConsent'
 >
 
 export const createAgentSlice: StateCreator<AcpState, [], [], AgentSliceState> = (set, get) => ({
   agents: {},
   agentStatus: {},
   pendingBrowserOpen: {},
+  pendingBrowserConsents: {},
 
   pendingRestartVersions: {},
 
@@ -1002,5 +1018,50 @@ export const createAgentSlice: StateCreator<AcpState, [], [], AgentSliceState> =
       return
     }
     set((s) => ({ pendingBrowserOpen: { ...s.pendingBrowserOpen, [e.agentId]: e.url } }))
+  },
+
+  _onBrowserAgentTab: (e) => {
+    // Host-mediated agent tab lifecycle (spec-acp-browser-pane-automation).
+    // "open": create the session record + mount a workspace tab — mounting
+    // runs `browserTabCreate`, which resolves the host's pending open waiter.
+    // "close": drop the workspace tab + session record (the host already
+    // destroyed the native webview; the unmount's destroy is a benign miss).
+    // Remote/web clients have no native browser pane — the event is
+    // informational there; only the desktop host opens the tab.
+    if (!isTauriContext()) return
+    if (typeof e.tabId !== 'string' || e.tabId.length === 0) return
+    if (e.action === 'open') {
+      const url = typeof e.url === 'string' && /^https?:\/\//i.test(e.url) ? e.url : undefined
+      useBrowserSessionStore.getState().createTab(e.tabId, url)
+      useBrowserSessionStore.getState().setAgentControlled(e.tabId, true)
+      useWorkspaceStore.getState().addBrowserTab(e.tabId)
+      void logFrontendError({
+        level: 'info',
+        message: `[acp] agent browser tab opened (tabId=${e.tabId})`,
+        source: 'acp-store:_onBrowserAgentTab'
+      })
+      return
+    }
+    if (e.action === 'close') {
+      useWorkspaceStore.getState().removeTab(workspaceBrowserTabId(e.tabId))
+      useBrowserSessionStore.getState().removeTab(e.tabId)
+    }
+  },
+
+  _onBrowserConsentRequest: (e) => {
+    if (typeof e.requestId !== 'string' || e.requestId.length === 0) return
+    if (typeof e.sessionId !== 'string' || e.sessionId.length === 0) return
+    set((s) => ({
+      pendingBrowserConsents: { ...s.pendingBrowserConsents, [e.requestId]: e }
+    }))
+  },
+
+  respondBrowserConsent: (requestId, allowed) => {
+    set((s) => {
+      const next = { ...s.pendingBrowserConsents }
+      delete next[requestId]
+      return { pendingBrowserConsents: next }
+    })
+    void browserConsentRespond(requestId, allowed)
   }
 })

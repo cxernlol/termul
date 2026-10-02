@@ -33,7 +33,17 @@ pub async fn browser_tab_create(
     browser_manager: State<'_, Arc<BrowserTabManager>>,
 ) -> Result<IpcResult<BrowserTabInfo>, String> {
     match browser_manager.create(tab_id, url, bounds).await {
-        Ok(info) => Ok(IpcResult::success(info)),
+        Ok(mut info) => {
+            // If the tab was opened on behalf of an agent (pending agent
+            // request), flag it so the renderer shows the Agent badge and
+            // the automation host tracks its lifetime.
+            if crate::browser_automation::tab_created(&info.id) {
+                browser_manager.set_agent_controlled(&info.id, true);
+                info.agent_controlled = true;
+                log::info!("[BrowserTab] tab {} marked agent-controlled", info.id);
+            }
+            Ok(IpcResult::success(info))
+        }
         Err(e) => Ok(IpcResult::error(e, "BROWSER_TAB_CREATE_FAILED")),
     }
 }
@@ -95,7 +105,10 @@ pub async fn browser_tab_destroy(
     browser_manager: State<'_, Arc<BrowserTabManager>>,
 ) -> Result<IpcResult<()>, String> {
     match browser_manager.destroy(&tab_id) {
-        Ok(()) => Ok(IpcResult::success(())),
+        Ok(()) => {
+            crate::browser_automation::tab_closed(&tab_id);
+            Ok(IpcResult::success(()))
+        }
         Err(e) => Ok(IpcResult::error(e, "BROWSER_TAB_DESTROY_FAILED")),
     }
 }
@@ -204,6 +217,8 @@ pub async fn browser_tab_report_url(
 ) -> Result<(), String> {
     validate_browser_tab_caller(&webview, &tab_id)?;
     log::debug!("[BrowserTab] URL report: tab={} navigated", tab_id);
+    // Invalidate stored @eN refs held by agent automation for this tab.
+    crate::browser_automation::tab_navigated(&tab_id);
     app_handle
         .emit(
             "browser-tab-navigated",
@@ -248,6 +263,44 @@ pub async fn browser_tab_report_loaded(
             serde_json::json!({ "browserTabId": tab_id }),
         )
         .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+/// Return channel for the agent eval bridge: injected scripts post their
+/// result back here. Caller-validated to the originating tab so a page in
+/// one tab can't resolve another tab's pending eval.
+#[tauri::command]
+pub async fn browser_agent_eval_result(
+    tab_id: String,
+    nonce: String,
+    ok: bool,
+    value: Option<String>,
+    webview: Webview,
+) -> Result<(), String> {
+    validate_browser_tab_caller(&webview, &tab_id)?;
+    crate::browser_automation::eval_resolved(&nonce, ok, value);
+    Ok(())
+}
+
+/// Renderer response to an `acp:browser_consent_request` prompt. Restricted
+/// to the main webview — browser tabs share the app-wide event channel and
+/// could otherwise observe the request id and self-grant consent.
+#[tauri::command]
+pub async fn browser_consent_respond(
+    request_id: String,
+    allowed: bool,
+    webview: Webview,
+) -> Result<(), String> {
+    if webview.label() != "main" {
+        log::warn!(
+            "[Security] browser_consent_respond rejected from '{}'",
+            webview.label()
+        );
+        return Err("consent must come from the main window".to_string());
+    }
+    if !crate::browser_automation::consent_responded(&request_id, allowed) {
+        return Err("unknown or expired consent request".to_string());
+    }
     Ok(())
 }
 
