@@ -61,6 +61,8 @@ pub struct SessionPersistence {
     inner: Arc<Inner>,
     #[cfg(test)]
     replay_hook: Mutex<Option<Arc<ReplayTestHook>>>,
+    #[cfg(test)]
+    salvage_hook: Mutex<Option<Arc<ReplayTestHook>>>,
 }
 
 #[cfg(test)]
@@ -129,6 +131,8 @@ impl SessionPersistence {
             }),
             #[cfg(test)]
             replay_hook: Mutex::new(None),
+            #[cfg(test)]
+            salvage_hook: Mutex::new(None),
         });
         service.recover().await?;
         Ok(service)
@@ -601,8 +605,12 @@ impl SessionPersistence {
         }
         self.inner.sessions.lock().remove(session_id);
         let dir = self.session_dir(&metadata.storage_key)?;
-        fs::remove_dir_all(&dir)?;
+        // Drop the catalog entry BEFORE touching the dir: a read-path
+        // salvage serializes its rewrite on the catalog lock, so once the
+        // entry is gone no in-flight or future salvage can stage a rewrite
+        // that would resurrect the deleted dir via `create_dir_all`.
         self.inner.catalog.lock().remove(session_id);
+        fs::remove_dir_all(&dir)?;
         self.persist_index().await?;
         log::info!(
             "[acp-history] host store delete success storage_key={}",
@@ -640,7 +648,58 @@ impl SessionPersistence {
             })
     }
 
+    /// Shared seq-intruder salvage for the durable reads: on
+    /// `CorruptSession`, run one bounded salvage pass and retry the load
+    /// once — a healed file (`Ok(true)`) succeeds on retry, and `Ok(false)`
+    /// (nothing salvageable, or a concurrent salvage already healed it) is
+    /// resolved by the same retry. Salvage errors propagate as-is so a
+    /// racing `delete_session` surfaces `SessionNotFound` rather than a
+    /// corrupt-history mislabel.
+    fn read_with_salvage<T>(
+        &self,
+        session_id: &str,
+        op: &'static str,
+        load: impl Fn(&Self) -> Result<T>,
+    ) -> Result<T> {
+        match load(self) {
+            Err(SessionPersistenceError::CorruptSession) => {
+                match self.salvage_seq_intruders(session_id) {
+                    Ok(healed) => {
+                        if !healed {
+                            log::warn!(
+                                "[acp-history] {op} found no salvageable seq intruders session_id={}",
+                                crate::logging::redact_session_id(session_id)
+                            );
+                        }
+                        load(self)
+                    }
+                    Err(error) => {
+                        log::warn!(
+                            "[acp-history] {op} seq-intruder salvage failed session_id={} error={error}",
+                            crate::logging::redact_session_id(session_id)
+                        );
+                        Err(error)
+                    }
+                }
+            }
+            result => result,
+        }
+    }
+
+    /// Durable read with bounded seq-intruder salvage: when the load fails
+    /// closed because a stale post-crash `last_seq` let an append reuse an
+    /// existing seq (a parseable in-session record behind the running file
+    /// max), quarantine the intruder bytes to a `.corrupt-*.bak` sidecar and
+    /// retry the load once against the rewritten files. Unparseable or
+    /// foreign-session lines are never salvageable — `CorruptSession`
+    /// propagates.
     pub fn replay_after(&self, session_id: &str, cursor: u64) -> Result<Vec<PersistedEventRecord>> {
+        self.read_with_salvage(session_id, "replay_after", |persistence| {
+            persistence.replay_after_inner(session_id, cursor)
+        })
+    }
+
+    fn replay_after_inner(&self, session_id: &str, cursor: u64) -> Result<Vec<PersistedEventRecord>> {
         let metadata = self.metadata(session_id)?;
         if cursor > metadata.last_seq {
             return Err(SessionPersistenceError::StaleCursor {
@@ -702,7 +761,20 @@ impl SessionPersistence {
     /// are transparent to the fold and never satisfy the check on their own.
     /// A single run spanning more than `TAIL_DEEPEN_MAX_LINES` records is
     /// pathological; beyond the cap we fall back to a full replay.
+    ///
+    /// Like [`replay_after`], a `CorruptSession` result triggers one
+    /// bounded seq-intruder salvage pass and a single retry — a dup-seq
+    /// record inside the scanned tail window is healed instead of failing
+    /// the session forever. (A dup-seq record *before* the tail window is
+    /// invisible to the tail read itself; it heals on the `replay_after`
+    /// fallback or the next scroll-back read.)
     pub fn replay_tail(&self, session_id: &str, limit: usize) -> Result<Vec<PersistedEventRecord>> {
+        self.read_with_salvage(session_id, "replay_tail", |persistence| {
+            persistence.replay_tail_inner(session_id, limit)
+        })
+    }
+
+    fn replay_tail_inner(&self, session_id: &str, limit: usize) -> Result<Vec<PersistedEventRecord>> {
         let metadata = self.metadata(session_id)?;
         let dir = self.session_dir(&metadata.storage_key)?;
         let messages_path = dir.join(MESSAGES_FILE);
@@ -816,6 +888,80 @@ impl SessionPersistence {
         })
         .await
         .map_err(|error| SessionPersistenceError::PersistenceUnhealthy(error.to_string()))?
+    }
+
+    /// Bounded salvage for the durable read path: when a session's JSONL
+    /// logs fail closed on seq-intruder records — parseable, in-session
+    /// records with `seq == 0` or `seq <=` the running file max, the
+    /// signature of a post-crash append issued from a stale `last_seq` —
+    /// quarantine the intruder bytes to `.corrupt-*.bak` sidecars and
+    /// rewrite the logs without them so the session resumes instead of
+    /// failing forever. Returns `Ok(true)` when at least one file was
+    /// rewritten; `Ok(false)` when nothing needed healing or any line was
+    /// unsalvageable (unparseable, or a foreign session/schema record —
+    /// those stay `CorruptSession` and are never dropped here). After a
+    /// heal the catalog metadata is recounted and persisted so index,
+    /// writers, and reads agree.
+    fn salvage_seq_intruders(&self, session_id: &str) -> Result<bool> {
+        // Unlocked probe first: when the logs are unsalvageable (the common
+        // fail-closed case) or already clean, skip the locked phase entirely
+        // so a permanently-corrupt session's repeated failed reads can't
+        // stall every other session's catalog lookups.
+        let metadata = self.metadata(session_id)?;
+        let dir = self.session_dir(&metadata.storage_key)?;
+        if !has_seq_intruders(&dir, session_id)? {
+            return Ok(false);
+        }
+        // The locked rewrite phase — serialize the heal against every
+        // writer-facing mutation. The catalog map lock blocks
+        // `install_runtime`'s entry-Arc swap (reopen_writer) and
+        // `delete_session`'s catalog removal; the entry lock blocks
+        // `append_record`, which the writer task runs under the same
+        // Arc<Mutex<SessionMetadata>>. Lock order is catalog → entry,
+        // matching `persist_index`'s catalog.lock() → metadata.lock() — no
+        // path locks entry before catalog, so this cannot deadlock. The
+        // scan runs a second time under the locks so the rewrite always
+        // sees the live bytes.
+        let catalog = self.inner.catalog.lock();
+        let entry = catalog
+            .get(session_id)
+            .cloned()
+            .ok_or(SessionPersistenceError::SessionNotFound)?;
+        let mut current = entry.lock();
+        #[cfg(test)]
+        if let Some(hook) = self.salvage_hook.lock().clone() {
+            hook.wait();
+        }
+        let dir = self.session_dir(&current.storage_key)?;
+        let Some(counts) = salvage_session_dir(&dir, session_id)? else {
+            return Ok(false);
+        };
+        // The recount is exact: no append could have landed mid-heal —
+        // `append_record` was blocked on this entry lock for the whole
+        // scan/backup/rewrite. `last_seq` still keeps a max() guard: a seq
+        // gap is harmless, a reused seq is the corruption being healed.
+        current.message_count = counts.message_count;
+        current.tool_count = counts.tool_count;
+        current.last_seq = current.last_seq.max(counts.last_seq);
+        self.persist_metadata(&current)?;
+        log::warn!(
+            "[acp-history] salvaged seq-intruder records session_id={} \
+             intruder_lines={} message_count={} tool_count={} last_seq={}",
+            crate::logging::redact_session_id(session_id),
+            counts.intruder_lines,
+            counts.message_count,
+            counts.tool_count,
+            counts.last_seq
+        );
+        Ok(true)
+    }
+
+    /// Test seam: lets a test enqueue a writer command while the salvage
+    /// holds the catalog+entry locks, deterministically proving the heal is
+    /// serialized against live appends.
+    #[cfg(test)]
+    pub(crate) fn set_salvage_test_hook(&self, hook: Arc<ReplayTestHook>) {
+        *self.salvage_hook.lock() = Some(hook);
     }
 
     /// Materialize the renderer-shaped `SessionPayload` for a session from its
@@ -980,17 +1126,54 @@ impl SessionPersistence {
             // JSONL reload was the dominant startup cost (75-84s); the
             // metadata file is a small JSON read (~O(1) per session).
             //
-            // Safety: if the app crashed between an append and the next
-            // flush, the counts may slightly undercount — but they are
-            // display-only and last_seq being stale-low is safe because the
-            // monotonic guard (record.seq <= current.last_seq) still passes
-            // for higher-seq records arriving from the agent.
+            // Stale counts undercounting after a crash are display-only.
+            // `last_seq` is different: the seq allocator derives the next
+            // seq from durable `last_seq + 1` (WsRelaySink::assign_and_append
+            // and the writer-assigned paths), so a stale-LOW durable
+            // `last_seq` makes the first post-restart append REUSE an
+            // existing seq → duplicate seq → `validate_and_sort` fails
+            // closed on every read. The tail reconcile below heals
+            // stale-low `last_seq` before any append can reuse a seq.
             //
             // Repair torn tails (incomplete final writes) so later appends
             // land after a valid line. This reads only the last 4 KiB of
             // each file — O(1) per session, not O(total_records).
             repair_jsonl_torn_tail(&dir.join(MESSAGES_FILE));
             repair_jsonl_torn_tail(&dir.join(TOOL_CALLS_FILE));
+
+            // Reconcile `last_seq` against each log's durable tail — the
+            // same tail-read class as the torn-tail repair (the probe
+            // deepens only until it covers a complete line). A crash
+            // between an append and the next metadata flush leaves
+            // `metadata.json` behind the JSONL frontier; bumping `last_seq`
+            // to the tail max keeps the next writer-assigned seq unique.
+            // A tail seq BELOW `last_seq` is a harmless seq gap — warn
+            // only, never rewrite.
+            let mut tail_max: Option<u64> = None;
+            for name in [MESSAGES_FILE, TOOL_CALLS_FILE] {
+                if let Some(seq) = jsonl_tail_seq(&dir.join(name), &metadata.session_id) {
+                    tail_max = Some(tail_max.map_or(seq, |current| current.max(seq)));
+                }
+            }
+            match tail_max {
+                Some(tail_max) if tail_max > metadata.last_seq => {
+                    log::warn!(
+                        "[acp-history] recover() healing stale last_seq session_id={} last_seq={} tail_seq={tail_max}",
+                        crate::logging::redact_session_id(&metadata.session_id),
+                        metadata.last_seq
+                    );
+                    metadata.last_seq = tail_max;
+                    dirty = true;
+                }
+                Some(tail_max) if tail_max < metadata.last_seq => {
+                    log::warn!(
+                        "[acp-history] recover() durable tail seq behind metadata last_seq session_id={} last_seq={} tail_seq={tail_max}",
+                        crate::logging::redact_session_id(&metadata.session_id),
+                        metadata.last_seq
+                    );
+                }
+                _ => {}
+            }
 
             // Lightweight corruption check: verify the first JSONL record
             // in BOTH logs deserializes with the right schema version and
@@ -1041,7 +1224,7 @@ impl SessionPersistence {
                 }
                 metadata.message_count = records
                     .iter()
-                    .filter(|record| !is_tool_event(&record.type_))
+                    .filter(|record| !is_tool_event(&record.type_) && record.type_ != "agent_switch")
                     .count() as u64;
                 metadata.tool_count = records
                     .iter()
