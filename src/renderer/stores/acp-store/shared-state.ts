@@ -6,6 +6,7 @@
  */
 
 import { type PersistedComposerOptions, PersistenceKeys } from '@shared/types/persistence.types'
+import type { WsAgentSummary } from '@shared/types/web-protocol.types'
 import type { AgentId, SessionId, ToolCall } from '@/lib/acp-api'
 import {
   deriveTitle,
@@ -13,8 +14,10 @@ import {
   type SessionIndexEntry,
   type SessionPayload
 } from '@/lib/acp-history-persistence'
+import { getAcpTransport } from '@/lib/acp-transport'
 import { persistenceApi } from '@/lib/api'
 import { logFrontendError } from '@/lib/log-api'
+import { isTauriContext } from '@/lib/tauri-runtime'
 import { agentReuseKey, configIdFromReuseKey, detachedReuseKey } from '../acp-reuse-keys'
 import { isReusableStatus } from './helpers'
 import type { AcpSession, AcpState, ChatMessage, CommitMessageCollector } from './types'
@@ -405,6 +408,77 @@ export function isCurrentRecoveryGeneration(sessionId: SessionId, generation: nu
  */
 export function _handoffOnlyTurnIdsForTesting(): ReadonlySet<string> {
   return handoffOnlyTurnIds
+}
+
+/**
+ * Web reload reuse (issue #837): ask the HOST which live agent owns `sessionId`
+ * (`list_agents` reply now carries each agent's `ownsSession` set) and adopt
+ * that process instead of spawning a duplicate. On a page reload this store
+ * knows nothing about the original agent (its `configToLiveAgent` map died
+ * with the tab), so `ensureLiveAgent` would spawn a fresh process and resume
+ * the session on it while the original still streams.
+ *
+ * Adoption seeds the store's agent presence (`agents` + `agentStatus`) from
+ * the summary's capabilities and registers the reuse key
+ * (`agentReuseKey(configId, cwd)`) → host agent id, so every later
+ * `ensureLiveAgent`/`prepareChat` for that config+cwd reuses the host process.
+ *
+ * Desktop skips the lookup entirely (`isTauriContext()`): the desktop store
+ * already owns its agents in memory. Returns `null` when no live agent owns
+ * the session (fresh chat, owner already stopped) or the listing fails — the
+ * caller falls back to the spawn path.
+ */
+export async function adoptHostOwnedAgent(
+  get: () => AcpState,
+  set: (fn: (s: AcpState) => Partial<AcpState> | AcpState) => void,
+  sessionId: SessionId,
+  configId: string,
+  cwd: string
+): Promise<AgentId | null> {
+  const trimmedCwd = cwd.trim()
+  if (isTauriContext() || trimmedCwd.length === 0) return null
+  let summaries: WsAgentSummary[]
+  try {
+    summaries = (await getAcpTransport().listAgentDetails?.()) ?? []
+  } catch (err) {
+    void logFrontendError({
+      level: 'warn',
+      source: 'acp-store.adoptHostOwnedAgent',
+      message: `Host agent listing failed while reopening session ${sessionId}: ${err instanceof Error ? err.message : String(err)}`
+    })
+    return null
+  }
+  const owners = summaries.filter((entry) => entry.ownsSession?.includes(sessionId))
+  if (owners.length === 0) return null
+  // Prefer an owner whose configId matches the session's agent config (the
+  // common case); otherwise the first owner — session ownership is
+  // authoritative regardless.
+  const match = owners.find((entry) => entry.configId === configId) ?? owners[0]
+  void logFrontendError({
+    level: 'info',
+    source: 'acp-store.adoptHostOwnedAgent',
+    message: `Reusing host agent ${match.id} that owns session ${sessionId} instead of spawning a duplicate`
+  })
+  const reuseKey = agentReuseKey(configId, trimmedCwd)
+  set((s) => ({
+    agents: {
+      ...s.agents,
+      [match.id]: s.agents[match.id] ?? {
+        id: match.id,
+        capabilities: match.capabilities ?? null
+      }
+    },
+    agentStatus: { ...s.agentStatus, [match.id]: 'connected' },
+    // A mismatched-config owner still opens its session here, but it must
+    // NOT be registered under the requested config+cwd reuse key — a later
+    // startChat for that config would silently reuse a different agent's
+    // process (CodeRabbit: mismatched owner registration).
+    configToLiveAgent:
+      match.configId === configId
+        ? { ...s.configToLiveAgent, [reuseKey]: match.id }
+        : s.configToLiveAgent
+  }))
+  return match.id
 }
 
 export type EnsureLiveAgentOptions = {
