@@ -17,6 +17,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { formatPath, useHomeDirectory } from '@/hooks/use-cwd'
 import { useMobileWebShell } from '@/hooks/use-mobile-web-shell'
 import { statusBarColors } from '@/lib/colors'
+import { isTauriContext } from '@/lib/tauri-runtime'
 import { cn } from '@/lib/utils'
 import {
   useShowExitCode,
@@ -126,7 +127,11 @@ export function StatusBar({ project }: StatusBarProps): React.JSX.Element {
             channels). Renders null on Tauri desktop. */}
         <ConnectionStatusIndicator />
 
-        <RemoteAccessPopover />
+        {/* #843: "Remote terminal access" is the desktop shared-live host's
+            own status — a web client served by termul-server has no
+            shared-live host to inspect, so hide the popover instead of
+            rendering a dead desktop-only control. */}
+        {isTauriContext() && <RemoteAccessPopover />}
 
         {showExitCode && lastExitCode !== null && lastExitCode !== undefined && (
           <Tooltip>
