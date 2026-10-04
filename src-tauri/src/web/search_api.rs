@@ -383,6 +383,12 @@ pub async fn file_names(
 
     let include_ignored = req.include_ignored;
     let args = build_file_name_search_args(&trimmed_query, &validated_root, include_ignored);
+    // Slash-normalized, no-trailing-separator form of the validated root —
+    // the prefix stripped from each rg line so hits are root-relative.
+    let root_prefix = format!(
+        "{}/",
+        validated_root.replace('\\', "/").trim_end_matches('/')
+    );
 
     let result = tokio::task::spawn_blocking(
         move || -> Result<FileNameSearchResponse, (String, &'static str)> {
@@ -419,11 +425,23 @@ pub async fn file_names(
             loop {
                 match lines.next() {
                     Some(Ok(line)) => {
-                        // rg emits root-relative paths when the root is a
-                        // directory argument; the cwd-relative prefix the
-                        // bare `.` form produces never applies here.
-                        let normalized = crate::path_validation::strip_verbatim_prefix(&line)
+                        // rg echoes the root argument's shape: with an
+                        // absolute root it emits ABSOLUTE paths, with a
+                        // relative/cwd-root it emits relative ones. The
+                        // desktop stream passes the validated (canonical,
+                        // absolute) root yet surfaces root-RELATIVE hits —
+                        // its renderer composes `absPath = root + '/' +
+                        // hit.path`. Strip the root prefix here (after
+                        // verbatim/slash normalization) so the web response
+                        // carries the SAME root-relative contract and the
+                        // composer never builds `/root//root/...`.
+                        let absolute = crate::path_validation::strip_verbatim_prefix(&line)
                             .replace('\\', "/");
+                        let normalized = absolute
+                            .strip_prefix(&root_prefix)
+                            .map(|rel| rel.trim_start_matches('/').to_string())
+                            .filter(|rel| !rel.is_empty())
+                            .unwrap_or(absolute);
                         if include_ignored {
                             if non_ignored.len() >= max_files {
                                 broke_at_cap = true;
@@ -497,6 +515,7 @@ pub async fn file_names(
 
 /// `GET /search/file-names` query params.
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SearchFileNamesQuery {
     /// Search root (scope + walk root — the mention picker passes the same
     /// value for both, mirroring the desktop `search_file_names_stream`
