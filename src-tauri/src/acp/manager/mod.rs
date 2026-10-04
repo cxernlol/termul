@@ -1090,11 +1090,11 @@ impl AcpManager {
                 .unwrap_or(false);
             if turn_active {
                 log::warn!(
-                    "[acp] session {} reopen rejected: owned by live agent {} with a turn in                      flight ({}: session {})",
+                    "[acp] session {} reopen rejected: owned by live agent {} with a turn in \
+                     flight ({})",
                     crate::logging::redact_session_id(&session_id.0),
                     owner.0,
-                    ACP_SESSION_OWNED_BY_OTHER,
-                    session_id.0
+                    ACP_SESSION_OWNED_BY_OTHER
                 );
                 return Err(format!(
                     "{ACP_SESSION_OWNED_BY_OTHER}: session {} is owned by live agent {} with a                      turn in flight; stop that agent or wait for the turn to complete",
