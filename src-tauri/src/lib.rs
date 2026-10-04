@@ -1447,10 +1447,14 @@ pub fn run() {
             // the main thread and is not guaranteed to be inside a tokio runtime
             // context, so capturing the handle here keeps `arm_timeout` reliable
             // when it runs later on the agent driver thread.
+            // Desktop reconnect grace shared by BOTH rendezvous (issue #841
+            // alignment: a phone attached to a desktop host keeps pending
+            // questions and pending permissions open for the same window).
+            let desktop_disconnect_grace = std::time::Duration::from_secs(15);
             let rendezvous = Arc::new(PermissionRendezvous::with_handle_and_policy(
                 Arc::clone(&acp_manager),
                 std::time::Duration::from_secs(60),
-                std::time::Duration::from_secs(15),
+                desktop_disconnect_grace,
                 tauri::async_runtime::handle().inner().clone(),
             ));
             ws_relay.set_rendezvous(rendezvous);
@@ -1458,9 +1462,10 @@ pub fn run() {
             // to a desktop host can answer structured questions over WS too
             // (desktop renderer answers via the `acp_answer_question` Tauri
             // command; first-response-wins across both paths).
-            let question_rendezvous = Arc::new(QuestionRendezvous::with_handle(
+            let question_rendezvous = Arc::new(QuestionRendezvous::with_handle_and_policy(
                 Arc::clone(&acp_manager),
                 std::time::Duration::from_secs(60),
+                desktop_disconnect_grace,
                 tauri::async_runtime::handle().inner().clone(),
             ));
             ws_relay.set_question_rendezvous(question_rendezvous);
