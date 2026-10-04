@@ -673,6 +673,10 @@ pub(super) async fn run_command_loop(
                 }
             }
 
+            AcpCommand::SessionIds { reply } => {
+                let _ = reply.send(Ok(driver_state.lock().active_session_ids()));
+            }
+
             AcpCommand::OwnsSession { session_id, reply } => {
                 let _ = reply.send(Ok(driver_state
                     .lock()
