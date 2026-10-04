@@ -5850,6 +5850,7 @@ dependencies = [
  "libc",
  "log",
  "minisign-verify",
+ "notify",
  "oauth2",
  "parking_lot",
  "portable-pty",
