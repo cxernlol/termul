@@ -15,6 +15,7 @@ import { useMobileWebShell } from '@/hooks/use-mobile-web-shell'
 import { useOskViewport } from '@/hooks/use-osk-viewport'
 import type { AvailableCommand, ContentBlock, PlanEntry, SessionId, ToolCall } from '@/lib/acp-api'
 import type { AgentSwitchRecord } from '@/lib/acp-history-persistence'
+import { logFrontendError } from '@/lib/log-api'
 import {
   extractCommandNames,
   extractSkillNames,
@@ -32,7 +33,10 @@ import {
 } from '@/stores/acp-store'
 import { useConsentCardHost } from '@/stores/browser-consent-card-store'
 import { useIsConsentStripHosting } from '@/stores/browser-consent-strip-store'
-import { isAgentDeadError } from '@/stores/prompt-queue-orchestration'
+import {
+  isAgentDeadError,
+  isSendPromptOutcomeUnknownError
+} from '@/stores/prompt-queue-orchestration'
 import { agentChatTabId, useWorkspaceStore } from '@/stores/workspace-store'
 import { AgentConnectionLamp } from './AgentConnectionLamp'
 import { AskUserQuestion } from './AskUserQuestion'
@@ -262,6 +266,17 @@ export function AgentChatPanel({
     (queueId: string) => {
       void sendQueuedPromptNow(sessionId, queueId).catch((err) => {
         if (isAgentDeadError(err)) return
+        // #844: a timed-out send_prompt is "outcome unknown", not "send
+        // failed" — the server may still complete the turn and deliver
+        // prompt_complete on replay. Log transiently instead of toasting.
+        if (isSendPromptOutcomeUnknownError(err)) {
+          void logFrontendError({
+            level: 'info',
+            source: 'acp.sendPromptOutcomeUnknown',
+            message: `Queued prompt send timed out on session ${sessionId}; awaiting replay reconciliation`
+          })
+          return
+        }
         toast.error('Could not send the queued message. Try again.')
       })
     },
@@ -272,6 +287,15 @@ export function AgentChatPanel({
     (text: string) => {
       void sendPrompt(sessionId, text).catch((err) => {
         if (isAgentDeadError(err)) return
+        // #844: see handleSendQueuedNow — a timeout is not a send failure.
+        if (isSendPromptOutcomeUnknownError(err)) {
+          void logFrontendError({
+            level: 'info',
+            source: 'acp.sendPromptOutcomeUnknown',
+            message: `Prompt send timed out on session ${sessionId}; awaiting replay reconciliation`
+          })
+          return
+        }
         toast.error('Could not send your message. Try again.')
       })
     },
@@ -282,6 +306,15 @@ export function AgentChatPanel({
     (blocks: ContentBlock[], displayBlocks?: ContentBlock[]) => {
       void sendPromptBlocks(sessionId, blocks, { displayBlocks }).catch((err) => {
         if (isAgentDeadError(err)) return
+        // #844: see handleSendQueuedNow — a timeout is not a send failure.
+        if (isSendPromptOutcomeUnknownError(err)) {
+          void logFrontendError({
+            level: 'info',
+            source: 'acp.sendPromptOutcomeUnknown',
+            message: `Block prompt send timed out on session ${sessionId}; awaiting replay reconciliation`
+          })
+          return
+        }
         toast.error('Could not send your message. Try again.')
       })
     },
