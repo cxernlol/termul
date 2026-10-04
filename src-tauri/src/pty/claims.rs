@@ -276,7 +276,7 @@ impl TerminalClaimRegistry {
                 // uniform.
                 let mut digest_ok = subtle::Choice::from(0u8);
                 for holder_digest in &record.digests {
-                    digest_ok = digest_ok | presented.ct_eq(holder_digest);
+                    digest_ok |= presented.ct_eq(holder_digest);
                 }
                 // Binding integrity: the presented context must match the
                 // issuance-time project binding. `ct_eq` on the byte slices
@@ -435,6 +435,7 @@ impl TerminalClaimRegistry {
     /// co-attachers). `0` when no record exists. Feeds `list_preserved`
     /// ownership info (#851) so clients can tell a solo terminal from one
     /// another device is already attached to.
+    #[cfg_attr(not(test), allow(dead_code))]
     #[must_use]
     pub fn holder_count(&self, terminal_id: &str) -> usize {
         self.records
