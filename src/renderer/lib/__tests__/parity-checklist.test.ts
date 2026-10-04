@@ -1462,7 +1462,16 @@ describe('Parity Checklist Automation', () => {
       'web',
       'search_api.rs'
     )
-    const CommandsRust = join(LIB_DIR, '..', '..', '..', 'src-tauri', 'src', 'commands', 'search.rs')
+    const CommandsRust = join(
+      LIB_DIR,
+      '..',
+      '..',
+      '..',
+      'src-tauri',
+      'src',
+      'commands',
+      'search.rs'
+    )
 
     it('tauri-filesystem-api.ts branches the filename stream methods on isTauriContext()', () => {
       const content = readFileSync(FsFacade, 'utf-8')

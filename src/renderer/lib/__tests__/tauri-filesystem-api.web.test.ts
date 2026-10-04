@@ -390,7 +390,10 @@ describe('tauriFilesystemApi (web branch)', () => {
     // A start with the same id clears the cancellation (mirrors the desktop
     // stream, where a new start supersedes any prior cancel of that id).
     mockFetch.mockResolvedValueOnce(
-      jsonResponse({ success: true, data: { files: [{ path: 'a.ts', ignored: false }], truncated: false } })
+      jsonResponse({
+        success: true,
+        data: { files: [{ path: 'a.ts', ignored: false }], truncated: false }
+      })
     )
     await tauriFilesystemApi.searchFileNamesStreamStart(
       'web-search-3',
