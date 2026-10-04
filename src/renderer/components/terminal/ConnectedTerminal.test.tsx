@@ -252,6 +252,7 @@ Object.defineProperty(window, 'api', {
 import { clipboardApi, systemApi, terminalApi } from '@/lib/api'
 import { openFilePathFromTerminal } from '@/lib/file-path-links'
 import { addRendererRef, removeRendererRef } from '@/lib/tauri-terminal-api'
+import { useKeyboardShortcutsStore } from '@/stores/keyboard-shortcuts-store'
 import { ConnectedTerminal } from './ConnectedTerminal'
 
 const { mockRecordTerminalContinuityEvent, mockGetOrCreateProjectContinuityCorrelation } =
@@ -446,6 +447,10 @@ describe('ConnectedTerminal', () => {
   afterEach(() => {
     getBoundingClientRectSpy.mockRestore()
     rendererPreferenceSpy.mockRestore()
+    // The Ctrl+R app-owned test pins a custom commandHistory binding
+    // (#858): restore the context-aware defaults between tests so later
+    // assertions see the real (web-unbound) state.
+    useKeyboardShortcutsStore.getState().resetAllShortcuts()
     cleanup()
   })
 
@@ -1566,6 +1571,19 @@ describe('ConnectedTerminal', () => {
     })
 
     it('should treat Ctrl+R as app-owned when it matches an app shortcut', async () => {
+      // #858: the web default unbinds commandHistory (empty string never
+      // matches), so this app-owned assertion only holds when the shortcut
+      // is actually bound — pin a custom ctrl+r binding for the test the way
+      // a user's persisted customKey would.
+      useKeyboardShortcutsStore.setState({
+        shortcuts: {
+          ...useKeyboardShortcutsStore.getState().shortcuts,
+          commandHistory: {
+            ...useKeyboardShortcutsStore.getState().shortcuts.commandHistory,
+            customKey: 'ctrl+r'
+          }
+        }
+      })
       render(<ConnectedTerminal />)
 
       await vi.waitFor(() => {
@@ -1574,7 +1592,7 @@ describe('ConnectedTerminal', () => {
 
       const handler = mockTerminalInstance.attachCustomKeyEventHandler.mock.calls[0][0]
 
-      // Ctrl+R matches commandHistory app shortcut — should be app-owned so the
+      // Ctrl+R matches the commandHistory app shortcut — app-owned so the
       // workspace handler can open the command history panel from terminal focus.
       const event = new KeyboardEvent('keydown', {
         key: 'r',
