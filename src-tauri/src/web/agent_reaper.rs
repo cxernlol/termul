@@ -9,9 +9,11 @@
 //!
 //! An agent is reapable when nothing pins it for the whole idle window:
 //!
-//! - a NON-ephemeral (durable) session always pins the agent (user chat),
 //! - a session with an in-flight prompt turn always pins the agent,
 //! - a session with a live WS subscriber always pins the agent,
+//! - a durable (non-ephemeral) session with NEITHER is not pinned: the
+//!   renderer reloads durable history on a fresh agent, so an idle durable
+//!   owner is reaped with its process after the window,
 //! - an ephemeral session (warm-pool seed) with none of the above pins nothing
 //!   once the idle window lapses — it is disposed, then the agent is stopped.
 //!
@@ -68,8 +70,12 @@ pub fn agent_is_reapable(pins: &[(String, bool)]) -> bool {
     pins.iter().all(|(_, pinned)| !pinned)
 }
 
-/// Per-session pin check for one owned session: pinned when durable
-/// (non-ephemeral), mid-turn, or carrying a live WS subscriber.
+/// Per-session pin check for one owned session: pinned when the session is
+/// mid-turn or carrying a live WS subscriber. A durable (non-ephemeral)
+/// session pins only while someone is actually using it — a durable session
+/// with no subscriber and no turn must not pin forever (CodeRabbit: the
+/// renderer can reload durable history on a fresh agent, so the old owner
+/// becomes pure dead weight).
 async fn session_pins_agent(
     acp: &Arc<AcpManager>,
     relay: &Arc<WsRelaySink>,
@@ -80,14 +86,9 @@ async fn session_pins_agent(
         return true;
     }
     let sid = SessionId(session_id.to_string());
-    // A driver that vanished mid-query errors; an unknown session cannot pin
+    // In-flight turn pins both durable and ephemeral sessions alike.
+    // A driver that vanished mid-query or an unknown session cannot pin
     // (the agent is on its way out anyway).
-    match acp.is_ephemeral_session(agent_id, sid.clone()).await {
-        Ok(false) => return true, // durable session: always pins
-        Ok(true) => {}
-        Err(_) => return false,
-    }
-    // Ephemeral warm-pool session: only an in-flight turn pins it.
     acp.is_turn_active(agent_id, sid)
         .await
         .unwrap_or(true) // unknown turn state: assume busy, never kill mid-turn
@@ -121,22 +122,31 @@ pub(crate) async fn reap_idle_agents(
         if now.duration_since(first_unpinned) < window {
             continue;
         }
-        // Reap: dispose every owned (ephemeral) session, then stop the agent.
-        // Disposal failures only warn — the kill below still frees the
-        // process, which is the leak being fixed.
+        // Reap: dispose every owned ephemeral session, then stop the agent.
+        // A disposal failure means the session's state changed after the pin
+        // check (a prompt arrived, or an ephemeral session was promoted to
+        // durable) — do NOT kill the agent in that case; the next sweep
+        // re-evaluates it with fresh pin state (CodeRabbit: kill on
+        // disposal failure can stop a newly active agent).
+        let mut disposal_failed = false;
         for session_id in &summary.owns_session {
             if let Err(error) = acp
                 .dispose_ephemeral_session(&agent_id, SessionId(session_id.clone()))
                 .await
             {
+                disposal_failed = true;
                 warn!(
                     target: "termul::web::agent_reaper",
                     agent_id = %agent_id.0,
                     session_id = %session_id,
                     error = %error,
-                    "idle reaper: ephemeral session disposal failed before agent stop"
+                    "idle reaper: ephemeral session disposal failed; deferring the agent stop to the next sweep"
                 );
             }
+        }
+        if disposal_failed {
+            unpinned_since.remove(&agent_id);
+            continue;
         }
         match acp.kill(&agent_id).await {
             Ok(()) => {

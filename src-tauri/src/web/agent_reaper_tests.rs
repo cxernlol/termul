@@ -63,10 +63,10 @@ async fn reaper_removes_sessionless_agent_after_idle_window() {
     assert!(*record.shut_down.lock(), "agent received Shutdown");
 }
 
-/// A durable session (non-ephemeral) pins the agent: no reap even an hour
-/// past the window.
+/// A durable session with a live WS subscriber pins the agent (the phone is
+/// still reading the chat) — no reap even an hour past the window.
 #[tokio::test]
-async fn reaper_keeps_agent_with_durable_session() {
+async fn reaper_keeps_agent_with_subscribed_durable_session() {
     let manager = Arc::new(AcpManager::new(vec![]));
     let relay = Arc::new(WsRelaySink::new());
     manager.install_test_agent_with_reap_state(
@@ -75,6 +75,8 @@ async fn reaper_keeps_agent_with_durable_session() {
         false,
         false,
     );
+    relay.seed_session_for_test("sess-chat");
+    let _keep = relay.subscribe("sess-chat", None).await;
 
     let mut unpinned = HashMap::new();
     unpinned.insert(
@@ -91,6 +93,38 @@ async fn reaper_keeps_agent_with_durable_session() {
     .await;
     assert!(reaped.is_empty());
     assert_eq!(manager.list_agents().len(), 1);
+    std::mem::drop(_keep);
+}
+
+/// An idle durable session (no subscriber, no turn) no longer pins the agent
+/// forever: the renderer reloads durable history on a fresh agent, so the
+/// old owner is reaped with its process (CodeRabbit: durable forever-pin).
+#[tokio::test]
+async fn reaper_removes_agent_with_idle_durable_session() {
+    let manager = Arc::new(AcpManager::new(vec![]));
+    let relay = Arc::new(WsRelaySink::new());
+    manager.install_test_agent_with_reap_state(
+        AgentId("agent-idle-durable".to_string()),
+        set(&["sess-chat"]),
+        false,
+        false,
+    );
+
+    let mut unpinned = HashMap::new();
+    unpinned.insert(
+        AgentId("agent-idle-durable".to_string()),
+        Instant::now() - Duration::from_secs(3600),
+    );
+    let reaped = reap_idle_agents(
+        &manager,
+        &relay,
+        &mut unpinned,
+        Instant::now(),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(reaped.len(), 1);
+    assert!(manager.list_agents().is_empty(), "idle durable owner reaped");
 }
 
 /// A mid-turn session pins the agent even when the session is ephemeral (a

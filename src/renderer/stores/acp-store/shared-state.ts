@@ -469,7 +469,14 @@ export async function adoptHostOwnedAgent(
       }
     },
     agentStatus: { ...s.agentStatus, [match.id]: 'connected' },
-    configToLiveAgent: { ...s.configToLiveAgent, [reuseKey]: match.id }
+    // A mismatched-config owner still opens its session here, but it must
+    // NOT be registered under the requested config+cwd reuse key — a later
+    // startChat for that config would silently reuse a different agent's
+    // process (CodeRabbit: mismatched owner registration).
+    configToLiveAgent:
+      match.configId === configId
+        ? { ...s.configToLiveAgent, [reuseKey]: match.id }
+        : s.configToLiveAgent
   }))
   return match.id
 }
