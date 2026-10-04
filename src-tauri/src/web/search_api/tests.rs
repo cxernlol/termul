@@ -33,6 +33,22 @@ fn urlencoding(s: &str) -> String {
     out
 }
 
+/// Deserializable mirror of `FileNameSearchResponse` for reading route
+/// bodies in tests (`SearchFileHit` itself only implements `Serialize`).
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TestFileHit {
+    path: String,
+    ignored: bool,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TestFileNameResponse {
+    files: Vec<TestFileHit>,
+    truncated: bool,
+}
+
 fn test_state() -> AppState {
     let pty = test_pty_manager();
     AppState {
@@ -198,11 +214,11 @@ async fn file_names_search_returns_root_relative_hits() {
     let root_str = root.to_string_lossy().to_string();
     let uri = format!(
         "/search/file-names?query=alpha&root={}",
-        urlencoding::encode(&root_str)
+        urlencoding(&root_str)
     );
     let resp = get_request(state, &uri).await;
     assert_eq!(resp.status(), StatusCode::OK);
-    let body: IpcBody<FileNameSearchResponse> = body_as_json(resp.into_body()).await;
+    let body: IpcBody<TestFileNameResponse> = body_as_json(resp.into_body()).await;
     assert!(body.success, "file-names search should succeed: {:?}", body.error);
     let data = body.data.expect("FileNameSearchResponse");
     // Default path: node_modules excluded by the ignore list; the hit is
@@ -244,11 +260,11 @@ async fn file_names_search_include_ignored_tags_and_ranks() {
     let root_str = root.to_string_lossy().to_string();
     let uri = format!(
         "/search/file-names?query=alpha&includeIgnored=true&root={}",
-        urlencoding::encode(&root_str)
+        urlencoding(&root_str)
     );
     let resp = get_request(state, &uri).await;
     assert_eq!(resp.status(), StatusCode::OK);
-    let body: IpcBody<FileNameSearchResponse> = body_as_json(resp.into_body()).await;
+    let body: IpcBody<TestFileNameResponse> = body_as_json(resp.into_body()).await;
     assert!(body.success, "file-names search should succeed: {:?}", body.error);
     let data = body.data.expect("FileNameSearchResponse");
     // Non-ignored first, ignored second (rank_search_hits).
@@ -266,7 +282,7 @@ async fn file_names_search_empty_query_returns_empty() {
     let uri = "/search/file-names?query=&root=/tmp";
     let resp = get_request(test_state(), uri).await;
     assert_eq!(resp.status(), StatusCode::OK);
-    let body: IpcBody<FileNameSearchResponse> = body_as_json(resp.into_body()).await;
+    let body: IpcBody<TestFileNameResponse> = body_as_json(resp.into_body()).await;
     assert!(body.success, "empty query should succeed: {:?}", body.error);
     let data = body.data.expect("FileNameSearchResponse");
     assert!(data.files.is_empty());
@@ -279,11 +295,11 @@ async fn file_names_search_too_long_query_rejected() {
     let huge = "x".repeat(MAX_SEARCH_QUERY_LEN + 10);
     let uri = format!(
         "/search/file-names?query={}&root=/tmp",
-        urlencoding::encode(&huge)
+        urlencoding(&huge)
     );
     let resp = get_request(test_state(), &uri).await;
     assert_eq!(resp.status(), StatusCode::OK);
-    let body: IpcBody<FileNameSearchResponse> = body_as_json(resp.into_body()).await;
+    let body: IpcBody<TestFileNameResponse> = body_as_json(resp.into_body()).await;
     assert!(!body.success, "too-long query should be rejected");
     assert_eq!(body.code.as_deref(), Some("QUERY_TOO_LONG"));
 }
@@ -298,7 +314,7 @@ async fn file_names_search_outside_project_root_rejected() {
     let uri = "/search/file-names?query=zzz-no-such-file&root=/";
     let resp = get_request(test_state(), uri).await;
     assert_eq!(resp.status(), StatusCode::OK);
-    let body: IpcBody<FileNameSearchResponse> = body_as_json(resp.into_body()).await;
+    let body: IpcBody<TestFileNameResponse> = body_as_json(resp.into_body()).await;
     assert!(!body.success, "outside root should be rejected");
     assert_eq!(body.code.as_deref(), Some("OUTSIDE_PROJECT_ROOT"));
 }

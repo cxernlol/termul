@@ -529,7 +529,7 @@ pub struct SearchFileNamesQuery {
 /// `GET /search/file-names` response body. `files[].path` is root-relative
 /// with forward slashes (same shape as the desktop
 /// `SearchFileNamesBatchEvent.files`).
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FileNameSearchResponse {
     pub files: Vec<SearchFileHit>,
