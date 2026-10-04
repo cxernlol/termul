@@ -31,13 +31,10 @@ export const webAcpCatalogApi: AcpCatalogApi = {
     // Re-render-driven repeat calls (the picker/launcher/settings hooks)
     // replay the cached response instead of re-fetching. `refresh=true`
     // (user-initiated "check for updates") bypasses the window.
-    return cachedListCatalog(
-      () => {
-        const query = refresh ? '?refresh=true' : ''
-        return getJson<AcpCatalog>(`/acp/catalog${query}`)
-      },
-      refresh
-    )
+    return cachedListCatalog(() => {
+      const query = refresh ? '?refresh=true' : ''
+      return getJson<AcpCatalog>(`/acp/catalog${query}`)
+    }, refresh)
   },
 
   setCatalogOptIn(enabled: boolean): Promise<IpcResult<void>> {
