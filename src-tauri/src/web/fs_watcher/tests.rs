@@ -10,9 +10,9 @@ use crate::web::sink::FsChangedPayload;
 
 #[test]
 fn reportable_paths_pass() {
-    assert!(is_reportable(std::path::Path::new("/root/proj/src/main.rs")));
-    assert!(is_reportable(std::path::Path::new("/root/proj/README.md")));
-    assert!(is_reportable(std::path::Path::new("/root/proj/.termul/worktrees/a")));
+    assert!(is_reportable_below_root(std::path::Path::new("/root/proj/src/main.rs"), std::path::Path::new("/root/proj")));
+    assert!(is_reportable_below_root(std::path::Path::new("/root/proj/README.md"), std::path::Path::new("/root/proj")));
+    assert!(is_reportable_below_root(std::path::Path::new("/root/proj/.termul/worktrees/a"), std::path::Path::new("/root/proj")));
 }
 
 #[test]
@@ -26,7 +26,7 @@ fn ignored_directories_are_suppressed() {
         "/root/proj/src/__pycache__/mod.cpython-311.pyc",
     ] {
         assert!(
-            !is_reportable(std::path::Path::new(ignored)),
+            !is_reportable_below_root(std::path::Path::new(ignored), std::path::Path::new("/root/proj")),
             "{ignored} must be suppressed"
         );
     }
@@ -36,7 +36,22 @@ fn ignored_directories_are_suppressed() {
 fn ignored_name_as_plain_file_is_not_suppressed() {
     // A file literally NAMED "dist" (not a directory component on the
     // path) is still a reportable tree change.
-    assert!(is_reportable(std::path::Path::new("/root/proj/dist")));
+    assert!(is_reportable_below_root(std::path::Path::new("/root/proj/dist"), std::path::Path::new("/root/proj")));
+}
+
+#[test]
+fn root_ancestors_are_not_inspected() {
+    // CodeRabbit: a project root that itself lives under an ignored-named
+    // directory (e.g. /home/u/build/myproj) must not suppress every event.
+    assert!(is_reportable_below_root(
+        std::path::Path::new("/home/u/build/myproj/src/main.rs"),
+        std::path::Path::new("/home/u/build/myproj")
+    ));
+    // ...but an ignored dir BELOW the root still suppresses.
+    assert!(!is_reportable_below_root(
+        std::path::Path::new("/home/u/build/myproj/dist/bundle.js"),
+        std::path::Path::new("/home/u/build/myproj")
+    ));
 }
 
 #[test]

@@ -38,6 +38,11 @@ pub const CLAIM_CREDENTIAL_LEN: usize = 64;
 /// known-terminal path (no existence signal through timing).
 const DUMMY_DIGEST: [u8; 32] = [0xA5; 32];
 
+/// Cap on co-attacher digests per record (CodeRabbit #851): polling
+/// `list_preserved` mints a shared credential per listing, so the holder
+/// set must be bounded; the oldest shared entry is evicted beyond it.
+const MAX_SHARED_HOLDERS: usize = 8;
+
 /// Wire shape of the rotate response — byte-identical on both transports
 /// (desktop `terminal_rotate_claim` IpcResult data; web `rotate_claim` reply
 /// data). Issuance-on-rotation is the only time a credential leaves the host
@@ -195,6 +200,16 @@ impl TerminalClaimRegistry {
         };
         if record.revoked || !binding_matches {
             return Err(ClaimError);
+        }
+        // Bound the shared-holder set (CodeRabbit): an authenticated client
+        // polling `list_preserved` would otherwise grow `digests` (and each
+        // verify's comparison work) without limit. When the cap is reached,
+        // evict the OLDEST shared entry (index 1 — index 0 is the primary
+        // spawn credential, which stays valid for the record's lifetime).
+        // A polled-out co-attacher re-mints on its next attach attempt.
+        if record.digests.len() >= MAX_SHARED_HOLDERS {
+            let evicted = record.digests.remove(1);
+            debug_assert!(evicted.len() == 32);
         }
         record.digests.push(digest);
         let holders = record.digests.len();

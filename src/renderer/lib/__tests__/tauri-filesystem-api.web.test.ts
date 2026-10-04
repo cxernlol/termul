@@ -484,6 +484,22 @@ describe('tauriFilesystemApi fs_changed bridge (web)', () => {
     unsubscribe()
   })
 
+  it('normalizes a backslash root before the prefix check (Windows, CodeRabbit)', () => {
+    const received: string[] = []
+    const unsubscribe = tauriFilesystemApi.onFileChanged((event) => {
+      received.push(event.path)
+    })
+
+    mockAcpTransport.emit('acp:fs_changed', {
+      root: 'C:\\proj\\app',
+      paths: ['C:/proj/app/src/main.rs']
+    })
+
+    expect(received).toEqual(['C:/proj/app/src/main.rs'])
+
+    unsubscribe()
+  })
+
   it('ignores malformed payloads (no crash, no dispatch)', () => {
     const received: string[] = []
     const unsubscribe = tauriFilesystemApi.onFileDeleted((event) => {

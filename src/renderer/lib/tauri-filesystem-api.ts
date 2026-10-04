@@ -1034,8 +1034,12 @@ interface FsChangedEventPayload {
  * a conservative `change` is sufficient and never closes a live tab.)
  */
 function fsChangedPathsToEvents(payload: FsChangedEventPayload): FileChangeEvent[] {
+  // CodeRabbit: the server normalizes each path to forward slashes but the
+  // root may still carry native backslashes (Windows) — normalize BOTH
+  // before the prefix check or every change for that root is dropped.
+  const normalizedRoot = payload.root.replaceAll('\\', '/')
   return payload.paths
-    .filter((path) => path.startsWith(payload.root))
+    .filter((path) => path.replaceAll('\\', '/').startsWith(normalizedRoot))
     .map((path) => ({ type: 'change' as const, path }))
 }
 

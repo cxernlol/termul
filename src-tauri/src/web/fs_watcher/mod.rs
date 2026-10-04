@@ -66,12 +66,20 @@ const IGNORED_DIR_NAMES: &[&str] = &[
 
 /// Whether a changed path should be reported to clients: any path that
 /// descends into an ignored directory is suppressed. Pure (no I/O).
+///
+/// `root` is the watched project root: the filter only inspects the path's
+/// components BELOW the root — the root's own ancestors (e.g. a project at
+/// `/home/u/build/myproj`) must not suppress everything (CodeRabbit).
 #[must_use]
-fn is_reportable(path: &std::path::Path) -> bool {
+fn is_reportable_below_root(path: &std::path::Path, root: &std::path::Path) -> bool {
+    // Strip the root prefix (both already normalized by the watcher to
+    // forward-slash PathBufs on Windows via notify's canonical events; a
+    // path outside the root keeps all its components).
+    let below_root = path.strip_prefix(root).unwrap_or(path);
     // Only ANCESTOR components count — the final component is the changed
     // entry itself (a file literally named `dist` is a plain tree change,
     // not a build-churn artifact).
-    let components: Vec<_> = path.components().collect();
+    let components: Vec<_> = below_root.components().collect();
     let ancestor_count = components.len().saturating_sub(1);
     components[..ancestor_count].iter().all(|component| {
         let Some(name) = component.as_os_str().to_str() else {
@@ -208,7 +216,7 @@ async fn watch_root(
                 }
                 let mut paths: Vec<String> = pending
                     .iter()
-                    .filter(|path| is_reportable(path))
+                    .filter(|path| is_reportable_below_root(path, &root))
                     .filter_map(|path| normalize_path(path))
                     .collect();
                 paths.sort();

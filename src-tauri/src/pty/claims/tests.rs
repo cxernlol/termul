@@ -352,3 +352,44 @@ fn issue_replaces_shared_holders_entirely() {
     assert_eq!(registry.verify("t1", &shared, Some("p1")), Err(ClaimError));
     assert_eq!(registry.holder_count("t1"), 1);
 }
+
+// ---------------------------------------------------------------------------
+// CodeRabbit #851: the shared-holder set is bounded — polling
+// `list_preserved` cannot grow `digests` (and each verify's work) forever.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn issue_shared_beyond_cap_evicts_oldest_shared_holder() {
+    let registry = TerminalClaimRegistry::new();
+    let _primary = registry.issue("t1", Some("p1"));
+    // Fill up to the cap (primary + MAX_SHARED_HOLDERS - 1 co-attachers).
+    let mut shared = Vec::new();
+    for _ in 0..(MAX_SHARED_HOLDERS - 1) {
+        shared.push(registry.issue_shared("t1", Some("p1")).unwrap());
+    }
+    // Every holder so far verifies.
+    for credential in &shared {
+        assert!(registry.verify("t1", credential, Some("p1")).is_ok());
+    }
+    // One MORE than the cap: the oldest shared credential is evicted.
+    let newest = registry.issue_shared("t1", Some("p1")).unwrap();
+    assert!(registry.verify("t1", &newest, Some("p1")).is_ok());
+    assert!(registry.verify("t1", &shared[0], Some("p1")).is_err());
+    // ...but every other shared holder still verifies, and so does the primary.
+    for credential in &shared[1..] {
+        assert!(registry.verify("t1", credential, Some("p1")).is_ok());
+    }
+    assert!(registry.holder_count("t1") <= MAX_SHARED_HOLDERS);
+}
+
+#[test]
+fn shared_holder_cap_never_evicts_the_primary_credential() {
+    let registry = TerminalClaimRegistry::new();
+    let primary = registry.issue("t1", Some("p1"));
+    for _ in 0..(MAX_SHARED_HOLDERS * 3) {
+        let _ = registry.issue_shared("t1", Some("p1")).unwrap();
+    }
+    // The spawn credential outlives any number of co-attacher cycles.
+    assert!(registry.verify("t1", &primary, Some("p1")).is_ok());
+    assert!(registry.holder_count("t1") == MAX_SHARED_HOLDERS);
+}
