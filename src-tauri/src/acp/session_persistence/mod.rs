@@ -609,13 +609,10 @@ impl SessionPersistence {
             let Some(last_prompt) = last_unmatched_user_prompt(&records) else {
                 continue;
             };
-            let seq = {
-                let catalog = self.inner.catalog.lock();
-                let Some(metadata) = catalog.get(&session_id) else {
-                    continue;
-                };
-                metadata.lock().last_seq + 1
+            let Some(metadata) = self.inner.catalog.lock().get(&session_id).cloned() else {
+                continue;
             };
+            let seq = metadata.lock().last_seq + 1;
             let mut payload = serde_json::json!({
                 "sessionId": session_id,
                 "stopReason": "interrupted",
