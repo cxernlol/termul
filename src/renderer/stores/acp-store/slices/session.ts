@@ -49,6 +49,7 @@ import {
   captureReopenControlBaseline,
   configIdForAgentId,
   creationOptionDefaultsFrom,
+  deriveOpenTurn,
   discoveryKey,
   dropHiddenToolCalls,
   dropPermissionsForSession,
@@ -585,6 +586,13 @@ async function openHistorySessionInner(
   // The fetched payload is authoritative: hidden greeting turns never render,
   // and the recorded watermark seq-dedupes live replayed events against it.
   const installed = installableTranscript(id, payload, { headAnchored })
+  // Issue #838: a trailing `user_prompt` with no matching `prompt_complete`
+  // in the installed payload means the turn is still running server-side
+  // (metadata carries `turnActive` when the host knows; the transcript
+  // derivation covers older hosts + trimmed windows alike). Derive the open
+  // turn so the spinner + stop button show immediately after reload instead
+  // of only after a `rate_limited` send attempt.
+  const openTurn = deriveOpenTurn(installed.messages, meta.turnActive)
   set((s) => ({
     sessions: {
       ...s.sessions,
@@ -595,8 +603,8 @@ async function openHistorySessionInner(
         projectId: meta.projectId,
         status: 'closed',
         title: meta.title,
-        activeTurn: false,
-        openTurnId: null,
+        activeTurn: openTurn !== null,
+        openTurnId: openTurn,
         modes: existingControls?.modes ?? null,
         models: existingControls?.models ?? null,
         configOptions: existingControls?.configOptions ?? [],
@@ -1286,8 +1294,12 @@ export const createSessionSlice: StateCreator<AcpState, [], [], SessionSliceStat
     }
     if (!payload) throw new Error(`no persisted history for ${id}`)
     const meta = payload.metadata
-    rebaseSeqCounter(maxPayloadSeq(payload))
     const installed = installableTranscript(id, payload, { headAnchored })
+    // #838 parity with openHistorySessionInner: a trailing unmatched
+    // `user_prompt` (or server metadata) means the turn is still running —
+    // the resumed chat must open with the spinner + stop button, not idle.
+    const openTurn = deriveOpenTurn(installed.messages, meta.turnActive)
+    rebaseSeqCounter(maxPayloadSeq(payload))
     set((s) => ({
       sessions: {
         ...s.sessions,
@@ -1298,8 +1310,8 @@ export const createSessionSlice: StateCreator<AcpState, [], [], SessionSliceStat
           projectId: meta.projectId,
           status: 'closed',
           title: meta.title,
-          activeTurn: false,
-          openTurnId: null,
+          activeTurn: openTurn !== null,
+          openTurnId: openTurn,
           modes: null,
           models: null,
           configOptions: [],
