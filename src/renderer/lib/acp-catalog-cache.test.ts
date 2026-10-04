@@ -115,3 +115,9 @@ describe('webAcpCatalogApi listCatalog caching (#844)', () => {
     expect(fetchMock).toHaveBeenCalledTimes(3, 'post-opt-in read must re-fetch, not replay')
   })
 })
+
+// ---------------------------------------------------------------------------
+// CodeRabbit: invalidation racing an in-flight fetch. The generation gate
+// means a request that started before a mutation POST must never write
+// pre-mutation data back into the cache window.
+// ---------------------------------------------------------------------------

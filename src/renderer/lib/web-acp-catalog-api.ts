@@ -17,8 +17,9 @@
  * gate's 401 UNAUTHORIZED keeps its code/message).
  */
 
+import type { AcpCatalog, AcpCatalogApi } from '@shared/types/acp-catalog.types'
+import type { IpcResult } from '@shared/types/ipc.types'
 import { cachedListCatalog, invalidateCatalogCache } from './acp-catalog-cache'
-
 import { getJson, postJson } from './ipc/http'
 
 /**
@@ -37,11 +38,16 @@ export const webAcpCatalogApi: AcpCatalogApi = {
     }, refresh)
   },
 
-  setCatalogOptIn(enabled: boolean): Promise<IpcResult<void>> {
+  async setCatalogOptIn(enabled: boolean): Promise<IpcResult<void>> {
     // #844: the opt-in changes what the next catalog read returns — drop the
     // cached response so the immediate follow-up read re-fetches.
     invalidateCatalogCache()
-    return postJson<void>('/acp/catalog/opt-in', { enabled })
+    const result = await postJson<void>('/acp/catalog/opt-in', { enabled })
+    // CodeRabbit: a fetch that raced the POST may still resolve pre-toggle
+    // data; invalidate again once the mutation settles so nothing stale
+    // re-enters the cache window.
+    invalidateCatalogCache()
+    return result
   },
 
   async isCatalogOptedIn(): Promise<IpcResult<boolean>> {

@@ -45,16 +45,31 @@ interface CatalogCacheEntry {
  */
 const catalogCache: { entry: CatalogCacheEntry | null } = { entry: null }
 let inflightCatalog: Promise<IpcResult<AcpCatalog>> | null = null
+/**
+ * Generation counter for invalidation (CodeRabbit): a fetch that was
+ * already in flight — or one that starts while a mutation POST is pending —
+ * must not write pre-mutation data back into the cache. Each invalidation
+ * bumps the generation; a settling request only commits when its generation
+ * still matches the current one.
+ */
+let cacheGeneration = 0
 
 /** Test seam: reset the cache + in-flight state between tests. */
 export function _resetCatalogCacheForTesting(): void {
   catalogCache.entry = null
   inflightCatalog = null
+  cacheGeneration += 1
 }
 
 /** Invalidate the cached response (call after a mutation, e.g. opt-in). */
 export function invalidateCatalogCache(): void {
   catalogCache.entry = null
+  cacheGeneration += 1
+  // A request that started before the invalidation may still resolve with
+  // pre-mutation data; dropping the in-flight handle makes the NEXT caller
+  // start a fresh request instead of joining it. The stale request itself
+  // is generation-gated, so it cannot repopulate the cache.
+  inflightCatalog = null
 }
 
 /** Whether the cache holds a fresh-enough entry. Internal + tests. */
@@ -83,21 +98,35 @@ export async function cachedListCatalog(
     // Dedupe concurrent callers onto the in-flight request.
     return inflightCatalog
   }
-  const request = (async () => {
+  // Capture the handle via a mutable local so the finally block can compare
+  // without referencing the not-yet-assigned `request` binding.
+  let pendingRequest: Promise<IpcResult<AcpCatalog>> | null = null
+  const request: Promise<IpcResult<AcpCatalog>> = (async () => {
+    const generation = cacheGeneration
     try {
       const result = await fetchCatalog()
-      if (result.success) {
-        catalogCache.entry = { result, cachedAt: Date.now() }
-      } else {
-        // A failure must not poison the window — drop any stale entry so
-        // the next call re-attempts rather than replaying old data.
-        catalogCache.entry = null
+      // Commit only when no invalidation happened while this request was
+      // in flight (CodeRabbit: pre-toggle data must not repopulate).
+      if (generation === cacheGeneration) {
+        if (result.success) {
+          catalogCache.entry = { result, cachedAt: Date.now() }
+        } else {
+          // A failure must not poison the window — drop any stale entry so
+          // the next call re-attempts rather than replaying old data.
+          catalogCache.entry = null
+        }
       }
       return result
     } finally {
-      inflightCatalog = null
+      // Only clear the in-flight handle if it is still THIS request; an
+      // invalidation may have already nulled it (and a newer request may
+      // have taken the slot).
+      if (inflightCatalog !== null && inflightCatalog === pendingRequest) {
+        inflightCatalog = null
+      }
     }
   })()
+  pendingRequest = request
   inflightCatalog = request
   return request
 }
