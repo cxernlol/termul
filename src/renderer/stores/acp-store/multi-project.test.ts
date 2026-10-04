@@ -499,9 +499,7 @@ describe('acp-store multi-project isolation', () => {
       sessionId: 's1',
       stopReason: 'interrupted'
     })
-    expect(useAcpStore.getState().sessions['s1'].lastError).toBe(
-      'Interrupted by server restart.'
-    )
+    expect(useAcpStore.getState().sessions['s1'].lastError).toBe('Interrupted by server restart.')
   })
 
   it('selectConfigWarmState rolls up status across all per-cwd processes', () => {
