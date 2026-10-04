@@ -470,7 +470,7 @@ impl WsRelaySink {
     /// Best-effort + idempotent: a failed enqueue (queue full / writer gone)
     /// logs and drops — the live fan-out already delivered those events, so
     /// only the durable replay tail is affected.
-    pub fn note_session_registered(&self, sid: &str) {
+    pub fn note_session_registered_inherent(&self, sid: &str) {
         let Some(persistence) = &self.persistence else {
             return;
         };
@@ -1393,6 +1393,14 @@ impl EventSink for WsRelaySink {
         {
             self.notify_history_changed();
         }
+    }
+
+    /// Issue #836: dispatch `note_session_registered` through the trait so
+    /// `Arc<dyn EventSink>` callers (the ACP command loop after
+    /// `register_session` / promote) reach the real flush, not this trait's
+    /// no-op default. Delegates to the inherent method.
+    fn note_session_registered(&self, session_id: &str) {
+        self.note_session_registered_inherent(session_id)
     }
 }
 

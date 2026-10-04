@@ -1100,7 +1100,7 @@ async fn pre_registration_events_are_buffered_and_flushed_on_registration() {
         })
         .await
         .unwrap();
-    relay.note_session_registered("sess-prereg");
+    relay.note_session_registered_inherent("sess-prereg");
     // Post-registration events persist normally.
     for index in 3..=4 {
         fan_out(
@@ -1124,6 +1124,51 @@ async fn pre_registration_events_are_buffered_and_flushed_on_registration() {
     assert_eq!(
         replayed.iter().map(|event| event.seq).collect::<Vec<_>>(),
         (1..=4).collect::<Vec<_>>()
+    );
+    persistence.shutdown().await.unwrap();
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// The `note_session_registered` flush must work through the TRAIT object
+/// (`Arc<dyn EventSink>`), not just the inherent method — the ACP command
+/// loop calls it via the trait, and the trait's default is a no-op. Guards
+/// against the flush silently becoming dead code again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn registration_flush_reaches_sinks_through_the_event_sink_trait() {
+    let root = temp_dir("trait-flush");
+    let cwd = root.join("cwd");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let persistence = SessionPersistence::open(root.join("sessions"))
+        .await
+        .unwrap();
+    let relay = Arc::new(WsRelaySink::with_persistence(64, persistence.clone()));
+    let sinks: Vec<Arc<dyn EventSink>> = vec![relay.clone()];
+    for index in 1..=2 {
+        fan_out(
+            &sinks,
+            Some("sess-trait"),
+            "acp:message_chunk",
+            &TestPayload::new("a", "sess-trait", &format!("seq-{index}")),
+        );
+    }
+    persistence
+        .register_session(SessionRegistration {
+            session_id: "sess-trait".to_string(),
+            cwd,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    // The production call shape: dispatch through Arc<dyn EventSink>.
+    for sink in &sinks {
+        sink.note_session_registered("sess-trait");
+    }
+    persistence.flush_session("sess-trait").await.unwrap();
+    let records = persistence.replay_after("sess-trait", 0).unwrap();
+    assert_eq!(
+        records.iter().map(|record| record.seq).collect::<Vec<_>>(),
+        (1..=2).collect::<Vec<_>>(),
+        "trait-dispatched registration must flush the buffered records"
     );
     persistence.shutdown().await.unwrap();
     let _ = std::fs::remove_dir_all(root);
