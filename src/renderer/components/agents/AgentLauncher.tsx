@@ -81,8 +81,8 @@ import { dialogApi, persistenceApi } from '@/lib/api'
 import { registerSessionTempFiles } from '@/lib/attachment-temp-cleanup'
 import { resolveEnvForSpawn } from '@/lib/env-parser'
 import { logFrontendError } from '@/lib/log-api'
-import { isTauriContext } from '@/lib/tauri-runtime'
 import { platform as osPlatform } from '@/lib/tauri-os'
+import { isTauriContext } from '@/lib/tauri-runtime'
 import { terminalApi } from '@/lib/terminal-api'
 import { cn } from '@/lib/utils'
 import { randomUUID } from '@/lib/uuid'
@@ -867,10 +867,7 @@ export function AgentLauncher({ paneId, className }: AgentLauncherProps): React.
     // anything. Desktop keeps the preferred default.
     const defaultAgent = isTauriContext()
       ? pickDefaultSupportedAgent(supportedAgents)
-      : pickDefaultConfiguredAgent(
-          supportedAgents,
-          new Set(acpConfigs.map((config) => config.id))
-        )
+      : pickDefaultConfiguredAgent(supportedAgents, new Set(acpConfigs.map((config) => config.id)))
     void (async () => {
       try {
         const persisted = await persistenceApi.read<unknown>(PersistenceKeys.lastSelectedAgent)
