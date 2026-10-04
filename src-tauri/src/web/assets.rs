@@ -80,14 +80,27 @@ pub fn is_vite_hashed_asset_path(path: &str) -> bool {
 
 /// Static-asset middleware for the disk `ServeDir` path (#857): sets
 /// `Cache-Control: public, max-age=31536000, immutable` on Vite-hashed
-/// `/assets/*` responses. Idempotent on the embedded path (which sets the
-/// same value in `embedded_response`). 200-only — a 404 must never be pinned
-/// for a year. Layered inside [`static_compression_layer`] so the header is
-/// computed before the body is (re)framed.
+/// `/assets/*` responses. Two guards keep it safe:
+///
+/// - **200-only** — a 404 must never be pinned for a year.
+/// - **Not-HTML** — `ServeDir`'s SPA fallback serves `index.html` (200!) for
+///   a MISSING asset whose request path looks like `/assets/foo.js`; the
+///   decision must key on the response, not just the request path, or the
+///   upgrade-critical shell would be pinned immutable. `text/html` is never
+///   an asset response (JS/CSS/fonts/images are their own MIME types).
+///
+/// Idempotent on the embedded path (which sets the same value in
+/// [`embedded_response`]). Layered inside [`static_compression_layer`] so
+/// the header is computed before the body is (re)framed.
 pub async fn immutable_asset_cache_headers(request: Request, next: Next) -> Response {
     let is_asset = is_vite_hashed_asset_path(request.uri().path());
     let mut response = next.run(request).await;
-    if is_asset && response.status() == StatusCode::OK {
+    let not_html = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| !value.starts_with("text/html"));
+    if is_asset && response.status() == StatusCode::OK && not_html {
         response.headers_mut().insert(
             header::CACHE_CONTROL,
             HeaderValue::from_static("public, max-age=31536000, immutable"),

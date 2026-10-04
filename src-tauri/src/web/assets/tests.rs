@@ -637,10 +637,15 @@ async fn disk_served_shell_stays_no_cache_under_compression() {
     }
 }
 
-/// A missing hashed asset 404s and is NOT pinned immutable — a year-long
-/// cache entry on a 404 would survive the file's later appearance.
+/// A missing hashed asset falls through to the SPA shell (ServeDir's
+/// `fallback(ServeFile::new(index.html))` serves index.html, 200) — and the
+/// response is NOT pinned immutable. A year-long immutable entry on the
+/// fallback (or a 404) would survive the asset's later appearance, breaking
+/// upgrades. The 200-only guard in `immutable_asset_cache_headers` is what
+/// keeps this correct: the fallback body is HTML and `shell_no_cache_headers`
+/// re-marks it `no-cache, must-revalidate`.
 #[tokio::test]
-async fn missing_hashed_asset_404_is_not_immutable() {
+async fn missing_hashed_asset_falls_back_not_immutable() {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     std::fs::write(root.join("index.html"), "<!doctype html>shell").expect("index.html");
@@ -662,9 +667,8 @@ async fn missing_hashed_asset_404_is_not_immutable() {
         )
         .await
         .expect("router response");
-    // ServeDir: a missing file with an extension misses the index.html
-    // fallback (real 404) — the immutable header must not be applied.
-    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    // ServeDir's configured fallback serves the SPA shell for missing paths.
+    assert_eq!(resp.status(), StatusCode::OK, "missing asset → SPA fallback");
     let cache = resp
         .headers()
         .get(header::CACHE_CONTROL)
@@ -673,6 +677,10 @@ async fn missing_hashed_asset_404_is_not_immutable() {
         .to_string();
     assert!(
         !cache.contains("immutable"),
-        "404 must not be immutable, got {cache}"
+        "missing asset must not be immutable, got {cache}"
+    );
+    assert_eq!(
+        cache, "no-cache, must-revalidate",
+        "the HTML fallback must be revalidated (upgrade safety), got {cache}"
     );
 }
