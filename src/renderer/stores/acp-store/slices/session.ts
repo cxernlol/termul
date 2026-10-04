@@ -1294,8 +1294,12 @@ export const createSessionSlice: StateCreator<AcpState, [], [], SessionSliceStat
     }
     if (!payload) throw new Error(`no persisted history for ${id}`)
     const meta = payload.metadata
-    rebaseSeqCounter(maxPayloadSeq(payload))
     const installed = installableTranscript(id, payload, { headAnchored })
+    // #838 parity with openHistorySessionInner: a trailing unmatched
+    // `user_prompt` (or server metadata) means the turn is still running —
+    // the resumed chat must open with the spinner + stop button, not idle.
+    const openTurn = deriveOpenTurn(installed.messages, meta.turnActive)
+    rebaseSeqCounter(maxPayloadSeq(payload))
     set((s) => ({
       sessions: {
         ...s.sessions,
@@ -1306,8 +1310,8 @@ export const createSessionSlice: StateCreator<AcpState, [], [], SessionSliceStat
           projectId: meta.projectId,
           status: 'closed',
           title: meta.title,
-          activeTurn: false,
-          openTurnId: null,
+          activeTurn: openTurn !== null,
+          openTurnId: openTurn,
           modes: null,
           models: null,
           configOptions: [],
