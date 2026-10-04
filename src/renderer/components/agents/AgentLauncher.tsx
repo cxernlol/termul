@@ -72,6 +72,7 @@ import { deriveAgentUpdates, deriveSpawnBasis } from '@/lib/agents/agent-update-
 import {
   installedBinaryConfig,
   manualBinaryConfig,
+  pickDefaultConfiguredAgent,
   pickDefaultSupportedAgent,
   type SupportedAcpAgentEntry,
   type SupportedAcpAgentManualInstall
@@ -860,6 +861,16 @@ export function AgentLauncher({ paneId, className }: AgentLauncherProps): React.
   useEffect(() => {
     if (selectedConfigId || supportedAgents.length === 0) return
     let cancelled = false
+    // Issue #840: on web the fallback default must be a CONFIGURED agent —
+    // the catalog-derived preferred default (Codex via `npx`) would
+    // auto-persist here and seed a warm process before the user picked
+    // anything. Desktop keeps the preferred default.
+    const defaultAgent = isTauriContext()
+      ? pickDefaultSupportedAgent(supportedAgents)
+      : pickDefaultConfiguredAgent(
+          supportedAgents,
+          new Set(acpConfigs.map((config) => config.id))
+        )
     void (async () => {
       try {
         const persisted = await persistenceApi.read<unknown>(PersistenceKeys.lastSelectedAgent)
@@ -870,20 +881,26 @@ export function AgentLauncher({ paneId, className }: AgentLauncherProps): React.
           saved?.mode === 'acp' && typeof saved.agentId === 'string'
             ? supportedAgents.find((entry) => entry.configId === saved.agentId)
             : null
-        const next = restored ?? pickDefaultSupportedAgent(supportedAgents) ?? supportedAgents[0]
+        // A persisted-but-unconfigured agent must not be restored on web
+        // either (it would auto-persist an `npx` config nobody chose).
+        const restoredOk =
+          !isTauriContext() && restored
+            ? acpConfigs.some((config) => config.id === restored.configId)
+            : Boolean(restored)
+        const next = (restoredOk ? restored : null) ?? defaultAgent ?? supportedAgents[0]
         if (next) {
           setSelectedConfigId(next.configId)
           persistSelection(next.configId)
         }
       } catch {
-        const next = pickDefaultSupportedAgent(supportedAgents) ?? supportedAgents[0]
+        const next = defaultAgent ?? supportedAgents[0]
         if (next) setSelectedConfigId(next.configId)
       }
     })()
     return () => {
       cancelled = true
     }
-  }, [persistSelection, selectedConfigId, supportedAgents])
+  }, [acpConfigs, persistSelection, selectedConfigId, supportedAgents])
 
   // CAP-2: resolve the origin-aware default base branch and local branch list
   // once per desktop git project so the context-strip picker is ready when the
