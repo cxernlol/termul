@@ -11,6 +11,7 @@ import {
 import { isTauriContext } from '@/lib/tauri-runtime'
 import { setTerminalProtected } from '@/lib/terminal-api'
 import { randomUUID } from '@/lib/uuid'
+import { useWebAuthGateOk } from '@/lib/web-auth-gate'
 import { webServerProjects } from '@/lib/web-server-api'
 import { workspaceManifestApi } from '@/lib/workspace-manifest-api'
 import { useAcpStore } from '@/stores/acp-store'
@@ -463,6 +464,12 @@ function summaryToProject(summary: ProjectSummary): Project {
 
 export function useProjectsLoader(): void {
   const setProjects = useProjectStore((state) => state.setProjects)
+  // #854: while the web auth gate reports unauthorized (missing/rotated
+  // token), the mirror fetch 401s and must not run — it would spin forever
+  // in a loop of failed fetches. When the gate resolves ok (including after
+  // a token submission), (re)run the fetch with the fresh Authorization
+  // header.
+  const webAuthGateOk = useWebAuthGateOk()
 
   useEffect(() => {
     // Web/remote mode: mirror the desktop's project list from the in-memory
@@ -478,6 +485,12 @@ export function useProjectsLoader(): void {
     // client switches). If the current project was deleted by the host, it
     // falls back to `defaultProjectId` (or the first project).
     if (!isTauriContext()) {
+      // #854: gated out (missing/rotated token) — do nothing; the effect
+      // re-runs when the gate flips ok and fetches with the fresh header.
+      // Falling through to the desktop persistence branch would flip
+      // isLoaded on the stubbed plugin-store's empty result and defeat the
+      // token-entry screen.
+      if (!webAuthGateOk) return
       let unsub: (() => void) | undefined
       // Guard against completing a fetch after unmount (skip the stale
       // setProjects so a remounted store is not clobbered).
@@ -589,7 +602,7 @@ export function useProjectsLoader(): void {
       }
     }
     load()
-  }, [setProjects])
+  }, [setProjects, webAuthGateOk])
 }
 
 /**
