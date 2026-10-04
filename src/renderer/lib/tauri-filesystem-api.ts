@@ -1012,4 +1012,7 @@ export function _resetFilesystemStateForTesting() {
   activeWatchers.clear()
   activeCallbacks.clear()
   globalCallbacks.clear()
+  webFileNameBatchCallbacks.clear()
+  webFileNameDoneCallbacks.clear()
+  cancelledWebFileNameSearches.clear()
 }

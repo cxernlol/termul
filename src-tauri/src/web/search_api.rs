@@ -277,7 +277,7 @@ pub async fn content(
     (StatusCode::OK, Json(body))
 }
 
-/// `GET /search/file-names?q=...&root=...&includeIgnored=true|false` —
+/// `GET /search/file-names?query=...&root=...&includeIgnored=true|false` —
 /// one-shot filename search (issue #848). Reuses the SAME ripgrep walk the
 /// desktop `#[tauri::command] search_file_names_stream` runs
 /// (`validated_search_root` + `build_file_name_search_args` +
