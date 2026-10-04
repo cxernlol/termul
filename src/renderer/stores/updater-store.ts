@@ -732,3 +732,18 @@ export function useUpdaterInternalActions() {
 // Raw store export for accessing store outside of React components
 // Usage: updaterStore.getState()
 export const updaterStore = useUpdaterStore
+
+/**
+ * @internal Testing only — reset the module-level lifecycle flags so
+ * `initializeUpdater` runs again after a test that pinned the web no-op
+ * path (isTauriContext() false) or completed an initialization cycle.
+ */
+export function _resetUpdaterLifecycleForTesting(): void {
+  isInitialized = false
+  initializationPromise = null
+  hasCompletedStartupAutoCheck = false
+  updaterLifecycleGeneration += 1
+  clearPeriodicCheckTimer()
+  activeTauriUpdaterUnsubscribe?.()
+  activeTauriUpdaterUnsubscribe = null
+}
