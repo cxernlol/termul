@@ -95,7 +95,12 @@ vi.mock('@/lib/api', async (importActual) => {
 })
 
 import type { AcpTransport } from '@/lib/acp-transport'
-import { _resetAcpTransportForTests, _setAcpTransportForTests } from '@/lib/acp-transport'
+import {
+  _resetAcpTransportForTests,
+  _setAcpTransportForTests,
+  AcpTransportError
+} from '@/lib/acp-transport'
+import { isTauriContext } from '@/lib/tauri-runtime'
 import {
   _resetAcpAuthForTesting,
   _resetEphemeralSessionIdsForTesting,
@@ -119,21 +124,32 @@ const NUL = '\0'
 function fakeWebTransport(
   summaries: Array<Record<string, unknown>>,
   payloads: Record<string, unknown> = {}
-): AcpTransport {
+): AcpTransport & {
+  loadSession: ReturnType<typeof vi.fn>
+  subscribeSession: ReturnType<typeof vi.fn>
+  seedSessionCursor: ReturnType<typeof vi.fn>
+  spawnAgent: ReturnType<typeof vi.fn>
+} {
   return {
     listAgentDetails: async () => summaries,
-    spawnAgent: async () => {
+    spawnAgent: vi.fn(async () => {
       throw new Error('spawn must not happen when a host agent owns the session')
-    },
-    loadSession: async () => ({}),
-    resumeSession: async () => ({}),
+    }),
+    loadSession: vi.fn(async () => ({})),
+    resumeSession: vi.fn(async () => ({})),
     getSessionPayload: async (id: string) => payloads[id] ?? null,
     getSessionPayloadTail: async () => null,
-    subscribeSession: async () => {},
+    subscribeSession: vi.fn(async () => {}),
+    seedSessionCursor: vi.fn(),
     connect: async () => {},
     dispose: () => {},
     historyMode: () => 'server' as const
-  } as unknown as AcpTransport
+  } as unknown as AcpTransport & {
+    loadSession: ReturnType<typeof vi.fn>
+    subscribeSession: ReturnType<typeof vi.fn>
+    seedSessionCursor: ReturnType<typeof vi.fn>
+    spawnAgent: ReturnType<typeof vi.fn>
+  }
 }
 
 const HOST_AGENT = 'agent-host-original'
@@ -169,6 +185,7 @@ function seededPayload(id: string): Record<string, unknown> {
 describe('acp-store: host agent reuse on web (#837)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    vi.mocked(isTauriContext).mockReturnValue(false)
     _resetAcpTransportForTests(null)
     _resetInFlightHistoryOpensForTesting()
     _resetAcpAuthForTesting()
@@ -237,6 +254,23 @@ describe('acp-store: host agent reuse on web (#837)', () => {
       ],
       { 's-unowned': seededPayload('s-unowned') }
     )
+    const unowned = transport.getSessionPayload
+      ? await transport.getSessionPayload('s-unowned')
+      : null
+    if (unowned && typeof unowned === 'object' && 'messages' in unowned) {
+      const payload = unowned as { messages: unknown[] }
+      payload.messages = [
+        ...payload.messages,
+        {
+          id: 'm2',
+          role: 'agent',
+          blocks: [{ type: 'text', text: 'done' }],
+          streaming: false,
+          timestamp: 1,
+          seq: 2
+        }
+      ]
+    }
     _setAcpTransportForTests(transport)
 
     // spawnAgent throws in this fake; the store's silentSpawnFailure path
@@ -246,7 +280,7 @@ describe('acp-store: host agent reuse on web (#837)', () => {
     const state = useAcpStore.getState()
     expect(state.configToLiveAgent['acp-registry:claude-acp' + NUL + '/w']).toBeUndefined()
     expect(state.agentStatus[HOST_AGENT]).toBeUndefined()
-    expect(state.messages['s-unowned']).toHaveLength(1)
+    expect(state.messages['s-unowned']).toHaveLength(2)
   })
 
   it('prefers the owner whose configId matches the session config', async () => {
@@ -285,5 +319,216 @@ describe('acp-store: host agent reuse on web (#837)', () => {
 
     await expect(useAcpStore.getState().openHistorySession('s-listfail')).resolves.toBeUndefined()
     expect(useAcpStore.getState().messages['s-listfail']).toHaveLength(1)
+  })
+
+  it('subscribes to a live turn instead of loading the session (#882)', async () => {
+    const payload = seededPayload('s-live')
+    payload.metadata = {
+      ...(payload.metadata as Record<string, unknown>),
+      turnActive: true,
+      lastSeq: 75,
+      status: 'active'
+    }
+    const transport = fakeWebTransport(
+      [
+        {
+          id: HOST_AGENT,
+          name: 'Claude',
+          configId: 'acp-registry:claude-acp',
+          capabilities: { loadSession: true },
+          ownsSession: ['s-live']
+        }
+      ],
+      { 's-live': payload }
+    )
+    _setAcpTransportForTests(transport)
+
+    await useAcpStore.getState().openHistorySession('s-live')
+
+    const session = useAcpStore.getState().sessions['s-live']
+    expect(transport.loadSession).not.toHaveBeenCalled()
+    expect(transport.subscribeSession).toHaveBeenCalledWith('s-live', 75, true)
+    expect(transport.seedSessionCursor).toHaveBeenCalledWith('s-live', 75)
+    expect(transport.spawnAgent).not.toHaveBeenCalled()
+    expect(session?.status).toBe('active')
+    expect(session?.activeTurn).toBe(true)
+    expect(session?.lastError).toBeNull()
+    expect(session?.agentId).toBe(HOST_AGENT)
+  })
+
+  it('falls back to subscribe when load is rejected with ACP_REOPEN_TURN_ACTIVE (#882)', async () => {
+    const payload = seededPayload('s-reopen')
+    payload.metadata = {
+      ...(payload.metadata as Record<string, unknown>),
+      status: 'active',
+      lastSeq: 75
+    }
+    payload.messages = [
+      ...(payload.messages as unknown[]),
+      {
+        id: 'm2',
+        role: 'agent',
+        blocks: [{ type: 'text', text: 'ECHO-OK' }],
+        streaming: true,
+        timestamp: 1,
+        seq: 2
+      }
+    ]
+    const transport = fakeWebTransport(
+      [
+        {
+          id: HOST_AGENT,
+          name: 'Claude',
+          configId: 'acp-registry:claude-acp',
+          capabilities: { loadSession: true },
+          ownsSession: ['s-reopen']
+        }
+      ],
+      { 's-reopen': payload }
+    )
+    transport.loadSession.mockRejectedValue(
+      new AcpTransportError('not_implemented', 'ACP_REOPEN_TURN_ACTIVE: session s-reopen')
+    )
+    _setAcpTransportForTests(transport)
+
+    await useAcpStore.getState().openHistorySession('s-reopen')
+
+    const session = useAcpStore.getState().sessions['s-reopen']
+    expect(transport.loadSession).toHaveBeenCalled()
+    expect(transport.subscribeSession).toHaveBeenCalledWith('s-reopen', 75, true)
+    expect(session?.status).toBe('active')
+    expect(session?.activeTurn).toBe(true)
+    expect(session?.openTurnId).toBe('turn:live')
+    expect(session?.lastError).toBeNull()
+  })
+
+  it('still loads an idle status-active session (#882)', async () => {
+    const payload = seededPayload('s-idle')
+    payload.messages = [
+      ...(payload.messages as unknown[]),
+      {
+        id: 'm2',
+        role: 'agent',
+        blocks: [{ type: 'text', text: 'done' }],
+        streaming: false,
+        timestamp: 1,
+        seq: 2
+      }
+    ]
+    const transport = fakeWebTransport(
+      [
+        {
+          id: HOST_AGENT,
+          name: 'Claude',
+          configId: 'acp-registry:claude-acp',
+          capabilities: { loadSession: true },
+          ownsSession: ['s-idle']
+        }
+      ],
+      { 's-idle': payload }
+    )
+    _setAcpTransportForTests(transport)
+
+    await useAcpStore.getState().openHistorySession('s-idle')
+
+    expect(transport.loadSession).toHaveBeenCalled()
+    expect(transport.subscribeSession).not.toHaveBeenCalled()
+    expect(useAcpStore.getState().sessions['s-idle']?.status).toBe('active')
+  })
+
+  it('attaches on desktop without subscribeSession or a second spawn (#882)', async () => {
+    vi.mocked(isTauriContext).mockReturnValue(true)
+    const payload = seededPayload('s-desk')
+    payload.metadata = {
+      ...(payload.metadata as Record<string, unknown>),
+      turnActive: true,
+      lastSeq: 4
+    }
+    const transport = fakeWebTransport(
+      [
+        {
+          id: HOST_AGENT,
+          name: 'Claude',
+          configId: 'acp-registry:claude-acp',
+          capabilities: { loadSession: true },
+          ownsSession: ['s-desk']
+        }
+      ],
+      { 's-desk': payload }
+    )
+    delete (transport as { subscribeSession?: unknown }).subscribeSession
+    _setAcpTransportForTests(transport)
+
+    await useAcpStore.getState().openHistorySession('s-desk')
+
+    const session = useAcpStore.getState().sessions['s-desk']
+    expect(transport.spawnAgent).not.toHaveBeenCalled()
+    expect(transport.loadSession).not.toHaveBeenCalled()
+    expect(session?.status).toBe('active')
+    expect(session?.activeTurn).toBe(true)
+    expect(session?.lastError).toBeNull()
+    expect(session?.agentId).toBe(HOST_AGENT)
+  })
+
+  it('adopts the host agent from an open transcript when turnActive is omitted (#882)', async () => {
+    vi.mocked(isTauriContext).mockReturnValue(true)
+    const payload = seededPayload('s-derived')
+    const transport = fakeWebTransport(
+      [
+        {
+          id: HOST_AGENT,
+          name: 'Claude',
+          configId: 'acp-registry:claude-acp',
+          capabilities: { loadSession: true },
+          ownsSession: ['s-derived']
+        }
+      ],
+      { 's-derived': payload }
+    )
+    delete (transport as { subscribeSession?: unknown }).subscribeSession
+    _setAcpTransportForTests(transport)
+
+    await useAcpStore.getState().openHistorySession('s-derived')
+
+    const session = useAcpStore.getState().sessions['s-derived']
+    expect(transport.spawnAgent).not.toHaveBeenCalled()
+    expect(transport.loadSession).not.toHaveBeenCalled()
+    expect(session?.status).toBe('active')
+    expect(session?.activeTurn).toBe(true)
+    expect(session?.agentId).toBe(HOST_AGENT)
+  })
+
+  it('keeps the open turn and surfaces a failed subscribe (#882)', async () => {
+    const payload = seededPayload('s-sub-fail')
+    payload.metadata = {
+      ...(payload.metadata as Record<string, unknown>),
+      turnActive: true,
+      lastSeq: 4
+    }
+    const transport = fakeWebTransport(
+      [
+        {
+          id: HOST_AGENT,
+          name: 'Claude',
+          configId: 'acp-registry:claude-acp',
+          capabilities: { loadSession: true },
+          ownsSession: ['s-sub-fail']
+        }
+      ],
+      { 's-sub-fail': payload }
+    )
+    transport.subscribeSession.mockRejectedValue(new Error('socket closed'))
+    _setAcpTransportForTests(transport)
+
+    await expect(useAcpStore.getState().openHistorySession('s-sub-fail')).rejects.toThrow(
+      'socket closed'
+    )
+
+    const session = useAcpStore.getState().sessions['s-sub-fail']
+    expect(session?.activeTurn).toBe(true)
+    expect(session?.openTurnId).toBeTruthy()
+    expect(session?.status).not.toBe('closed')
+    expect(session?.lastError).toContain('Resume failed')
+    expect(session?.lastError).toContain('socket closed')
   })
 })
