@@ -1933,9 +1933,11 @@ pub fn run() {
                         canvas_pool.shutdown_all().await;
                     }
                     if let Some(acp_manager) = acp_manager {
-                        // kill_all -> kill_all_checked flushes durable queues;
-                        // shutdown_persistence then stops the writers so the
-                        // host history index is canonical at exit.
+                        // When persistence is available, kill_all stops agents
+                        // and leaves session writers installed. shutdown_persistence
+                        // drains them, appends the interrupted marker for an open
+                        // turn, and persists status closed. A single-agent kill
+                        // does not take this path.
                         acp_manager.kill_all().await;
                         if let Err(error) = acp_manager.shutdown_persistence().await {
                             log::error!(

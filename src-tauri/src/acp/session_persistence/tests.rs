@@ -3004,6 +3004,11 @@ async fn shutdown_appends_no_marker_when_turns_completed() {
     assert!(records.iter().all(|r| r.payload
         .get("stopReason")
         .is_none_or(|s| s == "end_turn")));
+    assert_eq!(
+        persistence.metadata("session-1").unwrap().status,
+        PersistedSessionStatus::Closed,
+        "stopping the writer on process shutdown closes metadata even when no marker is needed"
+    );
     let _ = fs::remove_dir_all(root);
 }
 
@@ -3029,5 +3034,102 @@ async fn shutdown_marks_legacy_open_turn_without_turn_id() {
         .expect("legacy open turn gains a marker");
     assert_eq!(marker.payload["stopReason"], "interrupted");
     assert!(marker.payload.get("turnId").is_none());
+    let _ = fs::remove_dir_all(root);
+}
+
+/// #880: hold the writer so the shutdown close is queued behind appends that
+/// are not on disk yet. The marker seq must follow those chunks. A scan that
+/// runs before the drain either misses the open turn or writes the marker
+/// first.
+#[tokio::test]
+async fn shutdown_marker_follows_appends_held_in_the_writer_queue() {
+    let root = temp_dir("interrupted-writer-gate");
+    let (persistence, _) = registered(&root).await;
+
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+    let gate = WriterGate::new(entered_tx);
+    persistence.set_writer_gate(Arc::clone(&gate));
+
+    let mut prompt = record(1, "user_prompt");
+    prompt.payload = json!({"sessionId":"session-1","turnId":"turn-slow","content":[]});
+    persistence.enqueue_event(prompt).unwrap();
+    entered_rx.await.expect("writer blocked before executing the append");
+
+    for seq in 2..=4 {
+        let mut chunk = record(seq, "message_chunk");
+        chunk.payload = json!({
+            "sessionId": "session-1",
+            "role": "agent",
+            "content": {"type": "text", "text": format!("tick{seq} ")},
+        });
+        persistence.enqueue_event(chunk).unwrap();
+    }
+
+    // Close is queued while the first append is still held and the chunks
+    // are still in the channel.
+    let pending = persistence.enqueue_shutdown_closes().await.unwrap();
+    gate.release();
+    persistence.finish_shutdown_closes(pending).await.unwrap();
+
+    let records = persistence.replay_after("session-1", 0).unwrap();
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| record.type_ == "message_chunk")
+            .map(|record| record.seq)
+            .collect::<Vec<_>>(),
+        vec![2, 3, 4]
+    );
+    let marker = records.last().expect("transcript has a tail record");
+    assert_eq!(marker.type_, "prompt_complete");
+    assert_eq!(marker.payload["stopReason"], "interrupted");
+    assert_eq!(marker.payload["turnId"], "turn-slow");
+    assert!(
+        records
+            .iter()
+            .filter(|record| record.type_ == "message_chunk")
+            .all(|record| record.seq < marker.seq),
+        "interrupted marker must follow the drained chunks"
+    );
+    assert_eq!(marker.seq, 5);
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| record.payload.get("stopReason") == Some(&json!("interrupted")))
+            .count(),
+        1
+    );
+    assert_eq!(
+        persistence.metadata("session-1").unwrap().status,
+        PersistedSessionStatus::Closed
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+/// A user-initiated close (`finalize_session`) must not invent an
+/// interrupted marker — that note means the server shut down mid-turn.
+#[tokio::test]
+async fn user_close_does_not_append_interrupted_marker() {
+    let root = temp_dir("interrupted-user-close");
+    let (persistence, _) = registered(&root).await;
+
+    let mut prompt = record(1, "user_prompt");
+    prompt.payload = json!({"sessionId":"session-1","turnId":"turn-1","content":[]});
+    persistence.enqueue_event(prompt).unwrap();
+    persistence
+        .finalize_session("session-1", PersistedSessionStatus::Closed)
+        .await
+        .unwrap();
+    // Process shutdown must not go back and stamp a restart note onto a
+    // session a single-agent close already finalized.
+    persistence.shutdown().await.unwrap();
+
+    let records = persistence.replay_after("session-1", 0).unwrap();
+    assert_eq!(records.len(), 1);
+    assert!(records.iter().all(|record| record.type_ != "prompt_complete"));
+    assert_eq!(
+        persistence.metadata("session-1").unwrap().status,
+        PersistedSessionStatus::Closed
+    );
     let _ = fs::remove_dir_all(root);
 }
