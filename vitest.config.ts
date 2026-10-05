@@ -16,15 +16,6 @@ const nodeModulesLink = join(configDir, 'node_modules')
 const fsAllow = [configDir, materialIconsDir]
 if (existsSync(nodeModulesLink)) fsAllow.push(realpathSync(nodeModulesLink))
 
-// Worktrees symlink node_modules at another checkout. Vite resolves that
-// symlink and then refuses `?raw` SVG imports that land outside this root.
-// Resolve from this file, not cwd, and skip the allow-list entry when the
-// directory is missing so config load does not throw ENOENT.
-const configDir = dirname(fileURLToPath(import.meta.url))
-const nodeModulesLink = join(configDir, 'node_modules')
-const fsAllow = [configDir]
-if (existsSync(nodeModulesLink)) fsAllow.push(realpathSync(nodeModulesLink))
-
 export default defineConfig({
   plugins: [react()],
   server: {

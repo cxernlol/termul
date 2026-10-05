@@ -392,6 +392,8 @@ export interface MessageChunkEvent {
   sessionId: SessionId
   role: ChunkRole
   content: ContentBlock
+  /** ACP message id. Equal ids belong to one message. */
+  messageId?: string
 }
 export interface ToolCallEvent {
   agentId: AgentId
