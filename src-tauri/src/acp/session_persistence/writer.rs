@@ -1,17 +1,38 @@
 use super::*;
 
-pub(super) async fn writer_loop(
+pub(super) fn writer_loop(
     inner: Arc<Inner>,
     metadata: Arc<Mutex<SessionMetadata>>,
     unhealthy: Arc<Mutex<Option<String>>>,
-    mut rx: mpsc::Receiver<WriterCommand>,
+    alive: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    rx: std::sync::mpsc::Receiver<WriterCommand>,
 ) {
-    while let Some(command) = rx.recv().await {
+    let session_id = metadata.lock().session_id.clone();
+    log::debug!(
+        "[acp-history] session writer started capacity={WRITER_CAPACITY} session={}",
+        crate::logging::redact_session_id(&session_id)
+    );
+    // Cleared on every exit path, including a panic during append, so senders
+    // observe a stopped writer instead of blocking forever on a dead thread.
+    struct AliveGuard(std::sync::Arc<std::sync::atomic::AtomicBool>, String);
+    impl Drop for AliveGuard {
+        fn drop(&mut self) {
+            self.0.store(false, std::sync::atomic::Ordering::Release);
+            log::debug!(
+                "[acp-history] session writer stopped session={}",
+                crate::logging::redact_session_id(&self.1)
+            );
+        }
+    }
+    let _alive = AliveGuard(alive, session_id);
+    while let Ok(command) = rx.recv() {
         #[cfg(test)]
         {
-            let gate = inner.writer_gate.lock().clone();
-            if let Some(gate) = gate {
-                gate.wait().await;
+            if let Some(gate) = inner.writer_gate.lock().clone() {
+                gate.wait();
+            }
+            if let Some(gate) = inner.writer_gate_hook.lock().clone() {
+                gate.wait();
             }
         }
         let result = match command {

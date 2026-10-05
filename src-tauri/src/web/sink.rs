@@ -40,8 +40,8 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::acp::session_persistence::{
-    now_millis, PersistedEventRecord, SessionPersistence, SessionPersistenceError,
-    SESSION_SCHEMA_VERSION,
+    is_durable_event, now_millis, PersistedEventRecord, SessionPersistence,
+    SessionPersistenceError, SESSION_SCHEMA_VERSION,
 };
 use crate::web::project_registry::ProjectsChangedPayload;
 use crate::web::ws::{tier_of, ReliabilityTier, SequencedEvent};
@@ -467,18 +467,40 @@ impl WsRelaySink {
     /// durable store. Flushes any events buffered while the session's writer
     /// was not yet installed (they arrived between the agent's first emit and
     /// `register_session`), preserving a contiguous seq run in the JSONL.
-    /// Best-effort + idempotent: a failed enqueue (queue full / writer gone)
-    /// logs and drops — the live fan-out already delivered those events, so
-    /// only the durable replay tail is affected.
+    ///
+    /// The whole flush runs under the session's persistence send lock
+    /// (`with_ordered_sender`) so the buffered prefix is serialized with
+    /// every post-registration emit: a concurrent emit for this session can
+    /// never slip its enqueue between buffered records — the emit path
+    /// itself drains this same buffer under the same lock, so the earlier
+    /// seqs always reach the writer first. When no writer is installed yet
+    /// (registration raced a delete) `with_ordered_sender` returns `None`
+    /// and the buffer stays put for a later flush. Best-effort + idempotent:
+    /// a failed enqueue (writer stopped) logs and drops — a full queue
+    /// overflows to the writer's forwarder instead of rejecting, so
+    /// pre-registration records are not dropped for capacity. The live
+    /// fan-out already delivered those events, so only a stopped writer
+    /// affects the durable replay tail.
     pub fn note_session_registered_inherent(&self, sid: &str) {
         let Some(persistence) = &self.persistence else {
             return;
         };
+        let persistence = Arc::clone(persistence);
+        persistence.with_ordered_sender(sid, || {
+            self.flush_pre_registration_locked(&persistence, sid);
+        });
+    }
+
+    /// Drain `sid`'s pre-registration buffer into the durable writer. MUST be
+    /// called while holding the session's send lock (via
+    /// `SessionPersistence::with_ordered_sender`) — the lock is what keeps
+    /// these already-sequenced records ahead of any emit racing registration.
+    fn flush_pre_registration_locked(&self, persistence: &SessionPersistence, sid: &str) {
         let drained: Vec<PersistedEventRecord> = {
             let mut pending = self.pre_registration_events.lock();
-            pending.remove(sid).map_or_else(Vec::new, |queue| {
-                queue.into_iter().collect::<Vec<_>>()
-            })
+            pending
+                .remove(sid)
+                .map_or_else(Vec::new, |queue| queue.into_iter().collect::<Vec<_>>())
         };
         if drained.is_empty() {
             return;
@@ -488,16 +510,14 @@ impl WsRelaySink {
         for record in drained {
             // Split the record so the enqueue (which consumes it) and the
             // requeue path (which keeps it) never fight over ownership.
-            let (enqueue_record, requeue_record) = (
-                record.clone(),
-                record,
-            );
+            let (enqueue_record, requeue_record) = (record.clone(), record);
             match persistence.enqueue_event(enqueue_record) {
                 Ok(()) => enqueued += 1,
                 Err(SessionPersistenceError::SessionNotFound) => {
-                    // The writer is still not installed (registration raced a
-                    // concurrent delete): keep the record buffered for a
-                    // later flush rather than dropping it.
+                    // The writer vanished between the `with_ordered_sender`
+                    // check and this enqueue (a concurrent delete won the
+                    // race): keep the record buffered for a later flush
+                    // rather than dropping it.
                     requeued.push(requeue_record);
                 }
                 Err(error) => {
@@ -516,9 +536,7 @@ impl WsRelaySink {
             }
         }
         if enqueued > 0 {
-            info!(
-                "[sessions] flushed {enqueued} pre-registration event(s) for session {sid}"
-            );
+            info!("[sessions] flushed {enqueued} pre-registration event(s) for session {sid}");
         }
     }
 
@@ -633,66 +651,94 @@ impl WsRelaySink {
     }
 
     /// Assign seq + append under the sessions lock (atomic w.r.t. concurrent emits).
+    ///
+    /// Durable events take the session send lock *before* the sessions lock
+    /// (lock order: send lock, then sessions) and release the sessions lock
+    /// before the enqueue. Inside the ordered section the emit first drains
+    /// this session's pre-registration buffer — those records already carry
+    /// lower seqs and MUST reach the writer ahead of this one — then assigns
+    /// and enqueues. A full writer queue diverts to the session's overflow
+    /// forwarder instead of parking this thread, so holding the send lock
+    /// across the drain never wedges the agent driver runtime and never
+    /// freezes another session's relay state.
     fn assign_and_append(&self, sid: &str, type_: &str, payload: Value) -> SequencedEvent {
-        let mut sessions = self.sessions.lock();
-        let durable_last = self
-            .persistence
-            .as_ref()
-            .and_then(|persistence| persistence.last_seq(sid).ok())
-            .unwrap_or(0);
-        let state = sessions
-            .entry(sid.to_string())
-            .or_insert_with(|| SessionState {
-                last_seq: durable_last,
-                events: VecDeque::new(),
-                snapshot_events: Vec::new(),
-                base_seq: 1,
-            });
-        // Reconcile the cached frontier with the durable frontier before
-        // incrementing. The `set_session_title` MCP tool
-        // (`record_local_title`) writes a durable
-        // `local_title_generated` event directly through
-        // `SessionPersistence::enqueue_event` (advancing durable `last_seq`
-        // past the relay's cached value) BEFORE the synthetic
-        // `session_info_update` reaches the relay. Without this
-        // reconciliation the relay would assign a seq that collides with the
-        // durable record, tripping the fail-closed `record.seq <=
-        // current.last_seq` check in `append_record` on the next durable
-        // enqueue.
-        state.last_seq = state.last_seq.max(durable_last).saturating_add(1);
-        let seq = state.last_seq;
-        let se = SequencedEvent::new(Some(sid.to_string()), seq, type_, payload);
-        if state.events.is_empty() {
-            state.base_seq = seq;
-        }
-        state.events.push_back(se.clone());
-        // Desktop shared-live only: maintain a bounded in-memory snapshot for
-        // atomic stale recovery. When persistence is available, do NOT maintain
-        // `snapshot_events` at all — `subscribe_snapshot` rebuilds the snapshot
-        // from durable history instead (avoids unbounded growth).
-        if self.persistence.is_none() {
-            state.snapshot_events.push(se.clone());
-            while state.snapshot_events.len() > self.event_log_capacity {
-                state.snapshot_events.remove(0);
+        if self.persistence.is_some() && is_durable_event(type_) {
+            if let Some(persistence) = &self.persistence {
+                let persistence = Arc::clone(persistence);
+                if let Some(event) = persistence.with_ordered_sender(sid, || {
+                    self.flush_pre_registration_locked(&persistence, sid);
+                    self.assign_and_enqueue(sid, type_, payload.clone())
+                }) {
+                    return event;
+                }
             }
         }
-        while state.events.len() > self.event_log_capacity {
-            state.events.pop_front();
-            state.base_seq = state
-                .events
-                .front()
-                .map(|e| e.seq)
-                .unwrap_or(state.base_seq.saturating_add(1));
-        }
-        if let Some(persistence) = &self.persistence {
-            let record = PersistedEventRecord {
+        self.assign_and_enqueue(sid, type_, payload)
+    }
+
+    fn assign_and_enqueue(&self, sid: &str, type_: &str, payload: Value) -> SequencedEvent {
+        let (se, record) = {
+            let mut sessions = self.sessions.lock();
+            let durable_last = self
+                .persistence
+                .as_ref()
+                .and_then(|persistence| persistence.last_seq(sid).ok())
+                .unwrap_or(0);
+            let state = sessions
+                .entry(sid.to_string())
+                .or_insert_with(|| SessionState {
+                    last_seq: durable_last,
+                    events: VecDeque::new(),
+                    snapshot_events: Vec::new(),
+                    base_seq: 1,
+                });
+            // Reconcile the cached frontier with the durable frontier before
+            // incrementing. The `set_session_title` MCP tool
+            // (`record_local_title`) writes a durable
+            // `local_title_generated` event directly through
+            // `SessionPersistence::enqueue_event` (advancing durable `last_seq`
+            // past the relay's cached value) BEFORE the synthetic
+            // `session_info_update` reaches the relay. Without this
+            // reconciliation the relay would assign a seq that collides with the
+            // durable record, tripping the fail-closed `record.seq <=
+            // current.last_seq` check in `append_record` on the next durable
+            // enqueue.
+            state.last_seq = state.last_seq.max(durable_last).saturating_add(1);
+            let seq = state.last_seq;
+            let se = SequencedEvent::new(Some(sid.to_string()), seq, type_, payload);
+            if state.events.is_empty() {
+                state.base_seq = seq;
+            }
+            state.events.push_back(se.clone());
+            // Desktop shared-live only: maintain a bounded in-memory snapshot for
+            // atomic stale recovery. When persistence is available, do NOT maintain
+            // `snapshot_events` at all — `subscribe_snapshot` rebuilds the snapshot
+            // from durable history instead (avoids unbounded growth).
+            if self.persistence.is_none() {
+                state.snapshot_events.push(se.clone());
+                while state.snapshot_events.len() > self.event_log_capacity {
+                    state.snapshot_events.remove(0);
+                }
+            }
+            while state.events.len() > self.event_log_capacity {
+                state.events.pop_front();
+                state.base_seq = state
+                    .events
+                    .front()
+                    .map(|e| e.seq)
+                    .unwrap_or(state.base_seq.saturating_add(1));
+            }
+            let record = self.persistence.as_ref().map(|_| PersistedEventRecord {
                 schema_version: SESSION_SCHEMA_VERSION,
                 session_id: sid.to_string(),
                 seq,
                 type_: type_.to_string(),
                 recorded_at: now_millis(),
                 payload: se.payload.clone(),
-            };
+            });
+            (se, record)
+        };
+        if let (Some(persistence), Some(record)) = (&self.persistence, record) {
             if let Err(error) = persistence.enqueue_event(record.clone()) {
                 // Story 8 (web honesty) + issue #836: `SessionNotFound` is
                 // the expected outcome for BOTH a deleted session (delete won
@@ -703,10 +749,12 @@ impl WsRelaySink {
                 // not-yet-registered case is BUFFERED (flushed to the writer
                 // the moment registration lands — `note_session_registered`)
                 // so the JSONL keeps a contiguous seq run; the deleted case
-                // stays dropped. Every real failure class (queue full, writer
-                // stopped, I/O) stays warn — the live fan-out continues
-                // regardless.
+                // stays dropped. Writer-stopped and I/O failures stay warn.
+                // A full queue does not reject: `enqueue_event` blocks until
+                // the bounded writer accepts the record (issue #883). The live
+                // fan-out continues regardless.
                 if matches!(error, SessionPersistenceError::SessionNotFound) {
+                    let seq = record.seq;
                     let known_deleted = {
                         let mut pending = self.pre_registration_events.lock();
                         let queue = pending.entry(sid.to_string()).or_default();
