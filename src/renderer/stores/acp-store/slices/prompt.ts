@@ -7,6 +7,7 @@ import type { StateCreator } from 'zustand'
 import { acpApi, type ContentBlock, type SessionId, type StopReason } from '@/lib/acp-api'
 import { getCachedSessionPayload, setCachedSessionPayload } from '@/lib/acp-history-persistence'
 import { isTransientAcpTransportError } from '@/lib/acp-transport'
+import { bumpTurnEndNotice } from '@/lib/agent-chat-notify'
 import { logFrontendError } from '@/lib/log-api'
 import { randomUUID } from '@/lib/uuid'
 import {
@@ -115,6 +116,7 @@ function scheduleTurnEnd(
         const note = stopReason !== undefined ? noteForStopReason(stopReason) : null
         return {
           messages: finalizeStreaming(s.messages, sessionId),
+          turnEndNotices: bumpTurnEndNotice(s.turnEndNotices ?? {}, sessionId, stopReason),
           sessions: {
             ...s.sessions,
             [sessionId]: {
@@ -146,6 +148,7 @@ function scheduleTurnEnd(
       const note = stopReason !== undefined ? noteForStopReason(stopReason) : null
       return {
         messages: finalizeStreaming(s.messages, sessionId),
+        turnEndNotices: bumpTurnEndNotice(s.turnEndNotices ?? {}, sessionId, stopReason),
         sessions: {
           ...s.sessions,
           [sessionId]: {
@@ -464,6 +467,7 @@ export async function runPromptTurn(
 type PromptSliceState = Pick<
   AcpState,
   | 'promptQueues'
+  | 'turnEndNotices'
   | 'suppressQueueFlush'
   | 'pendingPermissions'
   | 'pendingQuestions'
@@ -486,6 +490,7 @@ export const createPromptSlice: StateCreator<AcpState, [], [], PromptSliceState>
   pendingPermissions: {},
   pendingQuestions: {},
   promptQueues: {},
+  turnEndNotices: {},
   suppressQueueFlush: {},
 
   sendPrompt: (sessionId, text) => {
