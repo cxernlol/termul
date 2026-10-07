@@ -387,11 +387,11 @@ export function AgentSwitchPicker({
         placeholder="Search agents…"
         aria-label="Search agents to switch to"
         className={cn(
-          'mb-1 w-full rounded-md bg-background px-2 py-1.5 text-foreground outline-none placeholder:text-muted-foreground focus:ring-1 focus:ring-foreground/20',
+          'mb-2 w-full rounded-md bg-background px-2 py-1.5 text-foreground outline-none placeholder:text-muted-foreground focus:ring-1 focus:ring-foreground/20',
           isMobile ? 'text-base' : 'text-sm'
         )}
       />
-      <div className="max-h-64 overflow-y-auto pr-1">
+      <div className="max-h-[min(16rem,50vh)] overflow-y-auto pr-1">
         {visibleAgents.length === 0 ? (
           <div className="px-2 py-1.5 text-xs text-muted-foreground">
             {switchTargets.length === 0
@@ -465,7 +465,7 @@ export function AgentSwitchPicker({
                 className={cn(
                   SELECTOR_OPTION_ROW,
                   isMobile ? SELECTOR_OPTION_ROW_MOBILE : SELECTOR_OPTION_ROW_DESKTOP,
-                  'disabled:cursor-not-allowed disabled:opacity-60'
+                  'disabled:cursor-not-allowed disabled:text-disabled-foreground disabled:hover:bg-muted'
                 )}
               >
                 <span className="mt-0.5 inline-flex shrink-0">
@@ -535,8 +535,13 @@ export function AgentSwitchPicker({
         <PopoverTrigger asChild disabled={controlDisabled}>
           {pill}
         </PopoverTrigger>
-        <PopoverContent align="end" side="top" className="w-72 p-1">
-          <div className={SELECTOR_SECTION_LABEL}>Switch agent</div>
+        <PopoverContent
+          align="end"
+          side="top"
+          collisionPadding={8}
+          className="w-80 max-w-[calc(100vw-1rem)] p-1"
+        >
+          <div className={cn(SELECTOR_SECTION_LABEL, 'mb-2')}>Switch agent</div>
           {contentBody}
         </PopoverContent>
       </Popover>

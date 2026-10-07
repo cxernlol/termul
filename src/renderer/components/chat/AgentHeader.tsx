@@ -23,7 +23,7 @@ import { useOptimisticSelect } from './use-optimistic-select'
  * modal keeps 44px touch rows.
  */
 export const SELECTOR_OPTION_ROW =
-  'flex w-full items-start gap-2 rounded-md px-2 text-left text-sm text-foreground hover:bg-secondary'
+  'flex w-full items-start gap-2 rounded-md px-2 text-left text-sm text-foreground hover:bg-muted'
 export const SELECTOR_OPTION_ROW_DESKTOP = 'min-h-8 py-1.5'
 export const SELECTOR_OPTION_ROW_MOBILE = 'min-h-11 py-2.5'
 export const SELECTOR_OPTION_SELECTED = 'bg-secondary'
@@ -280,7 +280,7 @@ export function ConfigChip({
         side="top"
         sideOffset={8}
         collisionPadding={8}
-        className={cn('p-1', searchable ? 'w-56' : 'w-40')}
+        className={cn('p-1', searchable ? 'w-72' : 'w-64')}
       >
         <div className={SELECTOR_SECTION_LABEL}>{promoted ? fallbackLabel : option.name}</div>
         {optionsList}
@@ -412,7 +412,7 @@ export function ModeChip({
         side="top"
         sideOffset={8}
         collisionPadding={8}
-        className="w-40 p-1"
+        className="w-64 p-1"
       >
         <div className={SELECTOR_SECTION_LABEL}>{label}</div>
         {optionsList}
