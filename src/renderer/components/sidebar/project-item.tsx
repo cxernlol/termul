@@ -181,7 +181,11 @@ export const ProjectItem = memo(function ProjectItem({
       </ContextMenu>
 
       {/* Project chat history sub-items */}
-      <CollapseExpandMotion open={isExpanded} className="ml-5 border-l border-sidebar-border">
+      <CollapseExpandMotion
+        open={isExpanded}
+        motion="chat"
+        className="ml-5 border-l border-sidebar-border"
+      >
         <ProjectChatList projectId={project.id} />
       </CollapseExpandMotion>
     </div>

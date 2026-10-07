@@ -320,6 +320,7 @@ export function ProjectList({
                                   onOpenNeedsYou={() => openNeedsYou(project.id)}
                                   onClick={() => {
                                     onSelectProject(project.id)
+                                    toggleProjectExpanded(project.id)
                                     navigate('/')
                                   }}
                                   onContextMenu={handleContextMenu}
@@ -416,6 +417,7 @@ export function ProjectList({
                         onOpenNeedsYou={() => openNeedsYou(project.id)}
                         onClick={() => {
                           onSelectProject(project.id)
+                          toggleProjectExpanded(project.id)
                           navigate('/')
                         }}
                         onContextMenu={handleContextMenu}
