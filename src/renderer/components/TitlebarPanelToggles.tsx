@@ -2,6 +2,7 @@ import { toast } from 'sonner'
 import { PanelLeft, PanelRight } from '@/components/icons'
 import { useUpdatePanelVisibility } from '@/hooks/use-app-settings'
 import { useFileExplorerVisible } from '@/stores/file-explorer-store'
+import { useSettingsModalView } from '@/stores/settings-modal-store'
 import { useSidebarVisible } from '@/stores/sidebar-store'
 
 /**
@@ -37,7 +38,10 @@ export function SidebarToggleButton({
   className = titlebarToggleButtonClass
 }: ToggleButtonProps): React.JSX.Element {
   const isVisible = useSidebarVisible()
+  const settingsOpen = useSettingsModalView() !== null
   const updatePanelVisibility = useUpdatePanelVisibility()
+
+  if (settingsOpen) return null
 
   const handleClick = async (e: React.MouseEvent<HTMLButtonElement>): Promise<void> => {
     e.stopPropagation()
@@ -75,7 +79,10 @@ export function FileExplorerToggleButton({
   className = titlebarToggleButtonClass
 }: ToggleButtonProps): React.JSX.Element {
   const isVisible = useFileExplorerVisible()
+  const settingsOpen = useSettingsModalView() !== null
   const updatePanelVisibility = useUpdatePanelVisibility()
+
+  if (settingsOpen) return null
 
   const handleClick = async (e: React.MouseEvent<HTMLButtonElement>): Promise<void> => {
     e.stopPropagation()
