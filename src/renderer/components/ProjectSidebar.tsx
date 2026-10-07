@@ -124,8 +124,8 @@ export function ProjectSidebar({
   const [searchQuery, setSearchQuery] = useState('')
   const searchInputRef = useRef<HTMLInputElement>(null)
 
-  // Expanded projects — expansion is controlled solely by the chevron.
-  // Selecting a project does not auto-expand its chat list, keeping the list uncluttered.
+  // Keep the sidebar focused on one project's chat list at a time. Selecting a
+  // different project replaces the expanded project; the chevron can still toggle it.
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(() => new Set<string>())
 
   // Inline editing state
@@ -244,13 +244,7 @@ export function ProjectSidebar({
 
   const toggleProjectExpanded = useCallback((projectId: string): void => {
     setExpandedProjects((prev) => {
-      const next = new Set(prev)
-      if (next.has(projectId)) {
-        next.delete(projectId)
-      } else {
-        next.add(projectId)
-      }
-      return next
+      return prev.has(projectId) ? new Set() : new Set([projectId])
     })
   }, [])
 
