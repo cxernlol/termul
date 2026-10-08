@@ -1,8 +1,8 @@
 import { Toaster as Sonner, toast } from 'sonner'
 import 'sonner/dist/styles.css'
 import { useMobileWebShell } from '@/hooks/use-mobile-web-shell'
-import { useSettingsModalView } from '@/stores/settings-modal-store'
 import { useAppearanceMode } from '@/stores/app-settings-store'
+import { useSettingsModalView } from '@/stores/settings-modal-store'
 import './sonner.css'
 
 type ToasterProps = React.ComponentProps<typeof Sonner>
