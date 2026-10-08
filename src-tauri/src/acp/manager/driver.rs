@@ -418,6 +418,9 @@ pub(super) async fn drive_connection(
     let question_sinks = sinks.clone();
     let question_agent_id = agent_id.clone();
     let question_state = driver_state.clone();
+    let elicit_sinks = sinks.clone();
+    let elicit_agent_id = agent_id.clone();
+    let elicit_state = driver_state.clone();
     let read_state = driver_state.clone();
     let write_state = driver_state.clone();
 
@@ -551,6 +554,110 @@ pub(super) async fn drive_connection(
                     &question_sinks,
                     Some(event.session_id.0.as_str()),
                     events::EVENT_QUESTION_REQUEST,
+                    &event,
+                );
+                Ok(())
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |request: agent_client_protocol::schema::v1::CreateElicitationRequest,
+                        responder,
+                        _cx| {
+                use agent_client_protocol::schema::v1::{
+                    CreateElicitationResponse, ElicitationAction, ElicitationMode, ElicitationScope,
+                };
+                let session_string = match request.scope() {
+                    ElicitationScope::Session(session) => session.session_id.0.to_string(),
+                    ElicitationScope::Request(_) => {
+                        let Some(session_id) = elicit_state.lock().sole_active_turn_session() else {
+                            log::warn!(
+                                "[acp] request-scoped elicitation is not tied to one active turn; cancelling"
+                            );
+                            let _ = responder.respond(CreateElicitationResponse::new(
+                                ElicitationAction::Cancel,
+                            ));
+                            return Ok(());
+                        };
+                        session_id
+                    }
+                    _ => {
+                        log::warn!("[acp] elicitation scope is unsupported; cancelling");
+                        let _ = responder
+                            .respond(CreateElicitationResponse::new(ElicitationAction::Cancel));
+                        return Ok(());
+                    }
+                };
+                if session_string.is_empty() {
+                    log::warn!("[acp] elicitation has no session id; cancelling");
+                    let _ = responder
+                        .respond(CreateElicitationResponse::new(ElicitationAction::Cancel));
+                    return Ok(());
+                }
+                if elicit_state.lock().is_ephemeral(&session_string) {
+                    let _ = responder
+                        .respond(CreateElicitationResponse::new(ElicitationAction::Cancel));
+                    return Ok(());
+                }
+                elicit_state.lock().signal_idle(&session_string);
+                let allow_other = events::elicitation_allow_other(request.meta.as_ref());
+                let (mode, url, fields, dropped_fields) = match &request.mode {
+                    ElicitationMode::Form(form) => {
+                        let Some(fields) = events::elicitation_fields(
+                            &form.requested_schema,
+                            allow_other,
+                        ) else {
+                            log::warn!(
+                                "[acp] elicitation form drops a required field; cancelling"
+                            );
+                            let _ = responder.respond(CreateElicitationResponse::new(
+                                ElicitationAction::Cancel,
+                            ));
+                            return Ok(());
+                        };
+                        let dropped = form
+                            .requested_schema
+                            .properties
+                            .len()
+                            .saturating_sub(fields.len());
+                        ("form".to_string(), None, fields, dropped)
+                    }
+                    ElicitationMode::Url(url_mode) => {
+                        ("url".to_string(), Some(url_mode.url.clone()), Vec::new(), 0)
+                    }
+                    ElicitationMode::Other(_) | _ => {
+                        let _ = responder
+                            .respond(CreateElicitationResponse::new(ElicitationAction::Cancel));
+                        return Ok(());
+                    }
+                };
+                let message = request.message.clone();
+                let request_id = elicit_state
+                    .lock()
+                    .register_elicitation(session_string.clone(), responder);
+                // Boundary log: counts/kinds only — field names/values and the
+                // message text are user-visible payload, never logged.
+                let kinds: Vec<&str> = fields.iter().map(|field| field.kind.as_str()).collect();
+                log::info!(
+                    "[acp] elicitation request {request_id}: \
+                     {} field(s) ({dropped_fields} dropped), allowOther={allow_other}, \
+                     kinds={kinds:?}",
+                    fields.len()
+                );
+                let event = events::ElicitationRequestEvent {
+                    agent_id: elicit_agent_id.clone(),
+                    session_id: SessionId::new(session_string),
+                    request_id,
+                    mode,
+                    message,
+                    url,
+                    fields,
+                    allow_other,
+                };
+                events::fan_out(
+                    &elicit_sinks,
+                    Some(event.session_id.0.as_str()),
+                    events::EVENT_ELICITATION_REQUEST,
                     &event,
                 );
                 Ok(())

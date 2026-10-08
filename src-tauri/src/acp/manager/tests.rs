@@ -1746,6 +1746,7 @@ async fn resume_session_rejected_when_other_agent_owns_session_mid_turn() {
             &duplicate,
             SessionId("sess-owned".to_string()),
             "/tmp".to_string(),
+            Vec::new(),
         )
         .await
         .expect_err("resume must be rejected for a mid-turn owner");
@@ -1779,7 +1780,12 @@ async fn resume_session_same_agent_owner_is_not_blocked_by_cross_agent_guard() {
     // cross-agent prefix (the fixture's deliberate resume rejection is
     // allowed to surface).
     let error = manager
-        .resume_session(&owner, SessionId("sess-own".to_string()), "/tmp".to_string())
+        .resume_session(
+            &owner,
+            SessionId("sess-own".to_string()),
+            "/tmp".to_string(),
+            Vec::new(),
+        )
         .await
         .expect_err("fixture rejects session/resume deliberately");
     assert!(
@@ -1837,7 +1843,12 @@ async fn load_session_rejected_when_other_agent_owns_session_mid_turn() {
     );
 
     let error = manager
-        .load_session(&duplicate, SessionId("sess-owned".to_string()), "/tmp".to_string())
+        .load_session(
+            &duplicate,
+            SessionId("sess-owned".to_string()),
+            "/tmp".to_string(),
+            Vec::new(),
+        )
         .await
         .expect_err("load must be rejected for a mid-turn owner");
     assert!(
@@ -1866,6 +1877,7 @@ async fn resume_session_passes_when_owner_is_idle() {
             &duplicate,
             SessionId("sess-owned".to_string()),
             "/tmp".to_string(),
+            Vec::new(),
         )
         .await
         .expect("idle owner must not block the resume");
@@ -1880,7 +1892,9 @@ async fn list_agent_summaries_with_ownership_reports_session_sets() {
     let manager = AcpManager::new(vec![]);
     manager.install_test_agent_with_resume(
         AgentId("agent-a".to_string()),
-        ["sess-1".to_string(), "sess-2".to_string()].into_iter().collect(),
+        ["sess-1".to_string(), "sess-2".to_string()]
+            .into_iter()
+            .collect(),
     );
     manager
         .install_test_agent_with_resume(AgentId("agent-b".to_string()), [].into_iter().collect());
@@ -1966,4 +1980,96 @@ async fn single_agent_kill_does_not_start_process_shutdown() {
         !manager.process_shutdown.load(Ordering::Acquire),
         "single-agent kill must not flag process shutdown"
     );
+}
+
+#[test]
+fn delete_logout_and_extra_roots_follow_advertised_capabilities() {
+    let mut caps = AgentCapabilities::default();
+    assert!(gate_delete_session(&caps).is_err());
+    assert!(gate_logout(&caps).is_err());
+    assert!(filter_additional_directories(&caps, "/work", &["/other".into()]).is_empty());
+    caps.session_capabilities.delete = Some(Default::default());
+    caps.auth.logout = Some(Default::default());
+    caps.session_capabilities.additional_directories = Some(Default::default());
+    assert!(gate_delete_session(&caps).is_ok());
+    assert!(gate_logout(&caps).is_ok());
+    let work = std::env::temp_dir().join("termul-acp-work");
+    let other = std::env::temp_dir().join("termul-acp-other");
+    let extras = vec![
+        work.to_string_lossy().into_owned(),
+        other.to_string_lossy().into_owned(),
+        "rel".to_string(),
+    ];
+    assert_eq!(
+        filter_additional_directories(&caps, work.to_string_lossy().as_ref(), &extras),
+        vec![other]
+    );
+}
+
+/// Issue #935: `elicitation_response` maps an all-string JSON array to
+/// `ElicitationContentValue::StringArray` so multi-select answers reach the
+/// agent; sibling keys keep their existing mappings.
+#[test]
+fn elicitation_response_maps_string_arrays() {
+    let content = serde_json::Map::from_iter([
+        ("q0".to_string(), serde_json::json!("Red")),
+        ("q1".to_string(), serde_json::json!(["Logging", "My custom feature"])),
+    ]);
+    let response = elicitation_response("accept", Some(content));
+    let ElicitationAction::Accept(accept) = response.action else {
+        panic!("accept must produce ElicitationAction::Accept");
+    };
+    let fields = accept.content.expect("accept carries content");
+    assert_eq!(
+        fields.get("q0"),
+        Some(&ElicitationContentValue::String("Red".to_string()))
+    );
+    assert_eq!(
+        fields.get("q1"),
+        Some(&ElicitationContentValue::StringArray(vec![
+            "Logging".to_string(),
+            "My custom feature".to_string(),
+        ]))
+    );
+}
+
+/// A `Value::Array` holding ANY non-string element is unrepresentable — that
+/// key is dropped (no panic); sibling keys still map.
+#[test]
+fn elicitation_response_drops_mixed_type_arrays() {
+    let content = serde_json::Map::from_iter([
+        ("q0".to_string(), serde_json::json!("Red")),
+        ("q1".to_string(), serde_json::json!(["a", 1])),
+    ]);
+    let response = elicitation_response("accept", Some(content));
+    let ElicitationAction::Accept(accept) = response.action else {
+        panic!("accept must produce ElicitationAction::Accept");
+    };
+    let fields = accept.content.expect("accept carries content");
+    assert_eq!(
+        fields.get("q0"),
+        Some(&ElicitationContentValue::String("Red".to_string()))
+    );
+    assert!(
+        !fields.contains_key("q1"),
+        "a mixed-type array drops the key instead of panicking"
+    );
+}
+
+/// `decline`/`cancel` (and unknown action strings) are unchanged by the
+/// StringArray mapping.
+#[test]
+fn elicitation_response_decline_and_cancel_unchanged() {
+    assert!(matches!(
+        elicitation_response("decline", None).action,
+        ElicitationAction::Decline
+    ));
+    assert!(matches!(
+        elicitation_response("cancel", None).action,
+        ElicitationAction::Cancel
+    ));
+    assert!(matches!(
+        elicitation_response("unknown-action", None).action,
+        ElicitationAction::Cancel
+    ));
 }

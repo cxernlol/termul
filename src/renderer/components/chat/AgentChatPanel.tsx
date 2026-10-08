@@ -15,6 +15,7 @@ import { useMobileWebShell } from '@/hooks/use-mobile-web-shell'
 import { useOskViewport } from '@/hooks/use-osk-viewport'
 import type { AvailableCommand, ContentBlock, PlanEntry, SessionId, ToolCall } from '@/lib/acp-api'
 import type { AgentSwitchRecord } from '@/lib/acp-history-persistence'
+import { CODEX_CLI_SIGNED_OUT_MESSAGE } from '@/lib/agents/codex-cli-auth'
 import { logFrontendError } from '@/lib/log-api'
 import {
   extractCommandNames,
@@ -38,7 +39,7 @@ import {
   isAgentDeadError,
   isSendPromptOutcomeUnknownError
 } from '@/stores/prompt-queue-orchestration'
-import { agentChatTabId, useWorkspaceStore } from '@/stores/workspace-store'
+import { agentChatTabId, findPaneContainingTab, useWorkspaceStore } from '@/stores/workspace-store'
 import { AgentConnectionLamp } from './AgentConnectionLamp'
 import { AskUserQuestion } from './AskUserQuestion'
 import { BrowserConsentCard } from './BrowserConsentCard'
@@ -47,7 +48,9 @@ import { ChatErrorNotice } from './ChatErrorNotice'
 import { ChatInputBar } from './ChatInputBar'
 import { ChatMessageList } from './ChatMessageList'
 import { CHAT_GUTTER_X } from './chat-layout'
+import { ChatStarters } from './chat-start'
 import { buildTimeline, consolidateThoughtGroups } from './chat-timeline'
+import { ElicitationPrompt } from './ElicitationPrompt'
 import { PendingRestartBanner } from './PendingRestartBanner'
 import { PermissionPrompt } from './PermissionPrompt'
 import { PlanPanel } from './PlanPanel'
@@ -154,6 +157,13 @@ export function AgentChatPanel({
       (s) => Object.values(s.pendingQuestions).find((q) => q.sessionId === sessionId) ?? null
     )
   )
+  const pendingElicitation = useAcpStore(
+    useShallow(
+      (s) =>
+        Object.values(s.pendingElicitations ?? {}).find((item) => item.sessionId === sessionId) ??
+        null
+    )
+  )
   // Pending browser-automation consent for THIS session (CAP-5): the in-chat
   // card renders adjacent to the input while the in-pane strip is not hosting.
   const pendingBrowserConsent = useAcpStore(
@@ -229,9 +239,13 @@ export function AgentChatPanel({
   }, [osk.isOskOpen, isMobileShell])
 
   // Restored-tab rehydration: a persisted `agent-chat` tab can outlive its
-  // in-memory session (app restart). When this panel is visible, its session
-  // record is missing, and history exists for the id, reopen it from history
-  // (deduped store-side against a concurrent sidebar open).
+  // in-memory session (app restart) or bind a stale crashed record. When this
+  // panel is visible and history exists for the id, reopen it from history
+  // (deduped store-side against a concurrent sidebar open) when the session
+  // record is missing OR errored — an 'error' record still points at the dead
+  // agent, so leaving it bound lets sends dispatch to `unknown agent`.
+  // `attemptedReopenRef` guards the loop: an open that resolves back to
+  // 'error' (degraded read-only) must not immediately re-fire the effect.
   const openHistorySession = useAcpStore((s) => s.openHistorySession)
   const openDiscoveredSession = useAcpStore((s) => s.openDiscoveredSession)
   const discoveredReopenContext = useAcpStore((s) => s.discoveredReopenContexts[sessionId] ?? null)
@@ -240,8 +254,20 @@ export function AgentChatPanel({
   const isRestoringChat = useAcpStore((s) => Boolean(s.restoringChatIds[sessionId]))
   const isLaunchingSession = useAcpStore((s) => Boolean(s.launchingSessionIds[sessionId]))
   const [rehydrateError, setRehydrateError] = useState<string | null>(null)
+  const attemptedReopenRef = useRef<string | null>(null)
   useEffect(() => {
-    if (!isVisible || session || !hasHistoryEntry || rehydrateError) return
+    if (!isVisible || !hasHistoryEntry || rehydrateError) return
+    if (session && session.status !== 'error') {
+      // Only a landed 'active' record resets the attempt: a mid-open 'closed'
+      // must NOT reset (an open resolving back to 'error' would otherwise
+      // re-fire forever). A future crash after a healthy open may reopen.
+      if (session.status === 'active') attemptedReopenRef.current = null
+      return
+    }
+    // A resolved-but-still-errored reopen must not re-fire (loop); only a
+    // rejected open retries via rehydrateError + user action.
+    if (attemptedReopenRef.current === sessionId) return
+    attemptedReopenRef.current = sessionId
     let cancelled = false
     void openHistorySession(sessionId).catch((err) => {
       if (!cancelled) setRehydrateError(String(err))
@@ -388,9 +414,11 @@ export function AgentChatPanel({
   }, [session, armedOptions])
 
   const handleSetConfig = useCallback(
-    async (configId: string, valueId: string) => {
+    async (configId: string, valueId: string | boolean) => {
       if (switchToConfigId) {
-        await setSwitchPendingOption(sessionId, { configValues: { [configId]: valueId } })
+        await setSwitchPendingOption(sessionId, {
+          configValues: { [configId]: typeof valueId === 'boolean' ? String(valueId) : valueId }
+        })
         return
       }
       try {
@@ -579,6 +607,8 @@ export function AgentChatPanel({
   // Keep the bottom cue visible for the complete turn, including while thought,
   // tool, and agent-message surfaces stream their own local progress.
   const showRunningIndicator = Boolean(session?.activeTurn)
+  // Same rule as ChatMessageList's empty state.
+  const isEmptyChat = timeline.length === 0 && !showRunningIndicator
 
   // Story 5.3 (T2.1): the AgentChatPanel root doubles as the OSK-aware
   // container. We attach a ref so the OSK-open transition effect can locate
@@ -596,7 +626,17 @@ export function AgentChatPanel({
             <div className="text-foreground">Failed to restore chat.</div>
             <div className="break-words text-xs text-muted-foreground">{rehydrateError}</div>
           </div>
-          <Button type="button" variant="outline" size="sm" onClick={() => setRehydrateError(null)}>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              // A manual Retry is the sanctioned re-attempt — clear the
+              // attempt marker too, else the loop guard swallows this open.
+              attemptedReopenRef.current = null
+              setRehydrateError(null)
+            }}
+          >
             Retry
           </Button>
         </div>
@@ -649,8 +689,16 @@ export function AgentChatPanel({
         })
       }
     : undefined
+  const codexSignedOut = session.lastError === CODEX_CLI_SIGNED_OUT_MESSAGE
   const activeError =
-    session.lastError && session.lastError !== dismissedError ? session.lastError : null
+    !codexSignedOut && session.lastError && session.lastError !== dismissedError
+      ? session.lastError
+      : null
+  const openCodexSignIn = (): void => {
+    const workspace = useWorkspaceStore.getState()
+    const pane = findPaneContainingTab(workspace.root, agentChatTabId(session.id))
+    if (pane) workspace.showAgentLauncher(pane.id)
+  }
 
   return (
     <div
@@ -696,20 +744,24 @@ export function AgentChatPanel({
       {isClosed &&
         !isOpeningHistory &&
         !isLaunchingSession &&
-        hasHistoryEntry &&
-        !discoveredReopenContext && (
+        !discoveredReopenContext &&
+        (hasHistoryEntry || codexSignedOut) && (
           <div className="flex items-center justify-between gap-2 border-b border-warning/30 bg-warning/10 px-3 py-1.5 text-xs text-warning">
-            <span>This chat stopped.</span>
+            <span>{codexSignedOut ? CODEX_CLI_SIGNED_OUT_MESSAGE : 'This chat stopped.'}</span>
             <button
               type="button"
               onClick={() => {
+                if (codexSignedOut) {
+                  openCodexSignIn()
+                  return
+                }
                 void openHistorySession(sessionId).catch(() => {
                   toast.error('Could not resume this chat. Try again.')
                 })
               }}
               className="inline-flex min-h-11 items-center rounded-md border border-warning/40 px-3 text-xs font-medium transition-colors hover:bg-warning/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 @[400px]:min-h-10"
             >
-              Resume chat
+              {codexSignedOut ? 'Sign in' : 'Resume chat'}
             </button>
           </div>
         )}
@@ -744,7 +796,6 @@ export function AgentChatPanel({
       <ChatMessageList
         items={timeline}
         sessionId={session.id}
-        agentId={session.agentId}
         showRunningIndicator={showRunningIndicator}
         filePathContext={filePathContext}
         onEditMessage={seedComposer}
@@ -762,6 +813,9 @@ export function AgentChatPanel({
           </div>
         </div>
       )}
+      {pendingElicitation && !isClosed ? (
+        <ElicitationPrompt key={pendingElicitation.requestId} request={pendingElicitation} />
+      ) : null}
       {pendingQuestion && !isClosed ? (
         <>
           {pendingPermission && (
@@ -801,6 +855,14 @@ export function AgentChatPanel({
             compactTop={hasFileChanges}
             isVisible={isVisible}
           />
+          {/* Empty chat: starters under the composer. With the hero above
+              (ChatEmptyState) both fill the free space, so the composer sits
+              in the middle. Mobile keeps the composer at the bottom. */}
+          {isEmptyChat && !isMobileShell ? (
+            <div className="flex min-h-0 flex-1 flex-col items-center px-6">
+              <ChatStarters onPick={seedComposer} />
+            </div>
+          ) : null}
         </>
       )}
     </div>
