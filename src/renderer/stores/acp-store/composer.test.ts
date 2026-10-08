@@ -472,9 +472,15 @@ describe('acp-store: composer-selection persistence', () => {
     ;(invoke as ReturnType<typeof vi.fn>).mockResolvedValueOnce(undefined) // set_model
 
     await useAcpStore.getState().setModel('sess-persist', 'm2')
-    await vi.waitFor(() => expect(mockPersistenceApi.writeDebounced).toHaveBeenCalled())
+    // The model list is saved under its own key; only the composer-options
+    // write is under test here.
+    const composerWrites = () =>
+      vi
+        .mocked(mockPersistenceApi.writeDebounced)
+        .mock.calls.filter((c) => String(c[0]).startsWith('agents/composer-options/'))
+    await vi.waitFor(() => expect(composerWrites().length).toBeGreaterThan(0))
 
-    const callArgs = vi.mocked(mockPersistenceApi.writeDebounced).mock.calls[0]
+    const callArgs = composerWrites()[0]
     expect(callArgs).toBeDefined()
     const written = callArgs![1] as Record<string, unknown>
     // The merge preserves the existing configValues while adding modelId.
@@ -510,9 +516,13 @@ describe('acp-store: composer-selection persistence', () => {
     ;(invoke as ReturnType<typeof vi.fn>).mockResolvedValueOnce(undefined) // set_model
 
     await useAcpStore.getState().setModel('sess-eph', 'm2')
-    // Ephemeral sessions skip persistence so agent defaults don't overwrite
-    // the user's real last selection.
-    expect(mockPersistenceApi.writeDebounced).not.toHaveBeenCalled()
+    // Ephemeral sessions skip composer-option persistence so agent defaults
+    // don't overwrite the user's real last selection. (The config's model
+    // list may still be saved: it is per config, not a selection.)
+    const composerWrites = vi
+      .mocked(mockPersistenceApi.writeDebounced)
+      .mock.calls.filter((c) => String(c[0]).startsWith('agents/composer-options/'))
+    expect(composerWrites).toHaveLength(0)
   })
 })
 
@@ -609,6 +619,42 @@ describe('composer option fidelity', () => {
         .mock.calls.map((c) => c[0])
         .filter((l) => l.source === 'acp.applyPendingLauncherOptions')
       expect(warns.length).toBeGreaterThanOrEqual(2)
+    })
+
+    it('sends a stored boolean option as a boolean', async () => {
+      seedOptionsSession('s1', 'agent-1', {
+        configOptions: [
+          {
+            id: 'approvals',
+            name: 'Approvals',
+            category: null,
+            type: 'boolean',
+            currentValue: false
+          }
+        ]
+      })
+      vi.mocked(invoke).mockImplementation(async (command: string) => {
+        if (command === 'acp_set_config_option') {
+          return [
+            {
+              id: 'approvals',
+              name: 'Approvals',
+              category: null,
+              type: 'boolean',
+              currentValue: true
+            }
+          ]
+        }
+        throw new Error(`unexpected invoke command: ${command}`)
+      })
+
+      await useAcpStore.getState().applyPendingLauncherOptions('s1', {
+        configValues: { approvals: 'true' }
+      })
+
+      expect(invokeCallsFor('acp_set_config_option')).toEqual([
+        expect.objectContaining({ configId: 'approvals', valueId: true })
+      ])
     })
 
     it('toasts only when no model application path exists', async () => {

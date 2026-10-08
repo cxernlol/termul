@@ -78,14 +78,23 @@ export interface SessionConfigOptionValue {
   description?: string | null
 }
 
+export interface SessionConfigOptionEntry {
+  value?: string
+  name: string
+  description?: string | null
+  group?: string
+  options?: SessionConfigOptionValue[]
+}
+
 export interface SessionConfigOption {
   id: string
   name: string
   description?: string | null
   category?: string | null
   type: string
-  currentValue: string
-  options: SessionConfigOptionValue[]
+  currentValue: string | boolean
+  /** Absent for `boolean` options. Select options always send this array. */
+  options?: SessionConfigOptionEntry[]
 }
 
 /** Option snapshot returned by ACP session/load and session/resume. */
@@ -458,6 +467,45 @@ export interface AskUserQuestionEvent {
   question: string
   options: QuestionOption[]
 }
+
+/**
+ * One selectable option of an elicitation form field (GH-935). `value`
+ * round-trips verbatim in the answer `content`; `label`/`description` are
+ * display-only (mirrors the Rust `ElicitationOption` wire shape).
+ */
+export interface ElicitationOption {
+  value: string
+  label: string
+  description?: string
+}
+
+export interface ElicitationField {
+  name: string
+  /** `string` | `number` | `integer` | `boolean` | `enum` | `multi-enum`. */
+  kind: string
+  required: boolean
+  /** Schema `title` — visible label when present (`name` is the fallback). */
+  title?: string
+  /** Schema `description` — question/subtext under the label. */
+  description?: string
+  options: ElicitationOption[]
+}
+
+export interface ElicitationRequestEvent {
+  agentId: AgentId
+  sessionId: SessionId
+  requestId: string
+  mode: string
+  message: string
+  url?: string
+  fields: ElicitationField[]
+  /**
+   * GH-935: `request.meta["cognition.ai/allowOther"]` — when true, each
+   * question field offers a free-text "Other" answer submitted as a
+   * non-option value. Absent on older hosts; treat as false.
+   */
+  allowOther?: boolean
+}
 export interface PromptCompleteEvent {
   agentId: AgentId
   sessionId: SessionId
@@ -548,6 +596,7 @@ export const ACP_EVENTS = {
   configOptionsUpdate: 'acp:config_options_update',
   permissionRequest: 'acp:permission_request',
   questionRequest: 'acp:question_request',
+  elicitationRequest: 'acp:elicitation_request',
   promptComplete: 'acp:prompt_complete',
   agentError: 'acp:agent_error',
   agentCrashed: 'acp:agent_crashed',
@@ -766,6 +815,7 @@ export async function acpNewSession(
     /** Worktree path + branch (CAP-3) — persisted for the indicator + fallback. */
     worktreePath?: string
     worktreeBranch?: string
+    additionalDirectories?: string[]
   }
 ): Promise<NewSessionOutcome> {
   return getAcpTransport().newSession(agentId, cwd, mcpServers, options)
@@ -774,17 +824,37 @@ export async function acpNewSession(
 export async function acpLoadSession(
   agentId: AgentId,
   sessionId: SessionId,
-  cwd: string
+  cwd: string,
+  additionalDirectories?: string[]
 ): Promise<SessionReopenOutcome> {
-  return getAcpTransport().loadSession(agentId, sessionId, cwd)
+  return getAcpTransport().loadSession(agentId, sessionId, cwd, additionalDirectories)
 }
 
 export async function acpResumeSession(
   agentId: AgentId,
   sessionId: SessionId,
-  cwd: string
+  cwd: string,
+  additionalDirectories?: string[]
 ): Promise<SessionReopenOutcome> {
-  return getAcpTransport().resumeSession(agentId, sessionId, cwd)
+  return getAcpTransport().resumeSession(agentId, sessionId, cwd, additionalDirectories)
+}
+
+export async function acpDeleteAgentSession(agentId: AgentId, sessionId: SessionId): Promise<void> {
+  await getAcpTransport().deleteAgentSession(agentId, sessionId)
+}
+
+export async function acpLogout(agentId: AgentId): Promise<void> {
+  await getAcpTransport().logout(agentId)
+}
+
+export async function acpRespondElicitation(
+  agentId: AgentId,
+  requestId: string,
+  action: 'accept' | 'decline' | 'cancel',
+  // GH-935: `string[]` = multi-select (`multi-enum`) answers.
+  content?: Record<string, string | number | boolean | string[]>
+): Promise<void> {
+  await getAcpTransport().respondElicitation(agentId, requestId, action, content)
 }
 
 export async function acpCloseSession(agentId: AgentId, sessionId: SessionId): Promise<void> {
@@ -901,7 +971,7 @@ export async function acpSetConfigOption(
   agentId: AgentId,
   sessionId: SessionId,
   configId: string,
-  valueId: string
+  valueId: string | boolean
 ): Promise<SessionConfigOption[] | null> {
   return getAcpTransport().setConfigOption(agentId, sessionId, configId, valueId)
 }
@@ -942,8 +1012,12 @@ export async function acpAnswerQuestion(
   await getAcpTransport().answerQuestion(agentId, questionId, values)
 }
 
-export async function acpAuthenticate(agentId: AgentId, methodId: string): Promise<void> {
-  await getAcpTransport().authenticate(agentId, methodId)
+export async function acpAuthenticate(
+  agentId: AgentId,
+  methodId: string,
+  gateway?: { baseUrl: string; apiKey?: string }
+): Promise<void> {
+  await getAcpTransport().authenticate(agentId, methodId, gateway)
 }
 
 /**
@@ -1007,6 +1081,9 @@ export const acpApi = {
   newSession: acpNewSession,
   loadSession: acpLoadSession,
   resumeSession: acpResumeSession,
+  deleteAgentSession: acpDeleteAgentSession,
+  logout: acpLogout,
+  respondElicitation: acpRespondElicitation,
   closeSession: acpCloseSession,
   disposeEphemeralSession: acpDisposeEphemeralSession,
   promoteSession: acpPromoteSession,

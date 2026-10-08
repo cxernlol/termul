@@ -89,7 +89,8 @@ vi.mock('@/stores/acp-store', () => ({
       agentStatus: {},
       launchingSessionIds: {},
       pendingPermissions: {},
-      pendingQuestions: {}
+      pendingQuestions: {},
+      pendingElicitations: {}
     })
   ),
   isEphemeralAcpSession: () => false,
@@ -299,7 +300,7 @@ describe('PaneContent → WorkspaceTabBar onCloseTabs wiring', () => {
     const onCloseTabs = vi.fn()
     render(<PaneContent pane={gitPane} onCloseTabs={onCloseTabs} />)
 
-    const tabEl = screen.getAllByText('Git Changes')[0].closest('.group') as HTMLElement
+    const tabEl = screen.getAllByText('Git Changes')[0].closest('[role="tab"]') as HTMLElement
     expect(tabEl).toBeTruthy()
     fireEvent.contextMenu(tabEl)
 
@@ -313,7 +314,7 @@ describe('PaneContent → WorkspaceTabBar onCloseTabs wiring', () => {
     const onCloseTabs = vi.fn()
     render(<PaneContent pane={gitPane} onCloseTabs={onCloseTabs} />)
 
-    const tabEl = screen.getAllByText('Git Changes')[0].closest('.group') as HTMLElement
+    const tabEl = screen.getAllByText('Git Changes')[0].closest('[role="tab"]') as HTMLElement
     fireEvent.contextMenu(tabEl)
 
     fireEvent.click(await screen.findByText('Close Other Tabs'))
@@ -342,7 +343,7 @@ describe('PaneContent → WorkspaceTabBar onCloseTabs wiring', () => {
     const onCloseTabs = vi.fn()
     render(<PaneRenderer node={splitRoot} onCloseTabs={onCloseTabs} />)
 
-    const tabEl = screen.getAllByText('Git Changes')[0].closest('.group') as HTMLElement
+    const tabEl = screen.getAllByText('Git Changes')[0].closest('[role="tab"]') as HTMLElement
     expect(tabEl).toBeTruthy()
     fireEvent.contextMenu(tabEl)
 
