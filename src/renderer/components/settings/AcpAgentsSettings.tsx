@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import { CustomAcpAgentDialog, exportAgentConfig } from '@/components/agents/CustomAcpAgentDialog'
 import { Clipboard, Plus, RefreshCw, Search } from '@/components/icons'
@@ -418,29 +418,29 @@ export function AcpAgentsSettings({ header }: { header?: ReactNode }): React.JSX
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         {header}
         <div className="flex flex-wrap items-center justify-end gap-2">
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          disabled={checking}
-          onClick={handleCheckUpdates}
-        >
-          {checking ? (
-            <Spinner size={14} decorative className="mr-1.5" />
-          ) : (
-            <RefreshCw size={14} className="mr-1.5" />
-          )}
-          Check for updates
-        </Button>
-        <Button
-          type="button"
-          size="sm"
-          variant="secondary"
-          onClick={() => setCustomDialogOpen(true)}
-        >
-          <Plus size={14} className="mr-1.5" />
-          Add Custom Agent
-        </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={checking}
+            onClick={handleCheckUpdates}
+          >
+            {checking ? (
+              <Spinner size={14} decorative className="mr-1.5" />
+            ) : (
+              <RefreshCw size={14} className="mr-1.5" />
+            )}
+            Check for updates
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="secondary"
+            onClick={() => setCustomDialogOpen(true)}
+          >
+            <Plus size={14} className="mr-1.5" />
+            Add Custom Agent
+          </Button>
         </div>
       </div>
       <div className="relative">

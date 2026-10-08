@@ -55,16 +55,18 @@ export function UpdatesSection({
         <div className="space-y-4 border-b border-border pb-6">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <Download size={18} className="text-primary" />
-              <h2 className="text-lg font-medium text-foreground">Updates</h2>
-            </div>
-            <p className="text-sm text-muted-foreground mt-1">
-              Server version and update policy for the web client.
-            </p>
+              <div className="flex items-center gap-2">
+                <Download size={18} className="text-primary" />
+                <h2 className="text-lg font-medium text-foreground">Updates</h2>
+              </div>
+              <p className="text-sm text-muted-foreground mt-1">
+                Server version and update policy for the web client.
+              </p>
             </div>
             <div className="min-w-48 text-right">
-              <label className="mb-2 block text-sm font-medium text-secondary-foreground">Server Version</label>
+              <label className="mb-2 block text-sm font-medium text-secondary-foreground">
+                Server Version
+              </label>
               <div className="rounded-md border border-border bg-secondary/30 px-4 py-3 text-left">
                 <span className="font-mono text-sm text-foreground">
                   v{import.meta.env.PACKAGE_VERSION || '0.1.0'}
@@ -73,11 +75,11 @@ export function UpdatesSection({
             </div>
           </div>
           <div>
-              <p className="text-xs text-muted-foreground mt-1">
-                The web client is served by the termul-server and updates together with it — reload
-                the page after the server updates to pick up the new bundle. Desktop-only update
-                controls (channels, auto-update, install) are hidden here.
-              </p>
+            <p className="text-xs text-muted-foreground mt-1">
+              The web client is served by the termul-server and updates together with it — reload
+              the page after the server updates to pick up the new bundle. Desktop-only update
+              controls (channels, auto-update, install) are hidden here.
+            </p>
           </div>
         </div>
       </SettingsSection>
@@ -89,16 +91,18 @@ export function UpdatesSection({
       <div className="space-y-4 border-b border-border pb-6">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <Download size={18} className="text-primary" />
-            <h2 className="text-lg font-medium text-foreground">Updates</h2>
-          </div>
-          <p className="text-sm text-muted-foreground mt-1">
-            Manage application updates and version information.
-          </p>
+            <div className="flex items-center gap-2">
+              <Download size={18} className="text-primary" />
+              <h2 className="text-lg font-medium text-foreground">Updates</h2>
+            </div>
+            <p className="text-sm text-muted-foreground mt-1">
+              Manage application updates and version information.
+            </p>
           </div>
           <div className="min-w-48 text-right">
-            <label className="mb-2 block text-sm font-medium text-secondary-foreground">Current Version</label>
+            <label className="mb-2 block text-sm font-medium text-secondary-foreground">
+              Current Version
+            </label>
             <div className="rounded-md border border-border bg-secondary/30 px-4 py-3 text-left">
               <span className="font-mono text-sm text-foreground">
                 v{import.meta.env.PACKAGE_VERSION || '0.1.0'}
@@ -107,7 +111,6 @@ export function UpdatesSection({
           </div>
         </div>
         <div className="w-full space-y-4">
-
           {/* Release Channel */}
           {!isAurUpdater && (
             <div>
