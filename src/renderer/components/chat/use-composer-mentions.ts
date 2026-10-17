@@ -3,13 +3,15 @@ import type { RefObject } from 'react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { filesystemApi } from '@/lib/api'
 import { logFrontendError } from '@/lib/log-api'
+import { basename } from '@/lib/path-basename'
 import { insertFileToken } from '@/lib/skill-tokens'
 import { randomUUID } from '@/lib/uuid'
-import { basename } from './chat-attachments'
 import type { FileMentionMenuHandle } from './FileMentionMenu'
 import {
   activeMentionToken,
   buildMentionSections,
+  isFolderMatch,
+  MAX_FOLDER_RESULTS,
   type MentionMatch,
   type MentionSection
 } from './mention-menu-model'
@@ -59,12 +61,41 @@ function cancelSearchStream(sid: string): void {
 
 /** Build a {@link MentionMatch} from a ripgrep `SearchFileHit` + search root. */
 function toMentionMatch(hit: SearchFileHit, root: string): MentionMatch {
+  if (hit.kind === 'dir') {
+    // Folder hits are root-relative with no trailing slash; the trailing `/` on
+    // `absPath` is the dir marker the folder token carries (`isFolderTokenPath`).
+    return {
+      relPath: hit.path,
+      absPath: `${root}/${hit.path}/`,
+      name: basename(hit.path),
+      ignored: hit.ignored,
+      kind: 'dir'
+    }
+  }
   return {
     relPath: hit.path,
     absPath: `${root}/${hit.path}`,
     name: basename(hit.path),
     ignored: hit.ignored
   }
+}
+
+/**
+ * Cap files at {@link MAX_RESULTS} and folders at {@link MAX_FOLDER_RESULTS}
+ * independently, so a full page of file hits can never crowd folders out.
+ */
+function capMatches(matches: MentionMatch[]): MentionMatch[] {
+  // The desktop stream emits cumulative snapshots (files, then folders in the
+  // final batch), so dedupe by `absPath` before capping or repeats eat the caps.
+  const seen = new Set<string>()
+  const unique = matches.filter((m) => {
+    if (seen.has(m.absPath)) return false
+    seen.add(m.absPath)
+    return true
+  })
+  const files = unique.filter((m) => !isFolderMatch(m)).slice(0, MAX_RESULTS)
+  const folders = unique.filter(isFolderMatch).slice(0, MAX_FOLDER_RESULTS)
+  return files.concat(folders)
 }
 
 export interface UseComposerMentionsOptions {
@@ -136,9 +167,9 @@ export function useComposerMentions(opts: UseComposerMentionsOptions): ComposerM
     const unsubBatch = filesystemApi.onSearchFileNamesBatch((event) => {
       if (event.searchId !== activeSearchIdRef.current) return
       const root = normalizeRoot(rootPathRef.current)
-      const next = accumRef.current
-        .concat(event.files.map((f) => toMentionMatch(f, root)))
-        .slice(0, MAX_RESULTS)
+      const next = capMatches(
+        accumRef.current.concat(event.files.map((f) => toMentionMatch(f, root)))
+      )
       accumRef.current = next
       setMatches(next)
     })
@@ -274,6 +305,9 @@ export function useComposerMentions(opts: UseComposerMentionsOptions): ComposerM
     ): { value: string; caret: number } | null => {
       const token = activeMentionToken(value, caret)
       if (!token) return null
+      // A folder pick reuses the file token: display is the relative path with a
+      // trailing `/`, `absPath` keeps its trailing `/` as the dir marker, and the
+      // wire builder turns it into plain text (no resource_link).
       // Splice a file token IN at the caret (instead of hoisting to the
       // attachment bar). Removes the `@filter` text, inserts the token, and
       // appends a trailing space so the caret lands in plain text. The token
@@ -283,7 +317,7 @@ export function useComposerMentions(opts: UseComposerMentionsOptions): ComposerM
       const { value: nextValue, caret: nextCaret } = insertFileToken(
         value,
         token.end,
-        match.name,
+        isFolderMatch(match) ? `${match.relPath}/` : match.name,
         match.absPath,
         token.end - token.at
       )

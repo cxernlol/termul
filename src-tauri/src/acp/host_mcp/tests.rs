@@ -128,9 +128,11 @@ fn title_frame_round_trips_with_kind_and_title() {
         kind: FrameKind::SetTitle,
         todos: Vec::new(),
         title: Some("Fix login bug".into()),
+        branch: None,
         browser_action: None,
         browser_args: None,
         browser_element: None,
+        ask: None,
     };
     let value = serde_json::to_value(&frame).unwrap();
     assert_eq!(value["kind"], "set_title");
@@ -411,9 +413,11 @@ fn frame_from_flat_call_carries_folded_keys_in_browser_args() {
         kind: FrameKind::Browser,
         todos: Vec::new(),
         title: None,
+        branch: None,
         browser_action: Some(input.action),
         browser_args: Some(input.args),
         browser_element: input.element,
+        ask: None,
     };
     let value = serde_json::to_value(&frame).unwrap();
     assert_eq!(value["browser_action"], "navigate");
@@ -424,4 +428,53 @@ fn frame_from_flat_call_carries_folded_keys_in_browser_args() {
         decoded.browser_args.as_ref().and_then(|a| a.get("url")),
         Some(&serde_json::json!("https://example.com"))
     );
+}
+
+#[test]
+fn title_frame_carries_the_optional_branch_slug() {
+    let frame = FrameRequest {
+        token: "token".into(),
+        session_id: "provisional".into(),
+        kind: FrameKind::SetTitle,
+        todos: Vec::new(),
+        title: Some("Fix login bug".into()),
+        branch: Some("fix-login".into()),
+        browser_action: None,
+        browser_args: None,
+        browser_element: None,
+        ask: None,
+    };
+    let value = serde_json::to_value(&frame).unwrap();
+    assert_eq!(value["branch"], "fix-login");
+    let decoded: FrameRequest = serde_json::from_value(value).unwrap();
+    assert_eq!(decoded.branch.as_deref(), Some("fix-login"));
+
+    // Old frames without the key still decode, and the key is skipped when
+    // absent.
+    let legacy: FrameRequest = serde_json::from_value(serde_json::json!({
+        "token": "t", "session_id": "p", "kind": "set_title", "title": "x"
+    }))
+    .unwrap();
+    assert_eq!(legacy.branch, None);
+    let absent = serde_json::to_value(&legacy).unwrap();
+    assert!(absent.get("branch").is_none());
+}
+
+#[test]
+fn set_title_input_branch_is_optional_in_the_schema() {
+    let input: TermulSetTitleInput =
+        serde_json::from_value(serde_json::json!({ "title": "T" })).unwrap();
+    assert_eq!(input.branch, None);
+    let with_branch: TermulSetTitleInput =
+        serde_json::from_value(serde_json::json!({ "title": "T", "branch": "fix-it" })).unwrap();
+    assert_eq!(with_branch.branch.as_deref(), Some("fix-it"));
+
+    let schema = serde_json::to_value(rmcp::schemars::schema_for!(TermulSetTitleInput)).unwrap();
+    assert!(schema["properties"].get("branch").is_some(), "{schema}");
+    let required: Vec<&str> = schema["required"]
+        .as_array()
+        .map(|items| items.iter().filter_map(|item| item.as_str()).collect())
+        .unwrap_or_default();
+    assert!(required.contains(&"title"), "{required:?}");
+    assert!(!required.contains(&"branch"), "{required:?}");
 }

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { AuthMethod } from '@/lib/acp-api'
+import { AcpTransportError } from '@/lib/acp-transport/types'
 import {
   AGENT_AUTH_REQUIRED_CODE,
   AmbiguousAuthError,
@@ -7,6 +8,10 @@ import {
   formatAcpSpawnError,
   isAgentAuthRequiredError,
   isAmbiguousAuthError,
+  isDefiniteSpawnRejection,
+  PROVIDER_ERROR_LABELS,
+  PROVIDER_ERROR_MESSAGES,
+  providerCodeOf,
   SETUP_ERROR_LABELS
 } from './acp-spawn-errors'
 
@@ -23,6 +28,61 @@ describe('formatAcpSpawnError', () => {
     expect(formatAcpSpawnError('program not found', { command: 'uvx' })).toMatch(/Install uv/)
     expect(formatAcpSpawnError('command not found', { command: 'cursor-agent' })).toMatch(
       /"cursor-agent"/
+    )
+  })
+
+  it('keeps a resolver error that names a different binary verbatim', () => {
+    // Managed claude-acp spawns `node`, but a failed *pre-spawn* probe of the
+    // system claude.cmd names the shim — rewriting it against `node` would
+    // blame the wrong binary.
+    const raw =
+      'program not found or not executable: C:\\Users\\u\\AppData\\Roaming\\npm\\claude.cmd'
+    expect(formatAcpSpawnError(raw, { command: 'node' })).toBe(raw)
+    const result = classifySetupError(raw, { command: 'node' })
+    expect(result.category).toBe('spawn')
+    expect(result.detail).toBe(raw)
+
+    // The bare-name variant — e.g. the claude CLI probe failing to find
+    // `claude` on PATH — names a different program than the spawned `node`.
+    const bare = 'program not found on PATH: claude'
+    expect(formatAcpSpawnError(bare, { command: 'node' })).toBe(bare)
+  })
+
+  it.each([
+    ['npx', 'Could not run npx. Install Node.js and ensure npx is on your PATH, then try again.'],
+    ['uvx', 'Could not run uvx. Install uv and ensure uvx is on your PATH, then try again.'],
+    [
+      'cursor-agent',
+      'Could not start "cursor-agent". Check that the binary exists and is on your PATH.'
+    ]
+  ])('rewrites an OS spawn error for %s even though its trailing text is not the command', (command, guidance) => {
+    const osError =
+      'agent failed to start: Internal error: "No such file or directory (os error 2)"'
+    expect(formatAcpSpawnError(osError, { command })).toBe(guidance)
+    expect(classifySetupError(osError, { command })).toMatchObject({
+      category: 'spawn',
+      detail: guidance
+    })
+  })
+
+  it('keeps resolver wording verbatim when it is wrapped in a transport message', () => {
+    const wrapped = 'agent failed to start: Internal error: "program not found on PATH: claude"'
+    expect(formatAcpSpawnError(wrapped, { command: 'node' })).toBe(wrapped)
+  })
+
+  it('still rewrites a resolver failure that names the command itself', () => {
+    expect(formatAcpSpawnError('program not found on PATH: node', { command: 'node' })).toBe(
+      'Could not start "node". Check that the binary exists and is on your PATH.'
+    )
+    expect(formatAcpSpawnError('spawn C:\\tools\\node.exe ENOENT', { command: 'node' })).toBe(
+      'Could not start "node". Check that the binary exists and is on your PATH.'
+    )
+    expect(
+      formatAcpSpawnError('program not found or not executable: C:\\tools\\node.exe', {
+        command: 'C:\\tools\\node.exe'
+      })
+    ).toBe(
+      'Could not start "C:\\tools\\node.exe". Check that the binary exists and is on your PATH.'
     )
   })
 })
@@ -68,6 +128,52 @@ describe('classifySetupError order and categories (P4)', () => {
     const raw = 'Error: spawn npx ENOENT'
     const result = classifySetupError(raw)
     expect(result.category).toBe('spawn')
+  })
+
+  it.each([
+    'provider_quota_exceeded',
+    'provider_session_limit',
+    'provider_request_rejected'
+  ] as const)('classifies the host code %s as provider whatever the wording', (code) => {
+    // Wording that the heuristics would read as transport / auth / timeout.
+    for (const wording of [
+      'connection limit: authentication token quota timed out',
+      'You have hit your limit',
+      ''
+    ]) {
+      const result = classifySetupError(new AcpTransportError(code, wording))
+      expect(result.category).toBe('provider')
+      expect(result.providerCode).toBe(code)
+      expect(result.label).toBe(PROVIDER_ERROR_LABELS[code])
+      expect(result.detail).toContain(PROVIDER_ERROR_MESSAGES[code])
+      if (wording) expect(result.detail).toContain(wording)
+    }
+  })
+
+  it('classifies a serialized { code, message } provider failure', () => {
+    const result = classifySetupError({
+      code: 'provider_session_limit',
+      message: 'resets 8:20pm'
+    })
+    expect(result.category).toBe('provider')
+    expect(result.detail).toBe(`${PROVIDER_ERROR_MESSAGES.provider_session_limit} (resets 8:20pm)`)
+  })
+
+  it('keeps auth and definite spawn rejections ahead of a provider code', () => {
+    expect(
+      classifySetupError(new AcpTransportError('agent_auth_required', 'sign in')).category
+    ).toBe('auth')
+    expect(classifySetupError(new AcpTransportError('agent_unavailable', 'quota')).category).toBe(
+      'spawn'
+    )
+  })
+
+  it('reads provider wording without a host code through the old heuristics only', () => {
+    // No code: nothing new is guessed from wording; it falls to the old paths.
+    expect(classifySetupError('You have reached your usage limit').category).toBe('unknown')
+    expect(providerCodeOf('provider_quota_exceeded')).toBeUndefined()
+    expect(providerCodeOf({ code: 'rate_limited' })).toBeUndefined()
+    expect(providerCodeOf({ code: 'provider_quota_exceeded' })).toBe('provider_quota_exceeded')
   })
 
   it('classifies transport failures (destroyed stream, refused, reset)', () => {
@@ -185,5 +291,63 @@ describe('classifySetupError order and categories (P4)', () => {
     ]) {
       expect(classifySetupError(raw).label).not.toBe('Model unavailable')
     }
+  })
+})
+
+describe('definite spawn rejections (AD-5)', () => {
+  it('recognises the /ws codes and the desktop message prefixes, nothing else', () => {
+    expect(
+      isDefiniteSpawnRejection(Object.assign(new Error('x'), { code: 'agent_unavailable' }))
+    ).toBe(true)
+    expect(isDefiniteSpawnRejection({ code: 'invalid_agent_config' })).toBe(true)
+    expect(isDefiniteSpawnRejection('ACP_AGENT_UNAVAILABLE: program not found')).toBe(true)
+    expect(isDefiniteSpawnRejection(new Error('ACP_INVALID_AGENT_CONFIG: empty name'))).toBe(true)
+    expect(isDefiniteSpawnRejection(Object.assign(new Error('x'), { code: 'timeout' }))).toBe(false)
+    expect(isDefiniteSpawnRejection('agent initialize failed: eof')).toBe(false)
+  })
+
+  it('classifies a definite rejection as a spawn failure even when its text sounds like auth or transport', () => {
+    const unavailable = classifySetupError(
+      Object.assign(new Error('Claude Code CLI is not signed in; connection refused'), {
+        code: 'agent_unavailable'
+      })
+    )
+    expect(unavailable).toMatchObject({ category: 'spawn', definite: true })
+
+    const invalid = classifySetupError(
+      'ACP_INVALID_AGENT_CONFIG: spawn_agent requires a non-empty `config.command`'
+    )
+    expect(invalid).toMatchObject({
+      category: 'spawn',
+      definite: true,
+      detail: 'spawn_agent requires a non-empty `config.command`'
+    })
+  })
+
+  it('strips the desktop prefixes from the text the user reads, whichever formatter shows it', () => {
+    expect(formatAcpSpawnError('ACP_AGENT_UNAVAILABLE: program `gemini` not found')).toBe(
+      'program `gemini` not found'
+    )
+    expect(formatAcpSpawnError(new Error('ACP_INVALID_AGENT_CONFIG: empty name'))).toBe(
+      'empty name'
+    )
+    expect(formatAcpSpawnError(new Error('plain failure'))).toBe('plain failure')
+  })
+
+  it('shows the message of a serialized { code, message } error, never [object Object]', () => {
+    expect(formatAcpSpawnError({ code: 'agent_unavailable', message: 'not installed' })).toBe(
+      'not installed'
+    )
+    expect(
+      classifySetupError({ code: 'invalid_agent_config', message: 'empty command' })
+    ).toMatchObject({ category: 'spawn', definite: true, detail: 'empty command' })
+    expect(formatAcpSpawnError({ message: 'ACP_AGENT_UNAVAILABLE: agent exited at startup' })).toBe(
+      'agent exited at startup'
+    )
+  })
+
+  it('leaves ordinary spawn/transport failures retryable (no definite flag)', () => {
+    expect(classifySetupError(new Error('failed to spawn agent')).definite).toBeUndefined()
+    expect(classifySetupError(new Error('connection refused')).definite).toBeUndefined()
   })
 })

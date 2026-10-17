@@ -11,7 +11,7 @@ import { cn } from '@/lib/utils'
  * lucide `<Bot>` fallback.
  *
  * Used by every chat-side surface (AgentBadge, ChatHistoryEntryRow,
- * ProjectChatList, ChatEmptyState, ChatInputBar) — the single chokepoint for
+ * ChatEmptyState, ChatInputBar) — the single chokepoint for
  * ACP agent icons in the chat UI.
  */
 export function AgentGlyph({

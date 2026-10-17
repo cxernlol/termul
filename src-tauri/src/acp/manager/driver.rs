@@ -1,4 +1,6 @@
+use super::exit::announced_reason;
 use super::*;
+use crate::acp::agent_process::TreeKillAgent;
 
 /// Entry point for an agent's dedicated driver thread.
 ///
@@ -18,8 +20,9 @@ pub(super) fn run_agent(
     init_tx: oneshot::Sender<Result<InitOutcome, String>>,
     agents: Arc<Mutex<HashMap<AgentId, AgentEntry>>>,
     reaped: Arc<AtomicBool>,
-    killed: Arc<AtomicBool>,
+    exit: Arc<ExitSignal>,
     start_error: Arc<Mutex<Option<String>>>,
+    stderr_ring: Arc<StderrRing>,
     persistence: Option<Arc<SessionPersistence>>,
 ) {
     warn_if_pidfd_reaper();
@@ -46,6 +49,8 @@ pub(super) fn run_agent(
     };
 
     let profile = AgentRuntimeProfile::resolve(&config);
+    let agent_kind = agent_kind(&config).to_string();
+    let agent_command = config.command.clone();
     let result = runtime.block_on(drive_connection(
         config,
         sinks.clone(),
@@ -57,6 +62,7 @@ pub(super) fn run_agent(
         driver_state.clone(),
         persistence.clone(),
         profile,
+        stderr_ring.clone(),
     ));
 
     let was_spawned = spawned.load(Ordering::Acquire);
@@ -95,6 +101,22 @@ pub(super) fn run_agent(
         }));
     }
 
+    // The SDK dropped the command loop and every spawned turn task when the
+    // connection closed, so a turn that was still active never reached its own
+    // terminator. Append one `crashed` `prompt_complete` per active turn
+    // BEFORE the writers are finalized, so reopen never reports the turn open
+    // (ACPM-F1). On process shutdown the `interrupted` marker owns that role
+    // (`SessionPersistence::shutdown` scans for the unterminated turn), so the
+    // markers are only drained.
+    if persistence
+        .as_ref()
+        .is_some_and(|persistence| persistence.is_process_shutdown())
+    {
+        driver_state.lock().drain_active_turns();
+    } else {
+        emit_crash_terminators(&driver_state, &sinks, &agent_id);
+    }
+
     // Self-reap: remove our own registry entry so a crashed/EOFed agent does
     // not linger in `list_agents` with a dead command channel. We do NOT join
     // our own handle here (a thread cannot join itself); `kill`/`kill_all` may
@@ -106,20 +128,20 @@ pub(super) fn run_agent(
         reaped.store(true, Ordering::Release);
         map.remove(&agent_id);
     }
-    // Only surface lifecycle events for an agent the renderer actually saw, and
-    // never for an intentional kill (L4): a kill we initiated is silent, so the
-    // renderer doesn't see a "disconnected" it didn't cause.
-    let intentional_kill = killed.load(Ordering::Acquire);
+    // Only surface lifecycle events for an agent the renderer actually saw.
+    // A kill, reap or crash is announced to every sink with its reason; only
+    // process shutdown (`kill_all`) stays silent.
+    let exit_reason = announced_reason(exit.get());
 
     // If the agent never finished initializing, the connection error IS the
     // start-failure reason (e.g. the subprocess could not be spawned). Record it
     // BEFORE the lifecycle gate below so the awaiting `spawn` caller can surface
     // the real error instead of the generic "did not initialize" message. This
-    // must run regardless of `was_spawned`/`intentional_kill` (those gate only
+    // must run regardless of `was_spawned`/the exit reason (those gate only
     // the renderer-facing lifecycle events).
     if !was_spawned {
-        if let Err(message) = &result {
-            *start_error.lock() = Some(message.clone());
+        if let Err(detail) = &result {
+            *start_error.lock() = Some(detail.message.clone());
         }
     }
 
@@ -184,11 +206,53 @@ pub(super) fn run_agent(
         );
     }
 
-    if was_spawned && !intentional_kill {
+    if let (true, Some(reason)) = (was_spawned, exit_reason) {
+        if reason == AgentExitReason::Crashed {
+            if let Err(detail) = result {
+                // The crash log names the agent kind, the command basename and
+                // the stderr tail; arguments and environment never reach it.
+                let logged = if profile.mask_failure_details {
+                    "connection failed (details withheld)"
+                } else {
+                    detail.message.as_str()
+                };
+                log_agent_failure(
+                    "agent crashed",
+                    &agent_kind,
+                    &agent_command,
+                    logged,
+                    &stderr_ring,
+                );
+                // Story 1.9 FR26: emit the typed `AgentCrashed` event BEFORE
+                // `agent_error` (back-compat) + the session/agent close events.
+                // The renderer distinguishes "crash" (→ `status: 'error'` +
+                // manual restart) from a clean disconnect. Outstanding turn
+                // oneshots fail with this.
+                if profile.mask_failure_details {
+                    // The renderer gets the generic message (agents may echo env
+                    // values); the host log keeps the specific detail.
+                    log::warn!("[acp] Factory Droid connection failed: {}", detail.message);
+                }
+                // Masking hides details: drop the structured code/data too.
+                let detail = if profile.mask_failure_details {
+                    detail.masked("Factory Droid connection failed")
+                } else {
+                    detail
+                };
+                let crashed = detail.clone().into_agent_crashed(agent_id.clone(), None);
+                events::fan_out(&sinks, None, events::EVENT_AGENT_CRASHED, &crashed);
+
+                let event = detail.into_agent_error(agent_id.clone(), None);
+                // Teardown error is agent-level (no session) → sid = None.
+                events::fan_out(&sinks, None, events::EVENT_AGENT_ERROR, &event);
+            }
+        }
+
         for session in active_sessions {
             let event = SessionClosedEvent {
                 agent_id: agent_id.clone(),
                 session_id: SessionId::new(session),
+                reason,
             };
             events::fan_out(
                 &sinks,
@@ -198,46 +262,16 @@ pub(super) fn run_agent(
             );
         }
 
-        if let Err(message) = result {
-            // Story 1.9 FR26: emit the typed `AgentCrashed` event BEFORE
-            // `agent_error` (back-compat) + `agent_disconnected`. The renderer
-            // distinguishes "crash" (→ `status: 'error'` + manual restart) from
-            // a clean disconnect. Outstanding turn oneshots fail with this.
-            if profile.mask_failure_details {
-                // The renderer gets the generic message (agents may echo env
-                // values); the host log keeps the specific detail.
-                log::warn!("[acp] Factory Droid connection failed: {message}");
-            }
-            let message = if profile.mask_failure_details {
-                "Factory Droid connection failed".to_string()
-            } else {
-                message
-            };
-            let crashed = AgentCrashedEvent {
-                agent_id: agent_id.clone(),
-                session_id: None,
-                message: message.clone(),
-            };
-            events::fan_out(&sinks, None, events::EVENT_AGENT_CRASHED, &crashed);
-
-            let event = AgentErrorEvent {
-                agent_id: agent_id.clone(),
-                session_id: None,
-                message,
-            };
-            // Teardown error is agent-level (no session) → sid = None.
-            events::fan_out(&sinks, None, events::EVENT_AGENT_ERROR, &event);
-        }
-
-        let event = AgentDisconnectedEvent { agent_id };
+        let event = AgentDisconnectedEvent { agent_id, reason };
         // Agent-level lifecycle event → sid = None.
         events::fan_out(&sinks, None, events::EVENT_AGENT_DISCONNECTED, &event);
     }
 }
 
-/// Handle an inbound `session/update` notification from the agent: nudge the
-/// active turn's idle deadline, apply the story-3 replay-window suppression,
-/// bind tool calls, apply the AD-8 title gate, then fan out to the sinks.
+/// Handle an inbound `session/update` notification from the agent: drop a
+/// repeated command list, nudge the active turn's idle deadline, apply the
+/// story-3 replay-window suppression, bind tool calls, apply the AD-8 title
+/// gate, then fan out to the sinks.
 ///
 /// Extracted from the connection-builder closure so the routing logic can be
 /// unit-tested without a live connection (cf. `gate_load_session`).
@@ -249,6 +283,20 @@ pub(super) async fn handle_session_notification(
     notification: agent_client_protocol::schema::v1::SessionNotification,
 ) -> Result<(), agent_client_protocol::Error> {
     let session_id = notification.session_id.0.to_string();
+    // A command list that repeats the last one fanned out for the session
+    // (same set, any order) is dropped here, before the idle nudge and before
+    // the relay allocates a seq: no live event, no durable record, no seq
+    // hole. Devin re-sends its unchanged list every ~15 s.
+    if let agent_client_protocol::schema::v1::SessionUpdate::AvailableCommandsUpdate(update) =
+        &notification.update
+    {
+        if state
+            .lock()
+            .is_repeated_commands_update(&session_id, &update.available_commands)
+        {
+            return Ok(());
+        }
+    }
     // Any inbound session/update is agent activity — nudge the active turn's
     // idle deadline so a streaming turn never hits the idle timeout.
     // Best-effort: a no-op when no turn is active for this session. Admission
@@ -281,27 +329,62 @@ pub(super) async fn handle_session_notification(
     // AD-8: gate native `session_info_update` fan-out. When the host already
     // owns a higher-precedence title (`BackgroundGenerated` from a prior
     // background-gen flow, or a future `LocalAlias`), suppress the agent's
-    // `session_info_update` so the background title survives in the renderer.
-    // The durable defense in `append_record` is the second layer; this is the
-    // fan-out defense.
-    let is_protected_info_update = matches!(
-        &notification.update,
-        agent_client_protocol::schema::v1::SessionUpdate::SessionInfoUpdate(_)
-    ) && is_protected_title_source(
+    // title so the background title survives in the renderer. OpenCode
+    // compaction and retry markers travel on the same notification; those
+    // still fan out, with the title field omitted. The durable defense in
+    // `append_record` is the second layer; this is the fan-out defense.
+    let protected_title = is_protected_title_source(
         persistence
             .and_then(|p| p.metadata(&session_id).ok())
             .and_then(|m| m.title_source)
             .as_ref(),
     );
-    if is_protected_info_update {
+    if protected_title
+        && matches!(
+            &notification.update,
+            agent_client_protocol::schema::v1::SessionUpdate::SessionInfoUpdate(_)
+        )
+    {
+        let notices = session_info_notices(&notification.update);
+        if notices.compaction.is_none() && notices.retry.is_none() {
+            log::debug!(
+                "[acp] session {}: suppressed native session_info_update (title_source is BackgroundGenerated/LocalAlias)",
+                crate::logging::redact_session_id(&session_id)
+            );
+            return Ok(());
+        }
         log::debug!(
-            "[acp] session {}: suppressed native session_info_update (title_source is BackgroundGenerated/LocalAlias)",
+            "[acp] session {}: forwarded opencode markers without the protected title",
             crate::logging::redact_session_id(&session_id)
+        );
+        let event = crate::acp::events::SessionInfoUpdateEvent {
+            agent_id: agent_id.clone(),
+            session_id: crate::acp::SessionId::new(session_id.clone()),
+            title: None,
+            compaction: notices.compaction,
+            retry: notices.retry,
+        };
+        crate::acp::events::fan_out(
+            sinks,
+            Some(event.session_id.0.as_str()),
+            crate::acp::events::EVENT_SESSION_INFO_UPDATE,
+            &event,
         );
         return Ok(());
     }
     client::emit_session_update(sinks, agent_id, notification);
     Ok(())
+}
+
+fn session_info_notices(
+    update: &agent_client_protocol::schema::v1::SessionUpdate,
+) -> crate::acp::events::OpenCodeNotices {
+    match update {
+        agent_client_protocol::schema::v1::SessionUpdate::SessionInfoUpdate(info) => {
+            crate::acp::events::opencode_notices(info.meta.as_ref())
+        }
+        _ => crate::acp::events::OpenCodeNotices::default(),
+    }
 }
 
 /// History variants replayed by `session/load` (and sometimes, incorrectly,
@@ -330,7 +413,8 @@ pub(super) async fn drive_connection(
     driver_state: Arc<Mutex<DriverState>>,
     persistence: Option<Arc<SessionPersistence>>,
     profile: AgentRuntimeProfile,
-) -> Result<(), String> {
+    stderr_ring: Arc<StderrRing>,
+) -> Result<(), events::AcpErrorDetail> {
     // Forward the agent subprocess's stdio to the log at `debug` (opt-in via
     // `RUST_LOG`). stderr is where agents print auth/login prompts and runtime
     // errors, so it is logged verbatim. stdin/stdout carry the JSON-RPC protocol
@@ -372,32 +456,34 @@ pub(super) async fn drive_connection(
         && std::env::var("TERMUL_ACP_TRACE_RAW")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
-    let agent = agent_client_protocol::AcpAgent::new(config.to_mcp_server(shim_dir.as_deref()))
-        .with_debug(
-            move |line: &str, direction: LineDirection| match direction {
-                LineDirection::Stderr => {
-                    if redact_output {
-                        log::debug!("[acp] {debug_agent_id} stderr ({} bytes)", line.len());
-                    } else {
-                        log::debug!("[acp] {debug_agent_id} stderr {line}");
-                    }
+    // `TreeKillAgent` is `AcpAgent` on unix; on Windows it puts the agent in a
+    // kill-on-close Job Object so killing it also reaps self-spawned workers.
+    let agent = TreeKillAgent::new(config.to_mcp_server(shim_dir.as_deref())).with_debug(
+        move |line: &str, direction: LineDirection| match direction {
+            LineDirection::Stderr => {
+                stderr_ring.push(line);
+                if redact_output {
+                    log::debug!("[acp] {debug_agent_id} stderr ({} bytes)", line.len());
+                } else {
+                    log::debug!("[acp] {debug_agent_id} stderr {line}");
                 }
-                LineDirection::Stdin => {
-                    if trace_raw {
-                        log::debug!("[acp] {debug_agent_id} -> {line}");
-                    } else {
-                        log::debug!("[acp] {debug_agent_id} -> ({} bytes)", line.len());
-                    }
+            }
+            LineDirection::Stdin => {
+                if trace_raw {
+                    log::debug!("[acp] {debug_agent_id} -> {line}");
+                } else {
+                    log::debug!("[acp] {debug_agent_id} -> ({} bytes)", line.len());
                 }
-                LineDirection::Stdout => {
-                    if trace_raw {
-                        log::debug!("[acp] {debug_agent_id} <- {line}");
-                    } else {
-                        log::debug!("[acp] {debug_agent_id} <- ({} bytes)", line.len());
-                    }
+            }
+            LineDirection::Stdout => {
+                if trace_raw {
+                    log::debug!("[acp] {debug_agent_id} <- {line}");
+                } else {
+                    log::debug!("[acp] {debug_agent_id} <- ({} bytes)", line.len());
                 }
-            },
-        );
+            }
+        },
+    );
 
     // Per-handler clones (handlers must be `Send` and may be called repeatedly).
     // Each handler gets its own clone of the sink fan-out; `Arc` clones are
@@ -539,6 +625,8 @@ pub(super) async fn drive_connection(
                     session_id: SessionId::new(session_string),
                     question_id,
                     question: request.question,
+                    allow_free_text: None,
+                    multi_select: None,
                     options: request
                         .options
                         .into_iter()
@@ -886,6 +974,7 @@ pub(super) async fn drive_connection(
                 allow_terminal,
                 persistence,
                 profile,
+                loop_terminals.clone(),
             )
             .await;
             // Driver thread is winding down — kill any live terminal children so
@@ -905,5 +994,5 @@ pub(super) async fn drive_connection(
         crate::acp::browser_shim::remove_shim(&agent_id);
     }
 
-    connection_result.map_err(|e| e.to_string())
+    connection_result.map_err(events::AcpErrorDetail::from)
 }

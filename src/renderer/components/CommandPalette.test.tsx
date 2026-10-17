@@ -113,9 +113,23 @@ describe('CommandPalette', () => {
       screen.getByText('Show the agent launcher prompt in the active pane')
     ).toBeInTheDocument()
     expect(screen.getByText('Ctrl+T')).toBeInTheDocument()
-    expect(screen.getByText('Navigate')).toBeInTheDocument()
-    expect(screen.getByText('Select')).toBeInTheDocument()
+    expect(screen.getByText('Move')).toBeInTheDocument()
+    expect(screen.getByText('Run')).toBeInTheDocument()
     expect(screen.getByText('Close')).toBeInTheDocument()
+  })
+
+  it('uses neutral popover chrome: foreground-wash selection and hairline kbd hints', () => {
+    const { container } = renderPalette()
+
+    const item = container.querySelector('[cmdk-item]')
+    expect(item?.className).toContain("data-[selected='true']:bg-foreground/[0.06]")
+    expect(item?.className).not.toContain('bg-background')
+    expect(item?.className).not.toContain('bg-accent')
+    const shortcut = screen.getByText('Ctrl+T')
+    expect(shortcut.className).not.toContain('bg-secondary')
+    const kbd = screen.getByText('Esc')
+    expect(kbd.tagName).toBe('KBD')
+    expect(kbd.className).not.toContain('bg-secondary')
   })
 
   it('orders the Projects group above Workspace, Navigation, and Tools', () => {
@@ -301,6 +315,55 @@ describe('CommandPalette', () => {
     }
   })
 
+  it('lists one New Terminal entry per profile on desktop and web, and opens that profile', async () => {
+    const node = {
+      id: 'p1',
+      name: 'Node dev',
+      shell: '/bin/zsh',
+      args: ['-l'],
+      cwd: '/work/app',
+      env: { NODE_ENV: 'development' }
+    }
+    const plain = { id: 'p2', name: 'Plain', shell: '', args: [], cwd: '', env: {} }
+    const prev = tauriRef.current
+    try {
+      for (const tauri of [true, false]) {
+        tauriRef.current = tauri
+        saveRecentCommand.mockClear()
+        const { props, unmount } = renderPalette({
+          terminalProfiles: [node, plain],
+          onOpenTerminalProfile: vi.fn()
+        })
+
+        expect(screen.getByText('/bin/zsh -l')).toBeInTheDocument()
+        expect(screen.getByText('Default shell')).toBeInTheDocument()
+        fireEvent.click(screen.getByText('New Terminal: Node dev'))
+
+        await waitFor(() => {
+          expect(saveRecentCommand).toHaveBeenCalledWith('terminal-profile-p1')
+          expect(props.onClose).toHaveBeenCalled()
+          expect(props.onOpenTerminalProfile).toHaveBeenCalledWith(node)
+        })
+        unmount()
+      }
+    } finally {
+      tauriRef.current = prev
+    }
+  })
+
+  it('lists Open Shortcut Menu and omits New Project on the desktop palette', async () => {
+    mobileRef.current = false
+    const { props } = renderPalette()
+
+    expect(screen.getByText('Open Shortcut Menu')).toBeInTheDocument()
+    expect(screen.queryByText('New Project')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByText('Open Shortcut Menu'))
+    await waitFor(() => {
+      expect(props.onOpenShortcutMenu).toHaveBeenCalledTimes(1)
+    })
+  })
+
   it('keeps recent commands visible when the search is empty', () => {
     recentCommandIds = ['open-command-history', 'project-alpha']
 
@@ -421,13 +484,41 @@ describe('CommandPalette', () => {
       const { props } = renderPalette()
 
       // Dead keyboard affordances are gone on touch.
-      expect(screen.queryByText('Navigate')).not.toBeInTheDocument()
-      expect(screen.queryByText('Select')).not.toBeInTheDocument()
+      expect(screen.queryByText('Move')).not.toBeInTheDocument()
+      expect(screen.queryByText('Run')).not.toBeInTheDocument()
       // The visible close button meets the 44px floor (size-11).
       const closeBtn = screen.getByRole('button', { name: 'Close command palette' })
       expect(closeBtn.className).toContain('size-11')
       fireEvent.click(closeBtn)
       expect(props.onClose).toHaveBeenCalledTimes(1)
+    })
+
+    it('lists New Project and runs it after closing the palette', async () => {
+      const onNewProject = vi.fn()
+      const { props } = renderPalette({ onNewProject })
+
+      fireEvent.click(screen.getByText('New Project'))
+
+      await waitFor(() => {
+        expect(saveRecentCommand).toHaveBeenCalledWith('new-project')
+        expect(props.onClose).toHaveBeenCalledTimes(1)
+        expect(onNewProject).toHaveBeenCalledTimes(1)
+      })
+    })
+
+    it('does not list Open Shortcut Menu, including under Pinned and Recent', () => {
+      pinnedCommandIds = ['open-shortcut-menu', 'new-terminal']
+      recentCommandIds = ['open-shortcut-menu']
+
+      const { props } = renderPalette({ onNewProject: vi.fn() })
+
+      expect(screen.queryByText('Open Shortcut Menu')).not.toBeInTheDocument()
+      expect(screen.queryByText('View and edit common keyboard shortcuts')).not.toBeInTheDocument()
+      // The pinned id that still resolves keeps its group; the unresolved
+      // shortcut id and the recent-only entry produce no rows.
+      expect(screen.getByText('Pinned')).toBeInTheDocument()
+      expect(screen.queryByText('Recent')).not.toBeInTheDocument()
+      expect(props.onOpenShortcutMenu).not.toHaveBeenCalled()
     })
 
     it('keeps the desktop layout byte-identical off the mobile shell', () => {
@@ -438,8 +529,8 @@ describe('CommandPalette', () => {
       expect(backdrop?.className).toContain('pt-[7vh]')
       expect(backdrop?.className).not.toContain('justify-end')
       // Desktop keeps the kbd hints + has no mobile close button.
-      expect(screen.getByText('Navigate')).toBeInTheDocument()
-      expect(screen.getByText('Select')).toBeInTheDocument()
+      expect(screen.getByText('Move')).toBeInTheDocument()
+      expect(screen.getByText('Run')).toBeInTheDocument()
       expect(
         screen.queryByRole('button', { name: 'Close command palette' })
       ).not.toBeInTheDocument()

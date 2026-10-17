@@ -20,6 +20,7 @@ const mocks = vi.hoisted(() => ({
   editorOpenFiles: new Map<string, FileState>(),
   expandedDirs: new Set<string>(),
   closeFileIfIdle: vi.fn(),
+  getFileInfo: vi.fn(),
   reloadFile: vi.fn(),
   removeTab: vi.fn(),
   refreshDirectory: vi.fn(),
@@ -51,7 +52,8 @@ vi.mock('@/lib/api', () => ({
       return () => {
         mocks.handlers.deleted = null
       }
-    })
+    }),
+    getFileInfo: mocks.getFileInfo
   }
 }))
 
@@ -211,24 +213,52 @@ describe('useFileWatcher', () => {
   })
 
   describe('unlink events close tabs', () => {
-    it('closes and removes the workspace tab when an open file is deleted', () => {
+    beforeEach(() => {
+      mocks.getFileInfo.mockResolvedValue({
+        success: false,
+        error: 'not found',
+        code: 'STAT_ERROR'
+      })
+    })
+
+    it('closes and removes the workspace tab when an open file is deleted', async () => {
       setOpenedFile('/project/notes.md')
 
       render(<WatcherHost />)
       mocks.handlers.deleted?.({ type: 'unlink', path: '/project/notes.md' })
 
+      await vi.waitFor(() => {
+        expect(mocks.removeTab).toHaveBeenCalledWith('edit-/project/notes.md')
+      })
+      expect(mocks.getFileInfo).toHaveBeenCalledWith('/project/notes.md')
       expect(mocks.closeFileIfIdle).toHaveBeenCalledWith('/project/notes.md')
-      expect(mocks.removeTab).toHaveBeenCalledWith('edit-/project/notes.md')
     })
 
-    it('keeps the workspace tab when closeFileIfIdle refuses (busy file)', () => {
+    it('keeps the tab when the deleted file is already back on disk', async () => {
+      setOpenedFile('/project/notes.md')
+      mocks.getFileInfo.mockResolvedValue({ success: true, data: { path: '/project/notes.md' } })
+
+      render(<WatcherHost />)
+      mocks.handlers.deleted?.({ type: 'unlink', path: '/project/notes.md' })
+
+      await vi.waitFor(() => {
+        expect(mocks.getFileInfo).toHaveBeenCalledWith('/project/notes.md')
+      })
+      await Promise.resolve()
+      expect(mocks.closeFileIfIdle).not.toHaveBeenCalled()
+      expect(mocks.removeTab).not.toHaveBeenCalled()
+    })
+
+    it('keeps the workspace tab when closeFileIfIdle refuses (busy file)', async () => {
       setOpenedFile('/project/notes.md', { operationStatus: 'saving' })
       mocks.closeFileIfIdle.mockReturnValue(false)
 
       render(<WatcherHost />)
       mocks.handlers.deleted?.({ type: 'unlink', path: '/project/notes.md' })
 
-      expect(mocks.closeFileIfIdle).toHaveBeenCalledWith('/project/notes.md')
+      await vi.waitFor(() => {
+        expect(mocks.closeFileIfIdle).toHaveBeenCalledWith('/project/notes.md')
+      })
       expect(mocks.removeTab).not.toHaveBeenCalled()
     })
 

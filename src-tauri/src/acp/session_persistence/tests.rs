@@ -11,10 +11,26 @@ fn temp_dir(label: &str) -> PathBuf {
     path
 }
 
+/// Stand-in for the relay's seq authority: the next seq after what is on disk.
+struct FloorSeqAuthority;
+
+impl SeqAuthority for FloorSeqAuthority {
+    fn allocate_after(&self, _session_id: &str, floor: u64) -> u64 {
+        floor + 1
+    }
+}
+
+/// Open a store whose shutdown marker takes its seq from [`FloorSeqAuthority`].
+async fn open_with_authority(root: &Path) -> Arc<SessionPersistence> {
+    let persistence = SessionPersistence::open(root.to_path_buf()).await.unwrap();
+    persistence.set_seq_authority(Arc::new(FloorSeqAuthority));
+    persistence
+}
+
 async fn registered(root: &Path) -> (Arc<SessionPersistence>, SessionMetadata) {
     let cwd = root.join("cwd");
     fs::create_dir_all(&cwd).unwrap();
-    let persistence = SessionPersistence::open(root.join("store")).await.unwrap();
+    let persistence = open_with_authority(&root.join("store")).await;
     let metadata = persistence
         .register_session(SessionRegistration {
             session_id: "session-1".to_string(),
@@ -73,7 +89,7 @@ async fn register_discovered_session_is_metadata_only_agent_supplied_and_idempot
     let root = temp_dir("discovered");
     let cwd = root.join("cwd");
     fs::create_dir_all(&cwd).unwrap();
-    let persistence = SessionPersistence::open(root.join("store")).await.unwrap();
+    let persistence = open_with_authority(&root.join("store")).await;
     let registration = SessionRegistration {
         session_id: "discovered-1".into(),
         stable_agent_namespace: Some("config:test".into()),
@@ -88,7 +104,7 @@ async fn register_discovered_session_is_metadata_only_agent_supplied_and_idempot
         .unwrap();
     assert_eq!(first.status, PersistedSessionStatus::Active);
     persistence.shutdown().await.unwrap();
-    let persistence = SessionPersistence::open(root.join("store")).await.unwrap();
+    let persistence = open_with_authority(&root.join("store")).await;
     let second = persistence
         .register_discovered_session(registration.clone(), Some("Replacement".into()), Some(99))
         .await
@@ -152,7 +168,7 @@ async fn first_run_registers_and_round_trips_interleaved_replay() {
     );
     persistence.shutdown().await.unwrap();
 
-    let reopened = SessionPersistence::open(root.join("store")).await.unwrap();
+    let reopened = open_with_authority(&root.join("store")).await;
     assert_eq!(reopened.last_seq("session-1").unwrap(), 6);
     assert_eq!(
         reopened.metadata("session-1").unwrap().storage_key,
@@ -179,7 +195,7 @@ async fn register_session_strips_verbatim_cwd_prefix_on_windows() {
         canonical_cwd.to_string_lossy().starts_with(r"\\?\"),
         "sanity: canonicalize should produce a verbatim prefix on Windows"
     );
-    let persistence = SessionPersistence::open(root.join("store")).await.unwrap();
+    let persistence = open_with_authority(&root.join("store")).await;
     let metadata = persistence
         .register_session(SessionRegistration {
             session_id: "session-verbatim".to_string(),
@@ -211,7 +227,7 @@ async fn register_session_strips_verbatim_cwd_prefix_on_windows() {
         let bytes = serde_json::to_vec_pretty(&corrupt).unwrap();
         std::fs::write(&metadata_path, &bytes).unwrap();
     }
-    let reopened = SessionPersistence::open(root.join("store")).await.unwrap();
+    let reopened = open_with_authority(&root.join("store")).await;
     let healed = reopened.metadata("session-verbatim").unwrap();
     assert!(
         !healed.cwd.starts_with(r"\\?\"),
@@ -349,6 +365,20 @@ async fn durable_payload_redacts_secret_fields_and_bounds_titles() {
     let mut title = record(2, "session_info_update");
     title.payload = json!({"sessionId":"session-1", "title": format!("  {}  ", "x".repeat(100)), "token":"secret"});
     persistence.enqueue_event(title).unwrap();
+    // A file-changing call: its durable DTO gains the path-only summary
+    // (`locations: [{path}]` without `line`, `diffStat` counts) while the
+    // title, rawInput, and diff text stay out.
+    let mut edit = record(3, "tool_call");
+    edit.payload = json!({
+        "agentId":"a", "sessionId":"session-1",
+        "toolCall": {"toolCallId":"e", "title":"ordinary-text-token-123",
+            "kind":"edit", "status":"completed",
+            "locations":[{"path":"/work/src/a.ts", "line": 7}],
+            "rawInput":{"file_path":"/work/src/other.ts", "apiKey":"secret"},
+            "content":[{"type":"diff", "path":"/work/src/a.ts",
+                "oldText":"one\ntwo\n", "newText":"one\nordinary-text-token-123\nthree\n"}]}
+    });
+    persistence.enqueue_event(edit).unwrap();
     persistence.flush_session("session-1").await.unwrap();
     let records = persistence.replay_after("session-1", 0).unwrap();
     let serialized = serde_json::to_string(&records).unwrap();
@@ -356,8 +386,21 @@ async fn durable_payload_redacts_secret_fields_and_bounds_titles() {
     assert!(!serialized.contains("rawInput"));
     assert!(!serialized.contains("Authorization"));
     assert!(!serialized.contains("ordinary-text-token-123"));
+    assert!(!serialized.contains("oldText"));
+    assert!(!serialized.contains("newText"));
+    assert!(!serialized.contains("other.ts"));
     assert!(serialized.contains("toolCallId"));
     assert!(serialized.contains("execute"));
+    let execute = records.iter().find(|r| r.seq == 1).unwrap();
+    assert!(execute.payload["toolCall"].get("locations").is_none());
+    assert!(execute.payload["toolCall"].get("diffStat").is_none());
+    let edit = records.iter().find(|r| r.seq == 3).unwrap();
+    assert_eq!(
+        edit.payload["toolCall"],
+        json!({"toolCallId":"e", "kind":"edit", "status":"completed",
+            "locations":[{"path":"/work/src/a.ts"}],
+            "diffStat":{"added":2, "removed":1}})
+    );
     assert_eq!(
         persistence
             .metadata("session-1")
@@ -387,7 +430,7 @@ async fn completed_turn_ids_recover_after_restart() {
     complete.payload = json!({"sessionId":"session-1", "turnId":"turn-1", "stopReason":"end_turn"});
     persistence.enqueue_event(complete).unwrap();
     persistence.shutdown().await.unwrap();
-    let reopened = SessionPersistence::open(root.join("store")).await.unwrap();
+    let reopened = open_with_authority(&root.join("store")).await;
     assert!(reopened
         .completed_turn_ids("session-1")
         .unwrap()
@@ -448,7 +491,7 @@ async fn corrupt_index_is_backed_up_and_rebuilt() {
     persistence.shutdown().await.unwrap();
     let index = root.join("store").join(INDEX_FILE);
     fs::write(&index, b"bad json").unwrap();
-    let reopened = SessionPersistence::open(root.join("store")).await.unwrap();
+    let reopened = open_with_authority(&root.join("store")).await;
     assert_eq!(reopened.list_sessions().len(), 1);
     let backups = fs::read_dir(root.join("store"))
         .unwrap()
@@ -478,12 +521,394 @@ async fn torn_final_tail_repairs_but_middle_corruption_quarantines() {
         .unwrap()
         .write_all(b"{torn")
         .unwrap();
-    let reopened = SessionPersistence::open(root.join("store")).await.unwrap();
+    let reopened = open_with_authority(&root.join("store")).await;
     assert_eq!(reopened.last_seq("session-1").unwrap(), 1);
     reopened.shutdown().await.unwrap();
     fs::write(&log, b"bad\n{}\n").unwrap();
-    let quarantined = SessionPersistence::open(root.join("store")).await.unwrap();
+    let quarantined = open_with_authority(&root.join("store")).await;
     assert!(quarantined.list_sessions().is_empty());
+    let _ = fs::remove_dir_all(root);
+}
+
+/// ACPM-F7: a valid final record left WITHOUT its newline (death between the
+/// record and the newline) must be terminated by the restart repair, so the
+/// next append lands on its own line and replay returns every record. Before
+/// the fix the repair left the tail alone and the next append fused onto it
+/// into one unparseable line (`CorruptSession` on every read).
+#[tokio::test]
+async fn unterminated_valid_tail_is_terminated_on_restart_and_next_append_replays() {
+    let root = temp_dir("unterminated-valid-tail");
+    let (persistence, metadata) = registered(&root).await;
+    persistence
+        .enqueue_event(record(1, "message_chunk"))
+        .unwrap();
+    persistence.flush_session("session-1").await.unwrap();
+    persistence.shutdown().await.unwrap();
+    let log = root
+        .join("store")
+        .join(&metadata.storage_key)
+        .join(MESSAGES_FILE);
+    let len = fs::metadata(&log).unwrap().len();
+    assert_eq!(fs::read(&log).unwrap().last(), Some(&b'\n'));
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&log)
+        .unwrap()
+        .set_len(len - 1)
+        .unwrap();
+
+    let reopened = open_with_authority(&root.join("store")).await;
+    assert_eq!(
+        fs::read(&log).unwrap().last(),
+        Some(&b'\n'),
+        "restart repair terminates the intact tail record"
+    );
+    reopened.reopen_writer("session-1").await.unwrap();
+    reopened
+        .enqueue_event(record(2, "message_chunk"))
+        .unwrap();
+    reopened.flush_session("session-1").await.unwrap();
+    assert_eq!(
+        reopened
+            .replay_after("session-1", 0)
+            .unwrap()
+            .iter()
+            .map(|record| record.seq)
+            .collect::<Vec<_>>(),
+        vec![1, 2]
+    );
+    assert!(corrupt_backups(log.parent().unwrap()).is_empty());
+    let _ = fs::remove_dir_all(root);
+}
+
+/// ACPM-F7: an unterminated valid tail longer than the 4 KiB repair window
+/// (no newline anywhere in the last block) is terminated, never mistaken for a
+/// torn fragment and truncated away.
+#[tokio::test]
+async fn oversized_unterminated_valid_tail_is_terminated_not_truncated() {
+    let root = temp_dir("unterminated-big-tail");
+    let (persistence, metadata) = registered(&root).await;
+    persistence
+        .enqueue_event(record(1, "message_chunk"))
+        .unwrap();
+    let mut big = record(2, "message_chunk");
+    big.payload["content"]["text"] = Value::String("x".repeat(9000));
+    persistence.enqueue_event(big).unwrap();
+    persistence.flush_session("session-1").await.unwrap();
+    persistence.shutdown().await.unwrap();
+    let log = root
+        .join("store")
+        .join(&metadata.storage_key)
+        .join(MESSAGES_FILE);
+    let len = fs::metadata(&log).unwrap().len();
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&log)
+        .unwrap()
+        .set_len(len - 1)
+        .unwrap();
+
+    let reopened = open_with_authority(&root.join("store")).await;
+    assert_eq!(
+        reopened
+            .replay_after("session-1", 0)
+            .unwrap()
+            .iter()
+            .map(|record| record.seq)
+            .collect::<Vec<_>>(),
+        vec![1, 2],
+        "the 9 KB tail record survives the restart repair"
+    );
+    assert_eq!(fs::read(&log).unwrap().last(), Some(&b'\n'));
+    let _ = fs::remove_dir_all(root);
+}
+
+/// ACPM-F7 (in-process ENOSPC / failed-rollback shape): a live writer that
+/// finds an unterminated tail repairs it inline instead of wedging until the
+/// next restart — an intact record is terminated, a torn fragment is
+/// quarantined and truncated — and the append never concatenates onto it.
+#[tokio::test]
+async fn append_record_repairs_unterminated_tail_inline_instead_of_wedging() {
+    let root = temp_dir("append-unterminated");
+    let (persistence, metadata) = registered(&root).await;
+    persistence.shutdown().await.unwrap();
+    let store = root.join("store");
+    let log = store.join(&metadata.storage_key).join(MESSAGES_FILE);
+    let seqs = |log: &Path| -> Vec<u64> {
+        fs::read(log)
+            .unwrap()
+            .split(|b| *b == b'\n')
+            .filter(|l| !l.is_empty())
+            .map(|l| serde_json::from_slice::<PersistedEventRecord>(l).unwrap().seq)
+            .collect()
+    };
+    let shared = Arc::new(Mutex::new(persistence.metadata("session-1").unwrap()));
+
+    // Intact record without its newline: terminated in place, then appended.
+    let tail = serde_json::to_vec(&record(1, "message_chunk")).unwrap();
+    fs::write(&log, &tail).unwrap();
+    append_record(&store, &shared, &mut TailState::default(), record(2, "message_chunk")).unwrap();
+    assert_eq!(seqs(&log), vec![1, 2]);
+    assert!(corrupt_backups(log.parent().unwrap()).is_empty());
+
+    // Torn fragment (failed rollback of a partial write): quarantined and
+    // truncated, the intact records stay, and the next append lands cleanly.
+    let mut torn = fs::read(&log).unwrap();
+    torn.extend_from_slice(b"{\"schemaVersion\":1,\"sessionId\":\"sess");
+    fs::write(&log, &torn).unwrap();
+    append_record(&store, &shared, &mut TailState::default(), record(3, "message_chunk")).unwrap();
+    assert_eq!(seqs(&log), vec![1, 2, 3]);
+    assert_eq!(corrupt_backups(log.parent().unwrap()).len(), 1);
+    assert_eq!(fs::read(&log).unwrap().last(), Some(&b'\n'));
+    let _ = fs::remove_dir_all(root);
+}
+
+/// ACPM-F7: the repair never reads the whole file for an oversized last line —
+/// a >1 MiB unterminated valid record (many scan blocks, no newline inside) is
+/// terminated and kept; a >1 MiB torn fragment is quarantined and truncated back
+/// to the last terminated record. Neither is truncated to zero.
+#[tokio::test]
+async fn repair_handles_last_line_larger_than_scan_blocks() {
+    let root = temp_dir("repair-huge-tail");
+    let (persistence, metadata) = registered(&root).await;
+    persistence.shutdown().await.unwrap();
+    let log = root
+        .join("store")
+        .join(&metadata.storage_key)
+        .join(MESSAGES_FILE);
+    let first = serde_json::to_vec(&record(1, "message_chunk")).unwrap();
+    let mut huge = record(2, "message_chunk");
+    huge.payload["content"]["text"] = Value::String("y".repeat(1_200_000));
+    let huge_bytes = serde_json::to_vec(&huge).unwrap();
+    assert!(huge_bytes.len() > 1024 * 1024);
+
+    // Intact huge record without its newline: preserved + terminated.
+    let mut content = first.clone();
+    content.push(b'\n');
+    content.extend_from_slice(&huge_bytes);
+    fs::write(&log, &content).unwrap();
+    assert_eq!(repair_jsonl_torn_tail(&log), Some(2));
+    let repaired = fs::read(&log).unwrap();
+    assert_eq!(repaired.len(), content.len() + 1);
+    assert_eq!(
+        &repaired[..content.len()],
+        &content[..],
+        "the repaired prefix is byte-identical to the original content"
+    );
+    assert_eq!(repaired.last(), Some(&b'\n'));
+    assert!(corrupt_backups(log.parent().unwrap()).is_empty());
+
+    // Huge torn fragment (cut mid-record): truncated back to record 1.
+    let mut content = first.clone();
+    content.push(b'\n');
+    content.extend_from_slice(&huge_bytes[..huge_bytes.len() - 10]);
+    fs::write(&log, &content).unwrap();
+    assert_eq!(repair_jsonl_torn_tail(&log), None);
+    let mut expected = first;
+    expected.push(b'\n');
+    assert_eq!(fs::read(&log).unwrap(), expected);
+    assert_eq!(corrupt_backups(log.parent().unwrap()).len(), 1);
+
+    // A single huge unterminated line with NO prior newline (scan reaches the
+    // start of the file) is still preserved, not truncated to zero.
+    fs::write(&log, &huge_bytes).unwrap();
+    assert_eq!(repair_jsonl_torn_tail(&log), Some(2));
+    let repaired = fs::read(&log).unwrap();
+    assert_eq!(repaired.len(), huge_bytes.len() + 1);
+    assert_eq!(&repaired[..huge_bytes.len()], &huge_bytes[..]);
+    assert_eq!(repaired.last(), Some(&b'\n'));
+    let _ = fs::remove_dir_all(root);
+}
+
+/// The inline repair of an intact-but-unterminated tail record advances the
+/// writer's `last_seq` past it, so neither the append that triggered the repair
+/// nor a later interrupted marker can reuse that sequence.
+#[tokio::test]
+async fn inline_repair_advances_last_seq_past_preserved_tail_record() {
+    let root = temp_dir("append-preserved-seq");
+    let (persistence, metadata) = registered(&root).await;
+    persistence.shutdown().await.unwrap();
+    let store = root.join("store");
+    let log = store.join(&metadata.storage_key).join(MESSAGES_FILE);
+    let shared = Arc::new(Mutex::new(persistence.metadata("session-1").unwrap()));
+
+    let mut content = serde_json::to_vec(&record(1, "message_chunk")).unwrap();
+    content.push(b'\n');
+    content.extend_from_slice(&serde_json::to_vec(&record(5, "message_chunk")).unwrap());
+    fs::write(&log, &content).unwrap();
+    assert_eq!(shared.lock().last_seq, 0, "bookkeeping is stale");
+
+    // seq 3 passes the stale check, but the preserved tail is seq 5: the
+    // append must be refused (never written out of order) while last_seq
+    // moves to 5.
+    let result = append_record(
+        &store,
+        &shared,
+        &mut TailState::default(),
+        record(3, "message_chunk"),
+    );
+    assert!(matches!(result, Err(SessionPersistenceError::CorruptSession)));
+    assert_eq!(shared.lock().last_seq, 5);
+    let seqs: Vec<u64> = fs::read(&log)
+        .unwrap()
+        .split(|b| *b == b'\n')
+        .filter(|l| !l.is_empty())
+        .map(|l| serde_json::from_slice::<PersistedEventRecord>(l).unwrap().seq)
+        .collect();
+    assert_eq!(seqs, vec![1, 5]);
+    assert_eq!(fs::read(&log).unwrap().last(), Some(&b'\n'));
+    append_record(
+        &store,
+        &shared,
+        &mut TailState::default(),
+        record(6, "message_chunk"),
+    )
+    .unwrap();
+    let _ = fs::remove_dir_all(root);
+}
+
+/// Shutdown marker after a failed append that left an intact unterminated
+/// `user_prompt` on disk: the marker sequences after it (never reuses its seq).
+#[tokio::test]
+async fn interrupted_marker_never_reuses_seq_of_unterminated_tail() {
+    let root = temp_dir("marker-preserved-seq");
+    let (persistence, metadata) = registered(&root).await;
+    persistence.shutdown().await.unwrap();
+    let store = root.join("store");
+    let log = store.join(&metadata.storage_key).join(MESSAGES_FILE);
+    let shared = Arc::new(Mutex::new(persistence.metadata("session-1").unwrap()));
+
+    let mut content = serde_json::to_vec(&record(1, "user_prompt")).unwrap();
+    content.push(b'\n');
+    content.extend_from_slice(&serde_json::to_vec(&record(2, "message_chunk")).unwrap());
+    fs::write(&log, &content).unwrap();
+    shared.lock().last_seq = 1; // the chunk's append "failed": bookkeeping lags
+
+    writer::append_interrupted_marker_if_open(
+        &store,
+        &shared,
+        &mut TailState::default(),
+        Some(&FloorSeqAuthority),
+    );
+    let seqs: Vec<(u64, String)> = fs::read(&log)
+        .unwrap()
+        .split(|b| *b == b'\n')
+        .filter(|l| !l.is_empty())
+        .map(|l| {
+            let r = serde_json::from_slice::<PersistedEventRecord>(l).unwrap();
+            (r.seq, r.type_)
+        })
+        .collect();
+    assert_eq!(
+        seqs,
+        vec![
+            (1, "user_prompt".to_string()),
+            (2, "message_chunk".to_string()),
+            (3, "prompt_complete".to_string()),
+        ]
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+/// An installed authority numbers the shutdown marker (here: ahead of the
+/// durable floor); with none installed the marker is `last_seq + 1`.
+#[tokio::test]
+async fn interrupted_marker_seq_uses_authority_when_installed_else_floor() {
+    struct AheadAuthority;
+    impl SeqAuthority for AheadAuthority {
+        fn allocate_after(&self, _session_id: &str, floor: u64) -> u64 {
+            floor + 5
+        }
+    }
+    for (label, authority, expected) in [
+        ("with", Some(&AheadAuthority as &dyn SeqAuthority), 6u64),
+        ("without", None, 2u64),
+    ] {
+        let root = temp_dir(&format!("marker-authority-{label}"));
+        let (persistence, metadata) = registered(&root).await;
+        persistence.shutdown().await.unwrap();
+        let store = root.join("store");
+        let log = store.join(&metadata.storage_key).join(MESSAGES_FILE);
+        let shared = Arc::new(Mutex::new(persistence.metadata("session-1").unwrap()));
+        let mut tails = TailState::default();
+        append_record(&store, &shared, &mut tails, record(1, "user_prompt")).unwrap();
+
+        writer::append_interrupted_marker_if_open(&store, &shared, &mut tails, authority);
+        let last = fs::read(&log)
+            .unwrap()
+            .split(|b| *b == b'\n')
+            .filter(|l| !l.is_empty())
+            .map(|l| serde_json::from_slice::<PersistedEventRecord>(l).unwrap())
+            .next_back()
+            .unwrap();
+        assert_eq!(last.type_, "prompt_complete", "{label}");
+        assert_eq!(last.seq, expected, "{label}");
+        let _ = fs::remove_dir_all(root);
+    }
+}
+
+/// A replay-triggered salvage atomically replaces the live log with a SHORTER
+/// file while the writer's cached tail offset still names the old length. The
+/// cache must be revalidated against the file: the next append lands on the
+/// replaced file cleanly (no zero-filled gap, parseable log) and the cache is
+/// re-synced to the new length.
+#[tokio::test]
+async fn tail_cache_is_revalidated_after_salvage_replaces_the_log() {
+    let root = temp_dir("append-tail-cache-salvage");
+    let (persistence, metadata) = registered(&root).await;
+    persistence.shutdown().await.unwrap();
+    let store = root.join("store");
+    let log = store.join(&metadata.storage_key).join(MESSAGES_FILE);
+    let shared = Arc::new(Mutex::new(persistence.metadata("session-1").unwrap()));
+    let mut tails = TailState::default();
+    for seq in 1..=3 {
+        append_record(&store, &shared, &mut tails, record(seq, "message_chunk")).unwrap();
+    }
+    let stale_len = fs::metadata(&log).unwrap().len();
+    assert_eq!(tails.messages, Some(stale_len));
+
+    // Salvage-like rewrite: only record 1 survives (atomic replace).
+    let mut kept = serde_json::to_vec(&record(1, "message_chunk")).unwrap();
+    kept.push(b'\n');
+    crate::acp::atomic_file::replace(&log, &kept).unwrap();
+    assert!((kept.len() as u64) < stale_len);
+
+    append_record(&store, &shared, &mut tails, record(4, "message_chunk")).unwrap();
+    let bytes = fs::read(&log).unwrap();
+    assert!(!bytes.contains(&0u8), "no zero-filled bytes in the log");
+    assert_eq!(bytes.last(), Some(&b'\n'));
+    let seqs: Vec<u64> = bytes
+        .split(|b| *b == b'\n')
+        .filter(|l| !l.is_empty())
+        .map(|l| serde_json::from_slice::<PersistedEventRecord>(l).unwrap().seq)
+        .collect();
+    assert_eq!(seqs, vec![1, 4]);
+    assert_eq!(tails.messages, Some(bytes.len() as u64), "cache re-synced");
+    let _ = fs::remove_dir_all(root);
+}
+
+/// Hot path: after a successful append the writer knows the tail is terminated
+/// (and where it ends), so consecutive appends need no per-append tail probe and
+/// still produce a well-formed log.
+#[tokio::test]
+async fn consecutive_appends_track_the_terminated_tail_end() {
+    let root = temp_dir("append-tail-cache");
+    let (persistence, metadata) = registered(&root).await;
+    persistence.shutdown().await.unwrap();
+    let store = root.join("store");
+    let log = store.join(&metadata.storage_key).join(MESSAGES_FILE);
+    let shared = Arc::new(Mutex::new(persistence.metadata("session-1").unwrap()));
+    let mut tails = TailState::default();
+    for seq in 1..=3 {
+        append_record(&store, &shared, &mut tails, record(seq, "message_chunk")).unwrap();
+        assert_eq!(
+            tails.messages,
+            Some(fs::metadata(&log).unwrap().len()),
+            "cached end offset matches the file after append {seq}"
+        );
+    }
+    assert!(tails.tool_calls.is_none(), "tool log untouched");
+    assert_eq!(shared.lock().last_seq, 3);
     let _ = fs::remove_dir_all(root);
 }
 
@@ -512,7 +937,7 @@ async fn corrupt_metadata_isolated_from_other_session() {
         b"bad",
     )
     .unwrap();
-    let reopened = SessionPersistence::open(root.join("store")).await.unwrap();
+    let reopened = open_with_authority(&root.join("store")).await;
     assert_eq!(reopened.list_sessions().len(), 1);
     assert_eq!(reopened.list_sessions()[0].storage_key, second.storage_key);
     assert!(!reopened.list_sessions()[0].resume_eligible);
@@ -656,7 +1081,7 @@ async fn restart_downgrades_active_to_closed_without_writer() {
     );
     persistence.shutdown().await.unwrap();
 
-    let reopened = SessionPersistence::open(root.join("store")).await.unwrap();
+    let reopened = open_with_authority(&root.join("store")).await;
     let metadata = reopened.metadata("session-1").unwrap();
     assert_eq!(
         metadata.status,
@@ -692,7 +1117,7 @@ async fn session_payload_survives_reopen_identically() {
     .unwrap();
     persistence.shutdown().await.unwrap();
 
-    let reopened = SessionPersistence::open(root.join("store")).await.unwrap();
+    let reopened = open_with_authority(&root.join("store")).await;
     let after =
         serde_json::to_value(reopened.session_payload_async("session-1").await.unwrap()).unwrap();
     // `status` is expected to differ (Active → Closed across restart); the
@@ -1128,7 +1553,7 @@ async fn restart_preserves_error_status_without_downgrade() {
         .unwrap();
     persistence.shutdown().await.unwrap();
 
-    let reopened = SessionPersistence::open(root.join("store")).await.unwrap();
+    let reopened = open_with_authority(&root.join("store")).await;
     assert_eq!(
         reopened.metadata("session-1").unwrap().status,
         PersistedSessionStatus::Error,
@@ -1175,7 +1600,7 @@ async fn delete_session_removes_live_writer_directory_and_index_entry() {
     ));
     persistence.shutdown().await.unwrap();
     // Nothing must resurrect on reopen.
-    let reopened = SessionPersistence::open(root.join("store")).await.unwrap();
+    let reopened = open_with_authority(&root.join("store")).await;
     assert!(reopened.list_sessions().is_empty());
     let _ = fs::remove_dir_all(root);
 }
@@ -1202,65 +1627,6 @@ async fn delete_session_works_for_finalized_and_unknown_ids() {
 }
 
 #[tokio::test]
-async fn find_most_recent_for_project_filters_and_orders() {
-    let root = temp_dir("find-project");
-    let cwd = root.join("cwd");
-    fs::create_dir_all(&cwd).unwrap();
-    let persistence = SessionPersistence::open(root.join("store")).await.unwrap();
-    for (session_id, project, namespace) in [
-        ("a", Some("project-1"), Some("config:one")),
-        ("b", Some("project-1"), Some("config:two")),
-        ("c", Some("project-2"), Some("config:one")),
-        // No stable namespace but a runtime agent id — still an identity.
-        ("d", Some("project-1"), None),
-    ] {
-        persistence
-            .register_session(SessionRegistration {
-                session_id: session_id.to_string(),
-                stable_agent_namespace: namespace.map(str::to_string),
-                runtime_agent_id: Some(format!("runtime-{session_id}")),
-                project_id: project.map(str::to_string),
-                cwd: cwd.clone(),
-                ..Default::default()
-            })
-            .await
-            .unwrap();
-    }
-    // Deterministic activity ordering via explicit recorded_at.
-    let bump = |session_id: &str, recorded_at: u64| PersistedEventRecord {
-        schema_version: SESSION_SCHEMA_VERSION,
-        session_id: session_id.to_string(),
-        seq: 1,
-        type_: "message_chunk".to_string(),
-        recorded_at,
-        payload: json!({"sessionId": session_id, "role": "agent", "content": [{"type": "text", "text": "hi"}]}),
-    };
-    persistence.enqueue_event(bump("a", 1_000)).unwrap();
-    persistence.enqueue_event(bump("b", 3_000)).unwrap();
-    persistence.enqueue_event(bump("d", 5_000)).unwrap();
-    for session_id in ["a", "b", "d"] {
-        persistence.flush_session(session_id).await.unwrap();
-    }
-
-    let cwd_str = persistence.metadata("a").unwrap().cwd;
-    let hit = persistence
-        .find_most_recent_for_project("project-1", &cwd_str, None)
-        .unwrap();
-    assert_eq!(hit.session_id, "d", "most recent activity wins");
-    let narrowed = persistence
-        .find_most_recent_for_project("project-1", &cwd_str, Some("config:one"))
-        .unwrap();
-    assert_eq!(narrowed.session_id, "a");
-    assert!(persistence
-        .find_most_recent_for_project("project-1", &cwd_str, Some("config:missing"))
-        .is_none());
-    assert!(persistence
-        .find_most_recent_for_project("project-9", &cwd_str, None)
-        .is_none());
-    let _ = fs::remove_dir_all(root);
-}
-
-#[tokio::test]
 async fn unclean_exit_still_downgrades_active_on_restart() {
     let root = temp_dir("restart-crash");
     let (persistence, _) = registered(&root).await;
@@ -1270,7 +1636,7 @@ async fn unclean_exit_still_downgrades_active_on_restart() {
     persistence.flush_session("session-1").await.unwrap();
     drop(persistence);
 
-    let reopened = SessionPersistence::open(root.join("store")).await.unwrap();
+    let reopened = open_with_authority(&root.join("store")).await;
     assert_eq!(
         reopened.metadata("session-1").unwrap().status,
         PersistedSessionStatus::Closed,
@@ -1631,6 +1997,18 @@ async fn reopen_writer_session_not_found_for_unknown_session() {
     let _ = fs::remove_dir_all(root);
 }
 
+/// Enqueue the `agent_switch` record at an explicit seq (what the relay's
+/// single allocator hands the writer).
+fn enqueue_agent_switch(persistence: &SessionPersistence, seq: u64) {
+    persistence
+        .enqueue_event(payload_record(
+            seq,
+            "agent_switch",
+            serde_json::to_value(agent_switch_record()).unwrap(),
+        ))
+        .unwrap();
+}
+
 fn agent_switch_record() -> AgentSwitchRecord {
     AgentSwitchRecord {
         session_id: "session-1".to_string(),
@@ -1641,12 +2019,12 @@ fn agent_switch_record() -> AgentSwitchRecord {
     }
 }
 
-/// CAP-2: `append_agent_switch` writes ONE durable `agent_switch` record
-/// with a writer-assigned seq, the fold materializes it, and
+/// CAP-2: an `agent_switch` record enqueued at an explicit seq is durable
+/// exactly once, the fold materializes it, and
 /// `message_count` is unchanged (a switch is not a message). Round-trips
 /// through reopen.
 #[tokio::test]
-async fn append_agent_switch_is_durable_and_folds_once() {
+async fn agent_switch_record_is_durable_and_folds_once() {
     let root = temp_dir("switch-durable");
     let (persistence, _) = registered(&root).await;
     persistence
@@ -1663,14 +2041,7 @@ async fn append_agent_switch_is_durable_and_folds_once() {
     // baseline (enqueue is async; metadata lags until the writer runs).
     persistence.flush_session("session-1").await.unwrap();
     let message_count_before = persistence.metadata("session-1").unwrap().message_count;
-    let seq = persistence
-        .append_agent_switch("session-1", agent_switch_record())
-        .await
-        .unwrap();
-    assert_eq!(
-        seq, 2,
-        "writer assigns the next seq (after the user prompt)"
-    );
+    enqueue_agent_switch(&persistence, 2);
     persistence.flush_session("session-1").await.unwrap();
     assert_eq!(persistence.last_seq("session-1").unwrap(), 2);
     // Switches are not messages: message_count must not move.
@@ -1706,27 +2077,26 @@ async fn append_agent_switch_is_durable_and_folds_once() {
     // Reopen round-trip: a fresh persistence over the same root reads the
     // same switch back (restart/reopen parity).
     persistence.shutdown().await.unwrap();
-    let reopened = SessionPersistence::open(root.join("store")).await.unwrap();
+    let reopened = open_with_authority(&root.join("store")).await;
     let reopened_payload = reopened.session_payload_async("session-1").await.unwrap();
     assert_eq!(reopened_payload.switches, payload.switches);
     let _ = fs::remove_dir_all(root);
 }
 
-/// CAP-2: the synthetic live fan-out event is NOT durable —
-/// `is_durable_event("agent_switch")` is false, so `enqueue_event`
-/// (the `WsRelaySink::emit` path) drops it. ONE durable record per
-/// switch; the writer command is the sole durable author.
+/// CAP-2: a switch marker is a durable host record (the relay appends it
+/// once under its allocated seq), unlike transient relay-only events.
 #[test]
-fn agent_switch_live_event_is_not_durable() {
-    assert!(!is_durable_event("agent_switch"));
+fn agent_switch_is_a_durable_event() {
+    assert!(is_durable_event("agent_switch"));
     assert!(is_durable_event("message_chunk"));
     assert!(is_durable_event("user_prompt"));
+    assert!(!is_durable_event("permission_request"));
 }
 
-/// CAP-2: the writer-assigned seq cannot collide with queued records —
-/// a switch recorded between two message enqueues takes the next seq.
+/// CAP-2: a switch recorded between two message enqueues at its allocated
+/// seq leaves a hole-free log with exactly one switch.
 #[tokio::test]
-async fn append_agent_switch_assigns_monotonic_seq_between_queued_events() {
+async fn agent_switch_between_queued_events_leaves_no_holes() {
     let root = temp_dir("switch-seq");
     let (persistence, _) = registered(&root).await;
     persistence
@@ -1739,11 +2109,7 @@ async fn append_agent_switch_assigns_monotonic_seq_between_queued_events() {
             }),
         ))
         .unwrap();
-    let seq = persistence
-        .append_agent_switch("session-1", agent_switch_record())
-        .await
-        .unwrap();
-    assert_eq!(seq, 2);
+    enqueue_agent_switch(&persistence, 2);
     // A subsequent enqueue lands after the switch (no collision).
     persistence
         .enqueue_event(payload_record(
@@ -1798,10 +2164,7 @@ async fn tail_payload_retains_switch_inside_window() {
             ))
             .unwrap();
     }
-    persistence
-        .append_agent_switch("session-1", agent_switch_record())
-        .await
-        .unwrap();
+    enqueue_agent_switch(&persistence, 7);
     for turn in 4..=6 {
         persistence
             .enqueue_event(payload_record(
@@ -1890,10 +2253,7 @@ async fn replay_tail_treats_agent_switch_as_fold_boundary() {
             ))
             .unwrap();
     }
-    persistence
-        .append_agent_switch("session-1", agent_switch_record())
-        .await
-        .unwrap();
+    enqueue_agent_switch(&persistence, 22);
     // Post-switch: a fresh agent run of 5 chunks.
     for seq in 23..=27 {
         persistence
@@ -2040,23 +2400,16 @@ async fn recover_bumps_stale_last_seq_to_the_jsonl_frontier() {
     )
     .unwrap();
 
-    let reopened = SessionPersistence::open(root.join("store")).await.unwrap();
+    let reopened = open_with_authority(&root.join("store")).await;
     assert_eq!(
         reopened.last_seq("session-1").unwrap(),
         5,
         "recover() must heal a stale-low last_seq up to the durable tail"
     );
-    // The next writer-assigned seq must exceed every on-disk seq — no
-    // collision, no new duplicate-seq record.
+    // The next allocated seq (frontier + 1) is accepted: no collision, no
+    // new duplicate-seq record.
     reopened.reopen_writer("session-1").await.unwrap();
-    let seq = reopened
-        .append_local_title("session-1", "healed title".to_string())
-        .await
-        .unwrap();
-    assert_eq!(
-        seq, 6,
-        "writer-assigned seq must land above the durable frontier"
-    );
+    enqueue_local_title(&reopened, 6, "healed title");
     reopened.flush_session("session-1").await.unwrap();
     assert_eq!(
         reopened
@@ -2090,7 +2443,7 @@ async fn duplicate_seq_tail_record_heals_on_read_with_corrupt_backup() {
     // The stale-counter intruder: parseable, in-session, seq <= max.
     let intruder_bytes = append_raw_record(&messages_path, &record(2, "commands_update"));
 
-    let reopened = SessionPersistence::open(root.join("store")).await.unwrap();
+    let reopened = open_with_authority(&root.join("store")).await;
     // Healable corruption must not quarantine the session at startup.
     assert_eq!(reopened.list_sessions().len(), 1);
     let payload = reopened.session_payload_async("session-1").await.unwrap();
@@ -2139,7 +2492,7 @@ async fn unparseable_mid_file_line_still_fails_closed() {
     let messages_path = session_dir.join(MESSAGES_FILE);
     splice_after_line(&messages_path, 0, b"{definitely not json}\n");
 
-    let reopened = SessionPersistence::open(root.join("store")).await.unwrap();
+    let reopened = open_with_authority(&root.join("store")).await;
     assert!(
         matches!(
             reopened.replay_after("session-1", 0),
@@ -2173,7 +2526,7 @@ async fn zero_seq_record_is_quarantined_as_intruder() {
     zero.push(b'\n');
     splice_after_line(&messages_path, 0, &zero);
 
-    let reopened = SessionPersistence::open(root.join("store")).await.unwrap();
+    let reopened = open_with_authority(&root.join("store")).await;
     assert_eq!(
         reopened
             .replay_after("session-1", 0)
@@ -2210,7 +2563,7 @@ async fn duplicate_seq_inside_tail_window_heals_replay_tail() {
     // window `load_jsonl_tail` scans.
     append_raw_record(&messages_path, &record(4, "message_chunk"));
 
-    let reopened = SessionPersistence::open(root.join("store")).await.unwrap();
+    let reopened = open_with_authority(&root.join("store")).await;
     let tail = reopened.replay_tail("session-1", 2).unwrap();
     assert_eq!(
         tail.iter().map(|record| record.seq).collect::<Vec<_>>(),
@@ -2247,7 +2600,7 @@ async fn recover_keeps_stale_high_last_seq_without_rewriting_logs() {
     )
     .unwrap();
 
-    let reopened = SessionPersistence::open(root.join("store")).await.unwrap();
+    let reopened = open_with_authority(&root.join("store")).await;
     assert_eq!(
         reopened.last_seq("session-1").unwrap(),
         10,
@@ -2262,13 +2615,9 @@ async fn recover_keeps_stale_high_last_seq_without_rewriting_logs() {
     // The gap is harmless: the next append lands at 11 and every read
     // sees a strictly-increasing log.
     reopened.reopen_writer("session-1").await.unwrap();
-    assert_eq!(
-        reopened
-            .append_local_title("session-1", "title".to_string())
-            .await
-            .unwrap(),
-        11
-    );
+    enqueue_local_title(&reopened, 11, "title");
+    reopened.flush_session("session-1").await.unwrap();
+    assert_eq!(reopened.last_seq("session-1").unwrap(), 11);
     let _ = fs::remove_dir_all(root);
 }
 
@@ -2295,7 +2644,7 @@ async fn cross_file_duplicate_seq_still_fails_closed() {
     line.push(b'\n');
     fs::write(session_dir.join(TOOL_CALLS_FILE), &line).unwrap();
 
-    let reopened = SessionPersistence::open(root.join("store")).await.unwrap();
+    let reopened = open_with_authority(&root.join("store")).await;
     assert!(matches!(
         reopened.replay_after("session-1", 0),
         Err(SessionPersistenceError::CorruptSession)
@@ -2345,7 +2694,7 @@ async fn recover_bumps_last_seq_when_frontier_record_exceeds_probe_block() {
     )
     .unwrap();
 
-    let reopened = SessionPersistence::open(root.join("store")).await.unwrap();
+    let reopened = open_with_authority(&root.join("store")).await;
     assert_eq!(
         reopened.last_seq("session-1").unwrap(),
         5,
@@ -2378,7 +2727,7 @@ async fn duplicate_seq_in_tool_calls_heals_on_read() {
         &record(2, "tool_call_update"),
     );
 
-    let reopened = SessionPersistence::open(root.join("store")).await.unwrap();
+    let reopened = open_with_authority(&root.join("store")).await;
     assert_eq!(
         reopened
             .replay_after("session-1", 0)
@@ -2406,16 +2755,11 @@ async fn salvage_recount_excludes_agent_switch_markers() {
     let root = temp_dir("seq-intruder-agent-switch");
     let (persistence, metadata) = registered(&root).await;
     let agent_chunk = json!({"role": "agent", "content": {"type": "text", "text": "hi"}});
-    // The switch marker persists ONLY through `append_agent_switch`
-    // (`is_durable_event("agent_switch")` is false, so `enqueue_event`
-    // would silently skip it) — seq 2 lands between the two chunk runs.
+    // The switch marker takes seq 2, between the two chunk runs.
     persistence
         .enqueue_event(record_with_payload(1, "message_chunk", agent_chunk.clone()))
         .unwrap();
-    persistence
-        .append_agent_switch("session-1", agent_switch_record())
-        .await
-        .unwrap();
+    enqueue_agent_switch(&persistence, 2);
     persistence
         .enqueue_event(record_with_payload(3, "message_chunk", agent_chunk.clone()))
         .unwrap();
@@ -2428,7 +2772,7 @@ async fn salvage_recount_excludes_agent_switch_markers() {
         &record_with_payload(1, "commands_update", json!({})),
     );
 
-    let reopened = SessionPersistence::open(root.join("store")).await.unwrap();
+    let reopened = open_with_authority(&root.join("store")).await;
     reopened.replay_after("session-1", 0).unwrap();
     let healed = reopened.metadata("session-1").unwrap();
     assert_eq!(
@@ -2454,7 +2798,7 @@ async fn torn_tail_fragment_alongside_intruder_still_heals() {
     // Reopen BEFORE corrupting: recover()'s torn-tail repair would quarantine
     // the fragment itself at startup — this test wants the read-path scan to
     // face both corruptions in one pass.
-    let reopened = SessionPersistence::open(root.join("store")).await.unwrap();
+    let reopened = open_with_authority(&root.join("store")).await;
     let session_dir = persistence.session_dir(&metadata.storage_key).unwrap();
     let messages_path = session_dir.join(MESSAGES_FILE);
     append_raw_record(&messages_path, &record(2, "commands_update"));
@@ -2497,7 +2841,7 @@ async fn concurrent_reads_on_a_corrupt_session_both_heal() {
         &record(2, "commands_update"),
     );
 
-    let reopened = SessionPersistence::open(root.join("store")).await.unwrap();
+    let reopened = open_with_authority(&root.join("store")).await;
     let first = {
         let persistence = Arc::clone(&reopened);
         std::thread::spawn(move || persistence.replay_after("session-1", 0))
@@ -2544,11 +2888,11 @@ async fn heal_serializes_against_a_live_writer() {
         &record(2, "commands_update"),
     );
 
-    let reopened = SessionPersistence::open(root.join("store")).await.unwrap();
+    let reopened = open_with_authority(&root.join("store")).await;
     reopened.reopen_writer("session-1").await.unwrap();
 
-    // Pause the salvage while it holds the catalog+entry locks, enqueue a
-    // writer-assigned append, then let the heal finish. The append must
+    // Pause the salvage while it holds the catalog+entry locks, enqueue an
+    // explicit-seq append, then let the heal finish. The append must
     // wait out the rewrite and then land above the healed frontier.
     let (entered_tx, entered_rx) = std::sync::mpsc::channel();
     let hook = ReplayTestHook::new(entered_tx);
@@ -2559,9 +2903,12 @@ async fn heal_serializes_against_a_live_writer() {
         std::thread::spawn(move || persistence.replay_after("session-1", 0))
     };
     entered_rx.recv().expect("salvage hook fired");
-    let (reply_tx, reply_rx) = oneshot::channel();
-    tx.try_send(WriterCommand::AppendLocalTitle("raced title".into(), reply_tx))
-        .unwrap();
+    tx.try_send(WriterCommand::Append(payload_record(
+        6,
+        "local_title_generated",
+        json!({"sessionId":"session-1","title":"raced title"}),
+    )))
+    .unwrap();
     hook.release();
 
     let reader_seqs = reader
@@ -2579,11 +2926,7 @@ async fn heal_serializes_against_a_live_writer() {
         reader_seqs == [1, 2, 3, 4, 5] || reader_seqs == [1, 2, 3, 4, 5, 6],
         "the heal drops only the intruder (append may already be visible): {reader_seqs:?}"
     );
-    let assigned = reply_rx.await.unwrap().unwrap();
-    assert_eq!(
-        assigned, 6,
-        "the raced append lands above the healed frontier — never dropped, never reusing a seq"
-    );
+    reopened.flush_session("session-1").await.unwrap();
     assert!(
         reopened
             .replay_after("session-1", 0)
@@ -2628,7 +2971,7 @@ async fn residual_cross_file_duplicate_blocks_the_rewrite() {
     fs::write(session_dir.join(TOOL_CALLS_FILE), &tool_line).unwrap();
     let messages_before = fs::read(session_dir.join(MESSAGES_FILE)).unwrap();
 
-    let reopened = SessionPersistence::open(root.join("store")).await.unwrap();
+    let reopened = open_with_authority(&root.join("store")).await;
     assert!(
         matches!(
             reopened.replay_after("session-1", 0),
@@ -2762,21 +3105,18 @@ async fn legacy_session_message_count_heals_on_reopen() {
     persistence.flush_session("session-1").await.unwrap();
     persistence.shutdown().await.unwrap();
 
-    // Simulate the pre-feature on-disk state: strip `foldOpenRole` and inflate
-    // `messageCount` to the legacy rule's value (every non-tool record).
     let session_dir = persistence.session_dir(&metadata.storage_key).unwrap();
     let metadata_path = session_dir.join(METADATA_FILE);
     let mut legacy: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&metadata_path).unwrap()).unwrap();
-    legacy
-        .as_object_mut()
-        .unwrap()
-        .remove("foldOpenRole");
+    let legacy_fields = legacy.as_object_mut().unwrap();
+    legacy_fields.remove("foldOpenRole");
+    legacy_fields.remove("foldCounted");
     legacy["messageCount"] = serde_json::json!(6);
     fs::write(&metadata_path, serde_json::to_vec_pretty(&legacy).unwrap()).unwrap();
 
     // Reopen: the writer install runs the versioned heal.
-    let reopened = SessionPersistence::open(root.join("store")).await.unwrap();
+    let reopened = open_with_authority(&root.join("store")).await;
     reopened
         .reopen_writer("session-1")
         .await
@@ -2827,19 +3167,16 @@ async fn mid_stream_restart_does_not_double_count_the_open_run() {
     assert_eq!(mid.fold_open_role.as_deref(), Some("agent"));
     persistence.shutdown().await.unwrap();
 
-    // Simulate the restart: strip `foldOpenRole` from the on-disk metadata so
-    // the reopen heal must reconstruct it from the records.
     let session_dir = persistence.session_dir(&metadata.storage_key).unwrap();
     let metadata_path = session_dir.join(METADATA_FILE);
     let mut stripped: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&metadata_path).unwrap()).unwrap();
-    stripped
-        .as_object_mut()
-        .unwrap()
-        .remove("foldOpenRole");
+    let stripped_fields = stripped.as_object_mut().unwrap();
+    stripped_fields.remove("foldOpenRole");
+    stripped_fields.remove("foldCounted");
     fs::write(&metadata_path, serde_json::to_vec_pretty(&stripped).unwrap()).unwrap();
 
-    let reopened = SessionPersistence::open(root.join("store")).await.unwrap();
+    let reopened = open_with_authority(&root.join("store")).await;
     reopened.reopen_writer("session-1").await.unwrap();
     // The resumed stream continues the SAME run: seq 3 must coalesce, not
     // open a second bubble.
@@ -2964,7 +3301,7 @@ async fn shutdown_marks_open_turn_with_interrupted_prompt_complete() {
 
     // Reopen: the marker is durable and only ONE marker exists (turn-1's
     // real completion is untouched).
-    let reopened = SessionPersistence::open(root.join("store")).await.unwrap();
+    let reopened = open_with_authority(&root.join("store")).await;
     let replayed = reopened.replay_after("session-1", 0).unwrap();
     assert_eq!(
         replayed
@@ -3169,7 +3506,7 @@ async fn shutdown_marks_null_turn_id_prompt_once() {
 
     // Reopen + shut down again: the marker closed the pending scan, so no
     // second marker accumulates.
-    let reopened = SessionPersistence::open(root.join("store")).await.unwrap();
+    let reopened = open_with_authority(&root.join("store")).await;
     reopened.shutdown().await.unwrap();
     let replayed = reopened.replay_after("session-1", 0).unwrap();
     assert_eq!(
@@ -3230,10 +3567,7 @@ async fn shutdown_appends_no_marker_after_agent_switch() {
         ))
         .unwrap();
     persistence.flush_session("session-1").await.unwrap();
-    persistence
-        .append_agent_switch("session-1", agent_switch_record())
-        .await
-        .unwrap();
+    enqueue_agent_switch(&persistence, 2);
     persistence.shutdown().await.unwrap();
 
     let records = persistence.replay_after("session-1", 0).unwrap();
@@ -3241,5 +3575,404 @@ async fn shutdown_appends_no_marker_after_agent_switch() {
         records.iter().all(|r| r.type_ != "prompt_complete"),
         "a switch-abandoned turn must not gain an interrupted marker"
     );
+    let _ = fs::remove_dir_all(root);
+}
+
+fn reduced_tool(type_: &str, tool: Value) -> Value {
+    let key = if type_ == "tool_call" {
+        "toolCall"
+    } else {
+        "update"
+    };
+    let payload = json!({"agentId":"a", "sessionId":"session-1", key: tool});
+    normalize_durable_payload(type_, &payload)[key].clone()
+}
+
+#[test]
+fn file_change_summary_gate_and_path_precedence() {
+    // READ_CALL: a read with locations is never summarized.
+    let read = reduced_tool(
+        "tool_call",
+        json!({"toolCallId":"r", "kind":"read", "locations":[{"path":"/a.ts"}]}),
+    );
+    assert_eq!(read, json!({"toolCallId":"r", "kind":"read"}));
+    // `locations[0].path` wins over rawInput and diff paths.
+    let edit = reduced_tool(
+        "tool_call",
+        json!({"toolCallId":"e", "kind":"edit",
+            "locations":[{"path":"/loc.ts", "line": 3}, {"path":"/second.ts"}],
+            "rawInput":{"path":"/input.ts"},
+            "content":[{"type":"diff", "path":"/diff.ts", "oldText":null, "newText":"x\n"}]}),
+    );
+    assert_eq!(edit["locations"], json!([{"path":"/loc.ts"}]));
+    assert_eq!(edit["diffStat"], json!({"added":1, "removed":0}));
+    // rawInput PATH_KEYS order + trim, ahead of the diff path.
+    let input = reduced_tool(
+        "tool_call",
+        json!({"toolCallId":"e", "kind":"move",
+            "rawInput":{"fileName":"/late.ts", "file_path":"  /input.ts  ", "path":"   "},
+            "content":[{"type":"diff", "path":"/diff.ts", "newText":""}]}),
+    );
+    assert_eq!(input["locations"], json!([{"path":"/input.ts"}]));
+    // Diff path fallback (first diff item with a path).
+    let diff_only = reduced_tool(
+        "tool_call",
+        json!({"toolCallId":"e", "kind":"edit",
+            "content":[{"type":"content"}, {"type":"diff", "oldText":"a\n", "newText":"b\n"},
+                {"type":"diff", "path":"/diff.ts", "oldText":"a\n", "newText":"a\nb\n"}]}),
+    );
+    assert_eq!(diff_only["locations"], json!([{"path":"/diff.ts"}]));
+    // Summed over diff items: (+1 −1) + (+1 −0).
+    assert_eq!(diff_only["diffStat"], json!({"added":2, "removed":1}));
+    // A delete with locations but no diff content: path only.
+    let delete = reduced_tool(
+        "tool_call",
+        json!({"toolCallId":"d", "kind":"delete", "locations":[{"path":"/gone.ts"}]}),
+    );
+    assert_eq!(
+        delete,
+        json!({"toolCallId":"d", "kind":"delete", "locations":[{"path":"/gone.ts"}]})
+    );
+}
+
+#[test]
+fn file_change_summary_update_gate_and_huge_path() {
+    // UPDATE_DIFF: an update without its own kind is admitted by diff content.
+    let update = reduced_tool(
+        "tool_call_update",
+        json!({"toolCallId":"e", "status":"completed",
+            "content":[{"type":"diff", "path":"/a.ts", "oldText":"1\n2\n", "newText":"1\n3\n4\n"}]}),
+    );
+    assert_eq!(
+        update,
+        json!({"toolCallId":"e", "status":"completed",
+            "locations":[{"path":"/a.ts"}], "diffStat":{"added":2, "removed":1}})
+    );
+    // An update with locations but neither a file-change kind nor diff
+    // content stays structural only.
+    let plain = reduced_tool(
+        "tool_call_update",
+        json!({"toolCallId":"e", "status":"completed", "locations":[{"path":"/a.ts"}]}),
+    );
+    assert_eq!(plain, json!({"toolCallId":"e", "status":"completed"}));
+    // An update whose own kind is a file-change kind is admitted.
+    let kinded = reduced_tool(
+        "tool_call_update",
+        json!({"toolCallId":"e", "kind":"edit", "locations":[{"path":"/a.ts"}]}),
+    );
+    assert_eq!(kinded["locations"], json!([{"path":"/a.ts"}]));
+    // A `tool_call` without a file-change kind is never admitted, even with
+    // diff content.
+    let other = reduced_tool(
+        "tool_call",
+        json!({"toolCallId":"o", "kind":"other",
+            "content":[{"type":"diff", "path":"/a.ts", "newText":"x"}]}),
+    );
+    assert_eq!(other, json!({"toolCallId":"o", "kind":"other"}));
+    // HUGE_PATH: > 4096 chars → field omitted (diffStat still kept); exactly
+    // 4096 is kept.
+    let huge = format!("/{}", "a".repeat(MAX_SUMMARY_PATH_CHARS));
+    let huge_edit = reduced_tool(
+        "tool_call",
+        json!({"toolCallId":"h", "kind":"edit", "locations":[{"path": huge}],
+            "content":[{"type":"diff", "oldText":"a", "newText":"b"}]}),
+    );
+    assert!(huge_edit.get("locations").is_none());
+    assert_eq!(huge_edit["diffStat"], json!({"added":1, "removed":1}));
+    let bound = format!("/{}", "a".repeat(MAX_SUMMARY_PATH_CHARS - 1));
+    let bound_edit = reduced_tool(
+        "tool_call",
+        json!({"toolCallId":"h", "kind":"edit", "locations":[{"path": bound.clone()}]}),
+    );
+    assert_eq!(bound_edit["locations"], json!([{ "path": bound }]));
+}
+
+/// The tail payload's `toolCalls` covers the WHOLE session (sourced from the
+/// full `tool-calls.jsonl`), identical to the full payload's — even when
+/// every tool record is older than the tail window.
+#[tokio::test]
+async fn tail_payload_carries_whole_session_file_change_summaries() {
+    let root = temp_dir("tail-tool-summaries");
+    let (persistence, _) = registered(&root).await;
+    let tool = |seq: u64, type_: &str, key: &str, body: Value| {
+        payload_record(
+            seq,
+            type_,
+            json!({"agentId":"runtime-1", "sessionId":"session-1", key: body}),
+        )
+    };
+    persistence
+        .enqueue_event(payload_record(
+            1,
+            "user_prompt",
+            json!({"agentId":"runtime-1","sessionId":"session-1","turnId":"turn-0",
+                "content":[{"type":"text","text":"edit please"}]}),
+        ))
+        .unwrap();
+    // UPDATE_DIFF: the call has no content; the update carries the diff.
+    persistence
+        .enqueue_event(tool(
+            2,
+            "tool_call",
+            "toolCall",
+            json!({"toolCallId":"e1", "kind":"edit", "status":"pending",
+                "locations":[{"path":"/w/a.ts"}]}),
+        ))
+        .unwrap();
+    persistence
+        .enqueue_event(tool(
+            3,
+            "tool_call_update",
+            "update",
+            json!({"toolCallId":"e1", "status":"completed",
+                "content":[{"type":"diff", "path":"/w/a.ts",
+                    "oldText":"1\n2\n3\n", "newText":"1\n2b\n3\n4\n5\n6\n"}]}),
+        ))
+        .unwrap();
+    // READ_CALL: excluded from the payload.
+    persistence
+        .enqueue_event(tool(
+            4,
+            "tool_call",
+            "toolCall",
+            json!({"toolCallId":"r1", "kind":"read", "status":"completed",
+                "locations":[{"path":"/w/a.ts"}]}),
+        ))
+        .unwrap();
+    persistence
+        .enqueue_event(tool(
+            5,
+            "tool_call",
+            "toolCall",
+            json!({"toolCallId":"e2", "kind":"edit", "status":"completed",
+                "content":[{"type":"diff", "path":"/w/a.ts", "oldText":null, "newText":"x\ny\n"}]}),
+        ))
+        .unwrap();
+    persistence
+        .enqueue_event(payload_record(
+            6,
+            "prompt_complete",
+            json!({"sessionId":"session-1","turnId":"turn-0","stopReason":"end_turn"}),
+        ))
+        .unwrap();
+    for i in 0..10u64 {
+        enqueue_turn(
+            &persistence,
+            7 + i * 3,
+            &format!("turn-{}", i + 1),
+            &format!("prompt-{i}"),
+            &format!("reply-{i}"),
+        );
+    }
+    persistence.flush_session("session-1").await.unwrap();
+
+    let expected = json!([
+        {"toolCallId":"e1", "kind":"edit", "status":"completed",
+            "locations":[{"path":"/w/a.ts"}], "diffStat":{"added":4, "removed":1},
+            "seq":2, "timestamp":1002, "restoredSummary":true},
+        {"toolCallId":"e2", "kind":"edit", "status":"completed",
+            "locations":[{"path":"/w/a.ts"}], "diffStat":{"added":2, "removed":0},
+            "seq":5, "timestamp":1005, "restoredSummary":true},
+    ]);
+    let full = serde_json::to_value(
+        persistence
+            .session_payload_async("session-1")
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(full["toolCalls"], expected);
+    let tail = persistence
+        .session_payload_tail_async("session-1", 2)
+        .await
+        .unwrap();
+    assert_eq!(tail.messages.len(), 2);
+    assert!(
+        tail.messages.iter().all(|message| message.seq > 6),
+        "every tool record is older than the tail window"
+    );
+    assert_eq!(serde_json::to_value(&tail).unwrap()["toolCalls"], expected);
+    let _ = fs::remove_dir_all(root);
+}
+
+/// LEGACY: records written before the summary fields existed (the bare
+/// `{toolCallId, kind, status}` DTO — exactly what a path-less edit still
+/// normalizes to) materialize no summaries and never fail the payload.
+#[tokio::test]
+async fn legacy_tool_records_without_summary_fields_yield_no_summaries() {
+    let root = temp_dir("legacy-tool-summaries");
+    let (persistence, _) = registered(&root).await;
+    persistence
+        .enqueue_event(payload_record(
+            1,
+            "tool_call",
+            json!({"agentId":"runtime-1","sessionId":"session-1",
+                "toolCall":{"toolCallId":"old", "kind":"edit", "status":"completed"}}),
+        ))
+        .unwrap();
+    persistence
+        .enqueue_event(payload_record(
+            2,
+            "tool_call_update",
+            json!({"agentId":"runtime-1","sessionId":"session-1",
+                "update":{"toolCallId":"old", "status":"failed"}}),
+        ))
+        .unwrap();
+    persistence.flush_session("session-1").await.unwrap();
+    let records = persistence.replay_after("session-1", 0).unwrap();
+    assert_eq!(
+        records[0].payload["toolCall"],
+        json!({"toolCallId":"old", "kind":"edit", "status":"completed"})
+    );
+    let payload = persistence
+        .session_payload_async("session-1")
+        .await
+        .unwrap();
+    assert!(payload.tool_calls.is_empty());
+    let tail = persistence
+        .session_payload_tail_async("session-1", 5)
+        .await
+        .unwrap();
+    assert!(tail.tool_calls.is_empty());
+    assert_eq!(serde_json::to_value(&tail).unwrap()["toolCalls"], json!([]));
+    let _ = fs::remove_dir_all(root);
+}
+
+/// `recover()` rebuilds `sessions.json` every launch but writes (and fsyncs)
+/// it only when the rebuilt bytes differ: an unchanged launch leaves the file
+/// untouched, while a launch that changes an indexed field rewrites it.
+#[tokio::test]
+async fn recover_rewrites_the_index_only_when_it_changed() {
+    let root = temp_dir("index-unchanged");
+    let (persistence, metadata) = registered(&root).await;
+    persistence.shutdown().await.unwrap();
+    drop(persistence);
+    let store = root.join("store");
+    let index = store.join(INDEX_FILE);
+    let settled = open_with_authority(&store).await;
+    drop(settled);
+    let pinned = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(86_400);
+    let pin = || {
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&index)
+            .unwrap()
+            .set_modified(pinned)
+            .unwrap();
+    };
+    pin();
+    let bytes = fs::read(&index).unwrap();
+
+    let unchanged = open_with_authority(&store).await;
+    drop(unchanged);
+    assert_eq!(fs::read(&index).unwrap(), bytes);
+    assert_eq!(
+        fs::metadata(&index).unwrap().modified().unwrap(),
+        pinned,
+        "an unchanged index is not rewritten"
+    );
+
+    let metadata_path = store.join(&metadata.storage_key).join(METADATA_FILE);
+    let mut on_disk: SessionMetadata =
+        serde_json::from_slice(&fs::read(&metadata_path).unwrap()).unwrap();
+    on_disk.title = Some("Renamed elsewhere".to_string());
+    fs::write(&metadata_path, serde_json::to_vec_pretty(&on_disk).unwrap()).unwrap();
+    let changed = open_with_authority(&store).await;
+    assert_eq!(
+        changed.list_sessions()[0].title.as_deref(),
+        Some("Renamed elsewhere")
+    );
+    drop(changed);
+    assert_ne!(
+        fs::metadata(&index).unwrap().modified().unwrap(),
+        pinned,
+        "a changed index is rewritten"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+fn enqueue_commands(persistence: &SessionPersistence, seq: u64, names: &[&str]) {
+    let commands: Vec<Value> = names
+        .iter()
+        .map(|name| json!({"name": name, "description": format!("{name} command")}))
+        .collect();
+    persistence
+        .enqueue_event(payload_record(
+            seq,
+            "commands_update",
+            json!({"agentId": "runtime-1", "sessionId": "session-1", "availableCommands": commands}),
+        ))
+        .unwrap();
+}
+
+#[tokio::test]
+async fn session_payload_tail_carries_the_last_command_list_outside_its_window() {
+    let root = temp_dir("payload-tail-commands");
+    let (persistence, _) = registered(&root).await;
+    enqueue_commands(&persistence, 1, &["init"]);
+    enqueue_commands(&persistence, 2, &["review", "compact"]);
+    for i in 0..10u64 {
+        let seq = i * 3 + 3;
+        enqueue_turn(&persistence, seq, &format!("turn-{i}"), "prompt", "reply");
+    }
+
+    let tail = persistence
+        .session_payload_tail_async("session-1", 5)
+        .await
+        .unwrap();
+    assert_eq!(tail.messages.first().map(|message| message.seq), Some(25));
+    assert_eq!(
+        serde_json::to_value(&tail).unwrap()["commands"],
+        json!([
+            {"name": "review", "description": "review command"},
+            {"name": "compact", "description": "compact command"}
+        ])
+    );
+    assert_eq!(
+        serde_json::to_value(&tail).unwrap()["commandsSeq"],
+        json!(2)
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn session_payload_folds_the_command_list_from_the_log_after_restart() {
+    let root = temp_dir("payload-commands-restart");
+    let (persistence, _) = registered(&root).await;
+    enqueue_commands(&persistence, 1, &["init"]);
+    enqueue_turn(&persistence, 2, "turn-1", "prompt", "reply");
+    persistence.shutdown().await.unwrap();
+
+    let reopened = open_with_authority(&root.join("store")).await;
+    let payload = reopened.session_payload_async("session-1").await.unwrap();
+    assert_eq!(
+        serde_json::to_value(&payload).unwrap()["commands"],
+        json!([{"name": "init", "description": "init command"}])
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn session_payload_tail_reads_the_command_list_from_the_log_after_restart() {
+    let root = temp_dir("payload-tail-commands-restart");
+    let (persistence, _) = registered(&root).await;
+    enqueue_commands(&persistence, 1, &["init"]);
+    for i in 0..10u64 {
+        let seq = i * 3 + 2;
+        enqueue_turn(&persistence, seq, &format!("turn-{i}"), "prompt", "reply");
+    }
+    persistence.shutdown().await.unwrap();
+
+    let reopened = open_with_authority(&root.join("store")).await;
+    let tail = reopened
+        .session_payload_tail_async("session-1", 4)
+        .await
+        .unwrap();
+    assert_eq!(tail.messages.first().map(|message| message.seq), Some(26));
+    assert_eq!(
+        serde_json::to_value(&tail).unwrap()["commands"],
+        json!([{"name": "init", "description": "init command"}])
+    );
+    assert_eq!(serde_json::to_value(&tail).unwrap()["commandsSeq"], json!(1));
     let _ = fs::remove_dir_all(root);
 }

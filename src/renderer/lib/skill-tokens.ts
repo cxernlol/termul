@@ -534,6 +534,38 @@ export const FILE_TOKEN_END = '\uE007'
  */
 export const FILE_TOKEN_SEP = '\u001F'
 
+/**
+ * True when a `/` or `@` at `index` is a trigger, not part of a word.
+ *
+ * The character before `index` is a boundary at the start of the text, on
+ * whitespace, or at the end of a pill (`\uE001`, `\uE003`, `\uE005`, `\uE007`).
+ * The figure space inside a skill padding block is not a boundary: the scanner
+ * stops on the sentinel that closes the pill, so a trigger glued to a pill
+ * still opens the menu.
+ */
+export function isComposerTriggerBoundary(value: string, index: number): boolean {
+  if (index <= 0) return true
+  const prev = value[index - 1]
+  if (prev === undefined || /\s/.test(prev)) return true
+  return (
+    prev === SKILL_TOKEN_END ||
+    prev === SKILL_PAD_END ||
+    prev === CMD_TOKEN_END ||
+    prev === FILE_TOKEN_END
+  )
+}
+
+/**
+ * Folder mentions (gh-896) reuse the file token with a trailing `/` on the
+ * `absPath` as the dir marker, so the token format and the file wire output
+ * stay unchanged. A folder token's display is the project-relative path with a
+ * trailing `/` (e.g. `src/renderer/components/`); on send it becomes that text
+ * verbatim — no `resource_link`, no expansion.
+ */
+export function isFolderTokenPath(absPath: string): boolean {
+  return absPath.endsWith('/')
+}
+
 /** A run of plain text or a single file token extracted from the value. */
 export type FileSegment =
   | { kind: 'text'; text: string }
@@ -670,10 +702,15 @@ export function removeFileTokenBeforeCaret(value: string, caret: number): Remove
  * Replace each file token with `(<display>)` for the wire prompt's user-text
  * portion. Inline duplicates are preserved (the same file may appear at
  * multiple positions). Non-token text is passed through verbatim. Mirrors
- * `replaceSkillTokensInline` for skills.
+ * `replaceSkillTokensInline` for skills. A folder token (see
+ * {@link isFolderTokenPath}) becomes its bare relative path text instead, so
+ * the agent reads `src/renderer/components/` rather than `(…)`.
  */
 export function replaceFileTokensInline(value: string): string {
   return parseFileSegments(value)
-    .map((s) => (s.kind === 'file' ? `(${s.display})` : s.text))
+    .map((s) => {
+      if (s.kind !== 'file') return s.text
+      return isFolderTokenPath(s.absPath) ? s.display : `(${s.display})`
+    })
     .join('')
 }

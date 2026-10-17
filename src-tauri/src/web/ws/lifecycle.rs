@@ -30,9 +30,6 @@ pub(super) async fn handle_resume_session(
     id: String,
     payload: &Value,
     acp: &Arc<AcpManager>,
-    current_agent: &mut Option<crate::acp::AgentId>,
-    current_session: &Arc<parking_lot::Mutex<Option<crate::acp::SessionId>>>,
-    current_project: &Arc<parking_lot::Mutex<Option<String>>>,
 ) -> WsReply {
     let parsed: LoadResumeSessionPayload = match serde_json::from_value(payload.clone()) {
         Ok(p) => p,
@@ -44,25 +41,17 @@ pub(super) async fn handle_resume_session(
             )
         }
     };
-    // Clone the ids before the call moves `parsed.session_id` + `parsed.cwd`;
-    // we still need the session id to track it for `switch_project`.
-    let agent_id = parsed.agent_id.clone();
-    let session_id = parsed.session_id.clone();
     match acp
         .resume_session(
-            &agent_id,
+            &parsed.agent_id,
             parsed.session_id,
             parsed.cwd,
             parsed.additional_directories,
+            parsed.mcp_servers,
         )
         .await
     {
-        Ok(outcome) => {
-            *current_agent = Some(agent_id);
-            *current_session.lock() = Some(session_id);
-            *current_project.lock() = None;
-            resume_ok_payload(id, &outcome)
-        }
+        Ok(outcome) => resume_ok_payload(id, &outcome),
         Err(e) => acp_err_to_reply(id, e),
     }
 }
@@ -154,9 +143,7 @@ pub(super) async fn handle_dispose_ephemeral_session(
     payload: &Value,
     acp: &Arc<AcpManager>,
     relay: &Arc<WsRelaySink>,
-    subscribed_clients: &mut Vec<(String, ClientId)>,
-    current_session: &Arc<parking_lot::Mutex<Option<SessionId>>>,
-    current_project: &Arc<parking_lot::Mutex<Option<String>>>,
+    subscribed_clients: &Subscriptions,
 ) -> WsReply {
     let parsed: CloseSessionPayload = match serde_json::from_value(payload.clone()) {
         Ok(p) => p,
@@ -171,22 +158,13 @@ pub(super) async fn handle_dispose_ephemeral_session(
         }
     };
     let disposed_session_id = parsed.session_id.clone();
-    match acp
+    let result = acp
         .dispose_ephemeral_session(&parsed.agent_id, parsed.session_id)
-        .await
-    {
+        .await;
+    match result {
         Ok(()) => {
-            subscribed_clients.retain(|(session_id, client_id)| {
-                if session_id == &disposed_session_id.0 {
-                    relay.unsubscribe(session_id, *client_id);
-                    false
-                } else {
-                    true
-                }
-            });
-            if current_session.lock().as_ref() == Some(&disposed_session_id) {
-                *current_session.lock() = None;
-                *current_project.lock() = None;
+            for client_id in subscribed_clients.remove_session(&disposed_session_id.0) {
+                relay.unsubscribe(&disposed_session_id.0, client_id);
             }
             relay.forget_session(&disposed_session_id.0).await;
             WsReply::ok(id, Some(json!({})))
@@ -199,8 +177,6 @@ pub(super) async fn handle_close_session(
     id: String,
     payload: &Value,
     acp: &Arc<AcpManager>,
-    current_session: &Arc<parking_lot::Mutex<Option<SessionId>>>,
-    current_project: &Arc<parking_lot::Mutex<Option<String>>>,
 ) -> WsReply {
     let parsed: CloseSessionPayload = match serde_json::from_value(payload.clone()) {
         Ok(p) => p,
@@ -212,15 +188,9 @@ pub(super) async fn handle_close_session(
             )
         }
     };
-    let closing_session_id = parsed.session_id.clone();
-    match acp.close_session(&parsed.agent_id, parsed.session_id).await {
-        Ok(()) => {
-            if current_session.lock().as_ref() == Some(&closing_session_id) {
-                *current_session.lock() = None;
-                *current_project.lock() = None;
-            }
-            WsReply::ok(id, Some(json!({})))
-        }
+    let result = acp.close_session(&parsed.agent_id, parsed.session_id).await;
+    match result {
+        Ok(()) => WsReply::ok(id, Some(json!({}))),
         Err(e) => acp_err_to_reply(id, e),
     }
 }

@@ -1,6 +1,5 @@
 use super::*;
 use crate::acp::AcpManager;
-use crate::web::project_registry::ProjectRegistry;
 use crate::web::sink::WsRelaySink;
 use crate::web::test_pty_manager;
 use axum::body::Body;
@@ -19,16 +18,12 @@ fn test_state() -> AppState {
         exit_code_tracker: pty.exit_code_tracker(),
         pty,
         relay: Arc::new(WsRelaySink::new()),
-        registry: Arc::new(ProjectRegistry::new()),
-        registry_persistence: None,
-        projects_file: None,
-        history_mode: crate::web::ws::HistoryMode::LiveOnly,
-        project_root: Arc::new(parking_lot::RwLock::new(
-            std::env::temp_dir()
+        registry: crate::web::project_registry::ProjectRegistry::seeded_for_test(
+            &std::env::temp_dir()
                 .canonicalize()
                 .unwrap_or_else(|_| std::env::temp_dir()),
-        )),
-        workspace_manifest: None,
+        ),
+        history_mode: crate::web::ws::HistoryMode::LiveOnly,
         acp_catalog: None,
         acp_install: None,
         store: None,
@@ -39,6 +34,7 @@ fn test_state() -> AppState {
             std::collections::HashMap::new(),
         )),
         oauth_base_url: "http://127.0.0.1".to_string(),
+        connections: Default::default(),
     }
 }
 
@@ -97,13 +93,15 @@ async fn list_skills_degrades_on_scan_failure() {
 }
 
 #[tokio::test]
-async fn list_skills_rejects_project_root_outside_project_root() {
-    // A projectRoot that exists but is outside the server's project_root
+async fn list_skills_rejects_project_root_outside_every_registered_project() {
+    // A projectRoot that exists but is outside every registered project
     // (temp_dir's parent) must be rejected with OUTSIDE_PROJECT_ROOT.
     let state = test_state();
-    // CAP-1: project_root is now `Arc<RwLock<PathBuf>>` — lock-read to
-    // derive the "outside" path (temp_dir's parent) for the test.
-    let root = state.project_root.read().clone();
+    // The registered project is the (canonical) temp dir; its parent is
+    // outside every registered root.
+    let root = std::env::temp_dir()
+        .canonicalize()
+        .unwrap_or_else(|_| std::env::temp_dir());
     let outside = root
         .parent()
         .map(std::path::Path::to_path_buf)

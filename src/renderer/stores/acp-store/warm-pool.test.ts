@@ -97,8 +97,10 @@ vi.mock('@/stores/workspace-store', () => {
   }
   return {
     getAllLeafPanes,
+    getAllTreeRoots: (state: { root: PaneNodeLike }) => [state.root],
     findPaneContainingTab,
     agentChatTabId: (sessionId: string) => `chat-${sessionId}`,
+    getAgentChatSessionIdsInAllTrees: () => new Set<string>(),
     useWorkspaceStore: {
       getState: () => ({
         addAgentChatTab: addAgentChatTabSpy,
@@ -141,15 +143,18 @@ vi.mock('@/lib/api', async (importActual) => {
 })
 
 import { invoke } from '@tauri-apps/api/core'
+import { fromPersistedSessionSummary, loadSessionIndex } from '@/lib/acp-history-persistence'
 import { logFrontendError } from '@/lib/log-api'
 import {
   _resetEphemeralSessionIdsForTesting,
   _resetInFlightHistoryOpensForTesting,
   _resetInFlightPromotionsForTesting,
   agentReuseKey,
+  isEphemeralAcpSession,
   prepareChatKey,
   useAcpStore
 } from '@/stores/acp-store'
+import { dropEphemeralSessionState } from './helpers'
 
 describe('warm session pool', () => {
   beforeEach(async () => {
@@ -181,7 +186,8 @@ describe('warm session pool', () => {
   async function seedConnectedAgent(
     configId: string,
     agentId: string,
-    cwd = '/work'
+    cwd = '/work',
+    projectId = 'p1'
   ): Promise<void> {
     await useAcpStore.getState().saveAgentConfig({
       id: configId,
@@ -193,7 +199,10 @@ describe('warm session pool', () => {
     useAcpStore.setState((s) => ({
       agents: { ...s.agents, [agentId]: { id: agentId, capabilities: null } },
       agentStatus: { ...s.agentStatus, [agentId]: 'connected' },
-      configToLiveAgent: { ...s.configToLiveAgent, [agentReuseKey(configId, cwd)]: agentId }
+      configToLiveAgent: {
+        ...s.configToLiveAgent,
+        [agentReuseKey(configId, cwd, projectId)]: agentId
+      }
     }))
   }
 
@@ -217,7 +226,8 @@ describe('warm session pool', () => {
       mcpServers: [],
       ephemeral: true,
       promotable: true,
-      projectId: 'p1'
+      projectId: 'p1',
+      commandId: expect.any(String)
     })
   })
 
@@ -290,6 +300,61 @@ describe('warm session pool', () => {
         true
       )
     })
+    await promptDone
+  })
+
+  it('a host index refetch from the promote keeps the title the first prompt gave the chat', async () => {
+    await seedConnectedAgent('cfg-1', 'agent-9')
+    vi.mocked(invoke).mockResolvedValueOnce({ sessionId: 'sess-prep' })
+    useAcpStore.getState().prepareChat('cfg-1', '/work', undefined, 'p1')
+    const key = prepareChatKey('cfg-1', '/work', undefined)
+    await vi.waitFor(() => expect(useAcpStore.getState().preparedSessions[key]).toBe('sess-prep'))
+
+    let releasePromote!: () => void
+    const promoteGate = new Promise<void>((resolve) => {
+      releasePromote = resolve
+    })
+    vi.mocked(invoke).mockImplementation(async (command: string) => {
+      if (command === 'acp_promote_session') await promoteGate
+      if (command === 'acp_send_prompt') return 'end_turn'
+      return undefined
+    })
+
+    await useAcpStore.getState().startChat('cfg-1', '/work', undefined, 'p1')
+    const promptDone = useAcpStore.getState().sendPrompt('sess-prep', 'color survey [ELICIT]')
+    await vi.waitFor(() => {
+      expect(
+        useAcpStore.getState().sessionIndex.find((entry) => entry.id === 'sess-prep')?.title
+      ).toBe('color survey [ELICIT]')
+    })
+
+    // The host registered the promoted session after the renderer's last
+    // index write, and has no title until the first prompt reaches it.
+    vi.mocked(loadSessionIndex).mockResolvedValueOnce([
+      fromPersistedSessionSummary({
+        storageKey: 'opaque',
+        sessionId: 'sess-prep',
+        stableAgentNamespace: 'config:cfg-1',
+        runtimeAgentId: 'agent-9',
+        projectId: 'p1',
+        cwd: '/work',
+        title: null,
+        createdAt: Date.now(),
+        lastActivityAt: Date.now() + 1_000,
+        status: 'active',
+        messageCount: 0,
+        toolCount: 0,
+        lastSeq: 1,
+        resumeEligible: true
+      })
+    ])
+    await useAcpStore.getState().loadSessionIndex()
+
+    expect(
+      useAcpStore.getState().sessionIndex.find((entry) => entry.id === 'sess-prep')?.title
+    ).toBe('color survey [ELICIT]')
+
+    releasePromote()
     await promptDone
   })
 
@@ -429,7 +494,7 @@ describe('warm session pool', () => {
     expect(state.sessions[first]?.agentId).toBe('factory-first')
     expect(state.sessions[first]?.configOptions[0]?.currentValue).toBe('glm-5.3-flash')
     expect(state.sessions['factory-2']?.agentId).toBe('factory-second')
-    expect(state.configToLiveAgent[agentReuseKey(configId, '/work')]).toBe('factory-second')
+    expect(state.configToLiveAgent[agentReuseKey(configId, '/work', 'p1')]).toBe('factory-second')
     expect(Object.entries(state.configToLiveAgent)).toContainEqual([
       expect.stringContaining('factory-first'),
       'factory-first'
@@ -450,8 +515,9 @@ describe('warm session pool', () => {
 
     useAcpStore.getState().detachAgentForNewCredentials(configId, '/work')
     const mapping = useAcpStore.getState().configToLiveAgent
-    expect(mapping[agentReuseKey(configId, '/work')]).toBeUndefined()
-    expect(mapping[`${agentReuseKey(configId, '/work')}\0factory-live`]).toBe('factory-live')
+    const reuseKey = agentReuseKey(configId, '/work', 'p1')
+    expect(mapping[reuseKey]).toBeUndefined()
+    expect(mapping[`${reuseKey}\0factory-live`]).toBe('factory-live')
     expect(useAcpStore.getState().sessions['factory-chat']?.status).not.toBe('closed')
     expect(vi.mocked(invoke)).not.toHaveBeenCalledWith('acp_kill_agent', expect.anything())
   })
@@ -474,7 +540,7 @@ describe('warm session pool', () => {
 
   it('retargetWarmPool keeps pooled sessions for other cwds (project switch-back)', async () => {
     await seedConnectedAgent('cfg-a', 'agent-a', '/work/proj-1')
-    await seedConnectedAgent('cfg-a', 'agent-a', '/work/proj-2')
+    await seedConnectedAgent('cfg-a', 'agent-a', '/work/proj-2', 'p2')
     vi.mocked(invoke).mockResolvedValueOnce({ sessionId: 'sess-1' })
     useAcpStore.getState().prepareChat('cfg-a', '/work/proj-1', undefined, 'p1')
     const key1 = prepareChatKey('cfg-a', '/work/proj-1', undefined)
@@ -493,7 +559,7 @@ describe('warm session pool', () => {
     useAcpStore.getState().prepareChat('cfg-1', '/work', undefined, 'p1')
     const key = prepareChatKey('cfg-1', '/work', undefined)
     await vi.waitFor(() => expect(useAcpStore.getState().preparedSessions[key]).toBe('sess-prep'))
-    useAcpStore.getState()._onAgentDisconnected({ agentId: 'agent-9' })
+    useAcpStore.getState()._onAgentDisconnected({ agentId: 'agent-9', reason: 'crashed' })
     // Pooled warm slot dropped so a later startChat does not promote a dead session.
     expect(useAcpStore.getState().preparedSessions[key]).toBeUndefined()
     // No orphan "Untitled Chat" is persisted to the history index on disconnect.
@@ -539,10 +605,10 @@ describe('warm session pool', () => {
         }
       }
     }))
-    // Renderer-initiated kill (idle shutdown / last tab closed): the backend
-    // emits no lifecycle events for an intentional kill, so the action itself
-    // must retire the slot — a stale one routes launcher option calls to the
-    // dead agent (`unknown agent`).
+    // Renderer-initiated kill (idle shutdown / last tab closed): the action
+    // itself retires the slot without waiting for the host's lifecycle events
+    // — a stale one routes launcher option calls to the dead agent
+    // (`unknown agent`).
     await useAcpStore.getState().killAgent('agent-9')
     expect(invoke).toHaveBeenCalledWith('acp_kill_agent', { agentId: 'agent-9' })
     expect(useAcpStore.getState().preparedSessions[key]).toBeUndefined()
@@ -568,7 +634,8 @@ describe('warm session pool', () => {
       preparedSessions: { ...s.preparedSessions, [keyOther]: 'sess-other' }
     }))
     await useAcpStore.getState().closeSession('sess-prep')
-    expect(useAcpStore.getState().sessions['sess-prep']?.status).toBe('closed')
+    expect(useAcpStore.getState().sessions['sess-prep']).toBeUndefined()
+    expect(isEphemeralAcpSession('sess-prep')).toBe(false)
     expect(useAcpStore.getState().preparedSessions[key]).toBeUndefined()
     // Unrelated slots survive — only the closed session's slot is dropped.
     expect(useAcpStore.getState().preparedSessions[keyOther]).toBe('sess-other')
@@ -600,9 +667,100 @@ describe('warm session pool', () => {
         ]
       }
     }))
-    useAcpStore.getState()._onSessionClosed({ agentId: 'agent-9', sessionId: 'sess-prep' })
+    useAcpStore
+      .getState()
+      ._onSessionClosed({ agentId: 'agent-9', sessionId: 'sess-prep', reason: 'closed' })
     expect(useAcpStore.getState().preparedSessions[key]).toBeUndefined()
     // Content-bearing session is persisted/closed, not deleted outright.
     expect(useAcpStore.getState().sessions['sess-prep']?.status).toBe('closed')
+  })
+
+  it('dropping an ephemeral session also drops its slash-command seq', () => {
+    const init = [{ name: 'init', description: 'Init' }]
+    const state = {
+      ...useAcpStore.getState(),
+      commands: { 'sess-prep': init, other: init },
+      commandsSeq: {
+        'sess-prep': { logEpoch: 'e', seq: 4 },
+        other: { logEpoch: 'e', seq: 2 }
+      }
+    }
+
+    const next = dropEphemeralSessionState(state, 'sess-prep')
+
+    expect(next.commands).toEqual({ other: init })
+    expect(next.commandsSeq).toEqual({ other: { logEpoch: 'e', seq: 2 } })
+  })
+
+  describe('warm slot lifecycle', () => {
+    const key = prepareChatKey('cfg-1', '/work', undefined)
+
+    async function prepareWarmSession(sessionId = 'sess-prep'): Promise<void> {
+      await seedConnectedAgent('cfg-1', 'agent-9')
+      vi.mocked(invoke).mockImplementation(async (command: string) =>
+        command === 'acp_new_session' ? { sessionId } : undefined
+      )
+      useAcpStore.getState().prepareChat('cfg-1', '/work', undefined, 'p1')
+      await vi.waitFor(() => expect(useAcpStore.getState().preparedSessions[key]).toBe(sessionId))
+    }
+
+    it('cancelPreparedChat disposes the warm session instead of the capability-gated close', async () => {
+      await prepareWarmSession()
+      useAcpStore.getState().cancelPreparedChat(key)
+      await vi.waitFor(() => expect(useAcpStore.getState().sessions['sess-prep']).toBeUndefined())
+      expect(invoke).toHaveBeenCalledWith('acp_dispose_ephemeral_session', {
+        agentId: 'agent-9',
+        sessionId: 'sess-prep',
+        commandId: expect.any(String)
+      })
+      expect(invoke).not.toHaveBeenCalledWith('acp_close_session', expect.anything())
+      expect(isEphemeralAcpSession('sess-prep')).toBe(false)
+    })
+
+    it('a crash of the warm agent drops its slot', async () => {
+      await prepareWarmSession()
+      useAcpStore.getState()._onAgentCrashed({ agentId: 'agent-9', message: 'gone' })
+      expect(useAcpStore.getState().preparedSessions[key]).toBeUndefined()
+    })
+
+    it('a slot on an agent in error cannot be claimed and is dropped', async () => {
+      await prepareWarmSession()
+      useAcpStore.getState()._onAgentError({ agentId: 'agent-9', message: 'wedged' })
+      expect(useAcpStore.getState().claimPreparedChat(key, 'p1')).toBeNull()
+      expect(useAcpStore.getState().preparedSessions[key]).toBeUndefined()
+      expect(useAcpStore.getState().sessionIndex.some((e) => e.id === 'sess-prep')).toBe(false)
+    })
+
+    it('a slot pointing at a missing session does not block prepareChat from reseeding', async () => {
+      await seedConnectedAgent('cfg-1', 'agent-9')
+      useAcpStore.setState({ preparedSessions: { [key]: 'sess-gone' } })
+      vi.mocked(invoke).mockImplementation(async (command: string) =>
+        command === 'acp_new_session' ? { sessionId: 'sess-new' } : undefined
+      )
+      useAcpStore.getState().prepareChat('cfg-1', '/work', undefined, 'p1')
+      await vi.waitFor(() => expect(useAcpStore.getState().preparedSessions[key]).toBe('sess-new'))
+    })
+
+    it('deleteHistorySession drops the slot of the deleted session', async () => {
+      await prepareWarmSession()
+      await useAcpStore.getState().deleteHistorySession('sess-prep')
+      expect(useAcpStore.getState().preparedSessions[key]).toBeUndefined()
+    })
+
+    it('a failed promotion re-marks the session ephemeral through a store update', async () => {
+      await prepareWarmSession()
+      vi.mocked(invoke).mockImplementation(async (command: string) => {
+        if (command === 'acp_promote_session') throw new Error('promote rejected')
+        return undefined
+      })
+      const seen: boolean[] = []
+      const unsubscribe = useAcpStore.subscribe(() => {
+        seen.push(isEphemeralAcpSession('sess-prep'))
+      })
+      useAcpStore.getState().claimPreparedChat(key, 'p1')
+      await vi.waitFor(() => expect(toastError).toHaveBeenCalled())
+      unsubscribe()
+      expect(seen.at(-1)).toBe(true)
+    })
   })
 })

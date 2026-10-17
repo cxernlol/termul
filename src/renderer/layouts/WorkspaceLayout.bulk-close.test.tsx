@@ -25,12 +25,12 @@ const {
   mockUnwatchDirectory,
   mockKeyboardOnShortcut,
   mockUpdatePanelVisibility,
-  mockWaitForPendingAppSettingsPersistence,
   mockWaitForPendingSessionIndexWrite,
   mockFlushSessionHistory,
   mockToastError,
+  mockToastWarning,
   mockListen,
-  mockRequestCloseAgentChat,
+  mockCloseAgentChat,
   mockLogFrontendError,
   mockTerminalKill,
   confirmTerminalCloseRef,
@@ -78,6 +78,8 @@ const {
   },
   mockWorkspaceStoreState: {
     activePaneId: 'pane-root',
+    activeProjectId: '',
+    parkedTrees: {},
     agentLauncherPaneId: null as string | null,
     root: {
       type: 'leaf' as const,
@@ -95,6 +97,7 @@ const {
   },
   mockFileExplorerStoreState: {
     setRootPath: vi.fn(),
+    setWorktreeRoot: vi.fn(),
     setRootLoadError: vi.fn(),
     toggleVisibility: vi.fn()
   },
@@ -109,12 +112,12 @@ const {
   mockUnwatchDirectory: vi.fn(async () => ({ success: true })),
   mockKeyboardOnShortcut: vi.fn(() => vi.fn()),
   mockUpdatePanelVisibility: vi.fn(async () => undefined),
-  mockWaitForPendingAppSettingsPersistence: vi.fn(async () => undefined),
   mockWaitForPendingSessionIndexWrite: vi.fn(async () => undefined),
   mockFlushSessionHistory: vi.fn(async () => undefined),
   mockToastError: vi.fn(),
+  mockToastWarning: vi.fn(),
   mockListen: vi.fn(async () => vi.fn()),
-  mockRequestCloseAgentChat: vi.fn((_sessionId: string, closeTab: () => void) => closeTab()),
+  mockCloseAgentChat: vi.fn((_sessionId: string, closeTab: () => void) => closeTab()),
   mockLogFrontendError: vi.fn(async () => undefined),
   mockTerminalKill: vi.fn(async () => ({ success: true })),
   confirmTerminalCloseRef: { current: true },
@@ -130,6 +133,10 @@ vi.mock('@/stores/connection-status-store', async (importOriginal) => {
   const actual = await importOriginal<typeof connectionStatusStoreModule>()
   return { ...actual, wireConnectionStatusTracking: mockWireConnectionStatusTracking }
 })
+
+// The shell resolves its working copy through the (heavily mocked) stores;
+// these suites exercise layout behaviour, so resolve to the project folder.
+vi.mock('@/hooks/use-active-working-copy', () => ({ useActiveWorkingCopy: () => null }))
 
 vi.mock('@/stores/project-store', () => ({
   useProjectsLoaded: () => true,
@@ -199,6 +206,10 @@ vi.mock('@/stores/browser-session-store', () => ({
   )
 }))
 
+// The shell unread tracker reads the real pane tree and acp store; this suite
+// mocks the workspace store wholesale and does not exercise it.
+vi.mock('@/hooks/use-shell-unread-tracker', () => ({ useShellUnreadTracker: () => {} }))
+
 vi.mock('@/stores/workspace-store', () => {
   const useWorkspaceStore = (selector?: (s: typeof mockWorkspaceStoreState) => unknown) =>
     selector ? selector(mockWorkspaceStoreState) : mockWorkspaceStoreState
@@ -244,10 +255,11 @@ vi.mock('@/stores/keyboard-shortcuts-store', () => ({
 }))
 
 vi.mock('@/stores/app-settings-store', () => ({
+  useAppSettingsStore: (selector: (state: Record<string, unknown>) => unknown) =>
+    selector({ settings: { shellLayout: 'classic' }, isLoaded: true }),
   useTerminalFontSize: () => 14,
   useUiZoomLevel: () => 1,
   useDefaultShell: () => 'bash',
-  useMaxTerminalsPerProject: () => 10,
   useConfirmTerminalClose: () => confirmTerminalCloseRef.current,
   useColorTheme: () => 'termul',
   useAppearanceMode: () => 'dark'
@@ -276,8 +288,7 @@ vi.mock('@/hooks/use-command-history', () => ({
 vi.mock('@/hooks/use-app-settings', () => ({
   useUpdateAppSetting: () => vi.fn(),
   useUpdateAppSettings: () => vi.fn(),
-  useUpdatePanelVisibility: () => mockUpdatePanelVisibility,
-  waitForPendingAppSettingsPersistence: mockWaitForPendingAppSettingsPersistence
+  useUpdatePanelVisibility: () => mockUpdatePanelVisibility
 }))
 
 vi.mock('@/lib/acp-history-persistence', () => ({
@@ -298,18 +309,22 @@ vi.mock('@/hooks/use-editor-persistence', () => ({
 }))
 
 // P17: shared canonical mock shape — identical across the WorkspaceLayout suites.
-vi.mock('@/hooks/use-workspace-manifest-sync', () => ({
-  useWorkspaceManifestSync: vi.fn(),
-  loadWorkspaceManifest: vi.fn().mockResolvedValue(false),
-  resolveManifestConflict: vi.fn().mockResolvedValue(undefined),
-  performManifestWrite: vi.fn().mockResolvedValue(undefined)
-}))
-vi.mock('@/components/workspace/WorkspaceConflictBanner', () => ({
-  WorkspaceConflictBanner: () => <div data-testid="workspace-conflict-banner" />
-}))
 
-vi.mock('@/components/ProjectSidebar', () => ({
-  ProjectSidebar: () => <div data-testid="project-sidebar" />
+// The desktop frame is stubbed to its two slots: these suites exercise the
+// close flows wired in WorkspaceLayout, not the Rail / Side panel chrome.
+vi.mock('@/components/shell/ShellFrame', () => ({
+  ShellFrame: ({
+    workspaceMain,
+    appModals
+  }: {
+    workspaceMain: React.ReactNode
+    appModals: React.ReactNode
+  }) => (
+    <div data-testid="shell-frame">
+      {workspaceMain}
+      {appModals}
+    </div>
+  )
 }))
 
 vi.mock('@/components/workspace/PaneRenderer', () => ({
@@ -322,20 +337,8 @@ vi.mock('@/components/workspace/PaneRenderer', () => ({
   }
 }))
 
-vi.mock('@/components/file-explorer/FileExplorer', () => ({
-  FileExplorer: () => <div data-testid="file-explorer" />
-}))
-
 vi.mock('@/components/StatusBar', () => ({
   StatusBar: () => <div data-testid="status-bar" />
-}))
-
-vi.mock('@/components/TitleBar', () => ({
-  TitleBar: () => <div data-testid="title-bar" />
-}))
-
-vi.mock('@/components/ActivityRail', () => ({
-  ActivityRail: () => <div data-testid="activity-rail" />
 }))
 
 vi.mock('@/components/NewProjectModal', () => ({
@@ -358,9 +361,8 @@ vi.mock('@/components/CommandHistoryModal', () => ({
   CommandHistoryModal: () => null
 }))
 
-vi.mock('@/hooks/use-agent-idle-shutdown', () => ({
-  useAgentIdleShutdown: vi.fn(),
-  requestCloseAgentChat: mockRequestCloseAgentChat
+vi.mock('@/lib/agent-chat-close', () => ({
+  closeAgentChat: mockCloseAgentChat
 }))
 
 vi.mock('@/lib/browser-api', () => ({
@@ -452,6 +454,7 @@ vi.mock('@/lib/api', () => ({
 vi.mock('sonner', () => ({
   toast: {
     error: mockToastError,
+    warning: mockToastWarning,
     success: vi.fn()
   }
 }))
@@ -531,11 +534,10 @@ describe('WorkspaceLayout aggregate bulk close', () => {
     mockEditorStoreState.saveAllDirty.mockResolvedValue(undefined)
     mockEditorStoreState.saveFile.mockResolvedValue(true)
     mockEditorStoreState.closeFileIfIdle.mockReturnValue(true)
-    mockRequestCloseAgentChat.mockImplementation((_s: string, closeTab: () => void) => closeTab())
+    mockCloseAgentChat.mockImplementation((_s: string, closeTab: () => void) => closeTab())
     mockTerminalKill.mockResolvedValue({ success: true })
     mockFlushPendingWrites.mockResolvedValue({ success: true, data: undefined })
     mockUpdatePanelVisibility.mockResolvedValue(undefined)
-    mockWaitForPendingAppSettingsPersistence.mockResolvedValue(undefined)
     mockWaitForPendingSessionIndexWrite.mockResolvedValue(undefined)
     mockFlushSessionHistory.mockResolvedValue(undefined)
     mockCloseRequested.mockImplementation(() => vi.fn())
@@ -627,7 +629,7 @@ describe('WorkspaceLayout aggregate bulk close', () => {
 
     expect(mockBrowserSessionState.removeTab).toHaveBeenCalledWith('btab-1')
     expect(mockWorkspaceStoreState.removeTab).toHaveBeenCalledWith('browser-1')
-    expect(mockRequestCloseAgentChat).toHaveBeenCalledWith('session-1', expect.any(Function))
+    expect(mockCloseAgentChat).toHaveBeenCalledWith('session-1', expect.any(Function))
     expect(mockWorkspaceStoreState.removeTab).toHaveBeenCalledWith('ac-1')
   })
 
@@ -691,6 +693,39 @@ describe('WorkspaceLayout aggregate bulk close', () => {
     expect(mockWorkspaceStoreState.removeTab).toHaveBeenCalledWith('edit-/b.ts')
     expect(mockWorkspaceStoreState.removeTab).toHaveBeenCalledWith('edit-/c.ts')
     expect(mockWorkspaceStoreState.removeTab).toHaveBeenCalledWith('git-1')
+    expect(screen.queryByRole('dialog', { name: 'Close Tabs' })).not.toBeInTheDocument()
+  })
+
+  it('Save & Close on a draft-conflicted file reveals it and closes nothing', async () => {
+    mockEditorStoreState.openFiles = new Map([
+      [
+        '/a.ts',
+        {
+          isDirty: false,
+          draftConflict: { draftContent: 'd', draftSavedAt: 1 },
+          operationStatus: 'idle'
+        }
+      ],
+      ['/b.ts', { isDirty: true, operationStatus: 'idle' }]
+    ])
+    const tabs = [editorTab('/a.ts'), editorTab('/b.ts'), gitTab('git-1')]
+    seedTabs(...tabs)
+
+    renderLayout()
+    await waitFor(() => expect(paneRendererPropsRef.current?.onCloseTabs).toBeTypeOf('function'))
+    closeTabsNow(tabs)
+
+    expect(await screen.findByRole('dialog', { name: 'Close Tabs' })).toBeInTheDocument()
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Save & Close' }))
+    })
+
+    expect(mockWorkspaceStoreState.setActiveTab).toHaveBeenCalledWith('pane-root', 'edit-/a.ts')
+    expect(mockToastWarning).toHaveBeenCalledWith('Resolve the draft conflict first')
+    expect(mockEditorStoreState.saveFile).not.toHaveBeenCalled()
+    expect(mockEditorStoreState.closeFileIfIdle).not.toHaveBeenCalled()
+    expect(mockWorkspaceStoreState.removeTab).not.toHaveBeenCalled()
     expect(screen.queryByRole('dialog', { name: 'Close Tabs' })).not.toBeInTheDocument()
   })
 

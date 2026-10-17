@@ -47,8 +47,11 @@ export interface FileSearchResult {
  * See ADR 0003.
  */
 export interface SearchFileHit {
+  /** Relative to the search root, forward slashes, on every transport. */
   path: string
   ignored: boolean
+  /** Absent means `'file'`. `'dir'` hit paths have no trailing slash. */
+  kind?: 'file' | 'dir'
 }
 
 export interface FileSearchResponse {

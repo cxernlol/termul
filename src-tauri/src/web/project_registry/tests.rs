@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::Arc;
 
 fn sample(id: &str, path: Option<&str>, archived: bool) -> ProjectSummary {
     ProjectSummary {
@@ -104,35 +105,18 @@ fn upsert_recomputes_default_and_clears_archived_default() {
 }
 
 #[test]
-fn find_path_resolves_known_with_cwd() {
-    let reg = ProjectRegistry::new();
-    reg.set(
-        vec![sample("p-1", Some("/a"), false), sample("p-2", None, false)],
-        Some("p-1".to_string()),
-    );
-    assert_eq!(reg.find_path("p-1").as_deref(), Some("/a"));
-    // No cwd → None (cannot switch).
-    assert_eq!(reg.find_path("p-2"), None);
-    // Unknown id → None.
-    assert_eq!(reg.find_path("missing"), None);
-    // Whitespace-only path → None.
-    reg.set(vec![sample("p-x", Some("   "), false)], None);
-    assert_eq!(reg.find_path("p-x"), None);
-}
-
-#[test]
-fn clear_empties_the_mirror() {
+fn replacing_with_an_empty_list_empties_the_registry() {
     let reg = ProjectRegistry::new();
     reg.set(
         vec![sample("p-1", Some("/a"), false)],
         Some("p-1".to_string()),
     );
     assert!(!reg.is_empty());
-    reg.clear();
+    reg.set(Vec::new(), None);
     assert!(reg.is_empty());
     assert_eq!(reg.snapshot().default_project_id, None);
-    // Clear is idempotent.
-    reg.clear();
+    // Idempotent.
+    reg.set(Vec::new(), None);
     assert!(reg.is_empty());
 }
 
@@ -152,20 +136,6 @@ fn project_summary_serializes_camel_case_with_optional_path() {
     // skip_serializing_if: path omitted (not null) when None.
     assert!(v2.get("path").is_none(), "path must be omitted, not null");
     assert_eq!(v2["isArchived"], true);
-}
-
-#[test]
-fn projects_changed_payload_omits_none_default() {
-    let p = ProjectsChangedPayload {
-        default_project_id: None,
-    };
-    let v = serde_json::to_value(&p).unwrap();
-    assert!(v.get("defaultProjectId").is_none());
-    let p2 = ProjectsChangedPayload {
-        default_project_id: Some("p-3".to_string()),
-    };
-    let v2 = serde_json::to_value(&p2).unwrap();
-    assert_eq!(v2["defaultProjectId"], "p-3");
 }
 
 // T5.8 — VfsRoot -> ProjectSummary mapping round-trips identity/display
@@ -189,7 +159,7 @@ fn vfs_root_maps_to_project_summary_redacting_env() {
     assert_eq!(summary.color, "blue");
     assert_eq!(summary.path.as_deref(), Some("/some/cwd"));
     assert!(!summary.is_archived);
-    // is_default is left false per-entry; seed_from_file derives it.
+    // is_default is left false per-entry; the registry derives it from the default id.
     assert!(!summary.is_default);
 
     // Redact-by-omission: the wire shape carries NO env-var field.
@@ -199,7 +169,7 @@ fn vfs_root_maps_to_project_summary_redacting_env() {
         "ProjectSummary must not carry env-var values"
     );
 
-    // An empty-path VfsRoot surfaces path: None (mirrors find_path's skip).
+    // An empty-path VfsRoot surfaces path: None (an empty cwd is not usable).
     let empty_root = VfsRoot {
         id: "p-empty".to_string(),
         name: "Empty".to_string(),
@@ -260,29 +230,38 @@ fn set_default_project_rejects_archived_and_pathless() {
 
 #[test]
 fn switch_context_rejects_archived_and_carries_private_mcp() {
-    use agent_client_protocol::schema::v1::{McpServer, McpServerStdio};
+    let dir = tempdir_like("mcp-context");
+    let live_dir = dir.join("live");
+    std::fs::create_dir_all(&live_dir).unwrap();
+    let file = dir.join("projects.json");
+    std::fs::write(
+        &file,
+        serde_json::json!({
+            "schemaVersion": 4,
+            "defaultProjectId": "live",
+            "projects": [
+                { "id": "live", "name": "Live", "path": live_dir, "color": "blue", "isArchived": false,
+                  "mcpServers": [{ "name": "project-mcp", "command": "mcp-bin", "args": [], "env": [] }] },
+                { "id": "old", "name": "Old", "path": live_dir, "color": "blue", "isArchived": true }
+            ]
+        })
+        .to_string(),
+    )
+    .unwrap();
 
-    let reg = ProjectRegistry::new();
-    reg.set(
-        vec![
-            sample("live", Some("/a"), false),
-            sample("old", Some("/b"), true),
-        ],
-        Some("live".to_string()),
-    );
-    reg.mcp_servers.lock().insert(
-        "live".to_string(),
-        vec![McpServer::Stdio(McpServerStdio::new(
-            "project-mcp",
-            std::path::PathBuf::from("mcp-bin"),
-        ))],
-    );
+    let reg = ProjectRegistry::open_durable(&file, RootCheck::Strict).expect("open");
     assert!(reg.switch_context("old").is_none());
     let context = reg.switch_context("live").expect("live context");
-    assert_eq!(context.cwd, "/a");
+    assert_eq!(context.cwd, live_dir.canonicalize().unwrap().to_string_lossy());
     assert_eq!(context.mcp_servers.len(), 1);
     let public = serde_json::to_value(reg.snapshot()).expect("public snapshot");
     assert!(public["projects"][0].get("mcpServers").is_none());
+
+    // A commit rewrites the file without losing the project's MCP config.
+    reg.commit_update("live", Some("Renamed".to_string()), None, None, None).unwrap();
+    let reopened = ProjectRegistry::open_durable(&file, RootCheck::Strict).expect("reopen");
+    assert_eq!(reopened.switch_context("live").unwrap().mcp_servers.len(), 1);
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// CAP-2 attribution: `find_by_path` resolves an exact project path, and
@@ -353,7 +332,7 @@ fn find_by_path_picks_longest_ancestor_for_nested_projects() {
     );
 }
 
-// ---- CAP-1: live project_root rebind edge cases ----
+// ---- Registry-only boundary: cached canonical roots ----
 
 fn tempdir_like(label: &str) -> PathBuf {
     let nanos = std::time::SystemTime::now()
@@ -361,127 +340,228 @@ fn tempdir_like(label: &str) -> PathBuf {
         .map(|d| d.as_nanos())
         .unwrap_or(0);
     let p = std::env::temp_dir().join(format!(
-        "termul-reg-rebind-{label}-{}-{nanos}",
+        "termul-reg-boundary-{label}-{}-{nanos}",
         std::process::id()
     ));
     std::fs::create_dir_all(&p).expect("create tempdir_like");
-    p
+    p.canonicalize().expect("canonicalize tempdir_like")
 }
 
-/// Row: "No default / empty path → warn! + keep the prior boundary" and
-/// "No handle registered → no-op". With no handle registered, `set` on a
-/// registry with no default must be a silent no-op (the start path falls
-/// back to home separately; the rebind never widens mid-run).
-#[test]
-fn rebind_is_noop_when_no_handle_registered() {
-    let reg = ProjectRegistry::new();
-    // No handle set — set() must not panic and must not rebind anything.
-    reg.set(vec![sample("p-1", Some("/a"), false)], None);
-    // No default → default_project_path is None.
-    assert!(reg.default_project_path().is_none());
+fn path_str(p: &Path) -> &str {
+    p.to_str().expect("utf-8 path")
 }
 
-/// Row: empty registry / no default at start. The rebind, when a handle IS
-/// registered but the registry has no default, must keep the prior boundary
-/// (do not widen to home mid-run; only the START path falls back to home).
+/// The boundary is "inside ANY registered, non-archived project": both roots
+/// admit, the default pointer is irrelevant, an outside path is refused.
 #[test]
-fn rebind_keeps_prior_boundary_when_no_default() {
+fn boundary_admits_every_registered_root_regardless_of_default() {
+    let (a, b) = (tempdir_like("a"), tempdir_like("b"));
+    let outside = tempdir_like("out");
     let reg = ProjectRegistry::new();
-    let prior = PathBuf::from("/prior/boundary");
-    let handle: Arc<RwLock<PathBuf>> = Arc::new(RwLock::new(prior.clone()));
-    reg.set_project_root_handle(Arc::clone(&handle));
-    // set() with no default → rebind skips (warns, keeps prior).
-    reg.set(vec![sample("p-1", Some("/a"), false)], None);
-    assert_eq!(
-        *handle.read(),
-        prior,
-        "rebind with no default must keep the prior boundary, not widen"
-    );
-}
-
-/// Row: canonicalization failure (deleted/moved default path) keeps the
-/// prior boundary — a transient failure does not widen the jail.
-#[test]
-fn rebind_keeps_prior_boundary_when_default_path_unresolvable() {
-    let reg = ProjectRegistry::new();
-    let prior = PathBuf::from("/prior/boundary");
-    let handle: Arc<RwLock<PathBuf>> = Arc::new(RwLock::new(prior.clone()));
-    reg.set_project_root_handle(Arc::clone(&handle));
-    // A default project whose path does NOT exist on disk — canonicalize
-    // fails, so the rebind must keep the prior boundary.
-    reg.set(
-        vec![sample("p-ghost", Some("/this/path/does/not/exist"), false)],
-        Some("p-ghost".to_string()),
-    );
-    assert_eq!(
-        *handle.read(),
-        prior,
-        "rebind on an unresolvable default path must keep the prior boundary"
-    );
-}
-
-/// Row: success path — rebind writes the canonical default path to the
-/// handle so the containment boundary follows the active project.
-#[test]
-fn rebind_writes_canonical_default_path_to_handle() {
-    let dir = tempdir_like("ok");
-    let reg = ProjectRegistry::new();
-    let prior = PathBuf::from("/prior/boundary");
-    let handle: Arc<RwLock<PathBuf>> = Arc::new(RwLock::new(prior));
-    reg.set_project_root_handle(Arc::clone(&handle));
-    reg.set(
-        vec![sample("p-live", Some(dir.to_str().unwrap()), false)],
-        Some("p-live".to_string()),
-    );
-    let bound = handle.read().clone();
-    assert!(
-        bound.is_absolute(),
-        "rebind must write a canonical absolute path, got: {}",
-        bound.display()
-    );
-    // The canonical form must resolve to the same real directory (a second
-    // canonicalize is idempotent).
-    let again = bound.canonicalize().expect("canonicalize again");
-    assert_eq!(bound, again, "rebind must write the canonical form");
-    assert_ne!(
-        bound,
-        PathBuf::from("/prior/boundary"),
-        "rebind must replace the prior boundary with the active project's path"
-    );
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-/// `set_default_project` triggers a rebind too — switching the default
-/// updates the handle to the new default's canonical path.
-#[test]
-fn set_default_project_rebinds_to_new_default_path() {
-    let dir_a = tempdir_like("a");
-    let dir_b = tempdir_like("b");
-    let reg = ProjectRegistry::new();
-    let handle: Arc<RwLock<PathBuf>> = Arc::new(RwLock::new(PathBuf::from("/prior")));
-    reg.set_project_root_handle(Arc::clone(&handle));
     reg.set(
         vec![
-            sample("p-a", Some(dir_a.to_str().unwrap()), false),
-            sample("p-b", Some(dir_b.to_str().unwrap()), false),
+            sample("p-a", Some(path_str(&a)), false),
+            sample("p-b", Some(path_str(&b)), false),
         ],
         Some("p-a".to_string()),
     );
-    let first = handle.read().clone();
-    assert_eq!(
-        first.canonicalize().expect("canonicalize a"),
-        first,
-        "initial rebind binds to p-a's canonical path"
-    );
-    // Switch default to p-b → rebind updates the handle.
+    assert!(reg.is_within_any_registered_root(&a.join("src/lib.rs")));
+    assert!(reg.is_within_any_registered_root(&b));
+    assert!(!reg.is_within_any_registered_root(&outside));
+
     assert!(reg.set_default_project("p-b"));
-    let second = handle.read().clone();
-    assert_ne!(second, first, "switching default must rebind the boundary");
-    assert_eq!(
-        second.canonicalize().expect("canonicalize b"),
-        second,
-        "rebind after switch writes p-b's canonical path"
+    assert!(
+        reg.is_within_any_registered_root(&a),
+        "moving the default must not move the boundary"
     );
-    let _ = std::fs::remove_dir_all(&dir_a);
-    let _ = std::fs::remove_dir_all(&dir_b);
+    for d in [a, b, outside] {
+        let _ = std::fs::remove_dir_all(d);
+    }
+}
+
+/// Every mutator invalidates the cached roots: archive, remove, path change,
+/// upsert of a new project, clear.
+#[test]
+fn boundary_cache_follows_set_upsert_update_remove_clear() {
+    let (a, b) = (tempdir_like("ca"), tempdir_like("cb"));
+    let reg = ProjectRegistry::new();
+    assert!(
+        !reg.is_within_any_registered_root(&a),
+        "empty registry admits nothing"
+    );
+
+    reg.upsert(sample("p-a", Some(path_str(&a)), false));
+    assert!(reg.is_within_any_registered_root(&a));
+    assert_eq!(reg.canonical_root("p-a").as_deref(), Some(a.as_path()));
+
+    // Path change via upsert re-points the cached root.
+    reg.upsert(sample("p-a", Some(path_str(&b)), false));
+    assert!(!reg.is_within_any_registered_root(&a));
+    assert!(reg.is_within_any_registered_root(&b));
+
+    // Archive drops it (and canonical_root answers None); un-archive restores.
+    assert!(reg.update("p-a", None, None, Some(true)));
+    assert!(!reg.is_within_any_registered_root(&b));
+    assert_eq!(reg.canonical_root("p-a"), None);
+    assert!(reg.update("p-a", None, None, Some(false)));
+    assert!(reg.is_within_any_registered_root(&b));
+
+    assert!(reg.remove("p-a"));
+    assert!(!reg.is_within_any_registered_root(&b));
+
+    reg.set(vec![sample("p-b", Some(path_str(&a)), false)], None);
+    assert!(reg.is_within_any_registered_root(&a));
+    reg.set(Vec::new(), None);
+    assert!(!reg.is_within_any_registered_root(&a));
+    for d in [a, b] {
+        let _ = std::fs::remove_dir_all(d);
+    }
+}
+
+/// A root that does not exist when registered is retried lazily, so creating
+/// the directory later admits it without a registry mutation; an unresolvable
+/// root never matches (and has no canonical root).
+#[test]
+fn unresolvable_root_is_retried_lazily() {
+    let parent = tempdir_like("lazy");
+    let later = parent.join("later");
+    let reg = ProjectRegistry::new();
+    reg.set(vec![sample("p-later", Some(path_str(&later)), false)], None);
+    assert!(!reg.is_within_any_registered_root(&later));
+    assert_eq!(reg.canonical_root("p-later"), None);
+
+    std::fs::create_dir_all(&later).expect("create later");
+    let canonical = later.canonicalize().expect("canonicalize later");
+    assert!(reg.is_within_any_registered_root(&canonical.join("x")));
+    assert_eq!(reg.canonical_root("p-later"), Some(canonical));
+    let _ = std::fs::remove_dir_all(&parent);
+}
+
+/// The empty-registry seed registers exactly one default project and never
+/// overrides an existing registry.
+#[test]
+fn seed_root_registers_one_default_project_only_when_empty() {
+    let dir = tempdir_like("seed");
+    let reg = ProjectRegistry::new();
+    assert!(reg.seed_root_if_no_usable_project(&dir));
+    let snap = reg.snapshot();
+    assert_eq!(snap.projects.len(), 1);
+    assert_eq!(snap.default_project_id.as_deref(), Some(SEEDED_PROJECT_ID));
+    assert_eq!(snap.projects[0].path.as_deref(), Some(path_str(&dir)));
+    assert!(reg.is_within_any_registered_root(&dir));
+    assert_eq!(reg.canonical_root(SEEDED_PROJECT_ID), dir.canonicalize().ok());
+
+    let other = tempdir_like("seed2");
+    assert!(
+        !reg.seed_root_if_no_usable_project(&other),
+        "non-empty registry is left alone"
+    );
+    assert_eq!(reg.len(), 1);
+    for d in [dir, other] {
+        let _ = std::fs::remove_dir_all(d);
+    }
+}
+
+/// A root deleted AFTER the last cache rebuild stops matching (and stops
+/// resolving) at once, instead of staying admitted from a stale cache.
+#[test]
+fn root_deleted_after_caching_stops_matching() {
+    let dir = tempdir_like("stale");
+    let reg = ProjectRegistry::new();
+    reg.set(vec![sample("p-1", Some(path_str(&dir)), false)], None);
+    assert!(reg.is_within_any_registered_root(&dir));
+    assert_eq!(reg.canonical_root("p-1").as_deref(), Some(dir.as_path()));
+
+    std::fs::remove_dir_all(&dir).expect("remove project dir");
+    assert!(!reg.is_within_any_registered_root(&dir.join("src")));
+    assert_eq!(reg.canonical_root("p-1"), None);
+}
+
+/// A seed racing a renderer sync never overwrites the synced list: whichever
+/// order they land in, the synced projects win.
+#[test]
+fn seed_never_overwrites_a_concurrent_set() {
+    let dir = tempdir_like("race");
+    for _ in 0..50 {
+        let reg = Arc::new(ProjectRegistry::new());
+        let seeder = {
+            let (reg, dir) = (Arc::clone(&reg), dir.clone());
+            std::thread::spawn(move || reg.seed_root_if_no_usable_project(&dir))
+        };
+        reg.set(
+            vec![sample("synced", Some(path_str(&dir)), false)],
+            Some("synced".to_string()),
+        );
+        seeder.join().expect("seeder thread");
+        let snap = reg.snapshot();
+        assert_eq!(snap.projects.len(), 1);
+        assert_eq!(snap.projects[0].id, "synced");
+        assert_eq!(snap.default_project_id.as_deref(), Some("synced"));
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A real usable project retires the synthetic seed and takes over as default;
+/// the seed is also (re)planted when only archived/pathless projects exist.
+#[test]
+fn seed_is_retired_by_a_real_project_and_planted_when_none_is_usable() {
+    let (seed_dir, real_dir) = (tempdir_like("sd"), tempdir_like("rl"));
+    let reg = ProjectRegistry::new();
+    reg.set(
+        vec![
+            sample("arch", Some(path_str(&real_dir)), true),
+            sample("nopath", None, false),
+        ],
+        None,
+    );
+    assert!(
+        reg.seed_root_if_no_usable_project(&seed_dir),
+        "no usable project ⇒ seed"
+    );
+    assert_eq!(reg.len(), 3);
+    assert!(reg.is_within_any_registered_root(&seed_dir));
+    assert!(
+        !reg.is_within_any_registered_root(&real_dir),
+        "archived project stays outside"
+    );
+
+    reg.upsert(sample("real", Some(path_str(&real_dir)), false));
+    let snap = reg.snapshot();
+    assert!(
+        snap.projects.iter().all(|p| p.id != SEEDED_PROJECT_ID),
+        "seed retired"
+    );
+    assert_eq!(snap.default_project_id.as_deref(), Some("real"));
+    assert!(reg.is_within_any_registered_root(&real_dir));
+    assert!(
+        !reg.is_within_any_registered_root(&seed_dir),
+        "retired seed leaves the boundary"
+    );
+    for d in [seed_dir, real_dir] {
+        let _ = std::fs::remove_dir_all(d);
+    }
+}
+
+/// A read never uses a cache that is behind a mutation: even when the cache
+/// rebuild has not run yet (mutator released the lock, rebuild pending), an
+/// archived project is already outside the boundary.
+#[test]
+fn boundary_read_rebuilds_a_cache_that_is_behind_a_mutation() {
+    let dir = tempdir_like("epoch");
+    let reg = ProjectRegistry::new();
+    reg.set(vec![sample("p-1", Some(path_str(&dir)), false)], None);
+    assert!(reg.is_within_any_registered_root(&dir));
+
+    // Simulate the window: the mutation landed, its rebuild has not.
+    {
+        let mut g = reg.inner.lock();
+        g.projects[0].is_archived = true;
+        reg.epoch.fetch_add(1, Ordering::AcqRel);
+    }
+    assert!(
+        !reg.is_within_any_registered_root(&dir),
+        "archived project must not be admitted"
+    );
+    assert_eq!(reg.canonical_root("p-1"), None);
+    let _ = std::fs::remove_dir_all(&dir);
 }

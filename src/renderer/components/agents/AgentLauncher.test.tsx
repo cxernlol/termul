@@ -15,6 +15,7 @@ import {
 } from '@/components/chat/composer/chat-composer-test-helpers'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import type { StoredAgentConfig } from '@/lib/acp-agents-persistence'
+import { OUTSIDE_PROJECT_ROOT_REASON } from '@/lib/active-worktree'
 import {
   buildSupportedAcpAgents,
   pickDefaultSupportedAgent,
@@ -24,8 +25,10 @@ import { SKILL_PAD_DEFAULT } from '@/lib/composer/doc-to-prompt'
 import { commandToken, fileToken, skillToken } from '@/lib/skill-tokens'
 import { isTauriContext, type ServerCapabilityState } from '@/lib/tauri-runtime'
 import { mockAcpSession } from '@/lib/test-utils/acp'
+import { READ_ONLY_SERVER_REASON } from '@/lib/write-gate'
 import type { AcpSession } from '@/stores/acp-store'
 import { useSettingsModalStore } from '@/stores/settings-modal-store'
+import { useShellLayoutStore } from '@/stores/shell-layout-store'
 import { useWorkspaceStore } from '@/stores/workspace-store'
 import { __resetLauncherSelectionCache, AgentLauncher } from './AgentLauncher'
 
@@ -267,6 +270,25 @@ vi.mock('sonner', () => ({
   toast: { error: mockToastError, success: vi.fn() }
 }))
 
+// `null` keeps the real hook (the jsdom default), so only the dock-clearance
+// block below flips the shell. The real hook still runs on every render: the
+// override never changes the hook order.
+const { mockMobileShell } = vi.hoisted(() => ({
+  mockMobileShell: { current: null as boolean | null }
+}))
+vi.mock('@/hooks/use-mobile-web-shell', async () => {
+  const actual = await vi.importActual<typeof import('@/hooks/use-mobile-web-shell')>(
+    '@/hooks/use-mobile-web-shell'
+  )
+  return {
+    ...actual,
+    useMobileWebShell: () => {
+      const real = actual.useMobileWebShell()
+      return mockMobileShell.current ?? real
+    }
+  }
+})
+
 vi.mock('@/hooks/use-agent-skills', async () => {
   // Use the real (sync) buildPromptWithLoadedSkills so the wire framing is
   // exercised end-to-end — no mock needed now that paths are captured at pick
@@ -347,13 +369,12 @@ vi.mock('@/lib/terminal-api', () => ({
 vi.mock('@/stores/terminal-store', () => {
   const state = {
     terminals: [] as unknown[],
-    isTerminalLimitReached: () => false,
     setTerminals: vi.fn(),
     selectTerminal: vi.fn()
   }
   const useTerminalStore = (sel?: (s: typeof state) => unknown) => (sel ? sel(state) : state)
   useTerminalStore.getState = () => state
-  return { useTerminalStore, GLOBAL_TERMINAL_LIMIT: 30 }
+  return { useTerminalStore }
 })
 
 vi.mock('@/lib/worktree-context', () => ({
@@ -385,13 +406,23 @@ vi.mock('@/lib/tauri-runtime', () => ({
 // via context so `SelectTrigger` can render one `<select>` with all options.
 vi.mock('@/components/ui/select', async () => {
   const { createContext, useContext, Children, isValidElement } = await import('react')
-  type Item = { value: string; label: React.ReactNode }
+  type Item = {
+    value: string
+    label: React.ReactNode
+    disabled?: boolean
+    description?: string
+  }
   const SelectCtx = createContext<{
     value?: string
     onValueChange?: (v: string) => void
     items: Item[]
   }>({ items: [] })
-  const SelectItem = (_props: { value: string; children: React.ReactNode }) => null
+  const SelectItem = (_props: {
+    value: string
+    children: React.ReactNode
+    disabled?: boolean
+    'aria-description'?: string
+  }) => null
   return {
     Select: ({
       value,
@@ -406,7 +437,12 @@ vi.mock('@/components/ui/select', async () => {
       const walk = (node: React.ReactNode): void => {
         if (!isValidElement(node)) return
         if (node.type === SelectItem) {
-          items.push({ value: node.props.value, label: node.props.children })
+          items.push({
+            value: node.props.value,
+            label: node.props.children,
+            disabled: node.props.disabled,
+            description: node.props['aria-description']
+          })
         }
         Children.forEach(node.props.children, walk)
       }
@@ -434,7 +470,12 @@ vi.mock('@/components/ui/select', async () => {
           aria-label={ariaLabel}
         >
           {ctx.items.map((item) => (
-            <option key={item.value} value={item.value}>
+            <option
+              key={item.value}
+              value={item.value}
+              disabled={item.disabled}
+              aria-description={item.description}
+            >
               {item.label}
             </option>
           ))}
@@ -456,14 +497,36 @@ const {
   mockWorktreeCreate,
   mockWorktreeCopyInclude,
   mockWorktreeResolveBaseBranch,
-  mockAddWorktree,
-  mockSetActiveWorktree
+  mockReconcileWorktrees,
+  mockStoredWorktrees,
+  mockSetWorktreePick
 } = vi.hoisted(() => ({
   mockWorktreeCreate: vi.fn(),
   mockWorktreeCopyInclude: vi.fn(),
   mockWorktreeResolveBaseBranch: vi.fn(),
-  mockAddWorktree: vi.fn(),
-  mockSetActiveWorktree: vi.fn()
+  // Stands in for the single-flight reconciler (the only `project.worktrees`
+  // writer): tests make it "store" worktrees by pushing into the project's list.
+  mockReconcileWorktrees: vi.fn(),
+  mockStoredWorktrees: [] as {
+    id: string
+    name: string
+    branch: string
+    path: string
+    outsideProjectRoot?: boolean
+  }[],
+  // Launching must never write the Workspace-switcher pick.
+  mockSetWorktreePick: vi.fn()
+}))
+
+vi.mock('@/stores/shell-layout-store', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/stores/shell-layout-store')>()
+  actual.useShellLayoutStore.setState({ setWorktreePick: mockSetWorktreePick })
+  return actual
+})
+
+vi.mock('@/lib/worktree-reconciler', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/worktree-reconciler')>()),
+  reconcileProjectWorktrees: mockReconcileWorktrees
 }))
 
 vi.mock('@/lib/worktree-api', () => ({
@@ -487,12 +550,16 @@ vi.mock('@/lib/worktree-api', () => ({
 }))
 
 vi.mock('@/stores/project-store', () => {
-  const baseProject = { id: 'p1', name: 'P', path: '/work', defaultShell: undefined }
+  const baseProject = {
+    id: 'p1',
+    name: 'P',
+    path: '/work',
+    defaultShell: undefined,
+    worktrees: mockStoredWorktrees
+  }
   const state = {
     activeProjectId: 'p1',
-    projects: [baseProject],
-    addWorktree: mockAddWorktree,
-    setActiveWorktree: mockSetActiveWorktree
+    projects: [baseProject]
   }
   const withOverride = () => ({
     ...state,
@@ -878,6 +945,34 @@ describe('AgentLauncher ACP new thread', () => {
     )
   })
 
+  it('applies the displayed options to a claimed warm session before the first prompt', async () => {
+    const key = 'acp-registry:claude-acp /work '
+    acpStateRef.current.agentConfigs = [ACP_CONFIG]
+    mockPersistRead.mockResolvedValue({
+      success: true,
+      data: { agentId: 'acp-registry:claude-acp', mode: 'acp' }
+    })
+    acpStateRef.current.preparedSessions = { [key]: 'prepared-1' }
+    acpStateRef.current.sessions = { 'prepared-1': preparedSession(ACP_CONFIG) }
+    mockClaimPreparedChat.mockReturnValue('prepared-1')
+    renderLauncher()
+    await screen.findByRole('button', { name: /Model One/ })
+
+    setComposerValue('warm start')
+    fireEvent.click(screen.getByLabelText('Start agent chat'))
+
+    expect(mockClaimPreparedChat).toHaveBeenCalledWith(key, 'p1')
+    await waitFor(() => expect(mockSendPrompt).toHaveBeenCalled())
+    expect(mockApplyPendingLauncherOptions).toHaveBeenCalledWith('prepared-1', {
+      modelId: 'm1',
+      modeId: 'agent',
+      configValues: { model: 'm1', thinking: 'medium' }
+    })
+    expect(mockApplyPendingLauncherOptions.mock.invocationCallOrder[0]).toBeLessThan(
+      mockSendPrompt.mock.invocationCallOrder[0]
+    )
+  })
+
   it('prepares the selected ACP session in the background', async () => {
     seedDefaultAgentConfigured()
     const defaultAgent = defaultReadyAgent()
@@ -1069,6 +1164,60 @@ describe('AgentLauncher ACP new thread', () => {
     ).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'API key' }))
     await waitFor(() => expect(mockAuthenticateAgent).toHaveBeenCalledWith('agent-live', 'api_key'))
+  })
+
+  it('stacks four sign-in actions under the copy and above the prompt', async () => {
+    seedDefaultAgentConfigured()
+    const defaultAgent = defaultReadyAgent()
+    const key = `${defaultAgent.configId}\0/work\0`
+    const reuseKey = `${defaultAgent.configId}\0/work`
+    acpStateRef.current.prepareChatErrors = {
+      [key]: {
+        category: 'multi-auth',
+        label: 'Multiple sign-in methods',
+        detail: 'This agent advertises multiple sign-in methods.'
+      }
+    }
+    acpStateRef.current.configToLiveAgent = { [reuseKey]: 'agent-live' }
+    acpStateRef.current.agents = {
+      'agent-live': {
+        id: 'agent-live',
+        capabilities: {},
+        authMethods: [
+          { id: 'google', name: 'Log in with Google' },
+          { id: 'enterprise', name: 'Log in with Gemini Enterprise' },
+          { id: 'api', name: 'Gemini API key' },
+          { id: 'platform', name: 'Gemini Enterprise Agent Platform' }
+        ]
+      }
+    }
+    renderLauncher()
+
+    const heading = await screen.findByText('Authenticate to Codex')
+    expect(
+      screen.getByText('Choose one of the following authentication options:')
+    ).toBeInTheDocument()
+    await screen.findByLabelText('Agent prompt')
+    await waitFor(() => {
+      expect(document.querySelector('[data-composer-editor="true"] p')).toHaveAttribute(
+        'data-placeholder',
+        'Ask anything… (/ for commands, @ for files)'
+      )
+    })
+    const actions = document.querySelector('[data-auth-actions="wrap"]')
+    expect(actions).toHaveClass('w-full', 'flex-wrap')
+    expect(actions?.className).not.toContain('shrink-0')
+    expect(
+      heading.compareDocumentPosition(actions as Node) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBe(Node.DOCUMENT_POSITION_FOLLOWING)
+    const editor = document.querySelector('[data-composer-editor="true"]')
+    expect(
+      (actions as Node).compareDocumentPosition(editor as Node) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBe(Node.DOCUMENT_POSITION_FOLLOWING)
+    expect(screen.getByRole('button', { name: 'Log in with Google' })).toBeInTheDocument()
+    expect(
+      screen.getByRole('button', { name: 'Gemini Enterprise Agent Platform' })
+    ).toBeInTheDocument()
   })
 
   it('collects a Factory key without sending the key through ACP authenticate', async () => {
@@ -2470,6 +2619,82 @@ describe('AgentLauncher mobile empty-state overflow', () => {
   })
 })
 
+// The mobile launcher pins a composer to the bottom of the shell and raises
+// toasts (unsupported attachments, "Failed to set model"). Its composer column
+// registers with `useDockClearance`, so a toast sits above the card instead of
+// over its toolbar. jsdom lays nothing out: the column's rect is stubbed.
+describe('AgentLauncher dock clearance (mobile toasts)', () => {
+  const DOCK_VAR = '--mobile-dock-height'
+  const dockVar = (): string => document.documentElement.style.getPropertyValue(DOCK_VAR)
+  const originalInnerHeight = window.innerHeight
+  let rectSpy: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    Object.defineProperty(window, 'innerHeight', { configurable: true, writable: true, value: 844 })
+    // Only the composer column (the parent of the composer group) has a box.
+    rectSpy = vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (
+      this: Element
+    ) {
+      const isColumn = Array.from(this.children).some((child) =>
+        child.hasAttribute('data-agent-launcher-composer-group')
+      )
+      const top = isColumn ? 700 : 0
+      const width = isColumn ? 390 : 0
+      const height = isColumn ? 120 : 0
+      return {
+        x: 0,
+        y: top,
+        top,
+        left: 0,
+        width,
+        height,
+        right: width,
+        bottom: top + height,
+        toJSON: () => ({})
+      }
+    })
+  })
+
+  afterEach(() => {
+    rectSpy.mockRestore()
+    Object.defineProperty(window, 'innerHeight', {
+      configurable: true,
+      writable: true,
+      value: originalInnerHeight
+    })
+    document.documentElement.style.removeProperty(DOCK_VAR)
+    mockMobileShell.current = null
+  })
+
+  it('writes the distance to the composer column top on the mobile shell', () => {
+    mockMobileShell.current = true
+    renderLauncher()
+
+    const group = document.querySelector('[data-agent-launcher-composer-group]')
+    expect(group).not.toBeNull()
+    // The column, not the group: the group takes a morph transform while exiting.
+    expect(group?.parentElement?.className).toContain('max-w-4xl')
+    expect(dockVar()).toBe('144px')
+  })
+
+  it('writes nothing when the shell is not mobile', () => {
+    mockMobileShell.current = false
+    renderLauncher()
+
+    expect(document.querySelector('[data-agent-launcher-composer-group]')).not.toBeNull()
+    expect(dockVar()).toBe('')
+  })
+
+  it('removes the property when the launcher unmounts', () => {
+    mockMobileShell.current = true
+    renderLauncher()
+    expect(dockVar()).toBe('144px')
+
+    cleanup()
+    expect(dockVar()).toBe('')
+  })
+})
+
 // ============================================================================
 // CAP-1/2/3/4 — Worktree-isolated agent chat
 // ============================================================================
@@ -2509,8 +2734,18 @@ describe('AgentLauncher worktree isolation', () => {
       data: { ran: 1, copied: 1, skipped: [] }
     })
     mockWorktreeResolveBaseBranch.mockReset()
-    mockAddWorktree.mockReset()
-    mockSetActiveWorktree.mockReset()
+    mockStoredWorktrees.length = 0
+    mockReconcileWorktrees.mockReset()
+    mockReconcileWorktrees.mockImplementation(async () => {
+      mockStoredWorktrees.push({
+        id: 'wt-stored-1',
+        name: 'abcd1234',
+        branch: 'chat/abcd1234',
+        path: '/work/.termul/worktrees/abcd1234'
+      })
+      return 'updated'
+    })
+    mockSetWorktreePick.mockReset()
     // "Clean repo on feat/x, base auto" — no origin/HEAD, so the fallback
     // chain resolves to the current branch (feat/x).
     mockWorktreeResolveBaseBranch.mockResolvedValue({
@@ -2526,16 +2761,13 @@ describe('AgentLauncher worktree isolation', () => {
     expect(
       screen.getByRole('heading', { level: 1, name: /what should we do in/i })
     ).toBeInTheDocument()
-    expect(screen.getByRole('combobox', { name: 'Isolation mode' })).toBeInTheDocument()
-    fireEvent.change(
-      screen.getByRole('combobox', { name: 'Isolation mode' }) as HTMLSelectElement,
-      {
-        target: { value: 'worktree' }
-      }
-    )
+    expect(screen.getByRole('combobox', { name: 'Workspace' })).toBeInTheDocument()
+    fireEvent.change(screen.getByRole('combobox', { name: 'Workspace' }) as HTMLSelectElement, {
+      target: { value: 'worktree' }
+    })
     await screen.findByRole('option', { name: /feat\/x/ })
 
-    for (const name of ['Isolation mode', 'Base branch']) {
+    for (const name of ['Workspace', 'Base branch']) {
       expect(screen.getByRole('combobox', { name })).toHaveClass(
         'focus-visible:ring-2',
         'focus-visible:ring-ring',
@@ -2562,7 +2794,7 @@ describe('AgentLauncher worktree isolation', () => {
   it('shows the isolation selector when gitBranch is null (CAP-1)', () => {
     mockProjectOverride.current = { isGitRepo: true, gitBranch: null }
     renderLauncher()
-    expect(screen.getByRole('combobox', { name: 'Isolation mode' })).toBeInTheDocument()
+    expect(screen.getByRole('combobox', { name: 'Workspace' })).toBeInTheDocument()
   })
 
   // CAP-2: selector hidden on non-repo — but the workspace strip itself stays
@@ -2572,7 +2804,7 @@ describe('AgentLauncher worktree isolation', () => {
     mockProjectOverride.current = null // no isGitRepo
     renderLauncher()
     expect(screen.queryByRole('combobox', { name: 'Base branch' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('combobox', { name: 'Isolation mode' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('combobox', { name: 'Workspace' })).not.toBeInTheDocument()
     const strip = document.querySelector('[data-agent-launcher-context-strip="true"]')
     expect(strip).toBeInTheDocument()
     expect(within(strip as HTMLElement).getByText('Local')).toBeInTheDocument()
@@ -2589,27 +2821,42 @@ describe('AgentLauncher worktree isolation', () => {
   it('shows the isolation selector on web when the project is a git repo (CAP web parity)', () => {
     mockProjectOverride.current = { isGitRepo: true, gitBranch: 'feat/x' }
     renderLauncher()
-    expect(screen.getByRole('combobox', { name: 'Isolation mode' })).toBeInTheDocument()
+    expect(screen.getByRole('combobox', { name: 'Workspace' })).toBeInTheDocument()
   })
 
-  // CAP — tunnel capability gate: when the server does NOT admit remote writes
+  // CAP-15 / AD-9 — write gate: when the server does NOT admit remote writes
   // (desktop shared-live cloudflared, or a non-loopback peer without
-  // --allow-remote-writes), the picker stays hidden on a git project so the
-  // user never reaches a launch that would fail `FORBIDDEN`. Covers the
-  // previously-untested hide path. (The real cache fetch/parse path is covered
-  // by tauri-runtime.test.ts; here the mock flips the snapshot.)
-  it('hides the isolation selector when the server does not admit remote writes', () => {
+  // --allow-remote-writes), the isolation picker stays visible on a git project
+  // but "New worktree" is disabled with the read-only reason, so the user
+  // never reaches a launch that would fail `FORBIDDEN`. (The real cache
+  // fetch/parse path is covered by tauri-runtime.test.ts; here the mock flips
+  // the snapshot.)
+  it('shows the isolation selector with New worktree disabled when the server does not admit remote writes', () => {
     vi.mocked(isTauriContext).mockReturnValue(false)
     mockServerCapability = { admitted: false, inFlight: false, resolved: true }
     mockProjectOverride.current = { isGitRepo: true, gitBranch: 'feat/x' }
     renderLauncher()
-    expect(screen.queryByRole('combobox', { name: 'Isolation mode' })).not.toBeInTheDocument()
+    const mode = screen.getByRole('combobox', { name: 'Workspace' }) as HTMLSelectElement
+    expect(mode.value).toBe('current')
+    expect(screen.getByRole('option', { name: 'Current checkout' })).not.toBeDisabled()
+    const worktree = screen.getByRole('option', { name: 'New worktree' })
+    expect(worktree).toBeDisabled()
+    expect(worktree).toHaveAttribute('aria-description', READ_ONLY_SERVER_REASON)
+    // The E37 wrapper exposes the reason on hover.
+    expect(document.querySelector('[data-write-gate="read-only"]')).toHaveAttribute(
+      'title',
+      READ_ONLY_SERVER_REASON
+    )
+    // No worktree mode is reachable, so no base-branch picker appears.
     expect(screen.queryByRole('combobox', { name: 'Base branch' })).not.toBeInTheDocument()
-    // The strip itself stays (chat parity): read-only workspace + branch.
-    const strip = document.querySelector('[data-agent-launcher-context-strip="true"]')
-    expect(strip).toBeInTheDocument()
-    expect(within(strip as HTMLElement).getByText('Local')).toBeInTheDocument()
-    expect(within(strip as HTMLElement).getByText('feat/x')).toBeInTheDocument()
+    expect(mockWorktreeCreate).not.toHaveBeenCalled()
+  })
+
+  it('keeps New worktree enabled and unwrapped when the server admits remote writes', () => {
+    mockProjectOverride.current = { isGitRepo: true, gitBranch: 'feat/x' }
+    renderLauncher()
+    expect(screen.getByRole('option', { name: 'New worktree' })).not.toBeDisabled()
+    expect(document.querySelector('[data-write-gate]')).not.toBeInTheDocument()
   })
 
   /**
@@ -2619,7 +2866,7 @@ describe('AgentLauncher worktree isolation', () => {
    * resolution.
    */
   async function chooseWorktreeBaseBranch(branch: string): Promise<void> {
-    const mode = screen.getByRole('combobox', { name: 'Isolation mode' }) as HTMLSelectElement
+    const mode = screen.getByRole('combobox', { name: 'Workspace' }) as HTMLSelectElement
     fireEvent.change(mode, { target: { value: 'worktree' } })
     await screen.findByRole('option', { name: new RegExp(branch) })
     const base = screen.getByRole('combobox', { name: 'Base branch' }) as HTMLSelectElement
@@ -2724,10 +2971,9 @@ describe('AgentLauncher worktree isolation', () => {
   })
 
   // Fix: worktree chat hidden from Chats sidebar — the launcher must register
-  // the just-created worktree in the project store and activate it so the
-  // sidebar scopes to it immediately (no 60s reconciler wait) and the worktree
-  // is a first-class project citizen across restarts.
-  it('registers and activates the created worktree in the project store on launch', async () => {
+  // the just-created worktree through the reconciler (no 60s wait). It never
+  // changes the Workspace-switcher pick.
+  it('registers the created worktree via the reconciler and never writes the pick on launch', async () => {
     renderLauncher()
     await chooseWorktreeBaseBranch('feat/x')
 
@@ -2735,22 +2981,14 @@ describe('AgentLauncher worktree isolation', () => {
     fireEvent.click(screen.getByLabelText('Start agent chat'))
 
     await waitFor(() => expect(mockWorktreeCreate).toHaveBeenCalledTimes(1))
-    await waitFor(() => expect(mockAddWorktree).toHaveBeenCalledTimes(1))
-    const [projectId, worktree] = mockAddWorktree.mock.calls[0] as [
-      string,
-      { id: string; path: string; branch: string; name: string }
-    ]
-    expect(projectId).toBe('p1')
-    expect(worktree.path).toBe('/work/.termul/worktrees/abcd1234')
-    expect(worktree.branch).toMatch(/^chat\/[a-f0-9]+$/)
-    expect(worktree.name).toMatch(/^[a-f0-9]{8}$/)
-    // The same id is activated so the sidebar scopes to the new worktree.
-    await waitFor(() => expect(mockSetActiveWorktree).toHaveBeenCalledTimes(1))
-    expect(mockSetActiveWorktree).toHaveBeenCalledWith('p1', worktree.id)
+    // Awaited reconcile for the launching project (no direct addWorktree).
+    await waitFor(() => expect(mockReconcileWorktrees).toHaveBeenCalledWith('p1'))
+    await waitFor(() => expect(mockFinalizeChatLaunch).toHaveBeenCalledTimes(1))
+    expect(mockSetWorktreePick).not.toHaveBeenCalled()
   })
 
   it('still opens the chat when worktree registration throws (best-effort)', async () => {
-    mockAddWorktree.mockImplementation(() => {
+    mockReconcileWorktrees.mockImplementation(async () => {
       throw new Error('store unavailable')
     })
     renderLauncher()
@@ -2762,7 +3000,20 @@ describe('AgentLauncher worktree isolation', () => {
     // The best-effort step threw and was swallowed; the chat still opens.
     await waitFor(() => expect(mockWorktreeCreate).toHaveBeenCalledTimes(1))
     await waitFor(() => expect(mockFinalizeChatLaunch).toHaveBeenCalledTimes(1))
-    expect(mockSetActiveWorktree).not.toHaveBeenCalled()
+    expect(mockSetWorktreePick).not.toHaveBeenCalled()
+  })
+
+  it('still opens the chat when the reconciler does not store the created worktree', async () => {
+    mockReconcileWorktrees.mockImplementation(async () => 'failed')
+    renderLauncher()
+    await chooseWorktreeBaseBranch('feat/x')
+
+    setComposerValue('not listed')
+    fireEvent.click(screen.getByLabelText('Start agent chat'))
+
+    await waitFor(() => expect(mockReconcileWorktrees).toHaveBeenCalledWith('p1'))
+    await waitFor(() => expect(mockFinalizeChatLaunch).toHaveBeenCalledTimes(1))
+    expect(mockSetWorktreePick).not.toHaveBeenCalled()
   })
 
   // CAP-4: relaunch of a persisted-worktree session does NOT call worktreeApi.create
@@ -2801,6 +3052,15 @@ describe('AgentLauncher worktree isolation', () => {
           headCommit: ''
         }
       })
+    mockReconcileWorktrees.mockImplementation(async () => {
+      mockStoredWorktrees.push({
+        id: 'wt-retry',
+        name: 'abcd1234-2',
+        branch: 'chat/abcd1234-2',
+        path: '/work/.termul/worktrees/abcd1234-2'
+      })
+      return 'updated'
+    })
     renderLauncher()
     await chooseWorktreeBaseBranch('feat/x')
 
@@ -2819,27 +3079,11 @@ describe('AgentLauncher worktree isolation', () => {
     }
     expect(finalizeArgs.worktreeBranch).toBe(`${firstBranch}-2`)
 
-    // The project-store entry must reflect the RETRY worktree (name/branch
-    // matching the retry create call's inputs, not the stale original chatId),
-    // so the registered `name` matches the git worktree on disk.
-    await waitFor(() => expect(mockAddWorktree).toHaveBeenCalledTimes(1))
-    const [, registered] = mockAddWorktree.mock.calls[0] as [
-      string,
-      { name: string; branch: string; path: string }
-    ]
-    const retryCreate = mockWorktreeCreate.mock.calls[1][0] as {
-      name: string
-      branch: string
-    }
-    expect(registered.name).toBe(retryCreate.name)
-    expect(registered.branch).toBe(retryCreate.branch)
-    expect(registered.path).toBe('/work/.termul/worktrees/abcd1234-2')
+    // The retry registers through the reconciler too; the pick stays untouched.
+    await waitFor(() => expect(mockReconcileWorktrees).toHaveBeenCalledWith('p1'))
+    expect(mockSetWorktreePick).not.toHaveBeenCalled()
   })
 
-  // Non-collision git failures (WORKTREE_CREATE_FAILED covers GitError/IoError
-  // — e.g. a real usage/argument error) must NOT trigger the `-2` collision
-  // retry: the launcher retries only on WORKTREE_EXISTS /
-  // BRANCH_ALREADY_HAS_WORKTREE, and surfaces anything else to the user.
   it('does not retry when worktree create fails with a non-collision error', async () => {
     mockWorktreeCreate.mockReset()
     mockWorktreeCreate.mockResolvedValue({
@@ -2871,12 +3115,9 @@ describe('AgentLauncher worktree isolation', () => {
       data: { defaultBase: 'main', currentBranch: undefined, isDetached: true }
     })
     renderLauncher()
-    fireEvent.change(
-      screen.getByRole('combobox', { name: 'Isolation mode' }) as HTMLSelectElement,
-      {
-        target: { value: 'worktree' }
-      }
-    )
+    fireEvent.change(screen.getByRole('combobox', { name: 'Workspace' }) as HTMLSelectElement, {
+      target: { value: 'worktree' }
+    })
     // Wait for the base-branch resolution to settle so the detached-HEAD hint
     // renders (the effect runs async after mode selection).
     await waitFor(() => expect(screen.getByText(/detached head/i)).toBeInTheDocument())
@@ -2894,6 +3135,184 @@ describe('AgentLauncher worktree isolation', () => {
     await waitFor(() => expect(mockWorktreeCreate).toHaveBeenCalledTimes(1))
     const createArgs = mockWorktreeCreate.mock.calls[0][0] as { startRef: string }
     expect(createArgs.startRef).toBe('main')
+  })
+
+  // Story 29: the Workspace chip's Existing worktree mode.
+  describe('Workspace chip: Existing worktree', () => {
+    const WT_PATH = '/work/.termul/worktrees/wt1'
+
+    function listWorktree(
+      extra: { outsideProjectRoot?: boolean; id?: string; path?: string } = {}
+    ): void {
+      mockStoredWorktrees.push({
+        id: extra.id ?? 'wt1',
+        name: 'wt1',
+        branch: 'feat/wt1',
+        path: extra.path ?? WT_PATH,
+        ...(extra.outsideProjectRoot ? { outsideProjectRoot: true } : {})
+      })
+    }
+
+    function modeSelect(): HTMLSelectElement {
+      return screen.getByRole('combobox', { name: 'Workspace' }) as HTMLSelectElement
+    }
+
+    beforeEach(() => {
+      useShellLayoutStore.setState({ worktreePickByProject: {} })
+    })
+
+    afterEach(() => {
+      useShellLayoutStore.setState({ worktreePickByProject: {} })
+    })
+
+    it('offers Current checkout, Existing worktree and New worktree, with the branch for the checkout', () => {
+      listWorktree()
+      renderLauncher()
+      expect(
+        screen
+          .getAllByRole('option')
+          .map((o) => o.textContent)
+          .slice(0, 3)
+      ).toEqual(['Current checkout', 'Existing worktree', 'New worktree'])
+      expect(modeSelect().value).toBe('current')
+      const strip = document.querySelector('[data-agent-launcher-context-strip="true"]')
+      expect(within(strip as HTMLElement).getByText('feat/x')).toBeInTheDocument()
+    })
+
+    it('disables Existing worktree with "No worktrees yet" when none are listed', () => {
+      renderLauncher()
+      const existing = screen.getByRole('option', { name: 'Existing worktree' })
+      expect(existing).toBeDisabled()
+      expect(existing).toHaveAttribute('aria-description', 'No worktrees yet')
+      expect(document.querySelector('div[title="No worktrees yet"]')).toBeInTheDocument()
+    })
+
+    it('disables Existing worktree with the outside reason when every worktree is outside the root', () => {
+      listWorktree({ outsideProjectRoot: true })
+      renderLauncher()
+      const existing = screen.getByRole('option', { name: 'Existing worktree' })
+      expect(existing).toBeDisabled()
+      expect(existing).toHaveAttribute('aria-description', OUTSIDE_PROJECT_ROOT_REASON)
+    })
+
+    it('starts on Existing worktree for a picked worktree and on Current checkout otherwise', () => {
+      listWorktree()
+      useShellLayoutStore.setState({ worktreePickByProject: { p1: WT_PATH } })
+      renderLauncher()
+      expect(modeSelect().value).toBe('existing')
+      const worktree = screen.getByRole('combobox', { name: 'Worktree' }) as HTMLSelectElement
+      expect(worktree.value).toBe('wt1')
+      expect(screen.getByRole('option', { name: 'feat/wt1' })).toBeInTheDocument()
+      cleanup()
+
+      useShellLayoutStore.setState({ worktreePickByProject: { p1: '/work' } })
+      renderLauncher()
+      expect(modeSelect().value).toBe('current')
+    })
+
+    it('starts on Current checkout when the pick names an outside-root worktree', () => {
+      listWorktree({ outsideProjectRoot: true })
+      useShellLayoutStore.setState({ worktreePickByProject: { p1: WT_PATH } })
+      renderLauncher()
+      expect(modeSelect().value).toBe('current')
+    })
+
+    it('lists outside-root worktrees as disabled rows with the reason', () => {
+      listWorktree()
+      listWorktree({ id: 'ext', path: 'D:/elsewhere/wt', outsideProjectRoot: true })
+      renderLauncher()
+      fireEvent.change(modeSelect(), { target: { value: 'existing' } })
+      const rows = screen.getAllByRole('option', { name: 'feat/wt1' })
+      expect(rows).toHaveLength(2)
+      expect(rows[0]).not.toBeDisabled()
+      expect(rows[1]).toBeDisabled()
+      expect(rows[1]).toHaveAttribute('aria-description', OUTSIDE_PROJECT_ROOT_REASON)
+    })
+
+    const topologies = [
+      { name: 'desktop / local (writes admitted)', admitted: true },
+      { name: 'shared-live (writes denied)', admitted: false },
+      { name: 'termul-server without --allow-remote-writes', admitted: false },
+      { name: 'termul-server with --allow-remote-writes', admitted: true }
+    ]
+    it.each(topologies)('launches into the existing worktree without creating one: $name', async ({
+      admitted
+    }) => {
+      mockServerCapability = { admitted, inFlight: false, resolved: true }
+      listWorktree()
+      renderLauncher()
+      // New worktree is only reachable on a server that admits writes; Existing always is.
+      const newWorktree = screen.getByRole('option', { name: 'New worktree' })
+      if (admitted) {
+        expect(newWorktree).not.toBeDisabled()
+      } else {
+        expect(newWorktree).toBeDisabled()
+        expect(newWorktree).toHaveAttribute('aria-description', READ_ONLY_SERVER_REASON)
+      }
+      expect(screen.getByRole('option', { name: 'Existing worktree' })).not.toBeDisabled()
+
+      fireEvent.change(modeSelect(), { target: { value: 'existing' } })
+      const worktree = screen.getByRole('combobox', { name: 'Worktree' }) as HTMLSelectElement
+      expect(worktree.value).toBe('wt1')
+      setComposerValue('use the worktree')
+      fireEvent.click(screen.getByLabelText('Start agent chat'))
+
+      await waitFor(() => expect(mockFinalizeChatLaunch).toHaveBeenCalledTimes(1))
+      expect(mockFinalizeChatLaunch).toHaveBeenCalledWith(
+        expect.objectContaining({
+          cwd: WT_PATH,
+          projectId: 'p1',
+          worktreePath: WT_PATH,
+          worktreeBranch: 'feat/wt1'
+        })
+      )
+      expect(mockWorktreeCreate).not.toHaveBeenCalled()
+      expect(mockReconcileWorktrees).not.toHaveBeenCalled()
+      expect(mockClaimPreparedChat).not.toHaveBeenCalled()
+      // Launching never writes the Workspace-switcher pick.
+      expect(mockSetWorktreePick).not.toHaveBeenCalled()
+    })
+
+    it('cannot enter Existing worktree when no worktree is listed', () => {
+      renderLauncher()
+      fireEvent.change(modeSelect(), { target: { value: 'existing' } })
+      expect(modeSelect().value).toBe('current')
+    })
+
+    it('toasts and rolls nothing back when the selected worktree is gone at launch', async () => {
+      listWorktree()
+      renderLauncher()
+      fireEvent.change(modeSelect(), { target: { value: 'existing' } })
+      setComposerValue('stale')
+      // The worktree disappears between selection and send.
+      mockStoredWorktrees.length = 0
+      mockCreateLaunchPlaceholder.mockClear()
+      fireEvent.click(screen.getByLabelText('Start agent chat'))
+
+      await waitFor(() =>
+        expect(mockToastError).toHaveBeenCalledWith('That worktree is no longer available.')
+      )
+      expect(mockCreateLaunchPlaceholder).not.toHaveBeenCalled()
+      expect(mockFinalizeChatLaunch).not.toHaveBeenCalled()
+      expect(mockAddAgentChatTab).not.toHaveBeenCalled()
+    })
+
+    it('falls back to Current checkout when the selected worktree vanishes from the project', () => {
+      listWorktree()
+      useShellLayoutStore.setState({ worktreePickByProject: { p1: WT_PATH } })
+      const tree = (): React.JSX.Element => (
+        <TooltipProvider>
+          <MemoryRouter>
+            <AgentLauncher paneId="pane1" />
+          </MemoryRouter>
+        </TooltipProvider>
+      )
+      const { rerender } = render(tree())
+      expect(modeSelect().value).toBe('existing')
+      mockStoredWorktrees.length = 0
+      rerender(tree())
+      expect(modeSelect().value).toBe('current')
+    })
   })
 })
 
@@ -3288,7 +3707,7 @@ describe('AgentLauncher per-agent update badge', () => {
 
     renderLauncher()
 
-    const mode = screen.getByRole('combobox', { name: 'Isolation mode' }) as HTMLSelectElement
+    const mode = screen.getByRole('combobox', { name: 'Workspace' }) as HTMLSelectElement
     fireEvent.change(mode, { target: { value: 'worktree' } })
     await screen.findByRole('option', { name: /feat\/x/ })
     const base = screen.getByRole('combobox', { name: 'Base branch' }) as HTMLSelectElement
@@ -3331,7 +3750,56 @@ describe('AgentLauncher per-agent update badge', () => {
       'session-1',
       'pane1'
     )
-    expect(mockAddWorktree).toHaveBeenCalled()
+    expect(mockReconcileWorktrees).toHaveBeenCalledWith('p1')
+  })
+
+  it('starts the Restart chat in the selected existing worktree without creating one', async () => {
+    mockProjectOverride.current = { isGitRepo: true, gitBranch: 'feat/x' }
+    mockStoredWorktrees.length = 0
+    mockStoredWorktrees.push({
+      id: 'wt1',
+      name: 'wt1',
+      branch: 'feat/wt1',
+      path: '/work/.termul/worktrees/wt1'
+    })
+    mockWorktreeResolveBaseBranch.mockResolvedValue({
+      success: true,
+      data: { defaultBase: 'feat/x', currentBranch: 'feat/x', isDetached: false }
+    })
+    const config = entryWithPin('0.218.1').config!
+    acpStateRef.current.agentConfigs = [config]
+    mockPersistRead.mockResolvedValue({
+      success: true,
+      data: { agentId: config.id, mode: 'acp' }
+    })
+    mockResolvedAgentsOverride.current = [entryWithPin('0.228.0')]
+    acpStateRef.current.pendingRestartVersions = { [config.id]: '0.228.0' }
+
+    try {
+      renderLauncher()
+      fireEvent.change(screen.getByRole('combobox', { name: 'Workspace' }), {
+        target: { value: 'existing' }
+      })
+      const restartButton = await screen.findByRole('button', {
+        name: /restart factory droid with version 0\.228\.0/i
+      })
+      mockStartChat.mockResolvedValue('session-updated')
+      fireEvent.click(restartButton)
+
+      await waitFor(() =>
+        expect(mockStartChat).toHaveBeenCalledWith(
+          config.id,
+          '/work/.termul/worktrees/wt1',
+          undefined,
+          'p1',
+          { worktreePath: '/work/.termul/worktrees/wt1', worktreeBranch: 'feat/wt1' }
+        )
+      )
+      expect(mockWorktreeCreate).not.toHaveBeenCalled()
+      expect(mockSetWorktreePick).not.toHaveBeenCalled()
+    } finally {
+      mockStoredWorktrees.length = 0
+    }
   })
 
   it('marks outdated agents in the agent picker so the entrance shows drift', async () => {

@@ -81,10 +81,20 @@ export function findConflictingShortcut(
 
 const MODIFIER_ORDER = ['ctrl', 'cmd', 'shift', 'alt'] as const
 
+// Older builds shipped arrow defaults as 'downarrow'/'uparrow'; a binding saved in
+// that spelling must keep matching the `KeyboardEvent.key` form ('arrowdown').
+const LEGACY_ARROW_KEYS: Record<string, string> = {
+  downarrow: 'arrowdown',
+  uparrow: 'arrowup',
+  leftarrow: 'arrowleft',
+  rightarrow: 'arrowright'
+}
+
 function canonicalizeShortcutKey(key: string): string {
   const parts = key.split('+').filter(Boolean)
-  const shortcutKey = parts[parts.length - 1]
-  if (!shortcutKey) return key
+  const rawKey = parts[parts.length - 1]
+  if (!rawKey) return key
+  const shortcutKey = LEGACY_ARROW_KEYS[rawKey] ?? rawKey
 
   const modifiers = new Set(parts.slice(0, -1))
   const orderedModifiers = MODIFIER_ORDER.filter((modifier) => modifiers.has(modifier))

@@ -79,7 +79,8 @@ fn install_shim_writes_executable_scripts_and_sink() {
     use std::os::unix::fs::PermissionsExt;
     let agent_id = AgentId(format!("test-shim-{}", uuid::Uuid::new_v4()));
     let dir = install_shim(&agent_id).expect("shim install must succeed");
-    assert_eq!(dir, shim_dir_for(&agent_id));
+    assert_eq!(shim_dir_for(&agent_id), Some(dir.clone()));
+    assert_eq!(dir.parent(), host_shim_dir());
     for program in SHIM_PROGRAMS {
         let path = dir.join(program);
         let meta = std::fs::metadata(&path).expect("script exists");
@@ -96,6 +97,53 @@ fn install_shim_writes_executable_scripts_and_sink() {
     assert!(dir.join(SINK_FILE_NAME).exists());
     remove_shim(&agent_id);
     assert!(!dir.exists());
+}
+
+/// A host dir survives only while its owner holds the lock: closing the lock
+/// file is what the kernel does to a process that dies, SIGKILL included.
+#[cfg(unix)]
+#[test]
+fn sweep_removes_only_dirs_whose_host_died() {
+    let root = std::env::temp_dir().join(format!("termul-shim-sweep-{}", uuid::Uuid::new_v4()));
+    let live = claim_host_dir(&root).expect("claim live host dir");
+    let dead = claim_host_dir(&root).expect("claim dead host dir");
+    let dead_path = dead.path.clone();
+    std::fs::create_dir(dead_path.join("agent-1")).unwrap();
+    std::fs::write(
+        dead_path.join("agent-1").join(SINK_FILE_NAME),
+        "https://a.example/\n",
+    )
+    .unwrap();
+    drop(dead);
+    let legacy = root.join("6f1c2a52-legacy-agent");
+    std::fs::create_dir(&legacy).unwrap();
+    std::fs::write(legacy.join("xdg-open"), SHIM_SCRIPT).unwrap();
+
+    // Another test thread that forks while `drop(dead)` runs inherits the
+    // lock's file description until its exec, so a sweep in that window sees
+    // the dead host's lock as held and correctly skips it. The lock is free
+    // for good once those children exec, so sweep until the dir is gone.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while dead_path.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the dead host's dir was never swept"
+        );
+        sweep_stale_host_dirs(&root);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    sweep_stale_host_dirs(&root);
+
+    let mut left: Vec<PathBuf> = std::fs::read_dir(&root)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    left.sort();
+    let mut expected = vec![live.path.clone(), legacy];
+    expected.sort();
+    assert_eq!(left, expected);
+    drop(live);
+    std::fs::remove_dir_all(&root).unwrap();
 }
 
 #[cfg(unix)]

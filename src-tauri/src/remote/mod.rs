@@ -13,4 +13,4 @@
 pub mod cloudflared;
 pub mod host;
 
-pub use host::{RemoteBindMode, RemoteServerState, RemoteStatus};
+pub use host::{RemoteBindMode, RemoteServerState, RemoteStatus, SharedLiveData};

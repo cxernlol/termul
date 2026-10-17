@@ -1,199 +1,169 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
-import { toast } from 'sonner'
-import { Search } from '@/components/icons'
-import { groupSessionsByRecency, scopeSessionIndex } from '@/lib/acp-history-persistence'
-import { useAcpStore } from '@/stores/acp-store'
-import { getActiveWorktreeFromStore, useActiveProject } from '@/stores/project-store'
-import { useWorkspaceStore } from '@/stores/workspace-store'
-import { ChatHistoryEntryRow, type ChatHistorySidebarEntry } from './ChatHistoryEntryRow'
+import { type RefObject, useCallback, useId, useRef, useState } from 'react'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle
+} from '@/components/ui/alert-dialog'
+import { ChatHistoryEntryRow } from './ChatHistoryEntryRow'
+import { useChatHistoryEntries } from './use-chat-history-entries'
 
-/** How many sidebar rows to render per lazy-load page. */
-const SIDEBAR_PAGE_SIZE = 50
-
-type SidebarEntry = ChatHistorySidebarEntry
-
-/** Sidebar tab listing persisted Termul-created chat sessions, grouped by recency with search. */
-export function ChatHistoryTab({
-  onSessionOpened
-}: {
+interface ChatHistoryTabProps {
   /** Optional callback after a chat row successfully opens (e.g. close a mobile drawer). */
   onSessionOpened?: () => void
-} = {}): React.JSX.Element {
-  const sessionIndex = useAcpStore((s) => s.sessionIndex)
-  const openHistorySession = useAcpStore((s) => s.openHistorySession)
-  const openDiscoveredSession = useAcpStore((s) => s.openDiscoveredSession)
-  const deleteHistorySession = useAcpStore((s) => s.deleteHistorySession)
-  const addAgentChatTab = useWorkspaceStore((s) => s.addAgentChatTab)
-  // Subscribe to the full active-project record so the sidebar re-scopes when
-  // the active worktree changes (not just when the active project id changes).
-  const activeProject = useActiveProject()
-  const activeProjectId = activeProject?.id ?? ''
-  const activeCwd = useMemo(() => {
-    if (!activeProject) return ''
-    const wt = getActiveWorktreeFromStore(activeProject.id)
-    return wt?.path ?? activeProject.path ?? ''
-  }, [activeProject])
+  /** Title filter. The search field lives with the host (the mobile drawer), not in this tab. */
+  query?: string
+  /** Id of the host's History heading: the focus fallback after the last visible row is deleted. */
+  historyHeadingId?: string
+  /** Scroll container the lazy-load observer watches. Defaults to the viewport. */
+  scrollRootRef?: RefObject<HTMLElement | null>
+}
 
-  // Active project's registered worktree paths. Passed into `scopeSessionIndex`
-  // so worktree-cwd chats stay reachable from the project root view and across
-  // restarts where `activeWorktreeId` is null (the sidebar would otherwise hide
-  // them because their cwd differs from the root). Re-derived whenever the
-  // active project record changes (covers reconciler discovery + launch adds).
-  const worktreePaths = useMemo(
-    () => activeProject?.worktrees?.map((w) => w.path) ?? [],
-    [activeProject]
+interface ChatDeleteConfirmDialogProps {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  /** The chat's title, named in the description. */
+  title: string
+  onConfirm: () => void
+  /** Places focus once the dialog has closed (there is no Radix trigger to return to). */
+  onClosed: () => void
+}
+
+/**
+ * The chat history delete confirm, shared by the desktop sidebar and the mobile
+ * Recents list. Nothing is deleted until its Delete.
+ */
+export function ChatDeleteConfirmDialog({
+  open,
+  onOpenChange,
+  title,
+  onConfirm,
+  onClosed
+}: ChatDeleteConfirmDialogProps): React.JSX.Element {
+  return (
+    <AlertDialog open={open} onOpenChange={onOpenChange}>
+      <AlertDialogContent
+        onCloseAutoFocus={(event) => {
+          // Radix would restore focus to the trigger; there is none (the row's
+          // trash button opens this programmatically), so place it ourselves.
+          event.preventDefault()
+          onClosed()
+        }}
+      >
+        <AlertDialogHeader>
+          <AlertDialogTitle>Delete chat</AlertDialogTitle>
+          <AlertDialogDescription>
+            {`Delete “${title}”? This action cannot be undone.`}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            className="bg-destructive-fill text-destructive-foreground hover:bg-destructive-fill/90"
+            onClick={onConfirm}
+          >
+            Delete
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  )
+}
+
+/** Sidebar tab listing persisted Termul-created chat sessions, grouped by recency; filtered by `query`. */
+export function ChatHistoryTab({
+  onSessionOpened,
+  query = '',
+  historyHeadingId,
+  scrollRootRef
+}: ChatHistoryTabProps = {}): React.JSX.Element {
+  const {
+    mergedEntries,
+    filtered,
+    visible,
+    groups,
+    hasMore,
+    sentinelRef,
+    loadMore,
+    openEntry: handleOpen,
+    deleteEntry: handleDelete
+  } = useChatHistoryEntries({ query, scrollRootRef, onSessionOpened })
+
+  const baseId = useId()
+  const rootRef = useRef<HTMLDivElement>(null)
+
+  // Delete confirm. The trash button only requests it; nothing is deleted
+  // until the AlertDialog's Delete. `deleteTarget` outlives `deleteOpen` so the
+  // description does not blank out while the dialog animates closed.
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; title: string } | null>(null)
+  const [deleteOpen, setDeleteOpen] = useState(false)
+  // Where focus goes when the dialog closes: set when it opens (Cancel / Esc →
+  // that row's trash button) and again on confirm (→ the next visible row).
+  const closeFocusRef = useRef<() => void>(() => {})
+  // The confirm's Delete stays tappable while the dialog animates closed, so a
+  // quick second tap would delete the same session twice (the second rejects
+  // and toasts a false "Could not delete"). Cleared each time a confirm opens.
+  const confirmedDeleteIdRef = useRef<string | null>(null)
+
+  const rowElements = useCallback(
+    (): HTMLElement[] =>
+      Array.from(rootRef.current?.querySelectorAll<HTMLElement>('[data-history-entry-id]') ?? []),
+    []
   )
 
-  // ADR 0002 scoping: show only sessions whose `(projectId, cwd)` match the
-  // active project + worktree/root, falling back to projectId-only matching
-  // when the exact cwd yields nothing (a chat whose cwd drifted since it was
-  // created is still reachable instead of silently hidden). Worktree-inclusive
-  // reachability (above) keeps the project's worktree chats listed from the
-  // root view. See `scopeSessionIndex` for the contract.
-  const scopedIndex = useMemo(
-    () => scopeSessionIndex(sessionIndex, activeProjectId, activeCwd, worktreePaths),
-    [sessionIndex, activeProjectId, activeCwd, worktreePaths]
+  const focusRowButton = useCallback(
+    (id: string, button: 'open' | 'delete'): boolean => {
+      const row = rowElements().find((el) => el.dataset.historyEntryId === id)
+      const target = row?.querySelector<HTMLElement>(`[data-history-${button}]`)
+      if (!target) return false
+      target.focus()
+      return true
+    },
+    [rowElements]
   )
 
-  // Termul-created sessions only. The host-owned `discovered` flag is `false`
-  // for sessions Termul created (`register_session`) and `true` for external
-  // `session/list` mirrors — filter hides CLI/other-client chats.
-  const mergedEntries = useMemo(() => {
-    const entries: SidebarEntry[] = scopedIndex
-      .filter((e) => e.discovered !== true)
-      .map((e) => ({
-        id: e.id,
-        title: e.title,
-        messageCount: e.messageCount,
-        status: e.status,
-        discovered: false,
-        agentId: e.agentId,
-        agentConfigId: e.agentConfigId,
-        agents: e.agents,
-        lastActivityAt: e.lastActivityAt,
-        canOpen: true
-      }))
+  // Last-resort focus target once no row can take it (the deleted chat was the
+  // last visible one): the host's History heading, else this tab's own root,
+  // which stays mounted (and programmatically focusable) so focus is never lost.
+  const focusFallback = useCallback((): void => {
+    const heading = historyHeadingId ? document.getElementById(historyHeadingId) : null
+    const target = heading ?? rootRef.current
+    target?.focus()
+  }, [historyHeadingId])
 
-    return entries
-  }, [scopedIndex])
-
-  const searchId = useId()
-  const [query, setQuery] = useState('')
-  // Lazy rendering: keep all results in memory but only render a growing window
-  // (a project can accumulate hundreds of sessions; rendering all rows is the cost).
-  const [visibleCount, setVisibleCount] = useState(SIDEBAR_PAGE_SIZE)
-  const scrollRef = useRef<HTMLDivElement>(null)
-  const sentinelRef = useRef<HTMLDivElement>(null)
-
-  // Filter the FULL set by query first (so search reaches every session, not
-  // just the rendered window), then sort newest-first so the visible cap keeps
-  // the most recent sessions.
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase()
-    const base =
-      q.length === 0
-        ? mergedEntries
-        : mergedEntries.filter((e) => e.title.toLowerCase().includes(q))
-    return base.slice().sort((a, b) => b.lastActivityAt - a.lastActivityAt)
-  }, [mergedEntries, query])
-
-  // Reset the window when the query or active scope changes. `worktreePaths`
-  // is a scoping input (worktree-inclusive reachability), so a reconciler
-  // discovery that grows the set without changing `activeCwd` must also reset
-  // the visible window — otherwise a stale "No matches"/window renders against
-  // the new scope.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: reset on scope/query change
-  useEffect(() => {
-    setVisibleCount(SIDEBAR_PAGE_SIZE)
-  }, [query, activeProjectId, activeCwd, worktreePaths])
-
-  const visible = useMemo(() => filtered.slice(0, visibleCount), [filtered, visibleCount])
-  const hasMore = filtered.length > visible.length
-
-  const groups = useMemo(() => groupSessionsByRecency(visible, Date.now()), [visible])
-
-  // Grow the window when the bottom sentinel scrolls into view (lazy load).
-  // `visibleCount` is intentionally in the deps so the observer re-arms after
-  // each growth: IntersectionObserver only fires on intersection transitions, so
-  // a sentinel already in view after a grow needs a fresh observe() to re-check.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: visibleCount re-arms the observer
-  useEffect(() => {
-    if (!hasMore) return
-    const sentinel = sentinelRef.current
-    if (!sentinel) return
-    const observer = new IntersectionObserver(
-      (obsEntries) => {
-        if (obsEntries.some((e) => e.isIntersecting)) {
-          setVisibleCount((c) => c + SIDEBAR_PAGE_SIZE)
-        }
-      },
-      { root: scrollRef.current, rootMargin: '200px' }
-    )
-    observer.observe(sentinel)
-    return () => observer.disconnect()
-  }, [hasMore, visibleCount])
-
-  const handleOpen = useCallback(
-    async (entry: SidebarEntry) => {
-      try {
-        if (entry.discovered && entry.agentId && entry.cwd) {
-          // Register the restore synchronously before focusing the tab so its
-          // first render shows the branded preload, then reconnect in the
-          // background just like local mirrors.
-          const opening = openDiscoveredSession(entry.agentId, entry.id, entry.cwd, activeProjectId)
-          addAgentChatTab(entry.id)
-          void opening.catch(() => {
-            toast.error('Could not open that chat. Try again.')
-          })
-        } else {
-          // Register the restore synchronously before focusing the tab so its
-          // first render cannot miss the branded preload. Reconnect continues
-          // in the background after the local transcript becomes usable.
-          const opening = openHistorySession(entry.id)
-          addAgentChatTab(entry.id)
-          void opening.catch(() => {
-            toast.error('Could not reconnect. Try again.')
-          })
-        }
-        onSessionOpened?.()
-      } catch {
-        toast.error('Could not open that chat. Try again.')
+  const requestDelete = useCallback(
+    (id: string) => {
+      const title = mergedEntries.find((e) => e.id === id)?.title ?? ''
+      setDeleteTarget({ id, title })
+      setDeleteOpen(true)
+      confirmedDeleteIdRef.current = null
+      closeFocusRef.current = () => {
+        if (!focusRowButton(id, 'delete')) focusFallback()
       }
     },
-    [addAgentChatTab, openHistorySession, openDiscoveredSession, activeProjectId, onSessionOpened]
+    [mergedEntries, focusRowButton, focusFallback]
   )
 
-  const handleDelete = useCallback(
-    (id: string) => {
-      void deleteHistorySession(id).catch(() => {
-        toast.error('Could not delete that chat. Try again.')
-      })
-    },
-    [deleteHistorySession]
-  )
+  const confirmDelete = useCallback(() => {
+    if (!deleteTarget || confirmedDeleteIdRef.current === deleteTarget.id) return
+    const { id } = deleteTarget
+    confirmedDeleteIdRef.current = id
+    const rows = rowElements()
+    const index = rows.findIndex((el) => el.dataset.historyEntryId === id)
+    const nextId = index >= 0 ? rows[index + 1]?.dataset.historyEntryId : undefined
+    closeFocusRef.current = () => {
+      if (!nextId || !focusRowButton(nextId, 'open')) focusFallback()
+    }
+    handleDelete(id)
+  }, [deleteTarget, rowElements, focusRowButton, focusFallback, handleDelete])
 
   return (
-    <div className="@container flex h-full flex-col">
-      <div className="border-b border-sidebar-border px-2 py-1.5">
-        <div className="relative">
-          <label htmlFor={searchId} className="sr-only">
-            Search chats
-          </label>
-          <Search
-            size={12}
-            className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground"
-          />
-          <input
-            id={searchId}
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search chats…"
-            className="min-h-11 w-full rounded-md bg-background py-1 pl-7 pr-2 text-base text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 @[400px]:min-h-10 @[400px]:text-xs"
-          />
-        </div>
-      </div>
-
-      <div ref={scrollRef} className="flex-1 overflow-y-auto py-1">
+    <div ref={rootRef} tabIndex={-1} className="@container flex flex-col outline-none">
+      <div className="py-1">
         {mergedEntries.length === 0 ? (
           <div className="flex flex-col items-center justify-center p-6 text-center text-xs text-muted-foreground">
             No chats yet. Start one with the New chat button.
@@ -203,32 +173,47 @@ export function ChatHistoryTab({
             No chats match this search.
           </div>
         ) : (
-          groups.map(({ group, entries }) => (
-            <div key={group}>
-              <div className="label-group px-3 py-1 text-muted-foreground">{group}</div>
-              {entries.map((entry) => (
-                <ChatHistoryEntryRow
-                  key={entry.id}
-                  entry={entry}
-                  onOpen={(e) => void handleOpen(e)}
-                  onDelete={handleDelete}
-                />
-              ))}
-            </div>
-          ))
+          groups.map(({ group, entries }) => {
+            const labelId = `${baseId}-${group}`
+            return (
+              <div key={group}>
+                <h3 id={labelId} className="label-group px-3 py-1 text-muted-foreground">
+                  {group}
+                </h3>
+                <div role="group" aria-labelledby={labelId}>
+                  {entries.map((entry) => (
+                    <ChatHistoryEntryRow
+                      key={entry.id}
+                      entry={entry}
+                      onOpen={(e) => void handleOpen(e)}
+                      onDelete={requestDelete}
+                    />
+                  ))}
+                </div>
+              </div>
+            )
+          })
         )}
         {hasMore && (
           <div ref={sentinelRef} className="px-3 py-2">
             <button
               type="button"
-              onClick={() => setVisibleCount((c) => c + SIDEBAR_PAGE_SIZE)}
-              className="w-full rounded-md py-1 text-xs tabular-nums text-muted-foreground hover:bg-sidebar-accent"
+              onClick={loadMore}
+              className="min-h-11 w-full rounded-md py-1 text-xs tabular-nums text-muted-foreground transition-colors duration-150 ease-out hover:bg-foreground/[0.03]"
             >
               Load more ({filtered.length - visible.length} more)
             </button>
           </div>
         )}
       </div>
+
+      <ChatDeleteConfirmDialog
+        open={deleteOpen}
+        onOpenChange={setDeleteOpen}
+        title={deleteTarget?.title ?? ''}
+        onConfirm={confirmDelete}
+        onClosed={() => closeFocusRef.current()}
+      />
     </div>
   )
 }

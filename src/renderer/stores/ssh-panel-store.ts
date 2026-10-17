@@ -1,23 +1,20 @@
-import { create } from 'zustand'
+/**
+ * Read-through projection of the shell-layout SSH section flag (shell revamp
+ * AD-4). `useSSHPanelVisible()` is `sshSectionVisible`; the imperative setters
+ * write through the shell-layout store so its hydration gate and persistence
+ * apply.
+ */
 
-interface SSHPanelState {
-  isVisible: boolean
-  toggleVisibility: () => void
-  setVisible: (visible: boolean) => void
-}
-
-export const useSSHPanelStore = create<SSHPanelState>((set) => ({
-  isVisible: true,
-
-  toggleVisibility: (): void => {
-    set((state) => ({ isVisible: !state.isVisible }))
-  },
-
-  setVisible: (visible: boolean): void => {
-    set({ isVisible: visible })
-  }
-}))
+import { useShellLayoutStore, useSshSectionVisible } from '@/stores/shell-layout-store'
 
 export function useSSHPanelVisible(): boolean {
-  return useSSHPanelStore((state) => state.isVisible)
+  return useSshSectionVisible()
+}
+
+export function setSSHPanelVisible(visible: boolean): void {
+  useShellLayoutStore.getState().setSshSectionVisible(visible)
+}
+
+export function toggleSSHPanelVisibility(): void {
+  setSSHPanelVisible(!useShellLayoutStore.getState().sshSectionVisible)
 }

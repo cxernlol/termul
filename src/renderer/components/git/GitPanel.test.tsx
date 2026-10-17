@@ -18,6 +18,7 @@ const { getDiff, generateCommitMessage, commit, toastError, acpState, gitState }
         generateCommitMessage
       },
       gitState: {
+        errors: {},
         statuses: {
           '/work': [
             { path: 'a.ts', staged: true, status: 'modified' },
@@ -77,7 +78,14 @@ vi.mock('@/stores/git-status-store', () => ({
   useGitStatusStore: (selector: (state: Record<string, unknown>) => unknown) => selector(gitState)
 }))
 
+import { useProjectStore } from '@/stores/project-store'
+import type { Project } from '@/types/project'
 import { GitPanel } from './GitPanel'
+
+// Write controls are gated on a read-only server; these tests cover the admitted path.
+vi.mock('@/hooks/use-server-admits-remote-writes', () => ({
+  useServerAdmitsRemoteWrites: () => true
+}))
 
 describe('GitPanel commit message generation', () => {
   beforeEach(() => {
@@ -185,5 +193,40 @@ describe('GitPanel commit message generation', () => {
     await waitFor(() => expect(toastError).toHaveBeenCalledWith('agent failed'))
     expect(screen.getByLabelText('Commit summary')).toHaveValue('Existing')
     expect(commit).not.toHaveBeenCalled()
+  })
+})
+
+describe('GitPanel write block for an unresolved working copy', () => {
+  const GONE = '/proj/.termul/worktrees/gone'
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    gitState.statuses[GONE] = [{ path: 'a.ts', staged: true, status: 'modified' }]
+    gitState.commitContexts[GONE] = { ...gitState.commitContexts['/work'], stagedCount: 1 }
+    useProjectStore.setState({
+      projects: [{ id: 'p1', name: 'P', color: 'blue', path: '/proj', worktrees: [] } as Project],
+      activeProjectId: 'p1'
+    })
+  })
+
+  it('disables generate while the cwd is unresolved', () => {
+    render(<GitPanel cwd={GONE} isVisible={false} />)
+    expect(screen.getByRole('button', { name: 'Generate message' })).toBeDisabled()
+  })
+
+  it('keeps generate enabled in a listed working copy', () => {
+    useProjectStore.setState({
+      projects: [
+        {
+          id: 'p1',
+          name: 'P',
+          color: 'blue',
+          path: '/proj',
+          worktrees: [{ id: 'w', name: 'gone', branch: 'b', path: GONE, createdAt: '' }]
+        } as Project
+      ]
+    })
+    render(<GitPanel cwd={GONE} isVisible={false} />)
+    expect(screen.getByRole('button', { name: 'Generate message' })).toBeEnabled()
   })
 })

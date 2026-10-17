@@ -11,8 +11,8 @@ use super::*;
 // emitted by `AcpManager` (via `fan_out` → `WsRelaySink`) flow back to the
 // browser automatically — these handlers only own the request/reply half.
 
-/// `spawn_agent` → `AcpManager::spawn(config)`. Mirrors Tauri `acp_spawn_agent`
-/// invoke args `{ config }`. Reply payload = the [`SpawnOutcome`] (camelCase:
+/// `spawn_agent` → `AcpManager::spawn(config)`. Request payload `{ config }`.
+/// Reply payload = the [`SpawnOutcome`] (camelCase:
 /// `agentId`/`capabilities`/`authMethods`/`stableNamespace?`) — the
 /// authoritative spawn metadata so the renderer populates the store
 /// synchronously from the response (CAP-4: the spawn response — not the async
@@ -21,13 +21,16 @@ use super::*;
 #[serde(rename_all = "camelCase")]
 pub(super) struct SpawnAgentPayload {
     config: AgentConfig,
+    /// Selects the Claude Account of a managed Claude agent.
+    #[serde(default)]
+    project_id: Option<String>,
 }
 
 pub(super) async fn handle_spawn_agent(
     id: String,
     payload: &Value,
     acp: &Arc<AcpManager>,
-    current_agent: &mut Option<crate::acp::AgentId>,
+    command_id: Option<String>,
 ) -> WsReply {
     let mut parsed: SpawnAgentPayload = match serde_json::from_value(payload.clone()) {
         Ok(p) => p,
@@ -39,41 +42,20 @@ pub(super) async fn handle_spawn_agent(
             )
         }
     };
-    // Mirror desktop `validateAgentConfig`: trim + require non-empty name/command.
-    parsed.config.name = parsed.config.name.trim().to_string();
-    parsed.config.command = parsed.config.command.trim().to_string();
-    if parsed.config.name.is_empty() {
-        return WsReply::err(
-            id,
-            WsErrorCode::Unsupported,
-            "spawn_agent requires a non-empty `config.name`",
-        );
+    // Trim + non-empty name/command/configId.
+    if let Err(e) = crate::acp::config::validate_spawn_config(&mut parsed.config) {
+        return acp_err_to_reply(id, e);
     }
-    if parsed.config.command.is_empty() {
-        return WsReply::err(
-            id,
-            WsErrorCode::Unsupported,
-            "spawn_agent requires a non-empty `config.command`",
-        );
-    }
-    // OQ1: require a non-empty `config.configId` (mirrors `acp_spawn_agent`)
-    // so the spawn path derives a stable `config:{config_id}` namespace on web
-    // too. Shared guard lives in `acp::config::require_config_id`.
-    if let Err(msg) = crate::acp::config::require_config_id(&parsed.config) {
-        return WsReply::err(id, WsErrorCode::Unsupported, msg);
-    }
-    match acp.spawn(parsed.config).await {
-        Ok(outcome) => {
-            // Track the spawned agent so a later `switch_project` can reuse it
-            // (Ask-First resolution: do NOT auto-spawn on switch).
-            *current_agent = Some(outcome.agent_id.clone());
-            ok_with_payload(id, &outcome)
-        }
+    match acp
+        .spawn_with_command_id(parsed.config, command_id, parsed.project_id)
+        .await
+    {
+        Ok(outcome) => ok_with_payload(id, &outcome),
         Err(e) => acp_err_to_reply(id, e),
     }
 }
 
-/// `kill_agent` → `AcpManager::kill(agent_id)`. Mirrors Tauri `acp_kill_agent`.
+/// `kill_agent` → `AcpManager::kill(agent_id)`.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct KillAgentPayload {
@@ -84,9 +66,6 @@ pub(super) async fn handle_kill_agent(
     id: String,
     payload: &Value,
     acp: &Arc<AcpManager>,
-    current_agent: &mut Option<AgentId>,
-    current_session: &Arc<parking_lot::Mutex<Option<SessionId>>>,
-    current_project: &Arc<parking_lot::Mutex<Option<String>>>,
 ) -> WsReply {
     let parsed: KillAgentPayload = match serde_json::from_value(payload.clone()) {
         Ok(p) => p,
@@ -99,21 +78,7 @@ pub(super) async fn handle_kill_agent(
         }
     };
     match acp.kill(&parsed.agent_id).await {
-        Ok(()) => {
-            // If the killed agent is this connection's tracked agent, drop the
-            // tracking so a later `switch_project` does not reuse the dead id
-            // (which would map `new_session`'s "unknown agent" to `not_found").
-            // The web client must spawn/create a session again first.
-            if current_agent
-                .as_ref()
-                .is_some_and(|a| *a == parsed.agent_id)
-            {
-                *current_agent = None;
-                *current_session.lock() = None;
-                *current_project.lock() = None;
-            }
-            WsReply::ok(id, Some(json!({})))
-        }
+        Ok(()) => WsReply::ok(id, Some(json!({}))),
         Err(e) => acp_err_to_reply(id, e),
     }
 }
@@ -122,7 +87,7 @@ pub(super) async fn handle_kill_agent(
 /// `AgentSummary[]` — identity-rich `{ id, name, configId?, namespace?,
 /// capabilities }` objects, replacing bare id strings. The only in-repo
 /// consumer (`WsAcpTransport.listAgents`) maps `.id`; `listAgentDetails`
-/// keeps the full summaries. Desktop parity: `acp_list_agent_details`.
+/// keeps the full summaries.
 pub(super) async fn handle_list_agents(id: String, acp: &Arc<AcpManager>) -> WsReply {
     // Issue #837: enrich each summary with the agent's owned-session set so a
     // reloading web client can resolve "which live agent owns this session"
@@ -180,6 +145,7 @@ pub(super) async fn handle_list_acp_catalog(
                 let installed = install.installed_agents();
                 crate::acp::overlay_installed(&mut catalog, &installed);
             }
+            service.apply_external_opencode(&mut catalog).await;
             ok_with_payload(id, &catalog)
         }
         Err(error) => WsReply::err_with_code(
@@ -236,6 +202,62 @@ pub(super) async fn handle_set_catalog_opt_in(
     }
 }
 
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum RegistryCheckReason {
+    Manual,
+    Background,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct FetchAcpRegistrySnapshotPayload {
+    reason: RegistryCheckReason,
+}
+
+/// `fetch_acp_registry_snapshot`: the web side of the desktop
+/// `acp_fetch_registry_snapshot` command. Every check forces past the cache
+/// TTL, as the desktop does for both reasons; a failed fetch with a cache on
+/// disk still answers `ok` with `source: "cache"`.
+pub(super) async fn handle_fetch_acp_registry_snapshot(
+    id: String,
+    payload: &Value,
+    acp_catalog: Option<&Arc<crate::acp::AcpCatalogService>>,
+) -> WsReply {
+    let parsed: FetchAcpRegistrySnapshotPayload = match serde_json::from_value(payload.clone()) {
+        Ok(p) => p,
+        Err(e) => {
+            return WsReply::err_with_code(
+                id,
+                "VALIDATION_ERROR",
+                format!("malformed fetch_acp_registry_snapshot payload (want reason): {e}"),
+            )
+        }
+    };
+    let Some(service) = acp_catalog.cloned() else {
+        return WsReply::err_with_code(
+            id,
+            "ACP_CATALOG_UNAVAILABLE",
+            "acp catalog store is unavailable",
+        );
+    };
+    match service.fetch_registry_snapshot(true).await {
+        Ok(snapshot) => {
+            tracing::info!(
+                reason = ?parsed.reason,
+                source = %snapshot.source,
+                agents = snapshot.agents.len(),
+                "[ws] registry check answered"
+            );
+            ok_with_payload(id, &snapshot)
+        }
+        Err(error) => {
+            tracing::warn!(reason = ?parsed.reason, error = %error, "[ws] registry check failed");
+            WsReply::err_with_code(id, "REGISTRY_FETCH_FAILED", error)
+        }
+    }
+}
+
 // --- CAP-6 / Story 9: ACP install WS handler --------------------------------
 
 /// `install_acp_agent` WS request payload. `deny_unknown_fields` rejects an
@@ -248,9 +270,8 @@ pub(super) struct InstallAcpAgentPayload {
     agent_id: String,
 }
 
-/// `install_acp_agent` WS request handler. Mirrors the desktop
-/// `#[tauri::command] acp_install_agent` + HTTP `POST /acp/install` handlers.
-/// Degrade-mode (`acp_install: None`) returns `ACP_INSTALL_UNAVAILABLE`. All
+/// `install_acp_agent` WS request handler. Mirrors the HTTP `POST /acp/install`
+/// handler. Degrade-mode (`acp_install: None`) returns `ACP_INSTALL_UNAVAILABLE`. All
 /// errors carry SCREAMING_SNAKE_CASE codes byte-identical to the other
 /// transports via `WsReply::err_with_code` (the protocol-level `WsErrorCode`
 /// enum is snake_case, so the install codes use the raw-string constructor).
@@ -287,8 +308,7 @@ pub(super) async fn handle_install_acp_agent(
 /// Runs the ACP agent-advertised `authenticate` method (e.g.
 /// `pi_terminal_login`) on the host where the agent process runs. Distinct
 /// from the WS connection `authenticate` token gate — this is the agent
-/// method, not the relay handshake. Mirrors the desktop `acp_authenticate`
-/// Tauri command (both call `AcpManager::authenticate`). The provider owns
+/// method, not the relay handshake. Calls `AcpManager::authenticate`. The provider owns
 /// the login UX (often opens its own browser); Termul never invents a
 /// redirect URL or stores credentials.
 #[derive(Debug, Deserialize)]
@@ -350,8 +370,7 @@ pub(super) async fn handle_authenticate_agent(
 /// redirect URL from the user's own browser and delivers it here. The manager
 /// validates it is http(s) AND loopback-only (SSRF guard — a non-loopback URL
 /// is rejected before any outbound request), then GETs it so the agent's own
-/// callback listener completes the flow. Mirrors the desktop
-/// `acp_auth_deliver_redirect` Tauri command (both call
+/// callback listener completes the flow (via
 /// `AcpManager::deliver_auth_redirect`). Success payload `{status}` is the
 /// listener's HTTP status code.
 #[derive(Debug, Deserialize)]

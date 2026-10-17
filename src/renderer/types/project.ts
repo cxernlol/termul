@@ -22,6 +22,11 @@ export interface Worktree {
   branch: string
   path: string
   createdAt: string // ISO timestamp
+  /**
+   * Web-only, derived by the worktree reconciler: the worktree path lies outside
+   * the project folder. Never persisted (`toPersistedWorktree` drops it).
+   */
+  outsideProjectRoot?: boolean
 }
 
 export interface ProjectGroup {
@@ -42,8 +47,7 @@ export interface Project {
    * `true` when this is the host's default project (set by the host's
    * `default_project_id`). Mirrors `ProjectSummary.isDefault` on the wire.
    * Distinct from `isActive` (per-client, set locally by `selectProject`).
-   * Surfaced in the desktop-hosted shared-live bridge (`useProjectsAutoSave`
-   * maps `summary.isDefault` → `Project.isDefault`).
+   * Set by the `projects` watch feed (`summary.isDefault` → `Project.isDefault`).
    */
   isDefault?: boolean
   isArchived?: boolean
@@ -52,7 +56,6 @@ export interface Project {
   defaultShell?: string
   envVars?: EnvVariable[]
   worktrees?: Worktree[]
-  activeWorktreeId?: string | null
   isGitRepo?: boolean
   symlinkDirs?: string[] // Directories to symlink from project root into worktrees
   /**
@@ -63,12 +66,6 @@ export interface Project {
    * before re-resolution finishes.
    */
   icon?: ProjectIcon
-}
-
-// Helper getters for worktree operations
-export function getActiveWorktree(project: Project): Worktree | undefined {
-  if (!project.activeWorktreeId) return undefined
-  return project.worktrees?.find((w) => w.id === project.activeWorktreeId)
 }
 
 export function isWorktreeTermulManaged(worktree: Worktree): boolean {
@@ -94,6 +91,12 @@ export interface Terminal {
   output?: TerminalLine[]
   pendingScrollback?: string[] // Legacy text snapshot to restore on terminal mount
   transcript?: string // Raw PTY transcript used for ANSI/styling-preserving restoration
+  /**
+   * True once `transcript` lost its head to a size or hidden-buffer trim since
+   * the last consume, so it no longer continues the screen a cached xterm
+   * holds. Cleared by `consumeTranscript`.
+   */
+  transcriptTrimmed?: boolean
   /**
    * Captured DEC private-mode snapshot (R3) to replay before `pendingScrollback`
    * on terminal mount, so an alt-screen TUI (vim/tmux/less) restores its

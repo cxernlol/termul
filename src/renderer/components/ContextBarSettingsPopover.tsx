@@ -39,13 +39,18 @@ export function ContextBarSettingsPopover(): React.JSX.Element {
           aria-label="Context bar settings"
         >
           <span className={STATUS_BAR_HIT_GLYPH}>
-            <Settings size={14} className="shrink-0" />
+            <Settings size={12} className="shrink-0" />
           </span>
         </button>
       </PopoverTrigger>
       <PopoverContent side="top" align="end" className="w-56">
         <div className="space-y-1">
           <h4 className="font-medium text-sm mb-2">Show in Context Bar</h4>
+          <SettingToggle
+            label="Project Name"
+            checked={settings.showProjectName}
+            onCheckedChange={() => handleToggle('showProjectName')}
+          />
           <SettingToggle
             label="Git Branch"
             checked={settings.showGitBranch}

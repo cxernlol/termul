@@ -23,6 +23,7 @@ const mocks = vi.hoisted(() => ({
   },
   writeFile: vi.fn(),
   readFile: vi.fn(),
+  getFileInfo: vi.fn(),
   removeTab: vi.fn(),
   toast: Object.assign(vi.fn(), {
     error: vi.fn(),
@@ -52,7 +53,8 @@ vi.mock('@/lib/api', () => ({
       }
     }),
     writeFile: mocks.writeFile,
-    readFile: mocks.readFile
+    readFile: mocks.readFile,
+    getFileInfo: mocks.getFileInfo
   }
 }))
 
@@ -137,9 +139,12 @@ describe('save → file watcher integration (GH-539)', () => {
 
     await useEditorStore.getState().saveFile(path)
 
+    mocks.getFileInfo.mockResolvedValue({ success: false, error: 'not found', code: 'STAT_ERROR' })
     mocks.handlers.deleted?.({ type: 'unlink', path })
 
+    await vi.waitFor(() => {
+      expect(mocks.removeTab).toHaveBeenCalledWith(`edit-${path}`)
+    })
     expect(useEditorStore.getState().openFiles.get(path)).toBeUndefined()
-    expect(mocks.removeTab).toHaveBeenCalledWith(`edit-${path}`)
   })
 })

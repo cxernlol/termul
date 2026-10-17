@@ -9,8 +9,17 @@ export function useAgentSkills(projectRoot: string | undefined): {
   reload: () => void
 } {
   const [skills, setSkills] = useState<AgentSkillSummary[]>([])
-  const [loading, setLoading] = useState(false)
+  const [loading, setLoading] = useState(true)
   const [reloadToken, setReloadToken] = useState(0)
+  const [trackedRoot, setTrackedRoot] = useState(projectRoot)
+  // Drop the previous project's rows in this render, before paint. The fetch
+  // effect runs after paint, so waiting for it would label the new project
+  // with the previous project's skills.
+  if (trackedRoot !== projectRoot) {
+    setTrackedRoot(projectRoot)
+    setSkills([])
+    setLoading(true)
+  }
 
   const reload = useCallback(() => {
     setReloadToken((t) => t + 1)

@@ -4,6 +4,14 @@
 //! `GET /oauth/callback` — the AS redirect target; exchanges code for token.
 //! `POST /mcp-servers/oauth/status` — check for stored token.
 //! `POST /mcp-servers/oauth/disconnect` — delete stored token.
+//!
+//! Every request names the `projectId` it acts for; an unknown, archived or
+//! pathless project is refused `NOT_FOUND`. `start` authorizes the server URL
+//! against THAT project's `.termul/mcp-servers.json` only. The token store
+//! itself stays keyed by server URL and host-global (`acp::mcp_oauth`): a token
+//! belongs to the host's credential for that URL, not to a project, so
+//! `status`/`disconnect` validate the project but read and delete the one
+//! URL-keyed token.
 
 use std::net::SocketAddr;
 
@@ -13,51 +21,14 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 
 use crate::acp::mcp_oauth;
-use crate::web::fs_api::IpcBody;
+use crate::web::fs_api::{check_local_only, IpcBody};
+use crate::web::mcp_servers_api::project_root_or_not_found;
 use crate::web::ws::AppState;
-
-/// Guard OAuth control routes (start/status/disconnect) the same way write
-/// routes are guarded: deny when shared-live deployment mode is active, and
-/// deny non-loopback peers without `--allow-remote-writes`. The
-/// `/oauth/callback` route stays publicly reachable for AS redirects.
-fn guard_oauth_control<T>(
-    peer: SocketAddr,
-    allow_remote_writes: bool,
-    shared_live_writes_denied: bool,
-    route: &str,
-) -> Option<IpcBody<T>> {
-    if shared_live_writes_denied {
-        tracing::warn!(
-            target: "termul::web::mcp_oauth_api",
-            route = route,
-            peer = %peer,
-            "OAuth control guard REFUSED (shared-live deployment mode denies all writes)",
-        );
-        return Some(IpcBody::<T>::err(
-            "shared-live deployment mode denies all remote writes".to_string(),
-            "FORBIDDEN",
-        ));
-    }
-    let is_loopback = peer.ip().is_loopback();
-    if is_loopback || allow_remote_writes {
-        None
-    } else {
-        tracing::warn!(
-            target: "termul::web::mcp_oauth_api",
-            route = route,
-            peer = %peer,
-            "OAuth control guard REFUSED (peer not loopback; no --allow-remote-writes)",
-        );
-        Some(IpcBody::<T>::err(
-            format!("OAuth control routes are localhost-only (peer {peer} is not loopback)"),
-            "FORBIDDEN",
-        ))
-    }
-}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OAuthStartRequest {
+    pub project_id: String,
     pub server_url: String,
 }
 
@@ -77,7 +48,7 @@ pub async fn oauth_start(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Json(request): Json<OAuthStartRequest>,
 ) -> Json<IpcBody<OAuthStartResponse>> {
-    if let Some(err) = guard_oauth_control(
+    if let Some(err) = check_local_only(
         peer,
         state.allow_remote_writes,
         state.shared_live_writes_denied,
@@ -90,7 +61,12 @@ pub async fn oauth_start(
     // service. Resolve the URL against the persisted MCP server registry
     // (`.termul/mcp-servers.json`) — reject if no enabled HTTP/SSE entry
     // matches.
-    let project_root = state.project_root.read().clone();
+    let project_root =
+        match project_root_or_not_found::<OAuthStartResponse>(&state.registry, &request.project_id)
+        {
+            Ok(root) => root,
+            Err(body) => return Json(body),
+        };
     if !is_authorized_mcp_server_url(&project_root, &request.server_url).await {
         log::warn!(
             "[mcp-oauth] web flow start rejected: server URL not in authorized registry (url redacted)"
@@ -213,6 +189,7 @@ fn urlencode(s: &str) -> String {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OAuthStatusRequest {
+    pub project_id: String,
     pub server_url: String,
 }
 
@@ -227,13 +204,16 @@ pub async fn oauth_status(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Json(request): Json<OAuthStatusRequest>,
 ) -> Json<IpcBody<OAuthStatusResponse>> {
-    if let Some(err) = guard_oauth_control(
+    if let Some(err) = check_local_only(
         peer,
         state.allow_remote_writes,
         state.shared_live_writes_denied,
         "/mcp-servers/oauth/status",
     ) {
         return Json(err);
+    }
+    if let Err(body) = project_root_or_not_found(&state.registry, &request.project_id) {
+        return Json(body);
     }
     let has_token = mcp_oauth::load_stored_token(&request.server_url)
         .map(|t| t.is_some())
@@ -246,13 +226,16 @@ pub async fn oauth_disconnect(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Json(request): Json<OAuthStatusRequest>,
 ) -> Json<IpcBody<()>> {
-    if let Some(err) = guard_oauth_control(
+    if let Some(err) = check_local_only(
         peer,
         state.allow_remote_writes,
         state.shared_live_writes_denied,
         "/mcp-servers/oauth/disconnect",
     ) {
         return Json(err);
+    }
+    if let Err(body) = project_root_or_not_found(&state.registry, &request.project_id) {
+        return Json(body);
     }
     match mcp_oauth::delete_stored_token(&request.server_url) {
         Ok(()) => {
@@ -270,7 +253,7 @@ pub async fn oauth_disconnect(
 }
 
 /// Check whether the given `server_url` matches an enabled HTTP/SSE entry in
-/// the persisted MCP server registry (`{project_root}/.termul/mcp-servers.json`).
+/// the persisted MCP server registry (`{project_root}/.termul/mcp-servers.json`) of the named project.
 /// This prevents a web client from using the OAuth start endpoint to make the
 /// host discover OAuth metadata for an attacker-selected URL.
 async fn is_authorized_mcp_server_url(project_root: &std::path::Path, server_url: &str) -> bool {
@@ -303,18 +286,19 @@ async fn build_web_auth_url(
     server_url: &str,
     redirect_uri: &str,
 ) -> Result<(String, String, String), mcp_oauth::McpOAuthError> {
-    use rmcp::transport::auth::{AuthorizationManager, AuthorizationSession};
+    use rmcp::transport::auth::{AuthorizationManager, AuthorizationRequest, AuthorizationSession};
     let mut manager = AuthorizationManager::new(server_url)
         .await
         .map_err(|e| mcp_oauth::McpOAuthError::DiscoveryFailed(e.to_string()))?;
-    let metadata = manager
-        .discover_metadata()
+    let resolution = manager
+        .resolve_metadata()
         .await
         .map_err(|e| mcp_oauth::McpOAuthError::DiscoveryFailed(e.to_string()))?;
-    manager.set_metadata(metadata);
-    let session = AuthorizationSession::new(manager, &[], redirect_uri, Some("Termul"), None)
+    manager.set_metadata(resolution.metadata);
+    let request = AuthorizationRequest::new(redirect_uri).with_client_name("Termul");
+    let session = AuthorizationSession::new(manager, request)
         .await
-        .map_err(|e| mcp_oauth::McpOAuthError::RegistrationFailed(e.to_string()))?;
+        .map_err(|(_manager, e)| mcp_oauth::McpOAuthError::RegistrationFailed(e.to_string()))?;
     let auth_url = session.get_authorization_url().to_string();
     let registered_uri = session.redirect_uri.clone();
     // Extract the CSRF state from the authorization URL query so the pending

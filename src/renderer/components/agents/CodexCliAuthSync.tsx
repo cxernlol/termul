@@ -9,7 +9,7 @@ import {
 import { invokeIpcWrapped } from '@/lib/ipc/tauri'
 import { logFrontendError } from '@/lib/log-api'
 import { isTauriContext } from '@/lib/tauri-runtime'
-import { useAcpStore } from '@/stores/acp-store'
+import { plainLastError, useAcpStore } from '@/stores/acp-store'
 import { isAnyAgentAuthInFlight } from '@/stores/acp-store/slices/agent'
 import { useProjectStore } from '@/stores/project-store'
 import { agentChatTabId, findPaneContainingTab, useWorkspaceStore } from '@/stores/workspace-store'
@@ -103,7 +103,10 @@ export function CodexCliAuthSync(): null {
               for (const sessionId of liveSessionIds) {
                 const session = sessions[sessionId]
                 if (!session) continue
-                sessions[sessionId] = { ...session, lastError: CODEX_CLI_SIGNED_OUT_MESSAGE }
+                sessions[sessionId] = {
+                  ...session,
+                  ...plainLastError(CODEX_CLI_SIGNED_OUT_MESSAGE)
+                }
                 changed = true
               }
               return changed ? { sessions } : {}

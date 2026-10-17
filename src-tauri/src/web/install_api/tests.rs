@@ -20,6 +20,10 @@ fn loopback_peer() -> SocketAddr {
 fn install_request(body: &'static [u8]) -> Request<Body> {
     Request::builder()
         .method("POST")
+        .header(
+            crate::web::command_ledger::COMMAND_ID_HEADER,
+            crate::web::command_ledger::test_clock::fresh_command_id(),
+        )
         .uri("/acp/install")
         .header("content-type", "application/json")
         .extension(ConnectInfo(loopback_peer()))
@@ -68,22 +72,21 @@ async fn state_with_store(root: &std::path::Path) -> AppState {
         exit_code_tracker: pty.exit_code_tracker(),
         pty,
         relay: Arc::new(crate::web::sink::WsRelaySink::new()),
-        registry: Arc::new(crate::web::project_registry::ProjectRegistry::new()),
-        registry_persistence: None,
-        projects_file: None,
+        registry: crate::web::project_registry::ProjectRegistry::seeded_for_test(
+            &std::env::temp_dir(),
+        ),
         history_mode: HistoryMode::LiveOnly,
-        project_root: Arc::new(parking_lot::RwLock::new(std::env::temp_dir())),
         pending_oauth_flows: std::sync::Arc::new(parking_lot::RwLock::new(
             std::collections::HashMap::new(),
         )),
         oauth_base_url: "http://127.0.0.1".to_string(),
-        workspace_manifest: None,
         acp_catalog: None,
         acp_install: Some(store),
         store: None,
         web_auth: None,
         allow_remote_writes: false,
         shared_live_writes_denied: false,
+        connections: Default::default(),
     }
 }
 
@@ -97,22 +100,21 @@ async fn state_without_store() -> AppState {
         exit_code_tracker: pty.exit_code_tracker(),
         pty,
         relay: Arc::new(crate::web::sink::WsRelaySink::new()),
-        registry: Arc::new(crate::web::project_registry::ProjectRegistry::new()),
-        registry_persistence: None,
-        projects_file: None,
+        registry: crate::web::project_registry::ProjectRegistry::seeded_for_test(
+            &std::env::temp_dir(),
+        ),
         history_mode: HistoryMode::LiveOnly,
-        project_root: Arc::new(parking_lot::RwLock::new(std::env::temp_dir())),
         pending_oauth_flows: std::sync::Arc::new(parking_lot::RwLock::new(
             std::collections::HashMap::new(),
         )),
         oauth_base_url: "http://127.0.0.1".to_string(),
-        workspace_manifest: None,
         acp_catalog: None,
         acp_install: None,
         store: None,
         web_auth: None,
         allow_remote_writes: false,
         shared_live_writes_denied: false,
+        connections: Default::default(),
     }
 }
 
@@ -155,6 +157,10 @@ async fn install_rejects_non_loopback_peer() {
         .oneshot(
             Request::builder()
                 .method("POST")
+                .header(
+                    crate::web::command_ledger::COMMAND_ID_HEADER,
+                    crate::web::command_ledger::test_clock::fresh_command_id(),
+                )
                 .uri("/acp/install")
                 .header("content-type", "application/json")
                 .extension(ConnectInfo(SocketAddr::from(([10, 0, 0, 5], 54321))))
@@ -184,6 +190,10 @@ async fn install_admits_non_loopback_peer_when_opt_in() {
         .oneshot(
             Request::builder()
                 .method("POST")
+                .header(
+                    crate::web::command_ledger::COMMAND_ID_HEADER,
+                    crate::web::command_ledger::test_clock::fresh_command_id(),
+                )
                 .uri("/acp/install")
                 .header("content-type", "application/json")
                 .extension(ConnectInfo(SocketAddr::from(([10, 0, 0, 5], 54321))))

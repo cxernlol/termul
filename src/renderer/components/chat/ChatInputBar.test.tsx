@@ -165,6 +165,19 @@ const {
 
 vi.mock('@/lib/tauri-runtime', () => ({ isTauriContext: mockIsTauri }))
 
+// The context strip's branch picker gates its write controls on the server's
+// write admission; covered in `ChatContextStrip.test.tsx`.
+vi.mock('@/hooks/use-server-admits-remote-writes', () => ({
+  useServerAdmitsRemoteWrites: () => true
+}))
+
+// Mobile dock tests flip this; every other suite runs the desktop shell.
+const { mobileRef } = vi.hoisted(() => ({ mobileRef: { current: false } }))
+vi.mock('@/hooks/use-mobile-web-shell', async (importActual) => ({
+  ...(await importActual<typeof import('@/hooks/use-mobile-web-shell')>()),
+  useMobileWebShell: () => mobileRef.current
+}))
+
 vi.mock('sonner', () => ({
   toast: { error: mockToastError, success: vi.fn() }
 }))
@@ -407,7 +420,9 @@ describe('ChatInputBar config controls', () => {
     expect(contextStrip).toBeInTheDocument()
     expect(composer).not.toContainElement(contextStrip)
     expect(screen.getByText('Worktree')).toBeInTheDocument()
-    expect(screen.getByText('chat/abcd1234')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Switch git branch' })).toHaveTextContent(
+      'chat/abcd1234'
+    )
     expect(screen.queryByText(/Shift\+Enter/i)).not.toBeInTheDocument()
     expect(screen.queryByText(/to send|to queue|newline/i)).not.toBeInTheDocument()
   })
@@ -424,27 +439,30 @@ describe('ChatInputBar config controls', () => {
       })
     }
 
-    it('shows the project branch in Local mode', () => {
+    it('shows the project branch in the branch picker for a current-checkout chat', () => {
       seedProject({ gitBranch: 'main', isGitRepo: true })
       renderInputBar()
 
-      expect(screen.getByText('Local')).toBeInTheDocument()
-      expect(screen.getByText('main')).toBeInTheDocument()
+      expect(screen.getByText('Current checkout')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Switch git branch' })).toHaveTextContent('main')
     })
 
     it('shows Detached HEAD when a git project has no branch', () => {
       seedProject({ isGitRepo: true })
       renderInputBar()
 
-      expect(screen.getByText('Detached HEAD')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Switch git branch' })).toHaveTextContent(
+        'Detached HEAD'
+      )
     })
 
-    it('shows no branch for a project that is not a git repo', () => {
+    it('keeps the plain read-only strip for a project that is not a git repo', () => {
       seedProject({ isGitRepo: false })
       renderInputBar()
 
-      expect(screen.getByText('Local')).toBeInTheDocument()
+      expect(screen.getByText('Current checkout')).toBeInTheDocument()
       expect(screen.queryByText('Detached HEAD')).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Switch git branch' })).not.toBeInTheDocument()
     })
   })
 
@@ -495,6 +513,47 @@ describe('ChatInputBar config controls', () => {
     clickMenuOption('Plan')
     expect(mockSetMode).toHaveBeenCalledWith('plan')
     expect(mockSetConfig).not.toHaveBeenCalled()
+  })
+
+  it('shows a boolean Fast mode option as the one bolt toggle, not a second switch', () => {
+    const s = session()
+    const configOptions: SessionConfigOption[] = [
+      option('model', 'Model', 'model', 'opus', [
+        { value: 'opus', name: 'Opus 5.5' },
+        { value: 'sonnet', name: 'Sonnet 5.5' }
+      ]),
+      option('effort', 'Effort', 'thought_level', 'high', [
+        { value: 'low', name: 'Low' },
+        { value: 'high', name: 'High' }
+      ]),
+      { id: 'fast_mode', name: 'Fast mode', type: 'boolean', currentValue: false }
+    ]
+
+    render(
+      <TooltipProvider>
+        <ChatInputBar
+          session={s}
+          busy={false}
+          disabled={false}
+          onSend={vi.fn()}
+          onSendBlocks={vi.fn()}
+          onCancel={vi.fn()}
+          commands={[]}
+          configOptions={configOptions}
+          modes={s.modes}
+          onSetConfig={mockSetConfig}
+          onSetMode={mockSetMode}
+          onSetModel={mockSetModel}
+        />
+      </TooltipProvider>
+    )
+    fireEvent.click(screen.getByRole('button', { name: /Opus 5\.5/ }))
+
+    expect(screen.getAllByTestId('selector-fast')).toHaveLength(1)
+    expect(screen.getByTestId('selector-fast')).toBeEnabled()
+    expect(screen.queryByRole('switch', { name: 'Fast mode' })).toBeNull()
+    fireEvent.click(screen.getByTestId('selector-fast'))
+    expect(mockSetConfig).toHaveBeenCalledWith('fast_mode', true)
   })
 
   it('searches and scroll-limits large active-chat model menus', async () => {
@@ -748,6 +807,67 @@ describe('ChatInputBar agent switch chip (Story 4, spec-in-chat-agent-switch)', 
       name: /Switch agent\. Currently Cursor/
     })
     expect(trigger).toBeDisabled()
+  })
+
+  it('disables the agent-backed controls via controlsDisabled while the editor stays enabled', async () => {
+    // A stopped chat that resumes on input: typing works, pickers would hit
+    // the stopped agent.
+    renderInputBar({ disabled: false, controlsDisabled: true })
+    const trigger = await screen.findByRole('button', {
+      name: /Switch agent\. Currently Cursor/
+    })
+    expect(trigger).toBeDisabled()
+    expect(screen.getByRole('button', { name: /^Agent$/ })).toBeDisabled()
+    expect(screen.queryByText('Session closed')).not.toBeInTheDocument()
+    await waitFor(() => {
+      expect(document.querySelector('[data-composer-editor="true"] p')).toHaveAttribute(
+        'data-placeholder',
+        'Ask anything… (/ for commands, @ for files)'
+      )
+    })
+  })
+
+  it('hides slash-menu mode and config rows via controlsDisabled while commands still list', async () => {
+    const commands = [{ name: 'compact', description: 'Compact the conversation' }]
+    const openSlashMenu = async (): Promise<HTMLElement> => {
+      await waitFor(() => {
+        expect(document.querySelector('[data-composer-editor="true"]')).not.toBeNull()
+      })
+      setComposerValue('/')
+      return screen.findByRole('listbox')
+    }
+
+    // Baseline: with the controls on, the session's modes list.
+    renderInputBar({ commands })
+    expect(within(await openSlashMenu()).getByText('Plan')).toBeInTheDocument()
+    cleanup()
+
+    // Modes only (no config options): no Plan/Ask rows, the command stays.
+    renderInputBar({ commands, disabled: false, controlsDisabled: true })
+    let listbox = await openSlashMenu()
+    expect(within(listbox).getByText('/compact')).toBeInTheDocument()
+    expect(within(listbox).queryByText('Plan')).not.toBeInTheDocument()
+    expect(within(listbox).queryByText('Ask')).not.toBeInTheDocument()
+    cleanup()
+
+    // Config options (which replace the mode rows when present): none list.
+    const effort = option('effort', 'Effort', 'other', 'low', [
+      { value: 'low', name: 'Low effort' },
+      { value: 'high', name: 'High effort' }
+    ])
+    renderInputBar({ commands, configOptions: [effort] })
+    expect(within(await openSlashMenu()).getByText('High effort')).toBeInTheDocument()
+    cleanup()
+    renderInputBar({
+      commands,
+      configOptions: [effort],
+      disabled: false,
+      controlsDisabled: true
+    })
+    listbox = await openSlashMenu()
+    expect(within(listbox).getByText('/compact')).toBeInTheDocument()
+    expect(within(listbox).queryByText('High effort')).not.toBeInTheDocument()
+    expect(within(listbox).queryByText('Low effort')).not.toBeInTheDocument()
   })
 
   it('cancel affordance clears the armed switch', async () => {
@@ -1161,11 +1281,14 @@ describe('ChatInputBar command chip', () => {
     // Select the command
     await selectSlashOption('/compact')
 
-    // Command pill should render inline (the CommandPill NodeView renders the
-    // SkillChip with name prefixed by `/` so the visible text is `/compact`).
+    // Command pill: terminal icon and muted `/compact`, not the skill sparkles.
     await waitFor(() => {
       expect(screen.getByText('/compact')).toBeInTheDocument()
     })
+    const commandPill = document.querySelector('[data-command-pill="true"]')
+    expect(commandPill?.querySelector('svg[data-termul-icon="TerminalSquare"]')).not.toBeNull()
+    expect(commandPill?.querySelector('svg[data-termul-icon="Sparkles"]')).toBeNull()
+    expect(commandPill?.querySelector('.text-muted-foreground')).not.toBeNull()
   })
 
   it('sends the command-prefixed wire with token display blocks on send', async () => {
@@ -1188,8 +1311,7 @@ describe('ChatInputBar command chip', () => {
     // Send
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
 
-    // Wire: `/compact hello` (byte-identical to the plain-prefix path).
-    // Display: the raw token text so the timeline renders the command chip.
+    // Wire: `/compact` stays where the token was. Display keeps the token.
     await waitFor(() => {
       expect(onSendBlocks).toHaveBeenCalledWith(
         [{ type: 'text', text: '/compact hello' }],
@@ -1281,6 +1403,41 @@ describe('ChatInputBar command chip', () => {
     expect(
       editor!.querySelector('[data-command-pill="true"][data-command-name="compact"]')
     ).not.toBeNull()
+    expect(mockToastError).toHaveBeenCalledWith('This message already has a command.')
+  })
+
+  it('keeps a command picked in the middle of a sentence in that place', async () => {
+    const onSendBlocks = vi.fn()
+    const commands = [{ name: 'compact', description: 'Compact the conversation' }]
+    renderInputBar({ commands, onSendBlocks })
+
+    setComposerValue('buatkan design baru /compact')
+
+    await selectSlashOption('/compact')
+
+    await waitFor(() => {
+      expect(getComposerValue()).toBe(`buatkan design baru ${commandToken('compact')} `)
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+
+    await waitFor(() => {
+      expect(onSendBlocks).toHaveBeenCalledWith(
+        [{ type: 'text', text: 'buatkan design baru /compact' }],
+        [{ type: 'text', text: `buatkan design baru ${commandToken('compact')}` }]
+      )
+    })
+  })
+
+  it('keeps a stored mid-sentence command where the draft put it', async () => {
+    const commands = [{ name: 'compact', description: 'Compact' }]
+    renderInputBar({ commands })
+
+    setComposerValue(`buatkan ${commandToken('compact')} design`)
+
+    await waitFor(() => {
+      expect(getComposerValue()).toBe(`buatkan ${commandToken('compact')} design`)
+    })
   })
 
   it('sends just the command (token display) when no message is typed', async () => {
@@ -1329,14 +1486,12 @@ describe('ChatInputBar command chip', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
 
-    // Wire: `/<name> ` prefix + the image block (byte-identical to the
-    // pre-token plain-prefix path). Display: raw token text + the image
-    // block so the timeline renders the command chip inline.
+    // Wire keeps `/compact` where the pill was. Display keeps the token.
     const imageBlock = { type: 'image', mimeType: 'image/png', data: 'c2NyZWVuc2hvdA==' }
     await waitFor(() => {
       expect(onSendBlocks).toHaveBeenCalledWith(
-        [{ type: 'text', text: '/compact ' }, imageBlock],
-        [{ type: 'text', text: commandToken('compact') }, imageBlock]
+        [{ type: 'text', text: '/compact' }, imageBlock],
+        [{ type: 'text', text: `${commandToken('compact')} ` }, imageBlock]
       )
     })
   })
@@ -1402,6 +1557,99 @@ describe('ChatInputBar command chip', () => {
     await waitFor(() => {
       expect(screen.getByRole('listbox')).toBeInTheDocument()
     })
+  })
+})
+
+/** A paste event carrying plain text (jsdom has no ClipboardEvent/DataTransfer). */
+function textPasteEvent(text: string): Event {
+  const clipboardData = {
+    types: ['text/plain'],
+    getData: (type: string) => (type === 'text/plain' || type === 'text' ? text : ''),
+    setData: () => {},
+    items: [],
+    files: [] as File[]
+  }
+  const ev = new Event('paste', { bubbles: true, cancelable: true })
+  Object.defineProperty(ev, 'clipboardData', { value: clipboardData, configurable: true })
+  return ev
+}
+
+function pasteIntoComposer(text: string): void {
+  const el = document.querySelector('[data-composer-editor="true"]')
+  if (!el) throw new Error('composer editor not mounted')
+  act(() => {
+    el.dispatchEvent(textPasteEvent(text))
+  })
+}
+
+// spec-idle-stopped-chat-seamless-resume: the draft-start signal pre-warms
+// the resume of a stopped chat.
+describe('ChatInputBar draft start', () => {
+  beforeEach(() => {
+    persistenceStore.clear()
+    fakePersistenceApi.readFails = false
+  })
+
+  it('fires onDraftStart on the first keystroke into an empty draft only', async () => {
+    const onDraftStart = vi.fn()
+    renderInputBar({ onDraftStart })
+    await waitFor(() => {
+      expect(document.querySelector('[data-composer-editor="true"]')).not.toBeNull()
+    })
+    expect(onDraftStart).not.toHaveBeenCalled()
+    setComposerValue('c')
+    setComposerValue('co')
+    expect(onDraftStart).toHaveBeenCalledTimes(1)
+    // Emptying the draft and typing again is a new draft start.
+    setComposerValue('')
+    setComposerValue('n')
+    expect(onDraftStart).toHaveBeenCalledTimes(2)
+  })
+
+  it('fires once for a paste into an empty draft', async () => {
+    const onDraftStart = vi.fn()
+    renderInputBar({ onDraftStart })
+    await waitFor(() => {
+      expect(document.querySelector('[data-composer-editor="true"]')).not.toBeNull()
+    })
+    pasteIntoComposer('pasted text')
+    expect(onDraftStart).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not fire for a paste into a non-empty draft', async () => {
+    const onDraftStart = vi.fn()
+    renderInputBar()
+    await waitFor(() => {
+      expect(document.querySelector('[data-composer-editor="true"]')).not.toBeNull()
+    })
+    setComposerValue('already typing')
+    cleanup()
+    // Same draft, now with the callback wired: the paste is not a draft start.
+    persistenceStore.set('chat-draft/p1/session-1', 'already typing')
+    renderInputBar({ onDraftStart })
+    await waitFor(() => {
+      expect(getComposerValue()).toBe('already typing')
+    })
+    pasteIntoComposer(' more')
+    expect(onDraftStart).not.toHaveBeenCalled()
+  })
+
+  it('does not fire for a restored draft', async () => {
+    persistenceStore.set('chat-draft/p1/session-1', 'half-typed message')
+    const onDraftStart = vi.fn()
+    renderInputBar({ onDraftStart })
+    await waitFor(() => {
+      expect(getComposerValue()).toBe('half-typed message')
+    })
+    expect(onDraftStart).not.toHaveBeenCalled()
+  })
+
+  it('shows the Session closed pill only while disabled', () => {
+    const { unmount } = renderInputBar({ disabled: true })
+    expect(screen.getByText('Session closed')).toBeInTheDocument()
+    unmount()
+    renderInputBar({ disabled: false })
+    expect(screen.queryByText('Session closed')).not.toBeInTheDocument()
   })
 })
 
@@ -1755,5 +2003,154 @@ describe('ChatInputBar skill chips (inline tokens)', () => {
     // The editor re-parses the tokens into pill nodes; the chip text renders.
     await waitFor(() => expect(screen.getByText('git-worktree')).toBeInTheDocument())
     await waitFor(() => expect(getComposerValue()).toBe(seeded))
+  })
+})
+
+// Mobile dock: the composer card is a programmatic focus target, the queue
+// starts collapsed, and the embedded permission prompt is touch sized and
+// guarded. Desktop keeps the baseline for each.
+describe('ChatInputBar mobile dock', () => {
+  const dockPermission = {
+    requestId: 'permission-1',
+    agentId: 'agent-1',
+    sessionId: 'session-1',
+    toolCall: { title: 'npm test' },
+    options: [
+      { optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' },
+      { optionId: 'reject-once', name: 'Decline', kind: 'reject_once' }
+    ]
+  } as NonNullable<ComponentProps<typeof ChatInputBar>['permission']>
+
+  const queue = [
+    { id: 'q1', createdAt: 1, blocks: [{ type: 'text', text: 'first queued' }] },
+    { id: 'q2', createdAt: 2, blocks: [{ type: 'text', text: 'second queued' }] }
+  ] as never
+
+  const bar = (props: Partial<ComponentProps<typeof ChatInputBar>> = {}) => {
+    const s = session()
+    return (
+      <TooltipProvider>
+        <ChatInputBar
+          session={s}
+          busy={false}
+          disabled={false}
+          onSend={vi.fn()}
+          onSendBlocks={vi.fn()}
+          onCancel={vi.fn()}
+          commands={[]}
+          configOptions={[]}
+          modes={s.modes}
+          onSetConfig={mockSetConfig}
+          onSetMode={mockSetMode}
+          onSetModel={mockSetModel}
+          {...props}
+        />
+      </TooltipProvider>
+    )
+  }
+  const composerCard = (): HTMLElement =>
+    document.querySelector<HTMLElement>('[data-chat-composer="true"]') as HTMLElement
+
+  beforeEach(() => {
+    mockRespondPermission.mockClear()
+    mobileRef.current = true
+  })
+
+  afterEach(() => {
+    mobileRef.current = false
+    vi.useRealTimers()
+  })
+
+  it('makes the composer card a focus target without an outline on the mobile shell', () => {
+    render(bar())
+    expect(composerCard()).toHaveAttribute('tabindex', '-1')
+    expect(composerCard()).toHaveClass('outline-none')
+  })
+
+  it('leaves the composer card out of the tab order and outline untouched on desktop', () => {
+    mobileRef.current = false
+    render(bar())
+    expect(composerCard()).not.toHaveAttribute('tabindex')
+    expect(composerCard()).not.toHaveClass('outline-none')
+  })
+
+  it('collapses the queue by default on mobile and keeps it expanded on desktop', () => {
+    const props = { queue, onRemoveQueued: vi.fn(), onSendQueuedNow: vi.fn() }
+    const mobile = render(bar(props))
+    expect(screen.getByRole('button', { name: '2 Queued' })).toHaveAttribute(
+      'aria-expanded',
+      'false'
+    )
+    mobile.unmount()
+
+    mobileRef.current = false
+    render(bar(props))
+    expect(screen.getByRole('button', { name: '2 Queued' })).toHaveAttribute(
+      'aria-expanded',
+      'true'
+    )
+  })
+
+  it('renders the embedded permission options at touch size', () => {
+    render(bar({ permission: dockPermission }))
+
+    for (const name of ['Allow once', 'Decline']) {
+      const button = screen.getByRole('button', { name })
+      expect(button).toHaveClass('h-11')
+      expect(button).not.toHaveClass('h-8')
+      expect(button).not.toHaveClass('text-xs')
+    }
+    expect(screen.getByTestId('permission-prompt')).not.toHaveAttribute('aria-live')
+  })
+
+  it('ignores a permission tap within 400ms of the prompt appearing, then answers once', () => {
+    vi.useFakeTimers({ toFake: ['Date', 'performance'] })
+    render(bar({ permission: dockPermission }))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Allow once' }))
+    expect(mockRespondPermission).not.toHaveBeenCalled()
+
+    act(() => {
+      vi.advanceTimersByTime(400)
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Allow once' }))
+    expect(mockRespondPermission).toHaveBeenCalledTimes(1)
+    expect(mockRespondPermission).toHaveBeenCalledWith('permission-1', 'allow-once')
+  })
+
+  it('starts the permission guard when a hidden pane turns visible', () => {
+    vi.useFakeTimers({ toFake: ['Date', 'performance'] })
+    const { rerender } = render(bar({ permission: dockPermission, isVisible: false }))
+    act(() => {
+      vi.advanceTimersByTime(5000)
+    })
+
+    rerender(bar({ permission: dockPermission, isVisible: true }))
+    fireEvent.click(screen.getByRole('button', { name: 'Allow once' }))
+    expect(mockRespondPermission).not.toHaveBeenCalled()
+
+    act(() => {
+      vi.advanceTimersByTime(400)
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Allow once' }))
+    expect(mockRespondPermission).toHaveBeenCalledTimes(1)
+    expect(mockRespondPermission).toHaveBeenCalledWith('permission-1', 'allow-once')
+  })
+
+  it('does not move focus out of the editor when a permission appears', async () => {
+    const { rerender } = render(bar())
+    await act(async () => {})
+    // jsdom does not treat a bare contenteditable as focusable; give the real
+    // editor surface a tabindex so it can hold focus like it does in a browser.
+    const editorSurface = composerCard().querySelector<HTMLElement>('[contenteditable="true"]')
+    expect(editorSurface).not.toBeNull()
+    editorSurface?.setAttribute('tabindex', '0')
+    act(() => editorSurface?.focus())
+    expect(editorSurface).toHaveFocus()
+
+    rerender(bar({ permission: dockPermission }))
+
+    expect(screen.getByTestId('permission-prompt')).toBeInTheDocument()
+    expect(editorSurface).toHaveFocus()
   })
 })

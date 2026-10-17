@@ -14,7 +14,7 @@ const mockRemoveTab = vi.fn()
 const mockTogglePaneFullscreen = vi.fn()
 const mockCloseFileIfIdle = vi.fn(() => true)
 const mockRemoveBrowserTab = vi.fn()
-const mockRequestCloseAgentChat = vi.hoisted(() => vi.fn())
+const mockCloseAgentChat = vi.hoisted(() => vi.fn())
 
 // Story 8 (web honesty): the tab-bar globe button (New Browser Tab) is
 // desktop-only. Mutable ref defaults to desktop so the existing browser-tab
@@ -131,19 +131,9 @@ vi.mock('@/stores/acp-store', () => ({
   useSessionIndexTitle: () => 'Chat 1'
 }))
 
-// Mutable so tests can mark a session as already-closing.
-const mockAgentChatLifetimeState = vi.hoisted(() => ({
-  closingSessionIds: {} as Record<string, true>
-}))
-
-vi.mock('@/stores/agent-chat-lifetime-store', () => ({
-  useAgentChatLifetimeStore: vi.fn(
-    (selector: (state: typeof mockAgentChatLifetimeState) => unknown) =>
-      selector(mockAgentChatLifetimeState)
-  )
-}))
-
-vi.mock('@/stores/git-status-store', () => ({
+vi.mock('@/stores/git-status-store', async (importOriginal) => ({
+  selectChangedFileCount: (await importOriginal<typeof import('@/stores/git-status-store')>())
+    .selectChangedFileCount,
   useGitStatusStore: vi.fn((selector: (state: unknown) => unknown) => selector({ statuses: {} }))
 }))
 
@@ -163,8 +153,8 @@ vi.mock('@/stores/canvas-store', () => ({
   )
 }))
 
-vi.mock('@/hooks/use-agent-idle-shutdown', () => ({
-  requestCloseAgentChat: mockRequestCloseAgentChat
+vi.mock('@/lib/agent-chat-close', () => ({
+  closeAgentChat: mockCloseAgentChat
 }))
 
 vi.mock('@/lib/log-api', () => ({
@@ -175,6 +165,7 @@ const mockStartTabDrag = vi.hoisted(() => vi.fn())
 const mockSetReorderPreview = vi.hoisted(() => vi.fn())
 const mockClearReorderPreview = vi.hoisted(() => vi.fn())
 const mockHandleTabReorder = vi.hoisted(() => vi.fn())
+const mockHandleDrop = vi.hoisted(() => vi.fn())
 
 interface MockPaneDndValue {
   startTabDrag: typeof mockStartTabDrag
@@ -183,6 +174,7 @@ interface MockPaneDndValue {
   setReorderPreview: typeof mockSetReorderPreview
   clearReorderPreview: typeof mockClearReorderPreview
   handleTabReorder: typeof mockHandleTabReorder
+  handleDrop?: typeof mockHandleDrop
 }
 
 const mockUsePaneDnd = vi.hoisted(() =>
@@ -219,110 +211,17 @@ vi.mock('@/lib/api', async () => {
     },
     clipboardApi: {
       writeText: vi.fn()
+    },
+    windowApi: {
+      onMaximizeChange: () => () => {},
+      minimize: vi.fn(),
+      toggleMaximize: vi.fn().mockResolvedValue({ success: true, data: false }),
+      close: vi.fn()
     }
   }
 })
 
-// Stub the Radix context-menu primitives. Every tab is wrapped in
-// `<TabContextMenu>`; the real primitives render via a portal + pointer-based
-// `onSelect` that is hard to drive from jsdom. This stateful stub opens the
-// menu on `contextmenu`, renders `<ContextMenuContent>` only while open
-// (so `findByText('Close Other Editors')` is singular even with multiple
-// editor tabs), closes on Escape, and wires `ContextMenuItem.onSelect` to a
-// click so the existing tab-menu tests assert the close callbacks without
-// the Radix portal/pointer plumbing.
-vi.mock('@/components/ui/context-menu', async () => {
-  const React = await import('react')
-  const MenuCtx = React.createContext<{ open: boolean; setOpen: (o: boolean) => void }>({
-    open: false,
-    setOpen: () => {}
-  })
-  const ContextMenu = ({ children }: { children: React.ReactNode }) => {
-    const [open, setOpen] = React.useState(false)
-    React.useEffect(() => {
-      if (!open) return
-      const onKey = (e: KeyboardEvent) => {
-        if (e.key === 'Escape') setOpen(false)
-      }
-      document.addEventListener('keydown', onKey)
-      return () => document.removeEventListener('keydown', onKey)
-    }, [open])
-    return <MenuCtx.Provider value={{ open, setOpen }}>{children}</MenuCtx.Provider>
-  }
-  const ContextMenuTrigger = ({
-    children,
-    asChild
-  }: {
-    children: React.ReactNode
-    asChild?: boolean
-  }) => {
-    const { setOpen } = React.useContext(MenuCtx)
-    const merged = (e: React.MouseEvent) => {
-      // F2: mirror Radix's composeEventHandlers({ checkForDefaultPrevented: true }) —
-      // if the child's onContextMenu already called preventDefault, do NOT open.
-      if (e.defaultPrevented) return
-      e.preventDefault()
-      setOpen(true)
-    }
-    if (asChild && React.isValidElement(children)) {
-      const child = children as React.ReactElement<{
-        onContextMenu?: (e: React.MouseEvent) => void
-      }>
-      return React.cloneElement(child, {
-        onContextMenu: (e: React.MouseEvent) => {
-          child.props.onContextMenu?.(e)
-          merged(e)
-        }
-      })
-    }
-    return <div onContextMenu={merged}>{children}</div>
-  }
-  const ContextMenuContent = ({
-    children,
-    className
-  }: {
-    children: React.ReactNode
-    className?: string
-  }) => {
-    const { open } = React.useContext(MenuCtx)
-    if (!open) return null
-    return (
-      <div role="menu" className={className}>
-        {children}
-      </div>
-    )
-  }
-  const ContextMenuItem = ({
-    children,
-    disabled,
-    onSelect,
-    variant
-  }: {
-    children: React.ReactNode
-    disabled?: boolean
-    onSelect?: () => void
-    variant?: 'default' | 'destructive'
-  }) => (
-    <div
-      role="menuitem"
-      data-disabled={disabled ? '' : undefined}
-      data-variant={variant}
-      onClick={() => {
-        if (!disabled) onSelect?.()
-      }}
-    >
-      {children}
-    </div>
-  )
-  const ContextMenuSeparator = () => <hr />
-  return {
-    ContextMenu,
-    ContextMenuTrigger,
-    ContextMenuContent,
-    ContextMenuItem,
-    ContextMenuSeparator
-  }
-})
+vi.mock('@/components/ui/context-menu', () => import('@/lib/test-utils/context-menu'))
 
 beforeEach(() => {
   mockSetActiveTab.mockReset()
@@ -333,11 +232,9 @@ beforeEach(() => {
   mockTogglePaneFullscreen.mockReset()
   mockCloseFileIfIdle.mockReset()
   mockRemoveBrowserTab.mockReset()
-  mockRequestCloseAgentChat.mockReset()
+  mockCloseAgentChat.mockReset()
   // Default: an idle chat closes immediately via the provided callback.
-  mockRequestCloseAgentChat.mockImplementation((_sessionId: string, closeTab: () => void) =>
-    closeTab()
-  )
+  mockCloseAgentChat.mockImplementation((_sessionId: string, closeTab: () => void) => closeTab())
   tauriRef.current = true
   mockWorkspaceStoreState.fullscreenPaneId = null
   mockCloseFileIfIdle.mockReturnValue(true)
@@ -347,7 +244,7 @@ beforeEach(() => {
   mockSetReorderPreview.mockReset()
   mockClearReorderPreview.mockReset()
   mockHandleTabReorder.mockReset()
-  mockAgentChatLifetimeState.closingSessionIds = {}
+  mockHandleDrop.mockReset()
   mockUsePaneDnd.mockReset()
   mockUsePaneDnd.mockReturnValue({
     startTabDrag: mockStartTabDrag,
@@ -373,13 +270,21 @@ async function flushShellEffect(): Promise<void> {
   })
 }
 
+async function openNewTabMenu(): Promise<void> {
+  fireEvent.pointerDown(screen.getByRole('button', { name: 'New tab' }), {
+    button: 0,
+    ctrlKey: false
+  })
+  await screen.findByRole('menu')
+}
+
 describe('WorkspaceTabBar', () => {
   it('shows pane plus action and no pane-close side control', async () => {
     render(<WorkspaceTabBar paneId="pane-a" tabs={[]} activeTabId={null} onAddTerminal={vi.fn()} />)
 
     await flushShellEffect()
 
-    expect(screen.getByTitle('Open terminal menu')).toBeInTheDocument()
+    expect(screen.getByTitle('New tab')).toBeInTheDocument()
 
     await waitFor(() => {
       expect(screen.queryByTitle('Close pane')).not.toBeInTheDocument()
@@ -395,8 +300,8 @@ describe('WorkspaceTabBar', () => {
 
     await flushShellEffect()
 
-    fireEvent.click(screen.getByTitle('Open terminal menu'))
-    fireEvent.click(screen.getByText('Bash'))
+    await openNewTabMenu()
+    fireEvent.click(await screen.findByRole('menuitem', { name: /Bash/ }))
 
     expect(onAddTerminal).toHaveBeenCalledTimes(1)
     expect(onAddTerminal).toHaveBeenCalledWith(
@@ -418,15 +323,16 @@ describe('WorkspaceTabBar', () => {
 
     await flushShellEffect()
 
-    fireEvent.click(screen.getByTitle('New Browser Tab'))
+    await openNewTabMenu()
+    fireEvent.click(screen.getByRole('menuitem', { name: 'New browser tab' }))
 
     expect(onAddBrowserTab).toHaveBeenCalledTimes(1)
   })
 
-  // Story 8 (web honesty): the New Browser Tab globe button is desktop-only —
-  // on the web client it must be absent (browser tabs are native child
-  // webviews), while the terminal menu stays available.
-  it('hides the New Browser Tab globe button on web', async () => {
+  // Story 8 (web honesty): the New browser tab item is desktop-only — on the
+  // web client it must be absent (browser tabs are native child webviews),
+  // while the terminal shells stay available.
+  it('omits the New browser tab item on web', async () => {
     const onAddBrowserTab = vi.fn()
     const prev = tauriRef.current
     tauriRef.current = false
@@ -443,8 +349,9 @@ describe('WorkspaceTabBar', () => {
 
       await flushShellEffect()
 
-      expect(screen.queryByTitle('New Browser Tab')).not.toBeInTheDocument()
-      expect(screen.getByTitle('Open terminal menu')).toBeInTheDocument()
+      await openNewTabMenu()
+      expect(screen.queryByRole('menuitem', { name: 'New browser tab' })).not.toBeInTheDocument()
+      expect(await screen.findByRole('menuitem', { name: /Bash/ })).toBeInTheDocument()
       expect(onAddBrowserTab).not.toHaveBeenCalled()
     } finally {
       tauriRef.current = prev
@@ -485,7 +392,7 @@ describe('WorkspaceTabBar', () => {
     expect(tabEl.className).toContain('text-foreground')
     expect(tabEl.className).not.toContain('border-b')
     // The raised surface is its own layer so it can slide between tabs.
-    expect(tabEl.querySelector('.bg-muted')).toBeTruthy()
+    expect(tabEl.querySelector('.keycap')).toBeTruthy()
     expect(container.querySelector('.h-10')?.className).not.toContain('border-b')
   })
 
@@ -855,6 +762,50 @@ describe('WorkspaceTabBar', () => {
     expect(mockSetReorderPreview).toHaveBeenCalledWith('pane-a', 'tab-2', 'after')
   })
 
+  it('drops a chat on the tab bar as a centre drop', async () => {
+    mockUsePaneDnd.mockReturnValue({
+      startTabDrag: mockStartTabDrag,
+      dragPayload: { type: 'chat', sessionId: 's-1' },
+      reorderPreview: null,
+      setReorderPreview: mockSetReorderPreview,
+      clearReorderPreview: mockClearReorderPreview,
+      handleTabReorder: mockHandleTabReorder,
+      handleDrop: mockHandleDrop
+    })
+    const tabs: WorkspaceTab[] = [{ type: 'terminal', id: 'tab-1', terminalId: 'term-1' }]
+    const { container } = render(
+      <WorkspaceTabBar paneId="pane-a" tabs={tabs} activeTabId="tab-1" />
+    )
+    await flushShellEffect()
+
+    fireEvent.drop(container.firstElementChild?.firstElementChild as HTMLElement)
+
+    expect(mockHandleDrop).toHaveBeenCalledTimes(1)
+    expect(mockHandleDrop.mock.calls[0][0]).toBe('pane-a')
+    expect(mockHandleDrop.mock.calls[0][1]).toBe('center')
+  })
+
+  it('leaves tab payload drops on the bar to the existing handlers', async () => {
+    mockUsePaneDnd.mockReturnValue({
+      startTabDrag: mockStartTabDrag,
+      dragPayload: { type: 'tab', tabId: 'tab-1', sourcePaneId: 'pane-a' },
+      reorderPreview: null,
+      setReorderPreview: mockSetReorderPreview,
+      clearReorderPreview: mockClearReorderPreview,
+      handleTabReorder: mockHandleTabReorder,
+      handleDrop: mockHandleDrop
+    })
+    const tabs: WorkspaceTab[] = [{ type: 'terminal', id: 'tab-1', terminalId: 'term-1' }]
+    const { container } = render(
+      <WorkspaceTabBar paneId="pane-a" tabs={tabs} activeTabId="tab-1" />
+    )
+    await flushShellEffect()
+
+    fireEvent.drop(container.firstElementChild?.firstElementChild as HTMLElement)
+
+    expect(mockHandleDrop).not.toHaveBeenCalled()
+  })
+
   it('calls handleTabReorder when dropping on a tab', async () => {
     // Mock dragPayload to indicate we're dragging a tab from the same pane
     mockUsePaneDnd.mockReturnValue({
@@ -975,6 +926,20 @@ describe('WorkspaceTabBar', () => {
     const gitTab2: WorkspaceTab = { type: 'git', id: 'git-2', cwd: '/repo' }
     const gitHistoryTab: WorkspaceTab = { type: 'git-history', id: 'gh-1', cwd: '/repo' }
     const agentChatTab: WorkspaceTab = { type: 'agent-chat', id: 'ac-1', sessionId: 'session-1' }
+    const diffTab: WorkspaceTab = {
+      type: 'diff',
+      id: 'diff:abc',
+      cwd: '/repo',
+      path: 'src/a.ts',
+      staged: false
+    }
+    const commitDiffTab: WorkspaceTab = {
+      type: 'commit-diff',
+      id: 'diff:def',
+      cwd: '/repo',
+      commit: 'e44b917'.padEnd(40, '0'),
+      path: 'src/a.ts'
+    }
 
     const TAB_LABEL: Array<{ kind: TabContextMenuKind; tab: WorkspaceTab; label: string }> = [
       { kind: 'terminal', tab: terminalTab, label: 'Terminal 1' },
@@ -982,6 +947,8 @@ describe('WorkspaceTabBar', () => {
       { kind: 'browser', tab: browserTab, label: 'Docs' },
       { kind: 'git', tab: gitTab1, label: 'Git Changes' },
       { kind: 'git-history', tab: gitHistoryTab, label: 'Git History' },
+      { kind: 'diff', tab: diffTab, label: 'a.ts' },
+      { kind: 'commit-diff', tab: commitDiffTab, label: 'a.ts @ e44b917' },
       // No ACP session is seeded; the tab labels itself from the mocked index
       // title.
       { kind: 'agent-chat', tab: agentChatTab, label: 'Chat 1' }
@@ -1245,25 +1212,6 @@ describe('WorkspaceTabBar', () => {
       fireEvent.click(screen.getByText('Close'))
       expect(onCloseTerminal).toHaveBeenCalledWith('term-1', 'tab-1')
     })
-
-    it('disables Close and excludes an agent-chat tab already closing from bulk targets', async () => {
-      mockAgentChatLifetimeState.closingSessionIds = { 'session-1': true }
-      const onCloseTabs = vi.fn()
-      const tabs: WorkspaceTab[] = [agentChatTab, gitTab1]
-
-      render(
-        <WorkspaceTabBar paneId="pane-a" tabs={tabs} activeTabId="ac-1" onCloseTabs={onCloseTabs} />
-      )
-      await flushShellEffect()
-
-      await openMenuOn('Chat 1')
-      expect(screen.getByText('Close')).toHaveAttribute('data-disabled')
-      expect(screen.getByText('Close Other Agent Chats')).toHaveAttribute('data-disabled')
-
-      // Close All Tabs still targets the remaining closable tab only.
-      fireEvent.click(screen.getByText('Close All Tabs'))
-      expect(onCloseTabs).toHaveBeenCalledWith([gitTab1])
-    })
   })
 
   describe('middle-click close', () => {
@@ -1374,7 +1322,26 @@ describe('WorkspaceTabBar', () => {
       expect(mockRemoveTab).toHaveBeenCalledWith('gh-1')
     })
 
-    it('closes an agent-chat tab on middle click through requestCloseAgentChat', async () => {
+    it('renders a diff tab with its file name and side, and closes it on middle click', async () => {
+      const diffTab: WorkspaceTab = {
+        type: 'diff',
+        id: 'diff:abc',
+        cwd: '/repo',
+        path: 'src/a.ts',
+        staged: true
+      }
+      const { container } = render(
+        <WorkspaceTabBar paneId="pane-a" tabs={[diffTab]} activeTabId="diff:abc" />
+      )
+      await flushShellEffect()
+
+      expect(screen.getByText('a.ts (staged)')).toBeInTheDocument()
+      middleClick(container.querySelector('[draggable="true"]') as HTMLElement)
+
+      expect(mockRemoveTab).toHaveBeenCalledWith('diff:abc')
+    })
+
+    it('closes an agent-chat tab on middle click through closeAgentChat', async () => {
       const { container } = render(
         <WorkspaceTabBar paneId="pane-a" tabs={[agentChatTab]} activeTabId="ac-1" />
       )
@@ -1382,7 +1349,7 @@ describe('WorkspaceTabBar', () => {
 
       middleClick(container.querySelector('[draggable="true"]') as HTMLElement)
 
-      expect(mockRequestCloseAgentChat).toHaveBeenCalledWith('session-1', expect.any(Function))
+      expect(mockCloseAgentChat).toHaveBeenCalledWith('session-1', expect.any(Function))
       expect(mockRemoveTab).toHaveBeenCalledWith('ac-1')
     })
 
@@ -1569,6 +1536,96 @@ describe('WorkspaceTabBar', () => {
         expect(exit.opacity).toBe(0)
         expect(exit.transition.duration).toBe(0)
       }
+    })
+  })
+
+  describe('top row (flagged shell)', () => {
+    const mountTabs: WorkspaceTab[] = [
+      { type: 'editor', id: 'edit-/a.ts', filePath: '/a.ts' },
+      { type: 'terminal', id: 'tab-1', terminalId: 'term-1' }
+    ]
+
+    const dragged = (container: HTMLElement): HTMLElement[] => [
+      ...container.querySelectorAll<HTMLElement>('[data-tauri-drag-region]')
+    ]
+
+    it('has no drag region and no window controls without topRow', async () => {
+      const { container } = render(
+        <WorkspaceTabBar
+          paneId="pane-a"
+          tabs={mountTabs}
+          activeTabId="edit-/a.ts"
+          onAddTerminal={vi.fn()}
+        />
+      )
+      await flushShellEffect()
+      expect(dragged(container)).toHaveLength(0)
+      expect(screen.queryByTestId('window-controls')).toBeNull()
+    })
+
+    it('marks the bar root, tabs wrapper, scroller, tablist and trailing wrapper, never a tab or button', async () => {
+      const { container } = render(
+        <WorkspaceTabBar
+          paneId="pane-a"
+          tabs={mountTabs}
+          activeTabId="edit-/a.ts"
+          onAddTerminal={vi.fn()}
+          topRow={{ dragRegion: true, windowControls: false }}
+        />
+      )
+      await flushShellEffect()
+
+      const marked = dragged(container)
+      expect(marked).toHaveLength(5)
+      expect(marked).toContain(container.querySelector('[role="tablist"]'))
+      expect(marked).toContain(container.firstElementChild as HTMLElement)
+      for (const element of marked) {
+        expect(element.tagName).toBe('DIV')
+        expect(element.getAttribute('role')).not.toBe('tab')
+      }
+      for (const button of screen.getAllByRole('button')) {
+        expect(button).not.toHaveAttribute('data-tauri-drag-region')
+      }
+      expect(container.querySelector('[role="tab"][data-tauri-drag-region]')).toBeNull()
+      expect(screen.queryByTestId('window-controls')).toBeNull()
+    })
+
+    it('renders the window controls flush at the right end, after the trailing buttons', async () => {
+      const { container } = render(
+        <WorkspaceTabBar
+          paneId="pane-a"
+          tabs={mountTabs}
+          activeTabId="edit-/a.ts"
+          onAddTerminal={vi.fn()}
+          topRow={{ dragRegion: true, windowControls: true }}
+        />
+      )
+      await flushShellEffect()
+
+      const controls = screen.getByTestId('window-controls')
+      const bar = container.firstElementChild as HTMLElement
+      expect(bar.lastElementChild).toBe(controls)
+      expect(controls).not.toHaveAttribute('data-tauri-drag-region')
+      expect(screen.getAllByRole('button', { name: /window$/ })).toHaveLength(3)
+      // The New tab button comes before the controls.
+      expect(
+        screen.getByTitle('New tab').compareDocumentPosition(controls) &
+          Node.DOCUMENT_POSITION_FOLLOWING
+      ).toBeTruthy()
+    })
+
+    it('renders the controls without drag attributes on a bar without drag (web-like)', async () => {
+      const { container } = render(
+        <WorkspaceTabBar
+          paneId="pane-a"
+          tabs={[]}
+          activeTabId={null}
+          topRow={{ dragRegion: false, windowControls: true }}
+        />
+      )
+      await flushShellEffect()
+      expect(dragged(container)).toHaveLength(0)
+      expect(screen.getByTestId('window-controls')).toBeInTheDocument()
     })
   })
 })

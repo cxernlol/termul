@@ -1,6 +1,7 @@
-import { expect, request, test } from 'playwright/test'
+import { randomUUID } from 'node:crypto'
+import { expect, type Page, request, test } from 'playwright/test'
 import { E2E_BASE_URL, E2E_TOKEN } from './helpers'
-import { openWorkspace, selectProject } from './ui'
+import { openWorkspace, selectColumnTab, selectProject } from './ui'
 
 /**
  * Editor regression guards (the "editor always spinning" class):
@@ -9,9 +10,8 @@ import { openWorkspace, selectProject } from './ui'
  * - EditorPanel renders "Loading..." while a workspace editor tab exists
  *   without a matching editor-store file state; only a SUCCESSFUL
  *   filesystemApi.readFile clears it (editor-store.ts openFile).
- * - On web that read is GET /fs/read — a failure (or a manifest-restore
- *   tab whose read failed) strands the tab on "Loading..." forever
- *   (use-workspace-manifest-sync.ts keeps the tab, swallows the error).
+ * - On web that read is GET /fs/read — a failure (or a restored
+ *   tab whose read failed) strands the tab on "Loading..." forever.
  *
  * These tests pin the healthy paths: file open renders content, and a
  * reload restores the editor tab with content (not a stuck loader).
@@ -30,16 +30,32 @@ const RELOAD_FILE_NAME = 'e2e-reload.md'
 async function writeFileOnServer(path: string, content: string): Promise<void> {
   const api = await request.newContext()
   const res = await api.post(`${E2E_BASE_URL}/fs/write`, {
-    headers: { Authorization: `Bearer ${E2E_TOKEN}`, 'content-type': 'application/json' },
+    headers: {
+      Authorization: `Bearer ${E2E_TOKEN}`,
+      'content-type': 'application/json',
+      // /fs/write is ledgered: the host refuses it without a command id.
+      'X-Command-Id': randomUUID()
+    },
     data: { path, content }
   })
-  if (!res.ok()) throw new Error(`fs/write failed: ${res.status()}`)
+  const body = (await res.json()) as { success?: boolean; error?: string }
+  if (!res.ok() || !body.success) throw new Error(`fs/write failed: ${res.status()} ${body.error}`)
 }
 
 async function workspaceRoot(): Promise<string> {
   const root = process.env.E2E_WORKSPACE_ROOT
   if (!root) throw new Error('E2E_WORKSPACE_ROOT not set (global-setup)')
   return root
+}
+
+/**
+ * The Explorer is a Side panel Column tab; Refresh lives in its header's
+ * "More explorer actions" menu.
+ */
+async function refreshExplorer(page: Page): Promise<void> {
+  await selectColumnTab(page, 'Explorer')
+  await page.getByRole('button', { name: 'More explorer actions' }).click()
+  await page.getByRole('menuitem', { name: 'Refresh' }).click()
 }
 
 test('editor opens a file and renders content (no stuck "Loading...")', async ({ page }) => {
@@ -51,7 +67,7 @@ test('editor opens a file and renders content (no stuck "Loading...")', async ({
   await selectProject(page, 'proj-e')
 
   // Refresh the explorer so the new file appears, then open it.
-  await page.locator('[aria-label="Refresh"]').first().click()
+  await refreshExplorer(page)
   const fileNode = page.locator(`[data-path$="${FILE_NAME}"]`).first()
   await fileNode.waitFor({ state: 'visible' })
   await fileNode.dblclick()
@@ -69,7 +85,7 @@ test('reload restores the editor tab with its content (not a stuck loader)', asy
   await openWorkspace(page)
   await selectProject(page, 'proj-e')
 
-  await page.locator('[aria-label="Refresh"]').first().click()
+  await refreshExplorer(page)
   const fileNode = page.locator(`[data-path$="${RELOAD_FILE_NAME}"]`).first()
   await fileNode.waitFor({ state: 'visible' })
   await fileNode.dblclick()

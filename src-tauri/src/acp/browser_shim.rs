@@ -5,7 +5,7 @@
 //! targets `127.0.0.1` on the server, unreachable from the user's browser.
 //!
 //! This module installs a per-agent shim directory under
-//! `temp_dir()/termul-acp-shim/<agent_id>/` holding tiny POSIX `sh` scripts for
+//! `temp_dir()/termul-acp-shim/<host_id>/<agent_id>/` holding tiny POSIX `sh` scripts for
 //! the common browser-open entry points (`xdg-open`, `sensible-browser`,
 //! `x-www-browser`, `www-browser`, `gnome-open`, `kde-open`, `open`, `gio`).
 //! Each script appends its last `http(s)://` argument to a `urls` sink file and
@@ -24,6 +24,13 @@
 //! following, 15s timeout) so the agent's own callback listener completes the
 //! flow.
 //!
+//! Every host process (desktop, `termul-server`, test binaries) shares the
+//! `termul-acp-shim` root, so each one claims its own `<host_id>` dir and holds
+//! an exclusive lock on the `.host.lock` file inside it for its whole life. A
+//! host killed with SIGKILL never runs agent teardown, but the kernel still
+//! drops its lock. On startup, each host removes every host dir whose lock it
+//! can take. That never touches a live host's dir.
+//!
 //! Logging policy: captured/pasted URLs carry OAuth state — only scheme+host
 //! (capture) or host+port (replay) are ever logged, never the full URL.
 
@@ -35,7 +42,7 @@ use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(unix)]
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 #[cfg(unix)]
@@ -62,6 +69,11 @@ const SHIM_PROGRAMS: &[&str] = &[
 /// Name of the sink file each shim script appends captured URLs to.
 #[cfg(unix)]
 const SINK_FILE_NAME: &str = "urls";
+
+/// Lock file inside each host dir. Its owner holds an exclusive lock on it for
+/// the life of the process.
+#[cfg(unix)]
+const HOST_LOCK_FILE_NAME: &str = ".host.lock";
 
 /// Sink poll interval for the watcher thread.
 #[cfg(unix)]
@@ -95,21 +107,111 @@ real="$(command -v "$(basename "$0")" 2>/dev/null)"
 exit 0
 "#;
 
-/// Root directory holding every agent's shim dir:
+/// Root directory shared by every host's shim dir:
 /// `temp_dir()/termul-acp-shim/`.
 #[cfg(unix)]
 fn shim_root() -> PathBuf {
     std::env::temp_dir().join("termul-acp-shim")
 }
 
-/// Per-agent shim directory: `temp_dir()/termul-acp-shim/<agent_id>/`.
+/// A host's own dir under the shim root. Dropping it releases the lock, which
+/// makes the dir sweepable by the next host that starts.
+#[cfg(unix)]
+struct HostShimDir {
+    path: PathBuf,
+    _lock: std::fs::File,
+}
+
+#[cfg(unix)]
+static HOST_SHIM_DIR: OnceLock<Option<HostShimDir>> = OnceLock::new();
+
+/// This host's dir, `temp_dir()/termul-acp-shim/<host_id>/`. The first call
+/// claims it and then sweeps the dirs that dead hosts left behind. `None` when
+/// the claim failed; agents then run without the shim.
+#[cfg(unix)]
+pub(crate) fn host_shim_dir() -> Option<&'static Path> {
+    HOST_SHIM_DIR
+        .get_or_init(|| {
+            let root = shim_root();
+            match claim_host_dir(&root) {
+                Ok(host) => {
+                    sweep_stale_host_dirs(&root);
+                    Some(host)
+                }
+                Err(e) => {
+                    log::warn!(
+                        "[acp] browser shim: failed to claim a host dir under {}: {e}",
+                        root.display()
+                    );
+                    None
+                }
+            }
+        })
+        .as_ref()
+        .map(|host| host.path.as_path())
+}
+
+/// Create a uniquely named host dir under `root` and lock it. The dir is built
+/// under a dot-prefixed staging name and renamed only once its lock is held,
+/// so no sweeper ever sees a visible host dir whose lock is free while its
+/// owner is alive.
+#[cfg(unix)]
+fn claim_host_dir(root: &Path) -> std::io::Result<HostShimDir> {
+    use std::os::unix::fs::DirBuilderExt;
+
+    std::fs::create_dir_all(root)?;
+    let host_id = uuid::Uuid::new_v4().to_string();
+    let staging = root.join(format!(".staging-{host_id}"));
+    std::fs::DirBuilder::new().mode(0o700).create(&staging)?;
+    let lock = std::fs::File::create(staging.join(HOST_LOCK_FILE_NAME))?;
+    lock.try_lock()?;
+    let path = root.join(host_id);
+    std::fs::rename(&staging, &path)?;
+    Ok(HostShimDir { path, _lock: lock })
+}
+
+/// Remove every host dir under `root` whose owner is gone. Taking a host's
+/// lock proves it died. Locks conflict between open files even inside one
+/// process, so this host's own dir is never taken. Staging dirs and dirs
+/// without a lock file (the older `<agent_id>`-only layout) are left alone.
+#[cfg(unix)]
+fn sweep_stale_host_dirs(root: &Path) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if entry.file_name().to_string_lossy().starts_with('.') {
+            continue;
+        }
+        let path = entry.path();
+        let Ok(lock) = std::fs::File::open(path.join(HOST_LOCK_FILE_NAME)) else {
+            continue;
+        };
+        if lock.try_lock().is_err() {
+            continue;
+        }
+        match std::fs::remove_dir_all(&path) {
+            Ok(()) => log::info!(
+                "[acp] browser shim: removed {} left by a host that is gone",
+                path.display()
+            ),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => log::warn!(
+                "[acp] browser shim: failed to remove stale {}: {e}",
+                path.display()
+            ),
+        }
+    }
+}
+
+/// Per-agent shim directory: `<host shim dir>/<agent_id>/`.
 ///
 /// `AgentId` is a UUID (safe charset); the component filter is defense-in-depth
 /// so a non-UUID id can never escape the shim root via `..` or `/`. An id that
 /// sanitizes to nothing maps to the fixed `"_"` component rather than the shim
 /// root itself (which would collide with every other agent's scripts).
 #[cfg(unix)]
-pub(crate) fn shim_dir_for(agent_id: &AgentId) -> PathBuf {
+pub(crate) fn shim_dir_for(agent_id: &AgentId) -> Option<PathBuf> {
     let safe: String = agent_id
         .0
         .chars()
@@ -120,7 +222,7 @@ pub(crate) fn shim_dir_for(agent_id: &AgentId) -> PathBuf {
     } else {
         safe
     };
-    shim_root().join(safe)
+    Some(host_shim_dir()?.join(safe))
 }
 
 /// Install the shim scripts for `agent_id`, returning the shim dir on success.
@@ -134,7 +236,7 @@ pub(crate) fn shim_dir_for(agent_id: &AgentId) -> PathBuf {
 pub(crate) fn install_shim(agent_id: &AgentId) -> Option<PathBuf> {
     use std::os::unix::fs::PermissionsExt;
 
-    let dir = shim_dir_for(agent_id);
+    let dir = shim_dir_for(agent_id)?;
     if let Err(e) = std::fs::create_dir_all(&dir) {
         log::warn!(
             "[acp] {agent_id} browser shim: failed to create {}: {e}",
@@ -185,7 +287,9 @@ pub(crate) fn install_shim(agent_id: &AgentId) -> Option<PathBuf> {
 /// Remove the agent's shim dir (best-effort; called on agent teardown).
 #[cfg(unix)]
 pub(crate) fn remove_shim(agent_id: &AgentId) {
-    let dir = shim_dir_for(agent_id);
+    let Some(dir) = shim_dir_for(agent_id) else {
+        return;
+    };
     if dir.exists() {
         if let Err(e) = std::fs::remove_dir_all(&dir) {
             log::warn!(

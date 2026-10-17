@@ -1,26 +1,41 @@
 /**
  * ACP (Agent Client Protocol) renderer facade.
  *
- * This is the ONLY module in the renderer that talks to the P0 ACP backend
- * (Tauri commands `acp_*` / events `acp:*`, or the web WS relay). Components
+ * This is the ONLY module in the renderer that talks to the ACP backend
+ * (the `/ws` relay protocol, carried over a WebSocket on web and a Tauri IPC
+ * Channel on desktop, plus the host-local `acp_*` domain commands). Components
  * and the acp-store go through here.
  *
- * Transport selection (Story 1.6): `getAcpTransport()` picks Tauri IPC when
- * `isTauriContext()` is true, otherwise the multiplexed WS client. Public
- * method names and TypeScript signatures are unchanged.
+ * Transport selection: `getAcpTransport()` returns the desktop subclass of the
+ * `/ws` client when `isTauriContext()` is true, otherwise the plain WS client.
+ * Public method names and TypeScript signatures are unchanged.
  *
- * IMPORTANT: ACP commands surface failures by throwing (Tauri `Result` Err
- * string, or `AcpTransportError` from WS `{ok:false,err}`). Callers (the store)
- * normalize it (toast, etc.).
+ * IMPORTANT: ACP commands surface failures by throwing (`AcpTransportError`
+ * from a `/ws` `{ok:false,err}` reply, or a Tauri `Result` Err string from a
+ * host-local domain command). Callers (the store) normalize it (toast, etc.).
  */
 
-import type { AgentCapabilities } from '@shared/types/web-protocol.types'
+import type { ClaudeRateLimit } from '@shared/types/claude-accounts.types'
+import {
+  type AgentCapabilities,
+  isProviderErrorCode,
+  type ProviderErrorCode
+} from '@shared/types/web-protocol.types'
 import { invoke } from '@tauri-apps/api/core'
-import { getAcpTransport } from '@/lib/acp-transport'
+import {
+  type AgentIdleWindowStatus,
+  type CommandCallOptions,
+  getAcpTransport
+} from '@/lib/acp-transport'
 import type { AcpRuntimeAvailability } from '@/lib/agents/supported-acp-agents'
+import { type CommandRun, runCommand } from '@/lib/command-engine'
+import { keyDigest } from '@/lib/command-journal'
+import { waitUntilVisible } from '@/lib/command-visibility'
 import { logFrontendError } from '@/lib/log-api'
 import { isTauriContext } from '@/lib/tauri-runtime'
 import { webServerMcpOAuth } from '@/lib/web-server-api'
+
+export type { AgentIdleWindowStatus }
 
 // --- Identifiers -----------------------------------------------------------
 
@@ -31,9 +46,9 @@ export type SessionId = string
 // --- ACP schema mirrors (only the fields the UI needs) ---------------------
 
 /**
- * Tagged content block. Only `text` is fully handled in P1; other block types
- * (image/audio/resource/resource_link/…) carry their protocol fields in the
- * index signature and render as a placeholder.
+ * Tagged content block. `text` is the only block with a typed field; other
+ * block types (image/audio/resource/resource_link/…) carry their protocol
+ * fields in the index signature.
  */
 export interface ContentBlock {
   type: string
@@ -48,7 +63,31 @@ export type StopReason =
   | 'refusal'
   | 'cancelled'
   | 'interrupted'
+  // Host-written terminators for a failed turn (AD-5): RPC error, idle/hard
+  // timeout, agent exit. Always accompanied by an `agent_error` / crash event.
+  | 'error'
+  | 'timeout'
+  | 'crashed'
   | string
+
+/**
+ * Non-terminal reply to a same-`turnId` prompt resend (AD-5/AD-6): the host
+ * already holds that turn. `in_progress` = still running (the stop reason
+ * arrives as `prompt_complete`); `accepted` = already finished (the terminator
+ * is on the session log/replay). A receipt resolves the COMMAND, never ends the
+ * turn view.
+ */
+export interface PromptReceipt {
+  receipt: 'in_progress' | 'accepted'
+}
+
+/** `send_prompt` result: a stop reason or a receipt. */
+export type PromptDispatchResult = StopReason | PromptReceipt
+
+export function isPromptReceipt(value: unknown): value is PromptReceipt {
+  if (typeof value !== 'object' || value === null || !('receipt' in value)) return false
+  return value.receipt === 'in_progress' || value.receipt === 'accepted'
+}
 
 export interface SessionMode {
   id: string
@@ -110,7 +149,7 @@ export interface SessionReopenOutcome {
 // file). Re-exported here so existing `@/lib/acp-api` imports keep working.
 export type { AgentCapabilities } from '@shared/types/web-protocol.types'
 
-/** A tool call (P3 renders these). ACP schema, camelCase on the wire. */
+/** A tool call. ACP schema, camelCase on the wire. */
 export type ToolKind =
   | 'read'
   | 'edit'
@@ -161,6 +200,13 @@ export interface ToolCall {
   timestamp?: number
   /** Monotonic arrival sequence (stamped in the store) for timeline ordering. */
   seq?: number
+  /** Host-computed `+N −N` line counts from the durable file-change summary.
+   * Present on restored/recovered calls whose diff `content` is not persisted;
+   * live calls derive counts from `content` instead. */
+  diffStat?: { added: number; removed: number }
+  /** True for a restored durable file-change summary (payload `toolCalls`):
+   * feeds the Changed files panel but never renders as a timeline card. */
+  restoredSummary?: boolean
   [k: string]: unknown
 }
 
@@ -173,6 +219,8 @@ export interface ToolCallUpdate {
   locations?: ToolCallLocation[]
   rawInput?: unknown
   rawOutput?: unknown
+  /** See {@link ToolCall.diffStat} — carried by durable recovery records. */
+  diffStat?: { added: number; removed: number }
   [k: string]: unknown
 }
 
@@ -262,7 +310,7 @@ export interface ProbeResult {
   error?: string
   wwwAuthenticateHeader?: string
 }
-/** Wire type forwarded verbatim to the backend `acp_new_session` command. */
+/** Wire type forwarded verbatim to the backend `create_session` request. */
 export type McpServer = McpServerConfig
 
 export interface AgentConfig {
@@ -281,6 +329,14 @@ export interface NewSessionOutcome {
   modes?: SessionModeState | null
   models?: SessionModelState | null
   configOptions?: SessionConfigOption[] | null
+  /**
+   * Client-side marker (never on the wire): this reply answers a RESEND and is
+   * the host's entity-lookup receipt (`{ sessionId }` only) — the session was
+   * created by an earlier attempt, so the reply says nothing about its state
+   * and the store opens it through the history-open flow instead of building
+   * the session from the reply.
+   */
+  lookup?: true
 }
 
 /** A session discovered via `session/list` (agent-native session). */
@@ -361,10 +417,9 @@ export interface BrowserOpenRequestEvent {
 }
 
 /**
- * Authoritative spawn result returned by `acp_spawn_agent` (Tauri) and
- * `spawn_agent` (WS) — the single contract for both transports (CAP-4: the
- * spawn response — not the async `acp:agent_spawned` event — is the source of
- * truth). The renderer populates `capabilities` + `authMethods` synchronously
+ * Authoritative spawn result returned by the `spawn_agent` WS request — the
+ * single contract for every carrier (CAP-4: the spawn response — not the async
+ * `acp:agent_spawned` event — is the source of truth). The renderer populates `capabilities` + `authMethods` synchronously
  * from this response, eliminating the former 250ms no-auth fallback.
  */
 export interface SpawnAgentResult {
@@ -466,6 +521,21 @@ export interface AskUserQuestionEvent {
   questionId: string
   question: string
   options: QuestionOption[]
+  /** `ask_user` (issue #784): show the free-text "Other" row. */
+  allowFreeText?: boolean
+  /** `ask_user` (issue #784): more than one option may be picked. */
+  multiSelect?: boolean
+}
+
+/**
+ * `acp:question_cancelled` payload (issue #784) — a pending question that can
+ * no longer be answered while its turn goes on (the agent hung up its
+ * `ask_user` call).
+ */
+export interface QuestionCancelledEvent {
+  agentId: AgentId
+  sessionId: SessionId
+  questionId: string
 }
 
 /**
@@ -519,6 +589,14 @@ export interface AgentErrorEvent {
   agentId: AgentId
   sessionId?: SessionId | null
   message: string
+  /** gh-821: JSON-RPC error code when the failure was an agent RPC error.
+   * Absent for non-RPC failures (timeouts, flush failures) and older hosts. */
+  code?: number
+  /** gh-821: JSON-RPC error `data` (structured; also folded into `message`). */
+  data?: unknown
+  /** Stable provider failure code (quota / session limit / rejected request).
+   * Absent for any other error and for older hosts. */
+  providerCode?: ProviderErrorCode
 }
 /** Story 1.9 FR26: the agent subprocess crashed mid-turn (a typed event
  * distinct from `agent_error` (non-fatal) + `agent_disconnected` (always)).
@@ -527,27 +605,84 @@ export interface AgentCrashedEvent {
   agentId: AgentId
   sessionId?: SessionId | null
   message: string
+  /** gh-821: JSON-RPC code of the connection-ending error, when it was one. */
+  code?: number
+  /** gh-821: JSON-RPC `data` of the connection-ending error, when present. */
+  data?: unknown
 }
+
+/** gh-821: structured JSON-RPC detail of an `agent_error` / `agent_crashed`. */
+export interface AcpErrorDetail {
+  code?: number
+  data?: unknown
+  providerCode?: ProviderErrorCode
+}
+
+/**
+ * Tolerantly extract the JSON-RPC `code` / `data` from an `agent_error` or
+ * `agent_crashed` payload. Old payloads (`{ agentId, message }`) yield `{}`; a
+ * non-integer `code` is ignored; `data` passes through verbatim when present.
+ */
+export function parseAcpErrorDetail(payload: unknown): AcpErrorDetail {
+  if (typeof payload !== 'object' || payload === null) return {}
+  const { code, data, providerCode } = payload as {
+    code?: unknown
+    data?: unknown
+    providerCode?: unknown
+  }
+  const detail: AcpErrorDetail = {}
+  if (typeof code === 'number' && Number.isInteger(code)) detail.code = code
+  if (data !== undefined && data !== null) detail.data = data
+  if (isProviderErrorCode(providerCode)) detail.providerCode = providerCode
+  return detail
+}
+/**
+ * Why an agent or one of its sessions ended (mirror of the host's
+ * `AgentExitReason`). `closed` is only ever sent for an explicit
+ * `close_session`; `crashed` is the only reason that keeps the error state.
+ */
+export type AgentExitReason = 'killed' | 'reaped' | 'crashed' | 'closed'
 export interface AgentDisconnectedEvent {
   agentId: AgentId
+  reason: AgentExitReason
 }
 export interface SessionClosedEvent {
   agentId: AgentId
   sessionId: SessionId
+  reason: AgentExitReason
 }
+/** OpenCode 2 compaction marker from `session_info_update` `_meta`. */
+export interface OpenCodeCompactionNotice {
+  status: 'started' | 'completed' | 'failed'
+  messageId?: string
+  reason?: string
+  errorMessage?: string
+}
+
+/** OpenCode 2 retry marker from `session_info_update` `_meta`. */
+export interface OpenCodeRetryNotice {
+  attempt: number
+  nextRetryAt?: string
+  errorMessage?: string
+}
+
 export interface SessionInfoUpdateEvent {
   agentId: AgentId
   sessionId: SessionId
   /** Agent-provided title; `null` when explicitly cleared, `undefined` when absent. */
   title?: string | null
+  /** Present when OpenCode reported compaction. `completed` clears the line. */
+  compaction?: OpenCodeCompactionNotice
+  /** Present to set a retry line. `null` clears it. Absent means no change. */
+  retry?: OpenCodeRetryNotice | null
 }
 
 /**
  * `acp:agent_switch` (CAP-2, spec-in-chat-agent-switch) — the live fan-out of
- * a durable agent-switch marker. Emitted only after the host flushed the
- * durable `agent_switch` record; the record — not this event — is the
- * transcript authority. Mirrors the Rust `AgentSwitchEvent` struct
- * (camelCase wire shape) exactly.
+ * a durable agent-switch marker. The host numbers it once: the durable
+ * record and this event carry the same seq, and the record's payload is this
+ * event's payload. Mirrors the Rust `AgentSwitchEvent` struct (camelCase
+ * wire shape) exactly.
  */
 export interface AgentSwitchEvent {
   agentId: AgentId
@@ -570,6 +705,8 @@ export interface UsageUpdateEvent {
   used: number
   size: number
   cost?: UsageCost | null
+  /** Claude plan rate-limit state, when the Claude ACP adapter sends it. */
+  rateLimit?: ClaudeRateLimit | null
 }
 
 /** Agent-reported context window state for a session. */
@@ -579,6 +716,8 @@ export interface SessionUsage {
   /** First `used` snapshot for this session — static agent bootstrap prefix. */
   baselineUsed: number
   cost?: UsageCost
+  /** Latest Claude plan rate-limit state of the session's Account. */
+  rateLimit?: ClaudeRateLimit
   updatedAt: number
   source: 'reported'
 }
@@ -596,6 +735,7 @@ export const ACP_EVENTS = {
   configOptionsUpdate: 'acp:config_options_update',
   permissionRequest: 'acp:permission_request',
   questionRequest: 'acp:question_request',
+  questionCancelled: 'acp:question_cancelled',
   elicitationRequest: 'acp:elicitation_request',
   promptComplete: 'acp:prompt_complete',
   agentError: 'acp:agent_error',
@@ -633,7 +773,7 @@ export interface BrowserAgentTabEvent {
 }
 
 /**
- * Respond to `acp:browser_consent_request`. Tauri-only in phase 1 — remote
+ * Respond to `acp:browser_consent_request`. Tauri-only — remote
  * (WS-relayed) clients never render the prompt (the consent strip and card
  * surfaces are desktop-only); the host times out and denies (fail-closed).
  * Returns false for unknown/expired requests.
@@ -672,14 +812,16 @@ export async function acpInstallRegistryBinary(
  * CAP-6 / Story 9: host-owned verified-atomic install. The request is
  * `{ agentId }` only; the host resolves everything (archive URL, cmd, args,
  * sha256) from the trusted catalog. The outcome `{ command, args }` flows
- * through `installedBinaryConfig` → `saveAgentConfig` unchanged. Mirrors the
- * `acp_install_agent` Tauri command + `POST /acp/install` + WS
- * `install_acp_agent` byte-for-byte.
+ * through `installedBinaryConfig` → `saveAgentConfig` unchanged. Mirrors
+ * `POST /acp/install` + WS `install_acp_agent` byte-for-byte.
  */
 export async function acpInstallAcpAgent(
   agentId: string
 ): Promise<InstallAcpRegistryBinaryOutcome> {
-  return getAcpTransport().installAcpAgent(agentId)
+  const run = await ledgered('install_acp_agent', agentId, (call) =>
+    getAcpTransport().installAcpAgent(agentId, call)
+  )
+  return run.result
 }
 
 export async function acpProbeRuntime(): Promise<AcpRuntimeAvailability> {
@@ -712,13 +854,15 @@ export async function listMcpTools(server: McpServerConfig): Promise<McpToolInfo
 }
 // --- MCP OAuth (desktop: Tauri command, web: HTTP route) -------------------
 
-/** Start the OAuth flow for an MCP server URL. On desktop, opens the system
+/** Start the OAuth flow for an MCP server URL on behalf of `projectId` (the
+ * web host authorizes the URL against that project's MCP list; the desktop
+ * Tauri command authorizes nothing and takes the URL only). On desktop, opens the system
  * browser and waits for the callback (the Tauri command blocks until the
  * token is stored). On web, opens a blank window first (preserves transient
  * user activation for the popup), navigates it to the auth URL once returned,
  * then polls the status endpoint until the token is stored. Throws on
  * failure (discovery, registration, timeout). */
-export async function startMcpOAuth(serverUrl: string): Promise<void> {
+export async function startMcpOAuth(projectId: string, serverUrl: string): Promise<void> {
   if (isTauriContext()) {
     await invoke('acp_mcp_oauth_start', { serverUrl })
     return
@@ -732,7 +876,7 @@ export async function startMcpOAuth(serverUrl: string): Promise<void> {
   }
   let authUrl: string
   try {
-    const result = await webServerMcpOAuth.start(serverUrl)
+    const result = await webServerMcpOAuth.start(projectId, serverUrl)
     if (!result.success) {
       throw new Error(result.error ?? 'OAuth start failed')
     }
@@ -750,7 +894,7 @@ export async function startMcpOAuth(serverUrl: string): Promise<void> {
   const deadline = Date.now() + POLL_TIMEOUT_MS
   while (Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS))
-    const status = await webServerMcpOAuth.status(serverUrl)
+    const status = await webServerMcpOAuth.status(projectId, serverUrl)
     if (status.success && status.data?.hasToken) {
       return
     }
@@ -758,24 +902,25 @@ export async function startMcpOAuth(serverUrl: string): Promise<void> {
   throw new Error('OAuth flow timed out — user did not complete authorization in time')
 }
 
-/** Check whether a stored OAuth token exists for a server URL. */
-export async function hasMcpOAuthToken(serverUrl: string): Promise<boolean> {
+/** Check whether a stored OAuth token exists for a server URL (`projectId` is
+ * validated by the web host; the desktop command takes the URL only). */
+export async function hasMcpOAuthToken(projectId: string, serverUrl: string): Promise<boolean> {
   if (isTauriContext()) {
     return invoke<boolean>('acp_mcp_oauth_has_token', { serverUrl })
   }
-  const result = await webServerMcpOAuth.status(serverUrl)
+  const result = await webServerMcpOAuth.status(projectId, serverUrl)
   return result.success && result.data ? result.data.hasToken : false
 }
 
 /** Delete the stored OAuth token for a server URL (the "Disconnect" action).
  * On web, inspects the IpcResult and throws when `success: false`. On desktop,
  * the Tauri invoke path propagates failures as before. */
-export async function disconnectMcpOAuth(serverUrl: string): Promise<void> {
+export async function disconnectMcpOAuth(projectId: string, serverUrl: string): Promise<void> {
   if (isTauriContext()) {
     await invoke('acp_mcp_oauth_disconnect', { serverUrl })
     return
   }
-  const result = await webServerMcpOAuth.disconnect(serverUrl)
+  const result = await webServerMcpOAuth.disconnect(projectId, serverUrl)
   if (!result.success) {
     throw new Error(result.error ?? 'OAuth disconnect failed')
   }
@@ -787,12 +932,61 @@ export interface AcpRegistrySnapshot {
   fetchedAt?: string | null
 }
 
-export async function acpFetchRegistrySnapshot(forceRefresh = false): Promise<AcpRegistrySnapshot> {
-  return getAcpTransport().fetchRegistrySnapshot(forceRefresh)
+/** Who asked for a registry check: the Settings button or the scheduler. */
+export type RegistryCheckReason = 'manual' | 'background'
+
+// --- Ledgered commands (AD-5) ----------------------------------------------
+//
+// Every mutating command below runs through the command engine: its
+// `commandId` is minted and persisted BEFORE the send, a lost reply is resent
+// with the SAME id (the host answers by entity lookup / receipt ledger and
+// never runs it twice), a definite rejection ends the command (the next try
+// mints a new id), and `outcome_unknown` is never reported as a failure of
+// the command itself. The facades keep their reply shapes.
+
+type LedgeredSend<T> = (call: CommandCallOptions) => Promise<T>
+
+async function ledgered<T>(
+  kind: string,
+  entityKey: string,
+  send: LedgeredSend<T>,
+  extra?: { acceptedWithoutResult?: () => T; fresh?: boolean }
+): Promise<CommandRun<T>> {
+  return runCommand<T>({ kind, entityKey, send, ...extra })
 }
 
-export async function acpSpawnAgent(config: AgentConfig): Promise<SpawnAgentResult> {
-  return getAcpTransport().spawnAgent(config)
+/** Hold a created/reopened session back until its stream reached `visible_at`. */
+async function untilSessionVisible(
+  sessionId: SessionId,
+  visibleAt: number | undefined
+): Promise<void> {
+  const transport = getAcpTransport()
+  await waitUntilVisible(
+    transport.getSessionCursor ? () => transport.getSessionCursor?.(sessionId)?.lastSeq : undefined,
+    visibleAt
+  )
+}
+
+export async function acpFetchRegistrySnapshot(
+  reason: RegistryCheckReason
+): Promise<AcpRegistrySnapshot> {
+  return getAcpTransport().fetchRegistrySnapshot(reason)
+}
+
+export async function acpSpawnAgent(
+  config: AgentConfig,
+  projectId?: string | null
+): Promise<SpawnAgentResult> {
+  const run = await ledgered(
+    'spawn_agent',
+    // args/env are digested (env can hold credentials): a changed launch is a
+    // different spawn, and no raw value reaches the journal or engine state.
+    `${config.configId ?? ''}|${config.name}|${config.command}|${projectId ?? ''}|${keyDigest(
+      JSON.stringify([config.args, config.env, config.allowTerminal ?? false])
+    )}`,
+    (call) => getAcpTransport().spawnAgent(config, call, projectId)
+  )
+  return run.result
 }
 
 export async function acpKillAgent(agentId: AgentId): Promise<void> {
@@ -818,33 +1012,96 @@ export async function acpNewSession(
     additionalDirectories?: string[]
   }
 ): Promise<NewSessionOutcome> {
-  return getAcpTransport().newSession(agentId, cwd, mcpServers, options)
+  // The key names every field that distinguishes one create from another (the
+  // host fingerprints agent/cwd/project; the flags and worktree keep an earlier
+  // ephemeral / probe create from ever being reused for a durable one).
+  const createKey = [
+    agentId,
+    cwd,
+    options?.projectId ?? '',
+    options?.ephemeral ? 'e' : '',
+    options?.promotable ? 'p' : '',
+    options?.worktreePath ?? '',
+    options?.worktreeBranch ?? '',
+    // Content-derived parts (MCP servers can carry env / headers): digest only,
+    // so a different server set or extra roots is a different create.
+    keyDigest(JSON.stringify([mcpServers ?? null, options?.additionalDirectories ?? []]))
+  ].join('|')
+  const run = await ledgered('create_session', createKey, (call) =>
+    getAcpTransport().newSession(agentId, cwd, mcpServers, { ...options, ...call })
+  )
+  const outcome = run.result
+  // A resend answered by the host's entity lookup carries `{ sessionId }` only.
+  const lookup =
+    run.resent &&
+    outcome.modes === undefined &&
+    outcome.models === undefined &&
+    outcome.configOptions === undefined
+  if (!options?.ephemeral) await untilSessionVisible(outcome.sessionId, run.visibleAt)
+  return lookup ? { ...outcome, lookup: true } : outcome
 }
 
 export async function acpLoadSession(
   agentId: AgentId,
   sessionId: SessionId,
   cwd: string,
-  additionalDirectories?: string[]
+  additionalDirectories?: string[],
+  mcpServers?: McpServer[]
 ): Promise<SessionReopenOutcome> {
-  return getAcpTransport().loadSession(agentId, sessionId, cwd, additionalDirectories)
+  // A reload carries a different server list than a plain reopen. Digest it
+  // so an in-flight history open is not reused as the reload command.
+  const mcpKey = mcpServers ? keyDigest(JSON.stringify(mcpServers)) : ''
+  const run = await ledgered(
+    'load_session',
+    `${agentId}|${sessionId}|${cwd}|${mcpKey}`,
+    (call) =>
+      getAcpTransport().loadSession(
+        agentId,
+        sessionId,
+        cwd,
+        additionalDirectories,
+        // Keep command options in the fifth slot. An empty list is still sent.
+        mcpServers === undefined ? call : { ...call, mcpServers }
+      ),
+    { acceptedWithoutResult: () => ({}) }
+  )
+  await untilSessionVisible(sessionId, run.visibleAt)
+  return run.result
 }
 
 export async function acpResumeSession(
   agentId: AgentId,
   sessionId: SessionId,
   cwd: string,
-  additionalDirectories?: string[]
+  additionalDirectories?: string[],
+  mcpServers?: McpServer[]
 ): Promise<SessionReopenOutcome> {
-  return getAcpTransport().resumeSession(agentId, sessionId, cwd, additionalDirectories)
+  const mcpKey = mcpServers ? keyDigest(JSON.stringify(mcpServers)) : ''
+  const run = await ledgered(
+    'resume_session',
+    `${agentId}|${sessionId}|${cwd}|${mcpKey}`,
+    (call) =>
+      getAcpTransport().resumeSession(
+        agentId,
+        sessionId,
+        cwd,
+        additionalDirectories,
+        mcpServers === undefined ? call : { ...call, mcpServers }
+      ),
+    { acceptedWithoutResult: () => ({}) }
+  )
+  await untilSessionVisible(sessionId, run.visibleAt)
+  return run.result
 }
 
 export async function acpDeleteAgentSession(agentId: AgentId, sessionId: SessionId): Promise<void> {
-  await getAcpTransport().deleteAgentSession(agentId, sessionId)
+  await ledgered('delete_agent_session', `${agentId}|${sessionId}`, (call) =>
+    getAcpTransport().deleteAgentSession(agentId, sessionId, call)
+  )
 }
 
 export async function acpLogout(agentId: AgentId): Promise<void> {
-  await getAcpTransport().logout(agentId)
+  await ledgered('logout_agent', agentId, (call) => getAcpTransport().logout(agentId, call))
 }
 
 export async function acpRespondElicitation(
@@ -854,18 +1111,30 @@ export async function acpRespondElicitation(
   // GH-935: `string[]` = multi-select (`multi-enum`) answers.
   content?: Record<string, string | number | boolean | string[]>
 ): Promise<void> {
-  await getAcpTransport().respondElicitation(agentId, requestId, action, content)
+  await ledgered('respond_elicitation', `${agentId}|${requestId}|${action}`, (call) =>
+    getAcpTransport().respondElicitation(agentId, requestId, action, content, call)
+  )
 }
 
 export async function acpCloseSession(agentId: AgentId, sessionId: SessionId): Promise<void> {
-  await getAcpTransport().closeSession(agentId, sessionId)
+  await ledgered(
+    'close_session',
+    `${agentId}|${sessionId}`,
+    (call) => getAcpTransport().closeSession(agentId, sessionId, call),
+    { acceptedWithoutResult: () => undefined }
+  )
 }
 
 export async function acpDisposeEphemeralSession(
   agentId: AgentId,
   sessionId: SessionId
 ): Promise<void> {
-  await getAcpTransport().disposeEphemeralSession(agentId, sessionId)
+  await ledgered(
+    'dispose_ephemeral_session',
+    `${agentId}|${sessionId}`,
+    (call) => getAcpTransport().disposeEphemeralSession(agentId, sessionId, call),
+    { acceptedWithoutResult: () => undefined }
+  )
 }
 
 /**
@@ -882,7 +1151,12 @@ export async function acpPromoteSession(agentId: AgentId, sessionId: SessionId):
     throw new Error('promoteSession is not supported by this transport')
   }
   try {
-    await transport.promoteSession(agentId, sessionId)
+    await ledgered(
+      'promote_session',
+      `${agentId}|${sessionId}`,
+      (call) => transport.promoteSession?.(agentId, sessionId, call) ?? Promise.resolve(),
+      { acceptedWithoutResult: () => undefined }
+    )
     void logFrontendError({
       level: 'warn',
       source: 'acp-api.promoteSession',
@@ -913,15 +1187,19 @@ export async function acpRegisterDiscoveredSession(input: {
   updatedAt?: number
   projectId?: string
 }): Promise<import('@shared/types/web-protocol.types').PersistedSessionSummary> {
-  return getAcpTransport().registerDiscoveredSession(input)
+  const run = await ledgered(
+    'register_discovered_session',
+    `${input.agentId}|${input.sessionId}|${input.cwd}|${input.projectId ?? ''}`,
+    (call) => getAcpTransport().registerDiscoveredSession(input, call)
+  )
+  return run.result
 }
 
 /**
  * CAP-2 (spec-in-chat-agent-switch): durably record an agent-switch marker.
- * Host is the sole author — the Tauri command (`acp_record_agent_switch`)
- * and the WS route (`record_agent_switch`) write ONE durable
- * `agent_switch` record (writer-assigned seq), flush, then fan the
- * synthetic `acp:agent_switch` event to live clients. Throws on a host
+ * Host is the sole author — the WS route (`record_agent_switch`) authors ONE
+ * `agent_switch` record: the host relay numbers it, persists it and delivers the same event
+ * live under that seq; the host then flushes. Throws on a host
  * write failure (record absent, no partial state — the caller surfaces it).
  */
 export async function acpRecordAgentSwitch(
@@ -933,7 +1211,12 @@ export async function acpRecordAgentSwitch(
     summaryText: string
   }
 ): Promise<void> {
-  await getAcpTransport().recordAgentSwitch(sessionId, record)
+  await ledgered(
+    'record_agent_switch',
+    `${sessionId}|${record.fromConfigId}|${record.toConfigId}|${record.newSessionId}`,
+    (call) => getAcpTransport().recordAgentSwitch(sessionId, record, call),
+    { acceptedWithoutResult: () => undefined }
+  )
 }
 
 /**
@@ -949,7 +1232,7 @@ export async function acpSendPrompt(
   text: string,
   turnId?: string,
   displayContent?: ContentBlock[]
-): Promise<StopReason> {
+): Promise<PromptDispatchResult> {
   return getAcpTransport().sendPrompt(agentId, sessionId, text, turnId, displayContent)
 }
 
@@ -959,7 +1242,7 @@ export async function acpSendPromptBlocks(
   content: ContentBlock[],
   turnId?: string,
   displayContent?: ContentBlock[]
-): Promise<StopReason> {
+): Promise<PromptDispatchResult> {
   return getAcpTransport().sendPromptBlocks(agentId, sessionId, content, turnId, displayContent)
 }
 
@@ -997,7 +1280,12 @@ export async function acpRespondPermission(
   requestId: string,
   optionId?: string
 ): Promise<void> {
-  await getAcpTransport().respondPermission(agentId, requestId, optionId)
+  await ledgered(
+    'respond_permission',
+    `${agentId}|${requestId}|${optionId ?? ''}`,
+    (call) => getAcpTransport().respondPermission(agentId, requestId, optionId, call),
+    { acceptedWithoutResult: () => undefined }
+  )
 }
 
 /**
@@ -1009,7 +1297,12 @@ export async function acpAnswerQuestion(
   questionId: string,
   values?: string[]
 ): Promise<void> {
-  await getAcpTransport().answerQuestion(agentId, questionId, values)
+  await ledgered(
+    'answer_question',
+    `${agentId}|${questionId}`,
+    (call) => getAcpTransport().answerQuestion(agentId, questionId, values, call),
+    { acceptedWithoutResult: () => undefined }
+  )
 }
 
 export async function acpAuthenticate(
@@ -1017,7 +1310,14 @@ export async function acpAuthenticate(
   methodId: string,
   gateway?: { baseUrl: string; apiKey?: string }
 ): Promise<void> {
-  await getAcpTransport().authenticate(agentId, methodId, gateway)
+  // `fresh`: the request may carry a gateway key the id cannot name, so a
+  // later try is never mistaken for a resend of an earlier one.
+  await ledgered(
+    'authenticate_agent',
+    `${agentId}|${methodId}`,
+    (call) => getAcpTransport().authenticate(agentId, methodId, gateway, call),
+    { fresh: true, acceptedWithoutResult: () => undefined }
+  )
 }
 
 /**
@@ -1028,7 +1328,18 @@ export async function acpAuthenticate(
  * received. Throws on validation failure / transport error.
  */
 export async function acpDeliverAuthRedirect(agentId: AgentId, url: string): Promise<number> {
-  return getAcpTransport().deliverAuthRedirect(agentId, url)
+  // `fresh`: the redirect URL (an auth code) cannot be named in the key, so
+  // each pasted URL is its own command.
+  const run = await ledgered(
+    'acp_deliver_auth_redirect',
+    agentId,
+    (call) => getAcpTransport().deliverAuthRedirect(agentId, url, call),
+    // `command_accepted` = the delivery ran on the first attempt but its HTTP
+    // status was not retained; the caller's success path (2xx) is the outcome
+    // the user is waiting for, so the replay resolves as delivered.
+    { fresh: true, acceptedWithoutResult: () => 200 }
+  )
+  return run.result
 }
 
 // Push the ACP turn (hard-cap) timeout override to the backend, in seconds,
@@ -1059,13 +1370,26 @@ export async function acpSetSessionReopenTimeout(secs: number | null): Promise<v
   await getAcpTransport().setSessionReopenTimeout(secs)
 }
 
+// Push how long an idle agent chat stays open, in seconds, or `null` to clear.
+// Desktop updates the reaper. The web transport no-ops; the server locks the
+// window at startup.
+export async function acpSetAgentIdleWindow(secs: number | null): Promise<void> {
+  await getAcpTransport().setAgentIdleWindow(secs)
+}
+
+// The window the host is using now.
+export async function acpGetAgentIdleWindow(): Promise<AgentIdleWindowStatus> {
+  return getAcpTransport().getAgentIdleWindow()
+}
+
 // --- Event subscription ----------------------------------------------------
 
 /**
- * Subscribe to a backend event. Transport-agnostic: Tauri `listen` on desktop,
- * WS event fan-in on web (Story 1.6). On web, the callback also receives the
- * server envelope seq as `eventSeq` (absent on desktop) for CAP-3 replay
- * seq-dedupe against the authoritative fetched payload.
+ * Subscribe to a backend event. Relay events arrive over the transport's
+ * carrier (WebSocket on web, IPC Channel on desktop); the few desktop-local
+ * `acp:*` events (worktree progress) are plain Tauri events. The callback also
+ * receives the server envelope seq as `eventSeq` for per-session relay events
+ * (CAP-3 replay seq-dedupe against the authoritative fetched payload).
  */
 export function onAcpEvent<T>(
   eventName: string,
@@ -1102,6 +1426,8 @@ export const acpApi = {
   setTurnIdleTimeout: acpSetTurnIdleTimeout,
   setSessionNewTimeout: acpSetSessionNewTimeout,
   setSessionReopenTimeout: acpSetSessionReopenTimeout,
+  setAgentIdleWindow: acpSetAgentIdleWindow,
+  getAgentIdleWindow: acpGetAgentIdleWindow,
   installRegistryBinary: acpInstallRegistryBinary,
   installAcpAgent: acpInstallAcpAgent,
   probeRuntime: acpProbeRuntime,

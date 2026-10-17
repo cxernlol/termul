@@ -1,7 +1,13 @@
 use super::*;
+use crate::web::sink::{record_host_event, HostRecordError, HostRecordFanout};
 
 /// Normalize, durably persist, flush, and broadcast a locally generated title.
 /// Used by the host-injected `set_session_title` MCP tool (host_mcp).
+///
+/// The durable `local_title_generated` record takes its seq from the relay's
+/// single allocator (`record_host_event`) and reaches live clients under that
+/// seq; the `session_info_update` twin that carries the title to the UI is an
+/// ordinary relay event with the next seq.
 pub(crate) async fn record_local_title(
     persistence: &SessionPersistence,
     sinks: &[Arc<dyn EventSink>],
@@ -28,16 +34,20 @@ pub(crate) async fn record_local_title(
     {
         return Ok(());
     }
-    let next_seq = persistence
-        .append_local_title(&session_id, title.clone())
-        .await
-        .map_err(|error| {
-            log::warn!(
-                "[acp-title] title persistence failed for session {}: {error}",
-                crate::logging::redact_session_id(&session_id)
-            );
-            "failed to persist title".to_string()
-        })?;
+    let next_seq = record_host_event(
+        sinks,
+        &session_id,
+        events::EVENT_LOCAL_TITLE_GENERATED,
+        &serde_json::json!({ "sessionId": session_id, "title": title }),
+        HostRecordFanout::RelayOnly,
+    )
+    .map_err(|error| {
+        log::warn!(
+            "[acp-title] title persistence failed for session {}: {error}",
+            crate::logging::redact_session_id(&session_id)
+        );
+        "failed to persist title".to_string()
+    })?;
     persistence
         .flush_session(&session_id)
         .await
@@ -48,11 +58,11 @@ pub(crate) async fn record_local_title(
             );
             "failed to flush title".to_string()
         })?;
-    let event = SessionInfoUpdateEvent {
-        agent_id: user_agent_id,
-        session_id: SessionId::new(session_id.clone()),
-        title: Some(title.clone()),
-    };
+    let event = SessionInfoUpdateEvent::title_only(
+        user_agent_id,
+        SessionId::new(session_id.clone()),
+        Some(title.clone()),
+    );
     events::fan_out(
         sinks,
         Some(event.session_id.0.as_str()),
@@ -67,13 +77,13 @@ pub(crate) async fn record_local_title(
     Ok(())
 }
 
-/// Durably record an agent switch (CAP-2) and broadcast the synthetic
-/// `acp:agent_switch` marker to live clients. The `record_local_title`
-/// precedent: the durable record is written through `SessionPersistence`
-/// (writer-assigned seq), the flush establishes the durability boundary, and
-/// the fan-out is live-only — `is_durable_event` excludes `agent_switch`, so
-/// `WsRelaySink::emit` fans it out WITHOUT re-appending a second durable
-/// record (ONE durable record per switch; the fold renders one separator).
+/// Durably record an agent switch (CAP-2) and broadcast the `acp:agent_switch`
+/// marker to live clients. The record is ONE event: the relay's single seq
+/// allocator numbers it (`record_host_event`), appends it to the durable log
+/// and fans it out to relay subscribers under that same seq, so the durable
+/// record and its live delivery can never disagree (and the fold renders one
+/// separator). Other sinks (the desktop renderer) get the same event. The
+/// flush afterwards is the durability boundary for the caller.
 ///
 /// Boundary logging carries session ids + config ids only — never the
 /// summary text (it may quote user content).
@@ -102,40 +112,6 @@ pub(crate) async fn record_agent_switch(
     let new_session_id = record.new_session_id.clone();
     let summary_text = record.summary_text.clone();
     let switch_session_id = session_id.clone();
-    let next_seq = persistence
-        .append_agent_switch(&session_id, record)
-        .await
-        .map_err(|error| {
-            log::warn!(
-                "[acp-switch] marker persistence failed for session {} ({} → {}): {error}",
-                crate::logging::redact_session_id(&session_id),
-                from_config_id,
-                to_config_id
-            );
-            // Preserve the SessionNotFound classification: a catalog-known
-            // session whose writer runtime is gone (post-restart recovered
-            // session) must be distinguishable from a storage failure — the
-            // WS handler maps this string to a typed `not_found` reply.
-            match error {
-                SessionPersistenceError::SessionNotFound
-                | SessionPersistenceError::WriterStopped => {
-                    "session writer unavailable".to_string()
-                }
-                _ => "failed to persist agent switch marker".to_string(),
-            }
-        })?;
-    persistence
-        .flush_session(&session_id)
-        .await
-        .map_err(|error| {
-            log::warn!(
-                "[acp-switch] marker flush failed for session {} ({} → {}): {error}",
-                crate::logging::redact_session_id(&session_id),
-                from_config_id,
-                to_config_id
-            );
-            "failed to flush agent switch marker".to_string()
-        })?;
     let event = AgentSwitchEvent {
         agent_id: user_agent_id,
         session_id: SessionId::new(switch_session_id.clone()),
@@ -144,12 +120,43 @@ pub(crate) async fn record_agent_switch(
         new_session_id,
         summary_text,
     };
-    events::fan_out(
+    let next_seq = record_host_event(
         sinks,
-        Some(event.session_id.0.as_str()),
+        event.session_id.0.as_str(),
         events::EVENT_AGENT_SWITCH,
         &event,
-    );
+        HostRecordFanout::AllSinks,
+    )
+    .map_err(|error| {
+        log::warn!(
+            "[acp-switch] marker persistence failed for session {} ({} → {}): {error}",
+            crate::logging::redact_session_id(&session_id),
+            event.from_config_id,
+            to_config_id
+        );
+        // Preserve the SessionNotFound classification: a catalog-known
+        // session whose writer runtime is gone (post-restart recovered
+        // session) must be distinguishable from a storage failure — the
+        // WS handler maps this string to a typed `not_found` reply.
+        match error {
+            HostRecordError::Persistence(
+                SessionPersistenceError::SessionNotFound | SessionPersistenceError::WriterStopped,
+            ) => "session writer unavailable".to_string(),
+            _ => "failed to persist agent switch marker".to_string(),
+        }
+    })?;
+    persistence
+        .flush_session(&session_id)
+        .await
+        .map_err(|error| {
+            log::warn!(
+                "[acp-switch] marker flush failed for session {} ({} → {}): {error}",
+                crate::logging::redact_session_id(&session_id),
+                event.from_config_id,
+                to_config_id
+            );
+            "failed to flush agent switch marker".to_string()
+        })?;
     log::info!(
         "[acp-switch] marker persisted and broadcast for session {} ({} → {}, new session {}, seq={next_seq})",
         crate::logging::redact_session_id(&switch_session_id),

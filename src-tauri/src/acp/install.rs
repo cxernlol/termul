@@ -19,9 +19,8 @@
 //!
 //! # Per-agent serialization
 //!
-//! An `Arc<TokioMutex<()>>` map keyed by `agent_id` (mirrors
-//! `WorkspaceManifestService::project_lock`), held under a parking_lot
-//! `Mutex`, so concurrent installs of the *same* agent serialize while
+//! An `Arc<TokioMutex<()>>` map keyed by `agent_id`, held under a
+//! parking_lot `Mutex`, so concurrent installs of the *same* agent serialize while
 //! *different* agents can perform package I/O in parallel. A separate async
 //! lock serializes manifest read-modify-write cycles.
 //!
@@ -65,7 +64,7 @@ use crate::acp::archive::{
     extract_archive, mark_executable, mark_spawnables_in_tree, normalize_cmd_path,
     resolve_cmd_in_root, MAX_ARCHIVE_BYTES,
 };
-use crate::acp::atomic_file;
+use crate::acp::atomic_file::{self, NewerSchema};
 use crate::acp::catalog::{CatalogAgent, HostCapability, SupportedAcpAgentStatus};
 use crate::acp::AcpCatalogService;
 use crate::acp_registry_snapshot::is_safe_agent_id;
@@ -224,36 +223,14 @@ impl Downloader for HttpDownloader {
                 "archive URL must be https",
             ));
         }
-        // Redirects: follow HTTPS→HTTPS redirects (GitHub releases 302 to
-        // `objects.githubusercontent.com`, still HTTPS — a no-redirect policy
-        // breaks every CDN-fronted archive), but REFUSE an https→http
-        // downgrade (would download over plaintext, leaking the URL
-        // path/query). The custom policy follows only https redirect
-        // targets; an http target stops → the 3xx surfaces below as
-        // "redirected — refused".
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(crate::acp::archive::FETCH_TIMEOUT_SECS))
-            .redirect(reqwest::redirect::Policy::custom(|attempt| {
-                let is_https = attempt.url().scheme() == "https";
-                if is_https {
-                    attempt.follow()
-                } else {
-                    attempt.stop()
-                }
-            }))
+            .redirect(crate::acp::https_only::redirect_policy())
             .build()
             .map_err(|e| InstallError::new(code::DOWNLOAD_FAILED, format!("http client: {e}")))?;
         let response = client.get(url).send().await.map_err(|e| {
             InstallError::new(code::DOWNLOAD_FAILED, format!("download failed: {e}"))
         })?;
-        if response.status().is_redirection() {
-            // An https→http downgrade was refused by the redirect policy
-            // (it stopped following). Surface it as a download failure.
-            return Err(InstallError::new(
-                code::DOWNLOAD_FAILED,
-                format!("download redirected (HTTP {}) — refused", response.status()),
-            ));
-        }
         if !response.status().is_success() {
             return Err(InstallError::new(
                 code::DOWNLOAD_FAILED,
@@ -349,6 +326,7 @@ impl NpmPackageInstaller for SystemNpmPackageInstaller {
                 .ok_or_else(|| "npm executable path is not valid Unicode".to_string())?,
         )?;
         let mut command = tokio::process::Command::new(npm.program);
+        crate::process_util::hide_console(&mut command);
         command
             .args(npm.prepend_args)
             .args([
@@ -410,9 +388,8 @@ pub struct InstalledAgent {
     pub installed_at: u64,
 }
 
-/// Schema-versioned envelope for `installed.json`. Mirrors the
-/// `WorkspaceManifestFile` pattern so future migrations route through a
-/// `migrate` hook. A corrupt file is backed up via `backup_corrupt` then
+/// Schema-versioned envelope for `installed.json`, so future migrations
+/// route through a `migrate` hook. A corrupt file is backed up via `backup_corrupt` then
 /// treated as empty (fresh install proceeds).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -431,7 +408,7 @@ impl Default for InstalledManifestFile {
 }
 
 // ---------------------------------------------------------------------------
-// Per-agent lock map (mirrors WorkspaceManifestService::ProjectLockMap)
+// Per-agent lock map
 // ---------------------------------------------------------------------------
 
 type AgentLockMap = HashMap<String, Arc<TokioMutex<()>>>;
@@ -443,8 +420,7 @@ type AgentLockMap = HashMap<String, Arc<TokioMutex<()>>>;
 /// Host-owned verified-atomic ACP install service. One instance per host
 /// runtime (desktop OR standalone `termul-server`, never shared across
 /// processes). Constructed via [`AcpInstallService::open`], which creates the
-/// root directory + idempotent re-open (mirrors `WorkspaceManifestService::open`
-/// + `AcpCatalogService::open`).
+/// root directory + idempotent re-open (like `AcpCatalogService::open`).
 ///
 /// The service holds an `Arc<AcpCatalogService>` for the convenience
 /// `install_by_id` path only; the catalog-agnostic `install(agent, host)`
@@ -470,8 +446,7 @@ pub struct AcpInstallService {
 impl AcpInstallService {
     /// Open (or re-open) an install root. Creates the directory if missing;
     /// idempotent re-open returns a fresh `Arc<Self>` over the same root.
-    /// Mirrors `WorkspaceManifestService::open` + `AcpCatalogService::open`:
-    /// Unix `0700` root, create the dir, load the manifest with corrupt-backup,
+    /// Mirrors `AcpCatalogService::open`: Unix `0700` root, create the dir, load the manifest with corrupt-backup,
     /// return an `Arc<Self>`. A non-directory root is an error.
     pub async fn open(root: PathBuf, catalog: Arc<AcpCatalogService>) -> io::Result<Arc<Self>> {
         Self::open_with_npm_installer(root, catalog, Arc::new(SystemNpmPackageInstaller)).await
@@ -503,11 +478,21 @@ impl AcpInstallService {
         {
             fs::create_dir_all(&root)?;
         }
-        let manifest = Self::load_manifest_blocking(&root.join(INSTALLED_MANIFEST_FILENAME))
-            .unwrap_or_else(|error| {
+        let manifest = match Self::load_manifest_blocking(&root.join(INSTALLED_MANIFEST_FILENAME))
+        {
+            Ok(manifest) => manifest,
+            // AD-18: a manifest written by a NEWER host is never replaced by a
+            // fresh one — refuse to open, file untouched (typed
+            // `NewerSchema` inside the `io::Error`; see `NewerSchema::from_io`).
+            Err(error) if NewerSchema::from_io(&error).is_some() => {
+                log::error!("[acp-install] open refused: {error}");
+                return Err(error);
+            }
+            Err(error) => {
                 log::warn!("[acp-install] manifest load failed (defaulting to empty): {error}");
                 InstalledManifestFile::default()
-            });
+            }
+        };
         log::info!("[acp-install] service ready root={}", root.display());
         Ok(Arc::new(Self {
             root,
@@ -540,7 +525,8 @@ impl AcpInstallService {
 
     /// Load the on-disk manifest (blocking). A missing file = empty (fresh
     /// start). A corrupt file is backed up via `backup_corrupt` then treated as
-    /// empty. A wrong schema version is backed up + empty.
+    /// empty. An OLDER schema version is backed up + empty (no migrations
+    /// exist yet); a NEWER one is refused (`Err`, file untouched).
     fn load_manifest_blocking(path: &Path) -> io::Result<InstalledManifestFile> {
         let bytes = match fs::read(path) {
             Ok(bytes) => bytes,
@@ -549,11 +535,13 @@ impl AcpInstallService {
             }
             Err(error) => return Err(error),
         };
+        NewerSchema::check(path, &bytes, INSTALLED_MANIFEST_SCHEMA_VERSION)
+            .map_err(NewerSchema::into_io_error)?;
         match serde_json::from_slice::<InstalledManifestFile>(&bytes) {
             Ok(file) if file.schema_version == INSTALLED_MANIFEST_SCHEMA_VERSION => Ok(file),
             Ok(file) => {
                 log::warn!(
-                    "[acp-install] manifest bad schema_version expected={} found={} — backing up + fresh start",
+                    "[acp-install] manifest older schema_version expected={} found={} — backing up + fresh start",
                     INSTALLED_MANIFEST_SCHEMA_VERSION,
                     file.schema_version
                 );
@@ -570,8 +558,7 @@ impl AcpInstallService {
         }
     }
 
-    /// Persist the manifest atomically (mirrors `WorkspaceManifestService::write`'s
-    /// `spawn_blocking` + `atomic_file::replace`).
+    /// Persist the manifest atomically (`atomic_file::replace`).
     fn persist_manifest_blocking(root: &Path, manifest: &InstalledManifestFile) -> io::Result<()> {
         let path = root.join(INSTALLED_MANIFEST_FILENAME);
         let serialized = serde_json::to_vec_pretty(manifest).map_err(io::Error::other)?;
@@ -1221,7 +1208,7 @@ fn rollback_activated_install(install_dir: &Path, backup: &Path) -> io::Result<(
     Ok(())
 }
 
-/// Epoch-millis timestamp (mirrors `workspace_manifest::now_millis`).
+/// Epoch-millis timestamp.
 fn now_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

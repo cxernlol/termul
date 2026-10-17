@@ -7,16 +7,19 @@
  * rebuilt on load from the active `cwd`.
  */
 
+import { PersistenceKeys } from '@shared/types/persistence.types'
 import type { MentionMatch } from '@/components/chat/mention-menu-model'
 import { persistenceApi } from '@/lib/api'
+import { trimListToCap } from '@/lib/persistence-trim'
 
-export const ACP_MENTION_RECENTS_KEY = 'acp/mention-recents'
 export const MENTION_RECENTS_CAP = 20
 
 export interface StoredRecent {
   relPath: string
   name: string
   ignored: boolean
+  /** Absent means `'file'` so records saved before folder mentions still parse. */
+  kind?: 'file' | 'dir'
 }
 
 /** Composite key isolates a project's main checkout from its worktrees. */
@@ -32,15 +35,25 @@ export function compositeKey(projectId: string, cwd: string): string {
  * separator and path characters safe as a store key.
  */
 export function mentionRecentsKey(projectId: string, cwd: string): string {
-  return `${ACP_MENTION_RECENTS_KEY}/${encodeURIComponent(compositeKey(projectId, cwd))}`
+  return PersistenceKeys.acpMentionRecents(encodeURIComponent(compositeKey(projectId, cwd)))
 }
 
 export function toStoredRecent(match: MentionMatch): StoredRecent {
-  return { relPath: match.relPath, name: match.name, ignored: match.ignored }
+  const base = { relPath: match.relPath, name: match.name, ignored: match.ignored }
+  return match.kind === 'dir' ? { ...base, kind: 'dir' } : base
 }
 
 export function fromStoredRecent(stored: StoredRecent, cwd: string): MentionMatch {
   const root = cwd.replace(/\\/g, '/').replace(/\/$/, '')
+  if (stored.kind === 'dir') {
+    return {
+      relPath: stored.relPath,
+      absPath: `${root}/${stored.relPath}/`,
+      name: stored.name,
+      ignored: stored.ignored,
+      kind: 'dir'
+    }
+  }
   return {
     relPath: stored.relPath,
     absPath: `${root}/${stored.relPath}`,
@@ -50,11 +63,13 @@ export function fromStoredRecent(stored: StoredRecent, cwd: string): MentionMatc
 }
 
 /**
- * Add `match` to the front of the list, dedup by `relPath`, and cap. Pure so
+ * Add `match` to the front of the list, dedup by `relPath` + kind (a file and a
+ * folder may share a path name), and cap. Pure so
  * it can be unit-tested directly.
  */
 export function pushRecent(list: MentionMatch[], match: MentionMatch): MentionMatch[] {
-  const deduped = list.filter((m) => m.relPath !== match.relPath)
+  const isDir = match.kind === 'dir'
+  const deduped = list.filter((m) => m.relPath !== match.relPath || (m.kind === 'dir') !== isDir)
   return [match, ...deduped].slice(0, MENTION_RECENTS_CAP)
 }
 
@@ -72,7 +87,7 @@ export async function loadMentionRecents(projectId: string, cwd: string): Promis
   // survive the upgrade. Subsequent saves write the per-partition key, so this
   // legacy read runs at most once per partition.
   if (!res.success && res.code === 'KEY_NOT_FOUND') {
-    const legacy = await persistenceApi.read<RecentsMap>(ACP_MENTION_RECENTS_KEY)
+    const legacy = await persistenceApi.read<RecentsMap>(PersistenceKeys.acpMentionRecentsLegacy)
     if (legacy.success && legacy.data) {
       const entries = legacy.data[compositeKey(projectId, cwd)]
       if (Array.isArray(entries)) return entries.map((e) => fromStoredRecent(e, cwd))
@@ -88,10 +103,9 @@ export async function saveMentionRecents(
 ): Promise<void> {
   // Per-partition write — no read-modify-write, so concurrent saves for
   // different partitions cannot clobber each other.
-  const write = await persistenceApi.write(
-    mentionRecentsKey(projectId, cwd),
-    recents.map(toStoredRecent)
-  )
+  // Newest first: past the host's value cap the oldest recents go.
+  const stored = trimListToCap(recents.map(toStoredRecent), (kept) => kept, 'head').items
+  const write = await persistenceApi.write(mentionRecentsKey(projectId, cwd), stored)
   if (!write.success) {
     throw new Error(write.error ?? 'Failed to persist mention recents')
   }

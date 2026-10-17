@@ -148,10 +148,9 @@ import {
   AcpTransportError
 } from '@/lib/acp-transport'
 import { commandToken } from '@/lib/skill-tokens'
+import { mockAcpSession } from '@/lib/test-utils/acp'
 import {
-  _acceptedServerPromptTurnIdsForTesting,
   _flushCoalescedForTesting,
-  _resetAcceptedServerPromptTurnIdsForTesting,
   _resetAcpAuthForTesting,
   _resetCoalesceForTesting,
   _resetEphemeralSessionIdsForTesting,
@@ -159,11 +158,23 @@ import {
   _resetInFlightHistoryOpensForTesting,
   _resetInFlightPreparedForTesting,
   _resetLiveSwitchSourcesForTesting,
+  _resetPromptReconcileForTesting,
   _resetSessionIndexLoadGenerationForTesting,
   useAcpStore
 } from '@/stores/acp-store'
 import { flushNextQueuedPrompt } from './slices/prompt'
-import { FRESH, flushTurnEnd, seedSession } from './testkit'
+import { deferred, FRESH, flushTurnEnd, seedSession } from './testkit'
+
+/** Deliver the durable `prompt_complete` of the turn the last send dispatched. */
+function completeSentTurn(stopReason: string): void {
+  const userMessage = (useAcpStore.getState().messages.s1 ?? []).find((m) => m.role === 'user')
+  useAcpStore.getState()._onPromptComplete({
+    agentId: 'agent-1',
+    sessionId: 's1',
+    stopReason: stopReason as never,
+    turnId: userMessage?.id.slice('turn:'.length)
+  })
+}
 
 describe('acp-store', () => {
   beforeEach(() => {
@@ -453,6 +464,69 @@ describe('acp-store', () => {
       }
     }
     expect(lastUser?.blocks).toEqual([{ type: 'text', text: `${commandToken('compact')} hello` }])
+  })
+
+  it('retryCrashedSession re-sends the failed prompt before a queued follow-up', async () => {
+    const userMessage = {
+      id: 'm1',
+      role: 'user' as const,
+      blocks: [{ type: 'text' as const, text: 'first message' }],
+      streaming: false,
+      timestamp: 0
+    }
+    useAcpStore.setState((s) => ({
+      agents: {
+        ...s.agents,
+        'agent-1': {
+          id: 'agent-1',
+          capabilities: { loadSession: false, sessionCapabilities: { resume: {} } }
+        }
+      },
+      agentStatus: { ...s.agentStatus, 'agent-1': 'connected' },
+      sessions: {
+        's-crash': mockAcpSession({
+          id: 's-crash',
+          cwd: '/w',
+          status: 'error',
+          lastError: 'prompt rejected'
+        })
+      },
+      messages: { 's-crash': [userMessage] },
+      promptQueues: {
+        's-crash': [{ id: 'q1', blocks: [{ type: 'text', text: 'second message' }], createdAt: 1 }]
+      }
+    }))
+    const { loadSessionPayload } = await import('@/lib/acp-history-persistence')
+    ;(loadSessionPayload as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      metadata: {
+        id: 's-crash',
+        agentId: 'agent-1',
+        title: 'Crash',
+        cwd: '/w',
+        projectId: 'p1',
+        createdAt: 1,
+        lastActivityAt: 2,
+        messageCount: 1,
+        status: 'closed'
+      },
+      messages: [userMessage]
+    })
+    const sentTexts: string[] = []
+    ;(invoke as ReturnType<typeof vi.fn>).mockImplementation(async (cmd: string, args: unknown) => {
+      if (cmd === 'acp_resume_session') return {}
+      if (cmd === 'acp_send_prompt') {
+        const sent = args as { text?: string; content?: Array<{ text?: string }> }
+        sentTexts.push(sent.text ?? (sent.content ?? []).map((b) => b.text).join(''))
+        return 'end_turn'
+      }
+      return undefined
+    })
+
+    await useAcpStore.getState().retryCrashedSession('s-crash')
+    await flushTurnEnd()
+
+    expect(sentTexts).toEqual(['first message'])
+    expect(useAcpStore.getState().promptQueues['s-crash']?.map((q) => q.id)).toEqual(['q1'])
   })
 
   it('sendPrompt updates the persisted history title from the first user message', async () => {
@@ -754,6 +828,45 @@ describe('acp-store', () => {
     ])
   })
 
+  it('sendQueuedPromptNow leaves the item queued while a history reopen is in flight', async () => {
+    // A stopped chat's automatic resume keeps the record 'closed' until the
+    // open lands; Send now must not throw — the open's finally flushes it.
+    seedSession('s1', 'agent-1', false)
+    const item = {
+      id: 'q-resume',
+      blocks: [{ type: 'text' as const, text: 'continue' }],
+      createdAt: Date.now()
+    }
+    useAcpStore.setState((s) => ({
+      sessions: { s1: { ...s.sessions.s1, status: 'closed' } },
+      openingHistoryIds: { s1: true },
+      promptQueues: { s1: [item] }
+    }))
+
+    await expect(
+      useAcpStore.getState().sendQueuedPromptNow('s1', 'q-resume')
+    ).resolves.toBeUndefined()
+
+    expect(useAcpStore.getState().promptQueues['s1']).toEqual([item])
+    expect(useAcpStore.getState().suppressQueueFlush['s1']).toBeUndefined()
+    expect(invoke).not.toHaveBeenCalledWith('acp_send_prompt', expect.anything())
+    useAcpStore.setState({ openingHistoryIds: {} })
+  })
+
+  it('sendQueuedPromptNow still rejects on a closed session with no reopen in flight', async () => {
+    seedSession('s1', 'agent-1', false)
+    useAcpStore.setState((s) => ({
+      sessions: { s1: { ...s.sessions.s1, status: 'closed' } },
+      openingHistoryIds: {},
+      promptQueues: {
+        s1: [{ id: 'q-closed', blocks: [{ type: 'text', text: 'x' }], createdAt: Date.now() }]
+      }
+    }))
+    await expect(useAcpStore.getState().sendQueuedPromptNow('s1', 'q-closed')).rejects.toThrow(
+      'session is closed'
+    )
+  })
+
   it('prompt_complete clears activeTurn-only sessions and flushes the queue', async () => {
     seedSession('s1', 'agent-1', false)
     useAcpStore.setState((s) => ({
@@ -797,19 +910,105 @@ describe('acp-store', () => {
     expect(useAcpStore.getState().sessions['s1'].lastError).toMatch(/boom/)
   })
 
-  it('sendPrompt clears the turn on command resolution even with no prompt_complete event', async () => {
+  it('gh-821: a send clears the previous agent error code and data', async () => {
+    seedSession('s1', 'agent-1', false)
+    useAcpStore.getState()._onAgentError({
+      agentId: 'agent-1',
+      message: 'Internal error',
+      code: -32603,
+      data: { reason: 'login' }
+    })
+    let session = useAcpStore.getState().sessions['s1']
+    expect(session.lastErrorCode).toBe(-32603)
+    expect(session.lastErrorData).toEqual({ reason: 'login' })
+
+    ;(invoke as ReturnType<typeof vi.fn>).mockResolvedValue('end_turn')
+    await useAcpStore.getState().sendPrompt('s1', 'again')
+    session = useAcpStore.getState().sessions['s1']
+    expect(session.lastError).toBeNull()
+    expect(session.lastErrorCode).toBeNull()
+    expect(session.lastErrorData).toBeUndefined()
+  })
+
+  it("gh-821: a turn's reply rejection keeps the code and data of its agent error", async () => {
+    seedSession('s1', 'agent-1', false)
+    const reply = deferred<unknown>()
+    ;(invoke as ReturnType<typeof vi.fn>).mockReturnValue(reply.promise)
+    const sent = useAcpStore.getState().sendPrompt('s1', 'x')
+    await Promise.resolve()
+    useAcpStore.getState()._onAgentError({
+      agentId: 'agent-1',
+      sessionId: 's1',
+      message: 'Internal error',
+      code: -32603,
+      data: { reason: 'login' }
+    })
+    reply.reject('Internal error: login')
+    await expect(sent).rejects.toBeDefined()
+    const session = useAcpStore.getState().sessions['s1']
+    expect(session.lastError).toBe('Internal error: login')
+    expect(session.lastErrorCode).toBe(-32603)
+    expect(session.lastErrorData).toEqual({ reason: 'login' })
+  })
+
+  it('gh-821: a stop-reason note drops the code and data of the error it replaces', async () => {
+    seedSession('s1', 'agent-1', true)
+    useAcpStore.getState()._onAgentError({
+      agentId: 'agent-1',
+      message: 'Internal error',
+      code: -32603,
+      data: { reason: 'login' }
+    })
+    useAcpStore.getState()._onPromptComplete({
+      agentId: 'agent-1',
+      sessionId: 's1',
+      stopReason: 'refusal'
+    })
+    await flushTurnEnd()
+    const session = useAcpStore.getState().sessions['s1']
+    expect(session.lastError).toBe('The agent refused to continue.')
+    expect(session.lastErrorCode).toBeNull()
+    expect(session.lastErrorData).toBeUndefined()
+  })
+
+  it("gh-821: a failed-turn terminator keeps the code and data of the turn's agent error", async () => {
+    seedSession('s1', 'agent-1', true)
+    useAcpStore.getState()._onAgentError({
+      agentId: 'agent-1',
+      sessionId: 's1',
+      message: 'Internal error',
+      code: -32603,
+      data: { reason: 'login' }
+    })
+    useAcpStore.getState()._onPromptComplete({
+      agentId: 'agent-1',
+      sessionId: 's1',
+      stopReason: 'error'
+    })
+    await flushTurnEnd()
+    const session = useAcpStore.getState().sessions['s1']
+    expect(session.lastError).toBe('Internal error')
+    expect(session.lastErrorCode).toBe(-32603)
+    expect(session.lastErrorData).toEqual({ reason: 'login' })
+  })
+
+  it('a stop-reason reply resolves the command only: the turn ends from the durable prompt_complete', async () => {
     seedSession('s1', 'agent-1', false)
     ;(invoke as ReturnType<typeof vi.fn>).mockResolvedValue('end_turn')
     await useAcpStore.getState().sendPrompt('s1', 'hello')
-    // no _onPromptComplete fired; the deferred safety-net must clear the turn
+    await flushTurnEnd()
+    // The reply is a receipt of the COMMAND; the log decides how the turn ended.
+    expect(useAcpStore.getState().sessions['s1'].activeTurn).toBe(true)
+    completeSentTurn('end_turn')
     await flushTurnEnd()
     expect(useAcpStore.getState().sessions['s1'].activeTurn).toBe(false)
   })
 
-  it('sendPrompt surfaces a max_tokens stop reason as an error note', async () => {
+  it('a max_tokens prompt_complete surfaces as an error note', async () => {
     seedSession('s1', 'agent-1', false)
     ;(invoke as ReturnType<typeof vi.fn>).mockResolvedValue('max_tokens')
     await useAcpStore.getState().sendPrompt('s1', 'hello')
+    completeSentTurn('max_tokens')
     await flushTurnEnd()
     expect(useAcpStore.getState().sessions['s1'].lastError).toMatch(/token limit/i)
   })
@@ -840,6 +1039,7 @@ describe('acp-store', () => {
     // finalizeStreaming sees them (rAF fires async in jsdom).
     _flushCoalescedForTesting()
     await done
+    completeSentTurn('end_turn')
     await flushTurnEnd()
     const msgs = useAcpStore.getState().messages['s1']
     // user message + the streamed agent message (not dropped)
@@ -992,91 +1192,6 @@ describe('acp-store', () => {
   })
 })
 
-// --- Issue #846: Retry after a mid-turn transport drop ------------------------
-
-describe('issue #846: transport drop after server-accepted prompt', () => {
-  beforeEach(() => {
-    _resetCoalesceForTesting()
-    _resetEphemeralSessionIdsForTesting()
-    _resetSessionIndexLoadGenerationForTesting()
-    _resetHistorySeqWatermarksForTesting()
-    _resetLiveSwitchSourcesForTesting()
-    _resetAcceptedServerPromptTurnIdsForTesting()
-    useAcpStore.setState(FRESH)
-  })
-
-  it('keeps the turn in-flight (no error banner, no queue re-send) when the drop follows an accepted prompt', async () => {
-    // The server accepts the prompt BEFORE dispatching to the agent: the
-    // `user_prompt` echo lands first. A later WS drop then leaves the outcome
-    // UNKNOWN — the agent keeps running server-side and the reconnect
-    // resubscribe replays the rest of the turn. `runPromptTurn` must keep
-    // `activeTurn` + `openTurnId` (spinner/stop button stay) and NOT set
-    // `lastError` (the Retry affordance must not blindly re-send a prompt
-    // that is already running).
-    seedSession('s1', 'agent-1', false)
-    // The dispatch promise rejects with the transport-drop error later.
-    let rejectDispatch!: (reason: unknown) => void
-    ;(invoke as ReturnType<typeof vi.fn>).mockReturnValue(
-      new Promise((_resolve, reject) => {
-        rejectDispatch = reject
-      })
-    )
-    const dispatched = useAcpStore.getState().sendPrompt('s1', 'do the deploy')
-    await Promise.resolve()
-    // The server's accepted-prompt echo arrives (proof of acceptance).
-    const turnId = useAcpStore.getState().messages['s1'][0].id.slice('turn:'.length)
-    useAcpStore.getState()._onUserPrompt({
-      agentId: 'agent-1',
-      sessionId: 's1',
-      turnId,
-      content: [{ type: 'text', text: 'do the deploy' }]
-    })
-    // Now the connection drops mid-turn.
-    rejectDispatch(
-      new (await import('@/lib/acp-transport')).AcpTransportError('closed', 'WebSocket closed')
-    )
-    await dispatched.then(
-      () => {},
-      () => {}
-    )
-    await flushTurnEnd()
-    const session = useAcpStore.getState().sessions['s1']
-    expect(session.activeTurn).toBe(true)
-    // `openTurnId` is the optimistic `newId('turn')` handle — the exact id
-    // value is not the contract; what matters is that it is NON-NULL so the
-    // spinner + stop button render.
-    expect(session.openTurnId).toBeTypeOf('string')
-    expect((session.openTurnId ?? '').length).toBeGreaterThan(0)
-    expect(session.lastError).toBeNull()
-    // The prompt was NOT recovered into the queue for a re-send.
-    expect(useAcpStore.getState().promptQueues['s1']).toBeUndefined()
-    // The accepted-turn marker was consumed by the unknown-outcome branch.
-    expect(_acceptedServerPromptTurnIdsForTesting().has(turnId)).toBe(false)
-  })
-
-  it('still surfaces the error (re-send allowed) when the prompt was never accepted', async () => {
-    // No `user_prompt` echo arrived before the drop → the server may never
-    // have received the prompt; Retry re-sending is safe and the failure
-    // surfaces as before.
-    seedSession('s1', 'agent-1', false)
-    ;(invoke as ReturnType<typeof vi.fn>).mockRejectedValue(
-      new (await import('@/lib/acp-transport')).AcpTransportError('closed', 'WebSocket closed')
-    )
-    await useAcpStore
-      .getState()
-      .sendPrompt('s1', 'never accepted')
-      .then(
-        () => {},
-        () => {}
-      )
-    await flushTurnEnd()
-    const session = useAcpStore.getState().sessions['s1']
-    expect(session.activeTurn).toBe(false)
-    expect(session.openTurnId).toBeNull()
-    expect(session.lastError).toContain('WebSocket closed')
-  })
-})
-
 // --- Issue #838: activeTurn from a live user_prompt echo (second device) ------
 
 describe('issue #838: live user_prompt echo marks the turn active', () => {
@@ -1086,7 +1201,7 @@ describe('issue #838: live user_prompt echo marks the turn active', () => {
     _resetSessionIndexLoadGenerationForTesting()
     _resetHistorySeqWatermarksForTesting()
     _resetLiveSwitchSourcesForTesting()
-    _resetAcceptedServerPromptTurnIdsForTesting()
+    _resetPromptReconcileForTesting()
     useAcpStore.setState(FRESH)
   })
 

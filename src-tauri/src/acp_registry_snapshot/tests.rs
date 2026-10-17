@@ -1,3 +1,4 @@
+use super::test_server::serve_registry_routes;
 use super::*;
 
 #[test]
@@ -13,7 +14,7 @@ fn parses_agents_with_distribution() {
                 }
             ]
         }"#;
-    let agents = parse_snapshot(body).unwrap();
+    let agents = parse_snapshot(body.as_bytes()).unwrap();
     assert_eq!(agents.len(), 1);
     assert_eq!(agents[0].id, "claude-acp");
     assert!(agents[0].distribution.get("npx").is_some());
@@ -22,7 +23,7 @@ fn parses_agents_with_distribution() {
 #[test]
 fn skips_agents_without_distribution() {
     let body = r#"{ "agents": [ { "id": "broken" } ] }"#;
-    assert!(parse_snapshot(body).unwrap().is_empty());
+    assert!(parse_snapshot(body.as_bytes()).unwrap().is_empty());
 }
 
 #[test]
@@ -250,4 +251,40 @@ async fn malformed_fetched_at_treated_as_expired() {
     assert_eq!(resolved.snapshot.source, "network");
     assert_eq!(resolved.snapshot.agents[0].id, "refetched-agent");
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+#[tokio::test]
+async fn fetch_refuses_a_redirect_to_a_non_https_url() {
+    let base = serve_registry_routes().await;
+
+    let direct = fetch_registry_agents(&format!("{base}/plain.json"))
+        .await
+        .unwrap();
+    assert_eq!(direct[0].id, "local-agent");
+
+    let error = fetch_registry_agents(&format!("{base}/redirect.json"))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error,
+        "ACP registry redirect refused: non-https redirect target (scheme \"http\")"
+    );
+}
+
+#[tokio::test]
+async fn fetch_accepts_a_body_at_the_cap_and_refuses_one_byte_over() {
+    let base = serve_registry_routes().await;
+
+    let at_cap = fetch_registry_agents(&format!("{base}/at-cap.json"))
+        .await
+        .unwrap();
+    assert!(at_cap.is_empty());
+
+    let error = fetch_registry_agents(&format!("{base}/over-cap.json"))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error,
+        "ACP registry body exceeded the 4194304-byte cap; refused"
+    );
 }

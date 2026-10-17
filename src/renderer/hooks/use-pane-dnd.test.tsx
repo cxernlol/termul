@@ -1,5 +1,6 @@
 import { act, renderHook } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { openAgentChatPlaced } from '@/lib/open-agent-chat'
 import { useEditorStore } from '@/stores/editor-store'
 import type { WorkspaceTab } from '@/stores/workspace-store'
 import { useWorkspaceStore } from '@/stores/workspace-store'
@@ -27,6 +28,8 @@ vi.mock('@/stores/workspace-store', () => {
     findPaneById
   }
 })
+
+vi.mock('@/lib/open-agent-chat', () => ({ openAgentChatPlaced: vi.fn() }))
 
 vi.mock('@/stores/editor-store', () => ({
   useEditorStore: {
@@ -410,5 +413,94 @@ describe('use-pane-dnd routing', () => {
     })
 
     expect(result.current.previewTarget).toBeNull()
+  })
+
+  describe('chat drags', () => {
+    const wrapper = ({ children }: { children: React.ReactNode }) => (
+      <PaneDndProvider>{children}</PaneDndProvider>
+    )
+
+    beforeEach(() => {
+      vi.mocked(openAgentChatPlaced).mockReset()
+      vi.mocked(openAgentChatPlaced).mockReturnValue('opened')
+    })
+
+    it('startChatDrag writes the json payload and sets drag state', () => {
+      const { result } = renderHook(() => usePaneDnd(), { wrapper })
+      const event = createDragEvent()
+
+      act(() => {
+        result.current.startChatDrag('s-1', event)
+      })
+
+      expect(event.dataTransfer.setData).toHaveBeenCalledWith(
+        'application/json',
+        JSON.stringify({ type: 'chat', sessionId: 's-1' })
+      )
+      expect(event.dataTransfer.effectAllowed).toBe('move')
+      expect(result.current.isDragging).toBe(true)
+      expect(result.current.dragPayload).toEqual({ type: 'chat', sessionId: 's-1' })
+    })
+
+    it('places the chat for an edge drop and stamps lastDrop when the tree changed', () => {
+      vi.mocked(openAgentChatPlaced).mockImplementation(() => {
+        bumpRoot()
+        return 'opened'
+      })
+      const { result } = renderHook(() => usePaneDnd(), { wrapper })
+
+      act(() => {
+        result.current.handleDrop(
+          'pane-b',
+          'right',
+          createDragEvent({ type: 'chat', sessionId: 's-1' })
+        )
+      })
+
+      expect(openAgentChatPlaced).toHaveBeenCalledWith('s-1', expect.any(String), {
+        paneId: 'pane-b',
+        zone: 'right'
+      })
+      expect(result.current.lastDrop).toMatchObject({ targetPaneId: 'pane-b', position: 'right' })
+      expect(moveTabToPane).not.toHaveBeenCalled()
+      expect(openFile).not.toHaveBeenCalled()
+    })
+
+    it('places the chat for a centre drop without stamping lastDrop when nothing changed', () => {
+      const { result } = renderHook(() => usePaneDnd(), { wrapper })
+
+      act(() => {
+        result.current.handleDrop(
+          'pane-b',
+          'center',
+          createDragEvent({ type: 'chat', sessionId: 's-1' })
+        )
+      })
+
+      expect(openAgentChatPlaced).toHaveBeenCalledWith('s-1', expect.any(String), {
+        paneId: 'pane-b',
+        zone: 'center'
+      })
+      expect(result.current.lastDrop).toBeNull()
+    })
+
+    it('ignores a chat payload without a string sessionId and clears drag state', () => {
+      const { result } = renderHook(() => usePaneDnd(), { wrapper })
+
+      act(() => {
+        result.current.handleDrop('pane-b', 'center', createDragEvent({ type: 'chat' }))
+      })
+      act(() => {
+        result.current.handleDrop(
+          'pane-b',
+          'center',
+          createDragEvent({ type: 'chat', sessionId: 7 })
+        )
+      })
+
+      expect(openAgentChatPlaced).not.toHaveBeenCalled()
+      expect(result.current.isDragging).toBe(false)
+      expect(result.current.dragPayload).toBeNull()
+    })
   })
 })

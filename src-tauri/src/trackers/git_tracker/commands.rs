@@ -1,3 +1,4 @@
+use super::git_exec::{git_command, run_git_capture, GitWaitError, StdoutCap, GIT_READ_TIMEOUT_MS};
 use super::*;
 
 pub fn git_get_status_detail(cwd: &str) -> Result<Vec<GitStatusDetail>, String> {
@@ -200,20 +201,55 @@ pub(super) fn repo_has_head(cwd: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Whether `name` is an existing branch of the requested kind: `refs/heads/<name>`
+/// for a local branch, `refs/remotes/<name>` for a remote-tracking one.
+/// `show-ref --verify` matches the fully-qualified ref only, so revision syntax
+/// (`main~1`, `main@{1}`) and option-shaped or pathspec-shaped names never match.
+fn branch_ref_exists(cwd: &str, name: &str, is_remote: bool) -> Result<bool, String> {
+    if name.trim().is_empty() || name.starts_with('-') {
+        return Ok(false);
+    }
+    let prefix = if is_remote { "refs/remotes" } else { "refs/heads" };
+    let output = GitTracker::run_git_command(
+        cwd,
+        &["show-ref", "--verify", "--quiet", &format!("{prefix}/{name}")],
+    )
+    .ok_or_else(|| "Failed to run git show-ref".to_string())?;
+    Ok(output.status.success())
+}
+
+/// Whether `name` is a branch in the repo at `cwd`, and if so whether it is
+/// remote-tracking: `Some(false)` local, `Some(true)` remote-tracking, `None`
+/// for anything else. Local wins when both exist, as in `git checkout <name>`.
+pub(crate) fn resolve_branch_ref(cwd: &str, name: &str) -> Result<Option<bool>, String> {
+    for is_remote in [false, true] {
+        if branch_ref_exists(cwd, name, is_remote)? {
+            return Ok(Some(is_remote));
+        }
+    }
+    Ok(None)
+}
+
 /// Check out an existing branch. Remote branches use `--track`.
+///
+/// `branch` must name an existing branch of the requested kind. Otherwise git
+/// would read `.` as a pathspec and discard uncommitted edits, or read `-f` as
+/// an option, so the name is refused before any checkout runs.
 pub fn git_checkout_branch(cwd: &str, branch: &str, is_remote: bool) -> Result<(), String> {
-    if branch.trim().is_empty() {
-        return Err("Branch name is required".to_string());
+    if !branch_ref_exists(cwd, branch, is_remote)? {
+        return Err(format!(
+            "'{branch}' is not a branch; refusing checkout (a branch switch must target a branch, not a pathspec)"
+        ));
     }
 
     if is_remote {
         git_command_result_with_long_timeout(
             cwd,
-            &["checkout", "-q", "--track", branch],
+            &["checkout", "-q", "--track", branch, "--"],
             "git checkout --track",
         )
     } else {
-        git_command_result_with_long_timeout(cwd, &["checkout", "-q", branch], "git checkout")
+        git_command_result_with_long_timeout(cwd, &["checkout", "-q", branch, "--"], "git checkout")
     }
 }
 
@@ -373,56 +409,44 @@ fn strip_first_path_component(s: &str) -> &str {
     }
 }
 
-/// Run `git apply` with a patch supplied on stdin. Used for per-hunk
-/// stage/unstage where the patch is a single-hunk fragment built by the
-/// renderer from the displayed diff. Follows the same deadline pattern as
-/// `GitTracker::spawn_and_wait` so a wedged `git apply` cannot hang the
-/// caller.
-fn run_git_apply(cwd: &str, args: &[&str], patch: &str) -> Result<(), String> {
+/// Run git with `input` on stdin. `args[0]` names the command in errors.
+fn run_git_with_input(
+    cwd: &str,
+    args: &[&str],
+    input: &[u8],
+    timeout_ms: u64,
+) -> Result<std::process::Output, String> {
     use std::io::Write;
 
-    let git = resolve_git_binary();
-    let mut command = backend_command(git);
-    command.current_dir(cwd).args(args.iter());
-    command.stdin(Stdio::piped());
-    command.stdout(Stdio::piped());
-    command.stderr(Stdio::piped());
+    let name = args.first().copied().unwrap_or("");
+    let mut git = git_command(cwd);
+    git.command.args(args).stdin(Stdio::piped());
+    let mut child = git
+        .spawn(StdoutCap::Unbounded)
+        .map_err(|e| format!("Failed to spawn git {name}: {e}"))?;
 
-    let mut child = command
-        .spawn()
-        .map_err(|e| format!("Failed to spawn git apply: {e}"))?;
-
-    if let Some(mut stdin) = child.stdin.take() {
-        // Ignore broken pipe: git may finish reading the patch and exit
-        // before we finish writing (e.g. it rejects the patch early). The
-        // exit status below is the source of truth.
-        let _ = stdin.write_all(patch.as_bytes());
+    if let Some(mut stdin) = child.take_stdin() {
+        // Ignore broken pipe: git may finish reading and exit before we
+        // finish writing (e.g. it rejects a patch early). The exit status is
+        // the source of truth.
+        let _ = stdin.write_all(input);
     }
 
-    let deadline = Instant::now() + Duration::from_millis(GIT_COMMAND_TIMEOUT_MS);
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => {
-                let output = child
-                    .wait_with_output()
-                    .map_err(|e| format!("git apply wait failed: {e}"))?;
-                if output.status.success() {
-                    return Ok(());
-                }
-                return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
-            }
-            Ok(None) => {
-                if Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(format!(
-                        "git apply timed out after {GIT_COMMAND_TIMEOUT_MS}ms"
-                    ));
-                }
-                std::thread::sleep(Duration::from_millis(20));
-            }
-            Err(e) => return Err(format!("git apply wait error: {e}")),
-        }
+    child.wait(timeout_ms).map_err(|error| match error {
+        GitWaitError::TimedOut => format!("git {name} timed out after {timeout_ms}ms"),
+        GitWaitError::Io(e) => format!("git {name} wait error: {e}"),
+    })
+}
+
+/// Run `git apply` with a patch supplied on stdin. Used for per-hunk
+/// stage/unstage where the patch is a single-hunk fragment built by the
+/// renderer from the displayed diff.
+fn run_git_apply(cwd: &str, args: &[&str], patch: &str) -> Result<(), String> {
+    let output = run_git_with_input(cwd, args, patch.as_bytes(), GIT_COMMAND_TIMEOUT_MS)?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
     }
 }
 
@@ -502,19 +526,20 @@ const LOG_RECORD_SEP: char = '\u{1e}';
 /// subjects containing spaces, pipes, or other punctuation cannot break parsing.
 /// `--parents` yields parent SHAs (for graph topology), `--decorate=full`
 /// yields ref names, and `--topo-order` emits commits child-before-parent so the
-/// renderer's lane layout never sees a parent before its child.
+/// renderer's lane layout never sees a parent before its child. `all` walks
+/// every branch, tag and remote ref (`--all`) instead of `HEAD` only.
 ///
 /// A *benign* failure (a repo with no commits yet, or a path that is not a git
 /// repository) is reported as an empty history so the UI shows an empty state.
 /// Any other non-zero exit (corrupt `.git`, unreadable objects, permission
 /// errors) is propagated as an error so real failures are surfaced.
-pub fn git_get_log(cwd: &str, limit: Option<u32>) -> Result<Vec<GitCommit>, String> {
+pub fn git_get_log(cwd: &str, limit: Option<u32>, all: bool) -> Result<Vec<GitCommit>, String> {
     let limit = limit
         .unwrap_or(GIT_LOG_DEFAULT_LIMIT)
         .clamp(1, GIT_LOG_MAX_LIMIT);
     let limit_str = limit.to_string();
 
-    let args = [
+    let mut args = vec![
         "log",
         "--no-color",
         "--topo-order",
@@ -524,9 +549,14 @@ pub fn git_get_log(cwd: &str, limit: Option<u32>) -> Result<Vec<GitCommit>, Stri
         "--decorate=full",
         "--pretty=format:%H%x00%h%x00%P%x00%D%x00%an%x00%aI%x00%s%x1e",
     ];
+    // Every branch, tag and remote ref instead of `HEAD` only.
+    if all {
+        args.push("--all");
+    }
 
-    let output = GitTracker::run_git_command(cwd, &args)
-        .ok_or_else(|| "Failed to run git log".to_string())?;
+    // Drained capture: `--all` output easily passes the pipe buffer.
+    let output = run_git_capture(cwd, StdoutCap::Unbounded, &args, GIT_READ_TIMEOUT_MS)
+        .map_err(|e| format!("Failed to run git log: {e}"))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -653,79 +683,73 @@ pub(super) fn staged_entry_count(cwd: &str) -> Option<u32> {
 /// nothing staged is rejected; an amend requires an existing HEAD. Uses the
 /// network-length timeout so pre-commit hooks / GPG passphrase prompts are not
 /// killed mid-run (which could leave a stale `.git/index.lock`).
-pub fn git_commit_file(
+///
+/// With `stamp.expected_head`, refuses when `HEAD` is not the commit the caller
+/// saw; with `stamp.command_id`, trails the message with
+/// `Termul-Command-Id: <id>` so a resend can find the commit it made.
+pub fn git_commit_stamped(
     cwd: &str,
     summary: &str,
     description: &str,
     amend: bool,
-) -> Result<(), String> {
+    stamp: &CommitStamp<'_>,
+) -> Result<(), CommitFailure> {
     if summary.trim().is_empty() {
-        return Err("Commit summary cannot be empty".to_string());
+        return Err(CommitFailure::Failed(
+            "Commit summary cannot be empty".to_string(),
+        ));
+    }
+    if stamp.expected_head.is_some_and(|head| !is_valid_expected_head(head)) {
+        return Err(CommitFailure::InvalidExpectedHead);
+    }
+    // The head check and the commit are one step against other Termul commits.
+    let repo_lock = repo_lock(cwd);
+    let _held = repo_lock.lock();
+    if let Some(expected) = stamp.expected_head {
+        let actual = head_sha(cwd);
+        if !expected.trim().eq_ignore_ascii_case(&actual) {
+            return Err(CommitFailure::PreconditionFailed {
+                expected: expected.trim().to_string(),
+                actual,
+            });
+        }
     }
     if amend {
         if !repo_has_head(cwd) {
-            return Err("No commit to amend".to_string());
+            return Err(CommitFailure::Failed("No commit to amend".to_string()));
         }
     } else {
         match staged_entry_count(cwd) {
-            Some(0) => return Err("Nothing staged to commit".to_string()),
-            None => return Err("Failed to read the staged index".to_string()),
+            Some(0) => {
+                return Err(CommitFailure::Failed("Nothing staged to commit".to_string()))
+            }
+            None => {
+                return Err(CommitFailure::Failed(
+                    "Failed to read the staged index".to_string(),
+                ))
+            }
             Some(_) => {}
         }
     }
 
-    let message = build_commit_message(summary, description);
-    let msg_path = create_commit_message_file(message.as_bytes())?;
-
-    // Pass the real OS path (not a lossy String) so a non-UTF-8 temp dir still
-    // resolves to the file we actually wrote.
-    use std::ffi::OsStr;
-    let mut args: Vec<&OsStr> = vec![OsStr::new("commit"), OsStr::new("-F"), msg_path.as_os_str()];
+    let mut message = build_commit_message(summary, description);
+    if let Some(id) = stamp.command_id {
+        message = with_command_trailer(&message, id);
+    }
+    // On stdin, not a temp file: git inside WSL cannot open a Windows path.
+    let mut args = vec!["commit", "-F", "-"];
     if amend {
-        args.push(OsStr::new("--amend"));
+        args.push("--amend");
     }
-
-    let result = match GitTracker::run_git_command_with_timeout(cwd, &args, GIT_NETWORK_TIMEOUT_MS)
-    {
-        Some(output) if output.status.success() => Ok(()),
-        Some(output) => Err(String::from_utf8_lossy(&output.stderr).trim().to_string()),
-        None => Err("git commit timed out or failed to start".to_string()),
-    };
-    // Always clean up the temp message file, regardless of commit outcome.
-    let _ = std::fs::remove_file(&msg_path);
-    result
-}
-
-/// Write `bytes` to a freshly-created, uniquely-named temp file using an
-/// exclusive create (`create_new`), which fails rather than following a symlink
-/// or truncating an existing file (CWE-59/CWE-377). Returns the path on success.
-fn create_commit_message_file(bytes: &[u8]) -> Result<std::path::PathBuf, String> {
-    use std::io::Write;
-    let pid = std::process::id();
-    for attempt in 0..8u32 {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        let path =
-            std::env::temp_dir().join(format!("termul-commitmsg-{pid}-{nanos}-{attempt}.txt"));
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true) // O_EXCL: fail if the path already exists
-            .open(&path)
-        {
-            Ok(mut f) => {
-                f.write_all(bytes).and_then(|_| f.flush()).map_err(|e| {
-                    let _ = std::fs::remove_file(&path);
-                    format!("Failed to write commit message: {e}")
-                })?;
-                return Ok(path);
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(e) => return Err(format!("Failed to create commit message file: {e}")),
-        }
+    let output = run_git_with_input(cwd, &args, message.as_bytes(), GIT_NETWORK_TIMEOUT_MS)
+        .map_err(CommitFailure::Failed)?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(CommitFailure::Failed(
+            String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        ))
     }
-    Err("Failed to create a unique commit message file".to_string())
 }
 
 /// Push the current branch to `origin`. When the branch has no upstream, it is

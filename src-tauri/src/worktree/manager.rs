@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Component, Path};
 
 use super::*;
 
@@ -99,12 +99,13 @@ impl WorktreeManager {
         on_progress: Option<&mut dyn FnMut(&str)>,
     ) -> Result<GitWorktreeEntry, WorktreeError> {
         let target = match target_path {
-            Some(p) => p.to_string(),
-            None => format!(
+            Some(p) => Some(p.to_string()),
+            None if is_only_plain_folder_names(name) => Some(format!(
                 "{}/.termul/worktrees/{}/",
                 project_path.trim_end_matches('/'),
                 name
-            ),
+            )),
+            None => None,
         };
 
         // Boundary log: record the create inputs before ANY early return so
@@ -132,6 +133,15 @@ impl WorktreeManager {
                 error
             );
         };
+
+        let Some(target) = target else {
+            log_failure(&WorktreeError::InvalidWorktreeName);
+            return Err(WorktreeError::InvalidWorktreeName);
+        };
+        if let Err(error) = ensure_valid_branch_name(branch, project_path) {
+            log_failure(&error);
+            return Err(error);
+        }
 
         // Validate path length (Windows MAX_PATH guard)
         let target_path_obj = Path::new(&target);
@@ -164,6 +174,13 @@ impl WorktreeManager {
             log_failure(error);
         }
         git_result?;
+
+        // Story 16 (CAP-5): remember that THIS call created a launcher
+        // `chat/*` worktree so the next session registration on `target` can
+        // be recognised as its creator (consume-once).
+        if is_new_branch {
+            note_launch_created(&target, branch);
+        }
 
         // Auto-add .termul/ to .gitignore if not already present
         let gitignore_path = Path::new(project_path).join(".gitignore");
@@ -344,6 +361,17 @@ impl WorktreeManager {
         })
     }
 
+    /// Whether `path` lies under a `.termul/worktrees` directory (a
+    /// Termul-managed worktree). Compares path components, so it works with
+    /// Windows backslashes too.
+    pub fn is_managed_path(path: &str) -> bool {
+        std::path::Path::new(path)
+            .components()
+            .collect::<Vec<_>>()
+            .windows(2)
+            .any(|w| w[0].as_os_str() == ".termul" && w[1].as_os_str() == "worktrees")
+    }
+
     /// Remove all Termul-managed worktrees for a project.
     /// Used during project cascade delete. Reports per-worktree success/failure.
     pub fn remove_all_managed(
@@ -361,14 +389,7 @@ impl WorktreeManager {
             let _name = wt["name"].as_str().unwrap_or("unknown").to_string();
 
             // Only remove Termul-managed worktrees
-            // Use Path components for cross-platform detection (Windows uses backslashes)
-            let wt_path_obj = std::path::Path::new(&path);
-            let is_managed = wt_path_obj
-                .components()
-                .collect::<Vec<_>>()
-                .windows(2)
-                .any(|w| w[0].as_os_str() == ".termul" && w[1].as_os_str() == "worktrees");
-            if !is_managed {
+            if !Self::is_managed_path(&path) {
                 results.push(RemoveResult {
                     worktree_path: path.clone(),
                     success: true,
@@ -443,8 +464,7 @@ impl WorktreeManager {
                 continue;
             }
 
-            // Skip if it contains path separators (subdirectory patterns like src/dist/)
-            if dir_name.contains('/') || dir_name.contains('\\') {
+            if !is_single_safe_folder_name(dir_name) {
                 continue;
             }
 
@@ -488,19 +508,13 @@ impl WorktreeManager {
         let mut results = Vec::new();
 
         for dir_name in symlink_dirs {
-            // Validate: reject absolute paths and path-traversal components
-            let dir_path = Path::new(dir_name);
-            if dir_path.is_absolute()
-                || dir_path
-                    .components()
-                    .any(|c| c == std::path::Component::ParentDir)
-            {
+            if !is_single_safe_folder_name(dir_name) {
                 results.push(SymlinkResult {
                     path: worktree_root.join(dir_name).to_string_lossy().to_string(),
                     target: project_root.join(dir_name).to_string_lossy().to_string(),
                     status: "skipped".to_string(),
                     reason: Some(format!(
-                        "Invalid symlink directory name (absolute or path traversal): {}",
+                        "Invalid symlink directory name (must be one folder name with no path separator or shell metacharacter): {}",
                         dir_name
                     )),
                 });
@@ -569,4 +583,12 @@ impl WorktreeManager {
     ) -> Vec<SymlinkResult> {
         Self::create_symlinks(project_path, worktree_path, symlink_dirs)
     }
+}
+
+fn is_only_plain_folder_names(name: &str) -> bool {
+    let mut components = Path::new(name).components().peekable();
+    // `components()` silently drops interior `.`, so `feat/./login` would alias `feat/login`.
+    components.peek().is_some()
+        && components.all(|c| matches!(c, Component::Normal(_)))
+        && !name.split(['/', '\\']).any(|segment| segment == ".")
 }

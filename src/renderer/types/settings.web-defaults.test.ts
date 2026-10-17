@@ -29,6 +29,7 @@ describe('getDefaultKeyboardShortcuts (#858 web-safe defaults)', () => {
     expect(defaults.zoomIn.defaultKey).toBe('ctrl+=')
     expect(defaults.zoomOut.defaultKey).toBe('ctrl+-')
     expect(defaults.zoomReset.defaultKey).toBe('ctrl+0')
+    expect(defaults.settings.defaultKey).toBe('ctrl+,')
   })
 
   it('web: remaps browser-reserved combos to Alt-based alternates', () => {
@@ -43,6 +44,7 @@ describe('getDefaultKeyboardShortcuts (#858 web-safe defaults)', () => {
     expect(defaults.zoomIn.defaultKey).toBe('alt+=')
     expect(defaults.zoomOut.defaultKey).toBe('alt+-')
     expect(defaults.zoomReset.defaultKey).toBe('alt+0')
+    expect(defaults.settings.defaultKey).toBe('alt+,')
   })
 
   it('web: leaves Ctrl+R unbound (browser reload) instead of remapping', () => {

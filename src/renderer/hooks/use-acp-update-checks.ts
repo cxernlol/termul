@@ -33,7 +33,7 @@ export function useAcpUpdateChecks(): void {
     const run = (): void => {
       void (async () => {
         try {
-          await checkForUpdates(true)
+          await checkForUpdates('background')
           if (!cancelled) lastCheckAt = Date.now()
         } catch (err) {
           if (!cancelled) {

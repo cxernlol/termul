@@ -1,20 +1,31 @@
-import { normalizeCwdForScope } from '@/lib/acp-history-persistence'
 import { logFrontendError } from '@/lib/log-api'
 import { randomUUID } from '@/lib/uuid'
 import { worktreeApi } from '@/lib/worktree-api'
+import { reconcileProjectWorktrees, worktreeKey } from '@/lib/worktree-reconciler'
 import { useProjectStore } from '@/stores/project-store'
 import { useWorktreeProgressStore } from '@/stores/worktree-progress-store'
-import type { Worktree } from '@/types/project'
 
-/** Isolation mode selected in the launcher context strip. */
-export type LaunchIsolationMode = 'current' | 'worktree'
+/**
+ * Workspace chip mode selected in the launcher context strip: the current
+ * checkout, an already-listed worktree, or a new chat worktree.
+ */
+export type LaunchIsolationMode = 'current' | 'existing' | 'worktree'
+
+/** What the composer persists: an existing-worktree launch is a read, so it
+ * persists as the current checkout and never pins a worktree preference. */
+export function persistedIsolationMode(mode: LaunchIsolationMode): 'current' | 'worktree' {
+  return mode === 'worktree' ? 'worktree' : 'current'
+}
 
 export interface PrepareLaunchWorktreeInput {
   isolationMode: LaunchIsolationMode
-  canUseWorktree: boolean
-  baseBranch: string | null
+  /** Needed for `'worktree'`; an `'existing'` launch is a read and ignores it. */
+  canUseWorktree?: boolean
+  baseBranch?: string | null
   projectRoot: string
   projectId: string
+  /** `Worktree.id` of the listed worktree an `'existing'` launch runs in. */
+  existingWorktreeId?: string | null
   /**
    * Correlation id for the in-timeline worktree-creation progress card. When
    * set, git's `worktree add` stderr lines stream into
@@ -31,8 +42,31 @@ export interface PrepareLaunchWorktreeResult {
 }
 
 /**
- * Create and register a launch worktree when New worktree is selected.
- * Local mode returns the project root unchanged.
+ * The listed worktree an Existing-worktree launch runs in. A read: no network,
+ * no reconcile, no progress card and no Workspace-switcher pick write.
+ */
+function resolveExistingWorktree(
+  projectId: string,
+  worktreeId: string | null | undefined
+): PrepareLaunchWorktreeResult {
+  const worktree = useProjectStore
+    .getState()
+    .projects.find((p) => p.id === projectId)
+    ?.worktrees?.find((w) => w.id === worktreeId)
+  if (!worktree || worktree.outsideProjectRoot === true) {
+    throw new Error('That worktree is no longer available.')
+  }
+  return {
+    launchCwd: worktree.path,
+    worktreePath: worktree.path,
+    worktreeBranch: worktree.branch
+  }
+}
+
+/**
+ * Create and register a launch worktree when New worktree is selected, or
+ * resolve the listed worktree when Existing worktree is selected. Current
+ * checkout mode returns the project root unchanged.
  *
  * CAP-3: the isolated worktree exists before the chat opens so the agent cwd
  * is the worktree path from the first turn. Branch is `chat/{id}`
@@ -42,6 +76,9 @@ export async function prepareLaunchWorktree(
   input: PrepareLaunchWorktreeInput
 ): Promise<PrepareLaunchWorktreeResult> {
   const { isolationMode, canUseWorktree, baseBranch, projectRoot, projectId } = input
+  if (isolationMode === 'existing') {
+    return resolveExistingWorktree(projectId, input.existingWorktreeId)
+  }
   if (isolationMode !== 'worktree' || !canUseWorktree) {
     return { launchCwd: projectRoot }
   }
@@ -67,12 +104,13 @@ export async function prepareLaunchWorktree(
   let worktreePathResult: string | null =
     createResult.success && createResult.data ? createResult.data.path : null
   let worktreeBranchResult: string = branchName
-  // Track the worktree NAME actually used (the retry branch appends `-2`),
-  // so the project-store entry's `name` matches the git worktree on disk.
-  let worktreeNameResult: string = chatId
   if (!worktreePathResult) {
     const failCode = createResult.success ? 'UNKNOWN' : createResult.code
-    if (failCode === 'WORKTREE_EXISTS' || failCode === 'BRANCH_ALREADY_HAS_WORKTREE') {
+    if (
+      failCode === 'WORKTREE_EXISTS' ||
+      failCode === 'BRANCH_EXISTS' ||
+      failCode === 'BRANCH_ALREADY_HAS_WORKTREE'
+    ) {
       // Collision-retry: append `-2` suffix once (stale state from a
       // prior crashed run). Never deadlock — a second collision surfaces
       // an error.
@@ -98,7 +136,6 @@ export async function prepareLaunchWorktree(
       if (retryResult.success && retryResult.data) {
         worktreePathResult = retryResult.data.path
         worktreeBranchResult = retryBranch
-        worktreeNameResult = retryId
       } else {
         const retryCode = retryResult.success ? 'UNKNOWN' : retryResult.code
         const retryErr = retryResult.success ? 'unknown' : retryResult.error
@@ -158,46 +195,34 @@ export async function prepareLaunchWorktree(
     })
   }
 
-  // Register the just-created worktree in the project store and
-  // activate it so the Chats sidebar scopes to it immediately (no
-  // 60s reconciler wait) and the worktree survives across restarts.
-  // Dedupe by path against already-stored worktrees so the reconciler
-  // cannot add a second entry for the same path later. Best-effort:
-  // a failure logs a warn and the chat still opens below.
+  // Register the just-created worktree through the single-flight reconciler
+  // (the only writer of `project.worktrees`) so it is listed immediately (no
+  // 60s reconciler wait). Launching never changes the Workspace-switcher pick.
+  // Best-effort: a failure logs a warn and the chat still opens below.
   try {
+    await reconcileProjectWorktrees(projectId)
     const projectStore = useProjectStore.getState()
-    const stored = projectStore.projects.find((p) => p.id === projectId)
-    // Dedupe by normalized path: worktreeApi.create and an already-stored
-    // entry (from a prior launch or the reconciler's worktreeApi.list)
-    // can differ by trailing slash / verbatim prefix. Without
-    // normalization the dedup misses and addWorktree creates a duplicate
-    // the comment below claims to prevent.
-    const alreadyStored = stored?.worktrees?.find(
-      (w) => normalizeCwdForScope(w.path) === normalizeCwdForScope(worktreePathResult)
-    )
-    if (alreadyStored) {
-      projectStore.setActiveWorktree(projectId, alreadyStored.id)
+    const resultKey = worktreeKey(worktreePathResult)
+    const stored = projectStore.projects
+      .find((p) => p.id === projectId)
+      ?.worktrees?.find((w) => worktreeKey(w.path) === resultKey)
+    if (stored) {
+      // Branch names are logged at debug level only.
+      console.debug(
+        `[agentLauncher.worktreeRegister] registered branch=${worktreeBranchResult} path=${worktreePathResult}`
+      )
     } else {
-      const newWorktree: Worktree = {
-        id: randomUUID(),
-        name: worktreeNameResult,
-        branch: worktreeBranchResult,
-        path: worktreePathResult,
-        createdAt: new Date().toISOString()
-      }
-      projectStore.addWorktree(projectId, newWorktree)
-      projectStore.setActiveWorktree(projectId, newWorktree.id)
+      void logFrontendError({
+        level: 'warn',
+        source: 'agentLauncher.worktreeRegister',
+        message: `created worktree not found after reconcile path=${worktreePathResult}`
+      })
     }
-    // Boundary log (info-level): not an error, so console.info is
-    // appropriate (logFrontendError is error/warn only).
-    console.info(
-      `[agentLauncher.worktreeRegister] activated branch=${worktreeBranchResult} path=${worktreePathResult}`
-    )
   } catch (registerErr) {
     void logFrontendError({
       level: 'warn',
       source: 'agentLauncher.worktreeRegister',
-      message: `register/activate failed: ${registerErr instanceof Error ? registerErr.message : String(registerErr)}`
+      message: `register failed: ${registerErr instanceof Error ? registerErr.message : String(registerErr)}`
     })
   }
 

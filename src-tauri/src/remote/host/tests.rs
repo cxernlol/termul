@@ -130,11 +130,29 @@ fn lifecycle_fixtures() -> (
     (acp, pty, relay, registry)
 }
 
+/// The desktop's data handed to the shared-live host: a store opened ONCE at
+/// `<app_data_dir>/store.json` inside a throwaway `app_data_dir`. Keep the
+/// returned guard alive for the test.
+fn shared_live_fixture() -> (SharedLiveData, tempfile::TempDir) {
+    let dir = tempfile::tempdir().expect("temp app_data_dir");
+    let store = WebStore::open(
+        crate::data_lock::desktop_store_file(dir.path()),
+        crate::web::store::StorePolicy::default(),
+    )
+        .expect("open the desktop web store");
+    let data = SharedLiveData {
+        store: Arc::new(store),
+        data_dir: dir.path().to_path_buf(),
+    };
+    (data, dir)
+}
+
 #[tokio::test]
 async fn remote_server_state_start_then_stop_lifecycle() {
     // The full start→status(running)→stop→status(stopped)→restart cycle
     // that T8.1 asked for and the old misnamed test never exercised.
     let (acp, pty, relay, registry) = lifecycle_fixtures();
+    let (data, _data_dir) = shared_live_fixture();
     let state = RemoteServerState::new();
     assert!(!state.status().running);
 
@@ -145,7 +163,8 @@ async fn remote_server_state_start_then_stop_lifecycle() {
             relay.clone(),
             registry.clone(),
             RemoteBindMode::Localhost,
-            None,
+            false,
+            &data,
             None,
             None,
         )
@@ -178,7 +197,8 @@ async fn remote_server_state_start_then_stop_lifecycle() {
             relay.clone(),
             registry.clone(),
             RemoteBindMode::Localhost,
-            None,
+            false,
+            &data,
             None,
             None,
         )
@@ -194,6 +214,7 @@ async fn remote_server_state_double_start_is_rejected() {
     // Err — and (per R1) does NOT orphan a second server (its shutdown_tx is
     // signaled before returning). The first server keeps running.
     let (acp, pty, relay, registry) = lifecycle_fixtures();
+    let (data, _data_dir) = shared_live_fixture();
     let state = RemoteServerState::new();
     let _first = state
         .start(
@@ -202,7 +223,8 @@ async fn remote_server_state_double_start_is_rejected() {
             relay.clone(),
             registry.clone(),
             RemoteBindMode::Localhost,
-            None,
+            false,
+            &data,
             None,
             None,
         )
@@ -216,7 +238,8 @@ async fn remote_server_state_double_start_is_rejected() {
             relay.clone(),
             registry.clone(),
             RemoteBindMode::Localhost,
-            None,
+            false,
+            &data,
             None,
             None,
         )
@@ -240,6 +263,7 @@ async fn remote_server_state_start_stop_does_not_kill_agents() {
     // nothing to kill — this guards the path: start/stop complete without
     // touching kill_all, i.e. no panic, no error, clean drain.)
     let (acp, pty, relay, registry) = lifecycle_fixtures();
+    let (data, _data_dir) = shared_live_fixture();
     let state = RemoteServerState::new();
     let _ = state
         .start(
@@ -248,7 +272,8 @@ async fn remote_server_state_start_stop_does_not_kill_agents() {
             relay.clone(),
             registry.clone(),
             RemoteBindMode::Localhost,
-            None,
+            false,
+            &data,
             None,
             None,
         )
@@ -264,6 +289,55 @@ async fn remote_server_state_start_stop_does_not_kill_agents() {
     // call kill_all. This test guards the path end-to-end.)
 }
 
+#[tokio::test]
+async fn the_durable_registry_survives_a_shared_live_stop_and_restart() {
+    // The registry belongs to the desktop, not to the server: stopping and
+    // starting shared-live neither clears it nor loses what it persisted.
+    let (acp, pty, relay, _in_memory) = lifecycle_fixtures();
+    let (data, data_dir) = shared_live_fixture();
+    let project_dir = data_dir.path().join("project");
+    std::fs::create_dir_all(&project_dir).unwrap();
+    let file = crate::data_lock::desktop_projects_file(data_dir.path());
+    let registry = Arc::new(
+        ProjectRegistry::open_durable(&file, crate::acp::RootCheck::Lenient).expect("open"),
+    );
+    registry.set(
+        vec![crate::web::ProjectSummary {
+            id: "p-1".to_string(),
+            name: "One".to_string(),
+            color: "blue".to_string(),
+            path: Some(project_dir.to_string_lossy().into_owned()),
+            is_archived: false,
+            is_default: false,
+        }],
+        Some("p-1".to_string()),
+    );
+
+    let state = RemoteServerState::new();
+    for _ in 0..2 {
+        state
+            .start(
+                acp.clone(),
+                pty.clone(),
+                relay.clone(),
+                registry.clone(),
+                RemoteBindMode::Localhost,
+                false,
+                &data,
+                None,
+                None,
+            )
+            .await
+            .expect("start succeeds");
+        assert_eq!(registry.len(), 1, "the list is served while running");
+        state.stop().await.expect("stop succeeds");
+        assert_eq!(registry.len(), 1, "stop leaves the list alone");
+    }
+    let reopened =
+        ProjectRegistry::open_durable(&file, crate::acp::RootCheck::Lenient).expect("reopen");
+    assert_eq!(reopened.snapshot().default_project_id.as_deref(), Some("p-1"));
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn status_clears_tunnel_url_when_cloudflared_child_exits() {
     // The watchdog flips `tunnel_dead` once the child exits; `status()`
@@ -271,6 +345,7 @@ async fn status_clears_tunnel_url_when_cloudflared_child_exits() {
     // (it would otherwise offer a link that yields "This site can't be
     // reached").
     let (acp, pty, relay, registry) = lifecycle_fixtures();
+    let (data, _data_dir) = shared_live_fixture();
     let state = RemoteServerState::new();
     let _ = state
         .start(
@@ -279,7 +354,8 @@ async fn status_clears_tunnel_url_when_cloudflared_child_exits() {
             relay.clone(),
             registry.clone(),
             RemoteBindMode::Localhost,
-            None,
+            false,
+            &data,
             None,
             None,
         )
@@ -327,6 +403,25 @@ fn quick_exit_command() -> tokio::process::Command {
     c.stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
+    c
+}
+
+/// A cross-platform command that stays alive for a while (a stand-in for a
+/// healthy cloudflared child); `kill_on_drop` reaps it when the host stops.
+fn long_lived_command() -> tokio::process::Command {
+    #[cfg(target_os = "windows")]
+    let mut c = tokio::process::Command::new("ping");
+    #[cfg(target_os = "windows")]
+    c.args(["-n", "30", "127.0.0.1"]);
+    #[cfg(not(target_os = "windows"))]
+    let mut c = tokio::process::Command::new("sleep");
+    #[cfg(not(target_os = "windows"))]
+    c.arg("30");
+
+    c.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
     c
 }
 
@@ -380,8 +475,265 @@ fn strip_line_comments(src: &str) -> String {
 }
 
 #[test]
+fn shared_live_requires_token_when_exposed() {
+    // Ungated ONLY on loopback with no tunnel; a tunnel or a LAN bind gates.
+    assert!(!shared_live_requires_token(
+        RemoteBindMode::Localhost,
+        false
+    ));
+    assert!(shared_live_requires_token(RemoteBindMode::Localhost, true));
+    assert!(shared_live_requires_token(RemoteBindMode::All, false));
+    assert!(shared_live_requires_token(RemoteBindMode::All, true));
+}
+
+/// Read the persisted bearer token the host generated under `data_dir`.
+fn persisted_token(data_dir: &std::path::Path) -> String {
+    std::fs::read_to_string(data_dir.join(crate::web::auth::WEB_AUTH_TOKEN_FILE))
+        .expect("token file under app_data_dir")
+        .trim()
+        .to_string()
+}
+
+async fn http_status(url: &str, token: Option<&str>) -> reqwest::StatusCode {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .expect("build reqwest client");
+    let mut request = client.get(url);
+    if let Some(token) = token {
+        request = request.bearer_auth(token);
+    }
+    request.send().await.expect("request completes").status()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shared_live_with_a_tunnel_requires_the_token_and_shares_it_in_the_url() {
+    let (acp, pty, relay, registry) = lifecycle_fixtures();
+    let (data, data_dir) = shared_live_fixture();
+    let state = RemoteServerState::new();
+    let status = state
+        .start(
+            acp,
+            pty,
+            relay,
+            registry,
+            RemoteBindMode::Localhost,
+            true,
+            &data,
+            None,
+            None,
+        )
+        .await
+        .expect("start with a planned tunnel");
+    let api = format!("{}/projects", status.url.expect("loopback url"));
+
+    // Token persisted under the desktop app_data_dir, never the service-account dir.
+    let token = persisted_token(data_dir.path());
+    assert!(!token.is_empty());
+
+    assert_eq!(
+        http_status(&api, None).await,
+        reqwest::StatusCode::UNAUTHORIZED,
+        "HTTP without the bearer token is refused"
+    );
+    assert_eq!(
+        http_status(&api, Some("not-the-token")).await,
+        reqwest::StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        http_status(&api, Some(&token)).await,
+        reqwest::StatusCode::OK,
+        "the right token is accepted"
+    );
+
+    // Once the tunnel is attached the shared link carries `#token=`; the
+    // bare tunnel URL never appears alone, and Debug redacts it.
+    let child = long_lived_command().spawn().expect("spawn child");
+    state
+        .attach_tunnel("https://abc.trycloudflare.com".to_string(), child)
+        .expect("attach");
+    let shared = state
+        .status()
+        .tunnel_url
+        .expect("tunnel url while child lives");
+    assert_eq!(
+        shared,
+        format!("https://abc.trycloudflare.com#token={token}")
+    );
+    assert!(!format!("{:?}", state.status()).contains(&token));
+
+    let _ = state.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shared_live_on_loopback_without_a_tunnel_is_ungated_and_writes_no_token() {
+    let (acp, pty, relay, registry) = lifecycle_fixtures();
+    let (data, data_dir) = shared_live_fixture();
+    let state = RemoteServerState::new();
+    let status = state
+        .start(
+            acp,
+            pty,
+            relay,
+            registry,
+            RemoteBindMode::Localhost,
+            false,
+            &data,
+            None,
+            None,
+        )
+        .await
+        .expect("start");
+    let api = format!("{}/projects", status.url.expect("loopback url"));
+    assert_eq!(http_status(&api, None).await, reqwest::StatusCode::OK);
+    assert!(
+        !data_dir
+            .path()
+            .join(crate::web::auth::WEB_AUTH_TOKEN_FILE)
+            .exists(),
+        "an ungated loopback host persists no token"
+    );
+    let _ = state.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shared_live_requested_beyond_loopback_requires_the_token_even_without_a_tunnel() {
+    let (acp, pty, relay, registry) = lifecycle_fixtures();
+    let (data, data_dir) = shared_live_fixture();
+    let state = RemoteServerState::new();
+    let status = state
+        .start(
+            acp,
+            pty,
+            relay,
+            registry,
+            RemoteBindMode::All,
+            false,
+            &data,
+            None,
+            None,
+        )
+        .await
+        .expect("start on all interfaces");
+    let api = format!(
+        "http://127.0.0.1:{}/projects",
+        status.port.expect("bound port")
+    );
+    assert_eq!(
+        http_status(&api, None).await,
+        reqwest::StatusCode::UNAUTHORIZED
+    );
+    let token = persisted_token(data_dir.path());
+    assert_eq!(
+        http_status(&api, Some(&token)).await,
+        reqwest::StatusCode::OK
+    );
+    let _ = state.stop().await;
+}
+
+#[tokio::test]
+async fn stop_then_start_reuses_the_one_desktop_store_without_taking_a_second_lock() {
+    let (acp, pty, relay, registry) = lifecycle_fixtures();
+    let (data, data_dir) = shared_live_fixture();
+    // The desktop's composition root holds the data-dir locks for the whole
+    // process; a host start that tried to lock again would fail against it.
+    let _locks = crate::data_lock::lock_desktop_data(data_dir.path()).expect("desktop locks");
+    assert_eq!(
+        data.store.path(),
+        crate::data_lock::desktop_store_file(data_dir.path()),
+        "the shared-live store is app_data_dir/store.json"
+    );
+    let identity = crate::web::ws::ClientIdentity {
+        device_id: "desktop-test".to_string(),
+        client_instance_id: "tab".to_string(),
+    };
+    data.store
+        .write(
+            "device/desktop-test/sentinel",
+            serde_json::json!("kept"),
+            crate::web::store::Precondition::default(),
+            &identity,
+            1,
+        )
+        .expect("seed the store");
+
+    let state = RemoteServerState::new();
+    for round in 0..2 {
+        state
+            .start(
+                acp.clone(),
+                pty.clone(),
+                relay.clone(),
+                registry.clone(),
+                RemoteBindMode::Localhost,
+                true,
+                &data,
+                None,
+                None,
+            )
+            .await
+            .unwrap_or_else(|e| panic!("start round {round} must not lock again: {e}"));
+        assert_eq!(
+            data.store
+                .read("device/desktop-test/sentinel", &identity, 2)
+                .expect("read")
+                .value,
+            Some(serde_json::json!("kept")),
+            "the same store instance survives round {round}"
+        );
+        state.stop().await.expect("stop");
+    }
+
+    // Nothing but the desktop's own files ever appears in app_data_dir.
+    let mut names: Vec<String> = std::fs::read_dir(data_dir.path())
+        .expect("read data dir")
+        .map(|e| e.expect("entry").file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    assert!(
+        names.iter().all(|n| {
+            n == "store.json"
+                || n == crate::web::auth::WEB_AUTH_TOKEN_FILE
+                || n.contains("lock")
+                || n == "acp-sessions"
+                || n == "acp-catalog"
+                || n == "acp-registry-binaries"
+        }),
+        "unexpected files in app_data_dir: {names:?}"
+    );
+}
+
+#[test]
 fn remote_server_state_default_equals_new() {
     let _ = RemoteServerState::default();
+}
+
+/// A desktop host started with an empty registry registers nothing: there is
+/// no host project root to seed from, the durable registry is fed by the
+/// renderer's project list.
+#[tokio::test]
+async fn shared_live_start_never_seeds_a_project() {
+    let (acp, pty, relay, registry) = lifecycle_fixtures();
+    assert!(registry.is_empty());
+    let (data, _data_dir) = shared_live_fixture();
+    let state = RemoteServerState::new();
+    state
+        .start(
+            acp.clone(),
+            pty.clone(),
+            relay.clone(),
+            registry.clone(),
+            RemoteBindMode::Localhost,
+            false,
+            &data,
+            None,
+            None,
+        )
+        .await
+        .expect("start with an empty registry");
+    assert!(registry.is_empty(), "start must not seed a project");
+    assert_eq!(registry.snapshot().default_project_id, None);
+    let _ = state.stop().await;
 }
 
 /// CAP-1 / CAP-8: the keystone cross-drive integration test.
@@ -390,9 +742,9 @@ fn remote_server_state_default_equals_new() {
 /// OUTSIDE the user home tree, starts `RemoteServerState`, and asserts
 /// `GET /skills` + `POST /git/status` pass the containment check (not
 /// `OUTSIDE_PROJECT_ROOT`) over the real shared-live HTTP socket. Then
-/// switches the default to a second project and asserts the new project is
-/// accepted WITHOUT a server restart — proving the live rebind threads
-/// through.
+/// proves the boundary is the registry, not the default: a non-default
+/// project is admitted, moving the default changes nothing, and archiving a
+/// project removes only its root.
 ///
 /// The bug this guards against is the `project_root = %USERPROFILE%` (home)
 /// binding that rejects every project outside the home tree. To reproduce
@@ -407,13 +759,16 @@ fn remote_server_state_default_equals_new() {
 /// test skips rather than false-pass; an explicit override that is unusable
 /// panics so a broken CI setup is loud, not silent.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn shared_live_binds_project_root_to_active_cross_drive_project() {
+async fn shared_live_boundary_is_any_registered_cross_drive_project() {
     let (acp, pty, relay, registry) = lifecycle_fixtures();
 
-    // Resolve the user home dir the way the buggy `default_project_root()`
-    // does, then pick a base provably OUTSIDE the home tree so the project
-    // dirs reproduce the cross-drive / outside-home rejection the bug caused.
-    let Some(home) = crate::web::config::default_project_root() else {
+    // Resolve the user home dir the way the old host project-root default did,
+    // then pick a base provably OUTSIDE the home tree so the project dirs
+    // reproduce the cross-drive / outside-home rejection the bug caused.
+    let Some(home) = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(std::path::PathBuf::from)
+    else {
         eprintln!("skip: cannot resolve user home dir for cross-drive test");
         return;
     };
@@ -550,8 +905,9 @@ async fn shared_live_binds_project_root_to_active_cross_drive_project() {
     };
     registry.set(vec![project_a, project_b], Some("p-a".to_string()));
 
-    // Start the shared-live server. CAP-1: `start` now derives project_root
-    // from the registry default (dir_a), NOT the user home dir.
+    let (data, _data_dir) = shared_live_fixture();
+    // Start the shared-live server. The registry already holds both projects,
+    // so `start` seeds nothing; the boundary is the registered roots.
     let state = RemoteServerState::new();
     let status = state
         .start(
@@ -560,7 +916,8 @@ async fn shared_live_binds_project_root_to_active_cross_drive_project() {
             relay.clone(),
             registry.clone(),
             RemoteBindMode::Localhost,
-            None,
+            false,
+            &data,
             None,
             None,
         )
@@ -578,8 +935,8 @@ async fn shared_live_binds_project_root_to_active_cross_drive_project() {
         .expect("build reqwest client");
 
     // GET /skills?projectRoot=dir_a — must succeed (not OUTSIDE_PROJECT_ROOT).
-    // The route canonicalizes dir_a and checks it against project_root
-    // (which is now dir_a's canonical form, not the home dir). Build the
+    // The route canonicalizes dir_a and checks it against the registered
+    // project roots (dir_a's canonical form, not the home dir). Build the
     // URL with percent-encoding so Windows backslash paths parse correctly.
     let skills_url_a = format!("{url}/skills?projectRoot={}", percent_encode_path(&dir_a));
     let resp = client.get(&skills_url_a).send().await.expect("GET /skills");
@@ -618,59 +975,62 @@ async fn shared_live_binds_project_root_to_active_cross_drive_project() {
         );
     }
 
-    // ---- Switch the default to project B (dir_b) WITHOUT a restart ----
-    // CAP-1: the registry's set_default_project triggers rebind_project_root,
-    // which recomputes project_root from the new default (dir_b) and writes
-    // the canonical path to the AppState.project_root handle in place.
-    assert!(
-        registry.set_default_project("p-b"),
-        "set_default_project must succeed for a switchable project"
-    );
-
-    // GET /skills?projectRoot=dir_b — must succeed with the new boundary.
+    // ---- Move the host default to project B: the boundary does not move ----
+    // The boundary is "inside any registered, non-archived project", so the
+    // default pointer is irrelevant to it: dir_b is admitted before AND after
+    // the default changes, and dir_a stays admitted while p-a is registered.
     let skills_url_b = format!("{url}/skills?projectRoot={}", percent_encode_path(&dir_b));
+    let outside = |body: &serde_json::Value| {
+        body.get("code").and_then(|v| v.as_str()) == Some("OUTSIDE_PROJECT_ROOT")
+    };
     let resp = client
         .get(&skills_url_b)
         .send()
         .await
-        .expect("GET /skills after switch");
+        .expect("GET /skills non-default project");
     let body: serde_json::Value = resp.json().await.expect("parse /skills body");
-    // Containment claim only (see above) — do not couple to skills-scan success.
     assert!(
-        body.get("code").and_then(|v| v.as_str()) != Some("OUTSIDE_PROJECT_ROOT"),
-        "/skills must not reject the new active project after switch, got: {body}"
+        !outside(&body),
+        "a registered non-default project must be inside the boundary, got: {body}"
     );
+    assert!(
+        registry.set_default_project("p-b"),
+        "set_default_project must succeed for a switchable project"
+    );
+    for (label, url) in [("old default", &skills_url_a), ("new default", &skills_url_b)] {
+        let resp = client.get(url).send().await.expect("GET /skills after default change");
+        let body: serde_json::Value = resp.json().await.expect("parse /skills body");
+        assert!(
+            !outside(&body),
+            "{label} must stay inside the boundary after the default moves, got: {body}"
+        );
+    }
 
-    // CAP-2 (PR #557) widened the operation boundary from "the default
-    // root only" to "the default root OR any registered, non-archived
-    // root" — see `ensure_within_project_boundary` and
-    // `is_within_any_registered_root`. So after the switch, dir_a is STILL
-    // admitted (p-a remains registered + non-archived) even though it is
-    // no longer the default. To prove the rebound boundary actually moved
-    // (and did not just widen to cover both), archive p-a — an archived
-    // root is excluded from `is_within_any_registered_root` — and THEN
-    // assert the rejection. Asserting rejection without archiving would
-    // contradict the CAP-2 contract the production code implements (this
-    // test predated #557; its last assertion was stale, not the code).
+    // Archiving p-a removes its root from the boundary (and nothing else).
     assert!(
         registry.update("p-a", None, None, Some(true)),
         "archiving p-a must succeed"
     );
-    // The old project (dir_a) is now outside BOTH the rebound default
-    // (dir_b) and every non-archived registered root, so
-    // /skills?projectRoot=dir_a must be rejected with
-    // OUTSIDE_PROJECT_ROOT — proving the boundary moved to dir_b.
     let resp = client
         .get(&skills_url_a)
         .send()
         .await
-        .expect("GET /skills old project after archive");
+        .expect("GET /skills archived project");
     let body: serde_json::Value = resp.json().await.expect("parse /skills body");
-    assert_eq!(
-            body.get("code").and_then(|v| v.as_str()),
-            Some("OUTSIDE_PROJECT_ROOT"),
-            "the old project must be rejected after the boundary moved to dir_b (and p-a archived), got: {body}"
-        );
+    assert!(
+        outside(&body),
+        "an archived project must be outside the boundary, got: {body}"
+    );
+    let resp = client
+        .get(&skills_url_b)
+        .send()
+        .await
+        .expect("GET /skills remaining project");
+    let body: serde_json::Value = resp.json().await.expect("parse /skills body");
+    assert!(
+        !outside(&body),
+        "the remaining registered project must stay inside the boundary, got: {body}"
+    );
 
     let _ = state.stop().await;
     // dir_a / dir_b are removed by the TempDirGuard RAII guards on drop,

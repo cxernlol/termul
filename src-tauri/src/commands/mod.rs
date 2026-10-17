@@ -1,5 +1,5 @@
 use crate::path_validation;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// Validate and canonicalize a project path to prevent path traversal attacks.
@@ -43,7 +43,7 @@ macro_rules! validate_and_stringify {
 }
 
 /// IPC Result pattern
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IpcResult<T> {
     pub success: bool,
@@ -85,6 +85,8 @@ pub mod notification;
 pub mod project_icon;
 pub mod remote;
 pub mod search;
+pub(crate) mod search_dirs;
+pub(crate) mod search_file_hits;
 pub mod ssh;
 pub mod terminal;
 pub mod workspace;
@@ -113,7 +115,19 @@ mod notification_tests;
 mod tests;
 
 #[cfg(test)]
+mod search_dirs_tests;
+
+#[cfg(test)]
+mod search_file_hits_tests;
+
+#[cfg(test)]
 mod remote_sync_mcp_registry_tests;
 
 #[cfg(test)]
 mod forwarder_teardown_tests;
+
+#[cfg(test)]
+mod terminal_tests;
+
+#[cfg(test)]
+mod worktree_tests;

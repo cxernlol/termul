@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Check, Palette, Search, X } from '@/components/icons'
+import { FIELD_FOCUS_CLASS } from '@/components/ui/panel-styles'
 import { useUpdateAppSettings } from '@/hooks/use-app-settings'
 import { useEffectiveColorThemeId } from '@/hooks/use-color-theme'
 import {
@@ -10,7 +11,13 @@ import {
   type ThemePickerRow
 } from '@/lib/themes'
 import { cn } from '@/lib/utils'
+import { useRailExpanded, useRailWidth } from '@/stores/shell-layout-store'
 import { useThemePickerStore } from '@/stores/theme-picker-store'
+
+/** Width of the collapsed Rail (`w-12`). */
+const COLLAPSED_RAIL_WIDTH = 48
+/** Gap between the Rail and the picker. */
+const RAIL_GUTTER = 8
 
 function ThemeSwatches({ themeId }: { themeId: string }): React.JSX.Element {
   const palette = getColorThemeDefinition(themeId).dark.palette
@@ -35,6 +42,10 @@ export function ThemePicker(): React.JSX.Element | null {
   const preview = useThemePickerStore((state) => state.preview)
   const cancel = useThemePickerStore((state) => state.cancel)
   const close = useThemePickerStore((state) => state.close)
+
+  // The picker opens beside the Rail, which can be resized or collapsed.
+  const railExpanded = useRailExpanded()
+  const railWidth = useRailWidth()
 
   const effectiveThemeId = useEffectiveColorThemeId()
   const updateSettings = useUpdateAppSettings()
@@ -202,7 +213,8 @@ export function ThemePicker(): React.JSX.Element | null {
         role="dialog"
         aria-modal="true"
         aria-label="Color theme picker"
-        className="pointer-events-auto absolute left-14 top-4 bottom-4 w-[min(20rem,calc(100vw-2rem))] flex flex-col rounded-xl border border-border bg-popover/95 shadow-2xl backdrop-blur-sm"
+        className="pointer-events-auto absolute top-4 bottom-4 w-[min(20rem,calc(100vw-2rem))] flex flex-col rounded-xl border border-border bg-popover/95 shadow-2xl backdrop-blur-sm"
+        style={{ left: (railExpanded ? railWidth : COLLAPSED_RAIL_WIDTH) + RAIL_GUTTER }}
         onMouseDown={(event) => event.stopPropagation()}
       >
         <header className="flex items-center gap-2 border-b border-border px-3 py-2.5">
@@ -239,7 +251,7 @@ export function ThemePicker(): React.JSX.Element | null {
                 setFocusIndex(0)
               }}
               placeholder="Search themes…"
-              className="w-full rounded-md border border-border bg-secondary/50 py-1.5 pl-8 pr-3 text-sm text-foreground placeholder:text-muted-foreground outline-none focus:ring-2 focus:ring-primary/40"
+              className={`w-full rounded-md border border-border bg-secondary/50 py-1.5 pl-8 pr-3 text-sm pointer-coarse:text-base text-foreground placeholder:text-muted-foreground ${FIELD_FOCUS_CLASS}`}
               aria-label="Search themes"
             />
           </div>
@@ -278,8 +290,8 @@ export function ThemePicker(): React.JSX.Element | null {
                         className={cn(
                           'flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-sm transition-colors duration-100 ease-[var(--ease-out)] active:scale-[0.98]',
                           isHighlighted || isFocused
-                            ? 'bg-accent/20 text-foreground'
-                            : 'text-foreground/90 hover:bg-secondary/80'
+                            ? 'bg-foreground/[0.06] text-foreground'
+                            : 'text-foreground/90 hover:bg-foreground/[0.06]'
                         )}
                         onMouseEnter={() => {
                           setFocusIndex(index)

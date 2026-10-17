@@ -2,14 +2,14 @@
  * Prompt-queue helpers for ACP chat.
  *
  * Owns FIFO queue mutations, turn-busy checks, and the stable
- * `ACP_TURN_IN_PROGRESS` error contract shared with Rust `acp_send_prompt`.
+ * `ACP_TURN_IN_PROGRESS` error contract shared with the Rust `send_prompt` handler.
  */
 
 import { WS_ERROR_CODES } from '@shared/types/web-protocol.types'
 import type { ContentBlock, SessionId } from '@/lib/acp-api'
 import { AcpTransportError } from '@/lib/acp-transport'
 
-/** Stable code from Rust when `acp_send_prompt` rejects a concurrent turn. */
+/** Stable code from Rust when `send_prompt` rejects a concurrent turn. */
 export const ACP_TURN_IN_PROGRESS_CODE = 'ACP_TURN_IN_PROGRESS'
 
 /** Default budget for waiting on turn clear after cancel (send-now path). */
@@ -44,16 +44,16 @@ export interface RecoverableChatMessage {
 type PromptQueueMap = Record<SessionId, QueuedPrompt[]>
 
 export function isPromptTurnInProgressError(err: unknown): boolean {
-  // Two surfaces report "a prompt turn is already in progress"; both must trigger
-  // `runPromptTurn`'s `recoverPromptToQueue` recovery (parity across desktop/web):
-  //  • Desktop/IPC: `acp_send_prompt` rejects with `Error('ACP_TURN_IN_PROGRESS: …')`.
-  //  • Web/WS: the relay maps the turn-busy condition to `WsErrorCode::RateLimited` via
-  //    `map_prompt_error_code` (preserving the `ACP_TURN_IN_PROGRESS: …` message) AND via
-  //    the pre-flight `TurnClaim::DuplicateInFlight | Busy` branch (message
-  //    "a prompt turn is already in progress"). Both surface as
-  //    `AcpTransportError(WS_ERROR_CODES.RATE_LIMITED, …)`.
-  // The string branch covers IPC + the WS `map_prompt_error_code` form (message keeps the
-  // code prefix); the instanceof branch covers the WS turn-claim form (different message).
+  // The `/ws` relay (every carrier: the WebSocket and the desktop channel) reports
+  // "a prompt turn is already in progress" in two forms; both must trigger
+  // `runPromptTurn`'s `recoverPromptToQueue` recovery:
+  //  • `map_prompt_error_code` maps the turn-busy condition to `WsErrorCode::RateLimited`,
+  //    preserving the `ACP_TURN_IN_PROGRESS: …` message.
+  //  • the pre-flight `TurnClaim::DuplicateInFlight | Busy` branch (message
+  //    "a prompt turn is already in progress").
+  // Both surface as `AcpTransportError(WS_ERROR_CODES.RATE_LIMITED, …)`. The string branch
+  // covers the first form (message keeps the code prefix); the instanceof branch covers the
+  // turn-claim form (different message).
   return (
     String(err).includes(ACP_TURN_IN_PROGRESS_CODE) ||
     (err instanceof AcpTransportError && err.code === WS_ERROR_CODES.RATE_LIMITED)
@@ -78,23 +78,6 @@ export function isAgentDeadError(err: unknown): boolean {
   return AGENT_DEAD_MARKERS.some((marker) => message.includes(marker))
 }
 
-/**
- * A pending `send_prompt` request timed out client-side (#844): the WS
- * request budget (or the send_prompt inactivity/deadline timer) expired
- * without a reply — most commonly because the socket DROPPED mid-turn (the
- * reply is addressed to the dead connection; the server still finishes the
- * turn and the replaying client later receives `prompt_complete`).
- *
- * This is "outcome unknown", not "send failed": the prompt was accepted and
- * durably recorded server-side. Toasting a send failure would be wrong —
- * the user would re-send a prompt that is still running. Callers use this
- * to downgrade the generic send-error toast to a transient log entry and
- * let replay reconcile the turn state.
- */
-export function isSendPromptOutcomeUnknownError(err: unknown): boolean {
-  return err instanceof AcpTransportError && err.code === 'timeout'
-}
-
 export function sessionTurnBusy(session: TurnBusySession | undefined): boolean {
   if (!session) return false
   return Boolean(session.openTurnId || session.activeTurn)
@@ -108,6 +91,17 @@ export function dropPromptQueueForSession(
   const next = { ...queues }
   delete next[sessionId]
   return next
+}
+
+export function moveQueuedPrompts(
+  queues: PromptQueueMap,
+  fromSessionId: SessionId,
+  toSessionId: SessionId
+): PromptQueueMap {
+  const moved = queues[fromSessionId]
+  if (!moved || moved.length === 0) return queues
+  const next = dropPromptQueueForSession(queues, fromSessionId)
+  return { ...next, [toSessionId]: [...(next[toSessionId] ?? []), ...moved] }
 }
 
 export function appendQueuedPrompt(
@@ -143,7 +137,14 @@ export interface RecoverPromptArgs {
 }
 
 export interface RecoverPromptState {
-  sessions: Record<SessionId, TurnBusySession & { lastError?: string | null }>
+  sessions: Record<
+    SessionId,
+    TurnBusySession & {
+      lastError?: string | null
+      lastErrorCode?: number | null
+      lastErrorData?: unknown
+    }
+  >
   messages: Record<SessionId, RecoverableChatMessage[]>
   promptQueues: PromptQueueMap
 }
@@ -192,7 +193,9 @@ export function buildRecoverPromptToQueuePatch(
             ...session,
             activeTurn: Boolean(restoredOpenTurnId),
             openTurnId: restoredOpenTurnId,
-            lastError: null
+            lastError: null,
+            lastErrorCode: null,
+            lastErrorData: undefined
           }
         }
       : state.sessions

@@ -1,11 +1,10 @@
 //! Agent Skills discovery — Zed-compatible `SKILL.md` packages under
 //! `~/.agents/skills/` (global) and `{project}/.agents/skills/` (project-local).
 //!
-//! Surfaced to the renderer slash-command menu via `commands.rs`. The renderer
-//! dedupes in both directions: a skill the agent already reports natively as an
-//! ACP `availableCommands` entry is not shown twice, and an agent command that
-//! re-promotes a discovered skill (`skill:<name>`) is hidden in favour of the
-//! injected skill item (see `slash-menu-model`).
+//! Surfaced to the renderer slash-command menu and the Settings list via
+//! `commands.rs`. An installed skill stays in the menu. A harness command that
+//! repeats it — the same name, or a re-promoted `skill:<name>` command — is
+//! hidden. Comparison is case-insensitive (see `slash-menu-model`).
 
 pub mod commands;
 

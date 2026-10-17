@@ -24,15 +24,20 @@ use std::path::Path;
 
 use axum::{
     extract::{ConnectInfo, Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::IntoResponse,
     Json,
 };
 use serde::{Deserialize, Serialize};
 
+mod ledgered;
+pub(crate) use ledgered::{commit_entity, commit_fingerprint, expected_head_malformed};
+
 use crate::trackers::git_tracker::{
     self, GitCommit, GitCommitContext, GitStatusDetail, GitTracker,
 };
+use crate::acp::destructive_guard::{ensure_no_active_turn_under, DESTRUCTIVE_OP_BLOCKED};
+use crate::web::command_ledger::{fingerprint_of, no_entity, run_http, run_http_released, HttpRan};
 use crate::web::fs_api::{check_local_only, resolve_request_path, IpcBody};
 use crate::web::ws::AppState;
 
@@ -62,13 +67,15 @@ pub struct GitPathRequest {
     pub path: String,
 }
 
-/// `POST /git/log { cwd, limit? }` body. `limit` is clamped server-side
-/// (`GIT_LOG_DEFAULT_LIMIT`/`GIT_LOG_MAX_LIMIT`).
+/// `POST /git/log { cwd, limit?, all? }` body. `limit` is clamped server-side
+/// (`GIT_LOG_DEFAULT_LIMIT`/`GIT_LOG_MAX_LIMIT`); `all` walks every ref.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GitLogRequest {
     pub cwd: String,
     pub limit: Option<u32>,
+    #[serde(default)]
+    pub all: bool,
 }
 
 /// `POST /git/commit { cwd, summary, description?, amend? }` body.
@@ -81,6 +88,10 @@ pub struct GitCommitRequest {
     pub description: String,
     #[serde(default)]
     pub amend: bool,
+    /// The full sha `HEAD` must be at (empty: an unborn branch); a different
+    /// `HEAD` refuses the commit with `PRECONDITION_FAILED`. Absent = no check.
+    #[serde(default)]
+    pub expected_head: Option<String>,
 }
 
 /// `POST /git/checkout-branch { cwd, branch, isRemote? }` body.
@@ -126,7 +137,7 @@ pub struct GitCwdQuery {
     pub cwd: String,
 }
 
-/// `POST /git/branch-switch | branch-create { cwd, name }` body.
+/// `POST /git/branch-switch { cwd, name }` body.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GitBranchNameRequest {
@@ -145,44 +156,27 @@ pub struct GitStashInfoDto {
     pub message: String,
 }
 
-/// Reject when the resolved cwd is outside `project_root`. Returns `None` when
-/// the cwd is within bounds; otherwise `Some(IpcBody::err(...,
-/// "OUTSIDE_PROJECT_ROOT"))`. Both `resolved` (from `resolve_request_path`) and
-/// `project_root` (from `AppState`, set via `resolve_and_validate_project_root`
-/// at startup) are canonicalized, so `starts_with` is a reliable containment
-/// check on every platform.
-pub(crate) fn ensure_within_project_root<T>(
+/// Reject when the resolved path is outside EVERY registered, non-archived
+/// project root. Returns `None` when within bounds; otherwise
+/// `Some(IpcBody::err(..., "OUTSIDE_PROJECT_ROOT"))`. `resolved` comes from
+/// `resolve_request_path` (canonical); the registry caches canonical roots, so
+/// `starts_with` is a reliable containment check on every platform and no
+/// request canonicalizes the whole project list.
+pub(crate) fn ensure_within_project_boundary<T>(
     resolved: &Path,
-    project_root: &Path,
+    registry: &crate::web::project_registry::ProjectRegistry,
 ) -> Option<IpcBody<T>> {
-    if resolved.starts_with(project_root) {
+    if registry.is_within_any_registered_root(resolved) {
         None
     } else {
         Some(IpcBody::<T>::err(
             format!(
-                "cwd '{}' is outside project_root '{}'",
-                resolved.display(),
-                project_root.display()
+                "path '{}' is outside every registered project root",
+                resolved.display()
             ),
             "OUTSIDE_PROJECT_ROOT",
         ))
     }
-}
-
-/// Reject when the resolved cwd is outside ALL authorized project roots. First
-/// checks the default `project_root` via `ensure_within_project_root` (fast
-/// path — single `starts_with`), then falls back to ALL registered project
-/// roots (handles a web client that switched to a non-default project via
-/// per-connection `switch_project` — the boundary follows any registered
-/// project, not just the host default). Returns `None` when within bounds;
-/// otherwise `Some(IpcBody::err(..., "OUTSIDE_PROJECT_ROOT"))`.
-pub(crate) fn ensure_within_project_boundary<T>(
-    resolved: &Path,
-    project_root: &Path,
-    registry: &crate::web::project_registry::ProjectRegistry,
-) -> Option<IpcBody<T>> {
-    ensure_within_project_root::<T>(resolved, project_root)
-        .filter(|_| !registry.is_within_any_registered_root(resolved))
 }
 
 /// Resolve + boundary-check the request `cwd`. On failure returns the
@@ -221,19 +215,9 @@ pub(super) fn resolve_cwd<T>(
             return Err((StatusCode::OK, Json(IpcBody::<T>::err(msg, code))));
         }
     };
-    // 3) project_root containment (web-server security boundary). CAP-1:
-    //    lock-read the RwLock for the duration of the `starts_with` check
-    //    (sync — no `.await` under the guard). The boundary may have been
-    //    rebound by a project switch since the last request. CAP-2: also
-    //    check ALL registered project roots so a web client that switched to
-    //    a non-default project (per-connection `switch_project`) can operate
-    //    on it — the boundary follows any registered project, not just the
-    //    host default.
-    let outside_err = {
-        let project_root = state.project_root.read();
-        ensure_within_project_boundary::<T>(&resolved, &project_root, &state.registry)
-    };
-    if let Some(err) = outside_err {
+    // 3) Registry boundary (web-server security boundary): the path must be
+    //    inside ANY registered, non-archived project (cached canonical roots).
+    if let Some(err) = ensure_within_project_boundary::<T>(&resolved, &state.registry) {
         return Err((StatusCode::OK, Json(err)));
     }
     Ok(resolved)
@@ -243,7 +227,7 @@ pub(super) fn resolve_cwd<T>(
 /// desktop `validate_project_path` behavior of stripping the Windows verbatim
 /// (`\\?\`) prefix so `git.exe` receives a path it understands. Returns an
 /// `IpcBody::err` (`INVALID_PATH_ENCODING`) when the path resolves to empty.
-fn cwd_string<T>(resolved: &std::path::Path) -> Result<String, RouteErr<T>> {
+pub(super) fn cwd_string<T>(resolved: &std::path::Path) -> Result<String, RouteErr<T>> {
     let lossy = resolved.to_string_lossy();
     let simplified = crate::path_validation::strip_verbatim_prefix(&lossy).into_owned();
     if simplified.is_empty() {
@@ -340,14 +324,16 @@ pub async fn get_diff(
 pub async fn stage(
     State(state): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(req): Json<GitPathRequest>,
 ) -> impl IntoResponse {
     run_git_path_write(
         &state,
         peer,
+        &headers,
         req,
         git_tracker::git_stage_file,
-        "stage",
+        ("stage", "git_stage"),
         "GIT_STAGE_ERROR",
     )
     .await
@@ -358,14 +344,16 @@ pub async fn stage(
 pub async fn unstage(
     State(state): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(req): Json<GitPathRequest>,
 ) -> impl IntoResponse {
     run_git_path_write(
         &state,
         peer,
+        &headers,
         req,
         git_tracker::git_unstage_file,
-        "unstage",
+        ("unstage", "git_unstage"),
         "GIT_UNSTAGE_ERROR",
     )
     .await
@@ -376,14 +364,16 @@ pub async fn unstage(
 pub async fn discard(
     State(state): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(req): Json<GitPathRequest>,
 ) -> impl IntoResponse {
     run_git_path_write(
         &state,
         peer,
+        &headers,
         req,
         git_tracker::git_discard_file,
-        "discard",
+        ("discard", "git_discard"),
         "GIT_DISCARD_ERROR",
     )
     .await
@@ -404,7 +394,8 @@ pub async fn get_log(
     };
     let cwd_for_log = cwd.clone();
     let limit = req.limit;
-    let result = tokio::task::spawn_blocking(move || git_tracker::git_get_log(&cwd, limit))
+    let all = req.all;
+    let result = tokio::task::spawn_blocking(move || git_tracker::git_get_log(&cwd, limit, all))
         .await
         .map_err(|e| format!("git log task failed: {e}"));
     let body = match result {
@@ -428,6 +419,7 @@ pub async fn get_log(
 pub async fn commit(
     State(state): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(req): Json<GitCommitRequest>,
 ) -> impl IntoResponse {
     let resolved = match resolve_cwd::<()>(&req.cwd, &state, Some(peer), true) {
@@ -438,29 +430,7 @@ pub async fn commit(
         Ok(s) => s,
         Err(resp) => return resp,
     };
-    let cwd_for_log = cwd.clone();
-    let summary = req.summary;
-    let description = req.description;
-    let amend = req.amend;
-    let result = tokio::task::spawn_blocking(move || {
-        git_tracker::git_commit_file(&cwd, &summary, &description, amend)
-    })
-    .await
-    .map_err(|e| format!("git commit task failed: {e}"));
-    let body = match result {
-        Ok(Ok(())) => {
-            tracing::info!(path = %cwd_for_log, amend, "git commit ok");
-            IpcBody::<()>::ok(())
-        }
-        Ok(Err(e)) => {
-            tracing::warn!(path = %cwd_for_log, error = %e, "git commit failed");
-            IpcBody::<()>::err(e, "GIT_COMMIT_ERROR")
-        }
-        Err(e) => {
-            tracing::error!(path = %cwd_for_log, error = %e, "git commit task panicked");
-            IpcBody::<()>::err(format!("git commit task failed: {e}"), "GIT_COMMIT_ERROR")
-        }
-    };
+    let body = ledgered::commit(&state, &headers, cwd, req).await;
     (StatusCode::OK, Json(body))
 }
 
@@ -558,6 +528,11 @@ pub async fn checkout_branch(
         Ok(s) => s,
         Err(resp) => return resp,
     };
+    // A checkout rewrites the whole working tree: refuse while a session
+    // working inside it is mid-turn.
+    if let Some(blocked) = checkout_refusal(&state, &resolved).await {
+        return blocked;
+    }
     let cwd_for_log = cwd.clone();
     let branch = req.branch;
     let branch_for_log = branch.clone();
@@ -592,6 +567,7 @@ pub async fn checkout_branch(
 pub async fn create_branch(
     State(state): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(req): Json<GitCreateBranchRequest>,
 ) -> impl IntoResponse {
     let resolved = match resolve_cwd::<()>(&req.cwd, &state, Some(peer), true) {
@@ -602,32 +578,53 @@ pub async fn create_branch(
         Ok(s) => s,
         Err(resp) => return resp,
     };
-    let cwd_for_log = cwd.clone();
-    let branch = req.branch;
-    let branch_for_log = branch.clone();
-    let start_ref = req.start_ref;
-    let result = tokio::task::spawn_blocking(move || {
-        git_tracker::git_create_branch(&cwd, &branch, start_ref.as_deref())
-    })
-    .await
-    .map_err(|e| format!("git create-branch task failed: {e}"));
-    let body = match result {
-        Ok(Ok(())) => {
-            tracing::info!(path = %cwd_for_log, branch = %branch_for_log, "git create-branch ok");
-            IpcBody::<()>::ok(())
-        }
-        Ok(Err(e)) => {
-            tracing::warn!(path = %cwd_for_log, branch = %branch_for_log, error = %e, "git create-branch failed");
-            IpcBody::<()>::err(e, "GIT_CREATE_BRANCH_ERROR")
-        }
-        Err(e) => {
-            tracing::error!(path = %cwd_for_log, error = %e, "git create-branch task panicked");
-            IpcBody::<()>::err(
-                format!("git create-branch task failed: {e}"),
-                "GIT_CREATE_BRANCH_ERROR",
-            )
-        }
-    };
+    let guard_state = state.clone();
+    let body = run_http_released(
+        state.relay.ledger(),
+        &headers,
+        "git_create_branch",
+        fingerprint_of("git_create_branch", &[("cwd", &req.cwd), ("branch", &req.branch)]),
+        no_entity(),
+        async move {
+            // Branching from HEAD leaves the work tree alone; branching from
+            // another `start_ref` checks that ref out, which rewrites it. The
+            // guard runs INSIDE the ledgered effect: a settled outcome replays
+            // before it, and a refusal is released, not recorded, so a retry
+            // after the turn ends runs.
+            if crate::acp::destructive_guard::start_ref_rewrites_tree(req.start_ref.as_deref()) {
+                if let Some((_, Json(blocked))) = checkout_refusal(&guard_state, &resolved).await {
+                    return HttpRan::Released(blocked);
+                }
+            }
+            let cwd_for_log = cwd.clone();
+            let branch = req.branch;
+            let branch_for_log = branch.clone();
+            let start_ref = req.start_ref;
+            let result = tokio::task::spawn_blocking(move || {
+                git_tracker::git_create_branch(&cwd, &branch, start_ref.as_deref())
+            })
+            .await
+            .map_err(|e| format!("git create-branch task failed: {e}"));
+            HttpRan::Settled(match result {
+                Ok(Ok(())) => {
+                    tracing::info!(path = %cwd_for_log, branch = ?branch_for_log, "git create-branch ok");
+                    IpcBody::<()>::ok(())
+                }
+                Ok(Err(e)) => {
+                    tracing::warn!(path = %cwd_for_log, branch = ?branch_for_log, error = %e, "git create-branch failed");
+                    IpcBody::<()>::err(e, "GIT_CREATE_BRANCH_ERROR")
+                }
+                Err(e) => {
+                    tracing::error!(path = %cwd_for_log, error = %e, "git create-branch task panicked");
+                    IpcBody::<()>::err(
+                        format!("git create-branch task failed: {e}"),
+                        "GIT_CREATE_BRANCH_ERROR",
+                    )
+                }
+            })
+        },
+    )
+    .await;
     (StatusCode::OK, Json(body))
 }
 
@@ -635,6 +632,7 @@ pub async fn create_branch(
 pub async fn stash_save(
     State(state): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(req): Json<GitStashSaveRequest>,
 ) -> impl IntoResponse {
     let resolved = match resolve_cwd::<()>(&req.cwd, &state, Some(peer), true) {
@@ -645,48 +643,58 @@ pub async fn stash_save(
         Ok(s) => s,
         Err(resp) => return resp,
     };
-    let cwd_for_log = cwd.clone();
-    let message = req.message;
-    let include_untracked = req.include_untracked.unwrap_or(false);
-    let result = tokio::task::spawn_blocking(move || -> Result<(), String> {
-        let mut args: Vec<String> = vec!["stash".into(), "push".into()];
-        if include_untracked {
-            args.push("-u".into());
-        }
-        let msg_holder;
-        if let Some(m) = message.as_ref() {
-            args.push("-m".into());
-            msg_holder = m.clone();
-            args.push(msg_holder);
-        }
-        let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        let output = GitTracker::run_git_command(&cwd, &arg_refs)
-            .ok_or_else(|| "Failed to run git stash push".to_string())?;
-        if output.status.success() {
-            Ok(())
-        } else {
-            Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
-        }
-    })
-    .await
-    .map_err(|e| format!("git stash-save task failed: {e}"));
-    let body = match result {
-        Ok(Ok(())) => {
-            tracing::info!(path = %cwd_for_log, "git stash-save ok");
-            IpcBody::<()>::ok(())
-        }
-        Ok(Err(e)) => {
-            tracing::warn!(path = %cwd_for_log, error = %e, "git stash-save failed");
-            IpcBody::<()>::err(e, "GIT_STASH_SAVE_ERROR")
-        }
-        Err(e) => {
-            tracing::error!(path = %cwd_for_log, error = %e, "git stash-save task panicked");
-            IpcBody::<()>::err(
-                format!("git stash-save task failed: {e}"),
-                "GIT_STASH_SAVE_ERROR",
-            )
-        }
-    };
+    let body = run_http(
+        state.relay.ledger(),
+        &headers,
+        "git_stash_save",
+        fingerprint_of("git_stash_save", &[("cwd", &req.cwd)]),
+        no_entity(),
+        async move {
+            let cwd_for_log = cwd.clone();
+            let message = req.message;
+            let include_untracked = req.include_untracked.unwrap_or(false);
+            let result = tokio::task::spawn_blocking(move || -> Result<(), String> {
+                let mut args: Vec<String> = vec!["stash".into(), "push".into()];
+                if include_untracked {
+                    args.push("-u".into());
+                }
+                let msg_holder;
+                if let Some(m) = message.as_ref() {
+                    args.push("-m".into());
+                    msg_holder = m.clone();
+                    args.push(msg_holder);
+                }
+                let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+                let output = GitTracker::run_git_command(&cwd, &arg_refs)
+                    .ok_or_else(|| "Failed to run git stash push".to_string())?;
+                if output.status.success() {
+                    Ok(())
+                } else {
+                    Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+                }
+            })
+            .await
+            .map_err(|e| format!("git stash-save task failed: {e}"));
+            match result {
+                Ok(Ok(())) => {
+                    tracing::info!(path = %cwd_for_log, "git stash-save ok");
+                    IpcBody::<()>::ok(())
+                }
+                Ok(Err(e)) => {
+                    tracing::warn!(path = %cwd_for_log, error = %e, "git stash-save failed");
+                    IpcBody::<()>::err(e, "GIT_STASH_SAVE_ERROR")
+                }
+                Err(e) => {
+                    tracing::error!(path = %cwd_for_log, error = %e, "git stash-save task panicked");
+                    IpcBody::<()>::err(
+                        format!("git stash-save task failed: {e}"),
+                        "GIT_STASH_SAVE_ERROR",
+                    )
+                }
+            }
+        },
+    )
+    .await;
     (StatusCode::OK, Json(body))
 }
 
@@ -756,27 +764,30 @@ pub async fn stash_list(
 pub async fn stash_apply(
     State(state): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(req): Json<GitStashIndexRequest>,
 ) -> impl IntoResponse {
-    run_stash_index_write(&state, peer, req, "apply", "GIT_STASH_APPLY_ERROR").await
+    run_stash_index_write(&state, peer, &headers, req, ("apply", "git_stash_apply"), "GIT_STASH_APPLY_ERROR").await
 }
 
 /// `POST /git/stash-pop` — apply + drop (write).
 pub async fn stash_pop(
     State(state): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(req): Json<GitStashIndexRequest>,
 ) -> impl IntoResponse {
-    run_stash_index_write(&state, peer, req, "pop", "GIT_STASH_POP_ERROR").await
+    run_stash_index_write(&state, peer, &headers, req, ("pop", "git_stash_pop"), "GIT_STASH_POP_ERROR").await
 }
 
 /// `POST /git/stash-drop` — delete a stash (write, destructive).
 pub async fn stash_drop(
     State(state): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(req): Json<GitStashIndexRequest>,
 ) -> impl IntoResponse {
-    run_stash_index_write(&state, peer, req, "drop", "GIT_STASH_DROP_ERROR").await
+    run_stash_index_write(&state, peer, &headers, req, ("drop", "git_stash_drop"), "GIT_STASH_DROP_ERROR").await
 }
 
 /// `GET /git/branch-list?cwd=...` — `git branch -a` (read).
@@ -834,34 +845,49 @@ pub async fn branch_list(
 pub async fn branch_switch(
     State(state): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(req): Json<GitBranchNameRequest>,
 ) -> impl IntoResponse {
     run_branch_name_write(
         &state,
         peer,
+        &headers,
         req,
-        "checkout",
+        ("checkout", "git_branch_switch"),
         "GIT_BRANCH_SWITCH_ERROR",
         run_simple_checkout,
     )
     .await
 }
 
-/// `POST /git/branch-create` — `git checkout -b <name>` (write).
-pub async fn branch_create(
-    State(state): State<AppState>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    Json(req): Json<GitBranchNameRequest>,
-) -> impl IntoResponse {
-    run_branch_name_write(
-        &state,
-        peer,
-        req,
-        "checkout -b",
-        "GIT_BRANCH_CREATE_ERROR",
-        run_simple_checkout_b,
-    )
-    .await
+/// [`destructive_op_refusal`] for a checkout run from `cwd`: the target is the
+/// enclosing git work-tree root (a checkout rewrites all of it, whichever
+/// subdirectory the caller named).
+async fn checkout_refusal(
+    state: &AppState,
+    cwd: &std::path::Path,
+) -> Option<(StatusCode, Json<IpcBody<()>>)> {
+    let top = crate::acp::destructive_guard::git_toplevel(cwd).await;
+    destructive_op_refusal(state, &top).await
+}
+
+/// The shared destructive-operation guard as an HTTP refusal: `Some` when a
+/// session working inside `target` has an active turn (same code + message as
+/// the Tauri commands).
+pub(super) async fn destructive_op_refusal(
+    state: &AppState,
+    target: &std::path::Path,
+) -> Option<(StatusCode, Json<IpcBody<()>>)> {
+    match ensure_no_active_turn_under(&state.acp, target).await {
+        Ok(()) => None,
+        Err(blocked) => {
+            tracing::warn!(path = %target.display(), "destructive operation refused: active turn inside target");
+            Some((
+                StatusCode::OK,
+                Json(IpcBody::<()>::err(blocked.to_string(), DESTRUCTIVE_OP_BLOCKED)),
+            ))
+        }
+    }
 }
 
 // ============================ helpers ============================
@@ -871,9 +897,10 @@ pub async fn branch_create(
 async fn run_git_path_write(
     state: &AppState,
     peer: SocketAddr,
+    headers: &HeaderMap,
     req: GitPathRequest,
     op: impl FnOnce(&str, &str) -> Result<(), String> + Send + 'static,
-    label: &'static str,
+    (label, kind): (&'static str, &'static str),
     code: &'static str,
 ) -> (StatusCode, Json<IpcBody<()>>) {
     let resolved = match resolve_cwd::<()>(&req.cwd, state, Some(peer), true) {
@@ -884,25 +911,36 @@ async fn run_git_path_write(
         Ok(s) => s,
         Err((st, body)) => return (st, body),
     };
-    let cwd_for_log = cwd.clone();
-    let path = req.path;
-    let result = tokio::task::spawn_blocking(move || op(&cwd, &path))
-        .await
-        .map_err(|e| format!("git {label} task failed: {e}"));
-    let body = match result {
-        Ok(Ok(())) => {
-            tracing::info!(path = %cwd_for_log, op = label, "git {label} ok");
-            IpcBody::<()>::ok(())
-        }
-        Ok(Err(e)) => {
-            tracing::warn!(path = %cwd_for_log, op = label, error = %e, "git {label} failed");
-            IpcBody::<()>::err(e, code)
-        }
-        Err(e) => {
-            tracing::error!(path = %cwd_for_log, op = label, error = %e, "git {label} task panicked");
-            IpcBody::<()>::err(format!("git {label} task failed: {e}"), code)
-        }
-    };
+    let (raw_cwd, req_path) = (req.cwd, req.path);
+    let body = run_http(
+        state.relay.ledger(),
+        headers,
+        kind,
+        fingerprint_of(kind, &[("cwd", &raw_cwd), ("path", &req_path)]),
+        no_entity(),
+        async move {
+            let cwd_for_log = cwd.clone();
+            let path = req_path;
+            let result = tokio::task::spawn_blocking(move || op(&cwd, &path))
+                .await
+                .map_err(|e| format!("git {label} task failed: {e}"));
+            match result {
+                Ok(Ok(())) => {
+                    tracing::info!(path = %cwd_for_log, op = label, "git {label} ok");
+                    IpcBody::<()>::ok(())
+                }
+                Ok(Err(e)) => {
+                    tracing::warn!(path = %cwd_for_log, op = label, error = %e, "git {label} failed");
+                    IpcBody::<()>::err(e, code)
+                }
+                Err(e) => {
+                    tracing::error!(path = %cwd_for_log, op = label, error = %e, "git {label} task panicked");
+                    IpcBody::<()>::err(format!("git {label} task failed: {e}"), code)
+                }
+            }
+        },
+    )
+    .await;
     (StatusCode::OK, Json(body))
 }
 
@@ -910,8 +948,9 @@ async fn run_git_path_write(
 async fn run_stash_index_write(
     state: &AppState,
     peer: SocketAddr,
+    headers: &HeaderMap,
     req: GitStashIndexRequest,
-    op: &'static str,
+    (op, kind): (&'static str, &'static str),
     code: &'static str,
 ) -> (StatusCode, Json<IpcBody<()>>) {
     let resolved = match resolve_cwd::<()>(&req.cwd, state, Some(peer), true) {
@@ -922,45 +961,57 @@ async fn run_stash_index_write(
         Ok(s) => s,
         Err((st, body)) => return (st, body),
     };
-    let cwd_for_log = cwd.clone();
-    let index = req.index;
-    let result = tokio::task::spawn_blocking(move || -> Result<(), String> {
-        let stash_ref = format!("stash@{{{}}}", index);
-        let args: [&str; 3] = ["stash", op, &stash_ref];
-        let output = GitTracker::run_git_command(&cwd, &args)
-            .ok_or_else(|| format!("Failed to run git stash {op}"))?;
-        if output.status.success() {
-            Ok(())
-        } else {
-            Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
-        }
-    })
-    .await
-    .map_err(|e| format!("git stash {op} task failed: {e}"));
-    let body = match result {
-        Ok(Ok(())) => {
-            tracing::info!(path = %cwd_for_log, op, index, "git stash {op} ok");
-            IpcBody::<()>::ok(())
-        }
-        Ok(Err(e)) => {
-            tracing::warn!(path = %cwd_for_log, op, index, error = %e, "git stash {op} failed");
-            IpcBody::<()>::err(e, code)
-        }
-        Err(e) => {
-            tracing::error!(path = %cwd_for_log, op, index, error = %e, "git stash {op} task panicked");
-            IpcBody::<()>::err(format!("git stash {op} task failed: {e}"), code)
-        }
-    };
+    let (raw_cwd, req_index) = (req.cwd, req.index);
+    let index_text = req_index.to_string();
+    let body = run_http(
+        state.relay.ledger(),
+        headers,
+        kind,
+        fingerprint_of(kind, &[("cwd", &raw_cwd), ("index", &index_text)]),
+        no_entity(),
+        async move {
+            let cwd_for_log = cwd.clone();
+            let index = req_index;
+            let result = tokio::task::spawn_blocking(move || -> Result<(), String> {
+                let stash_ref = format!("stash@{{{}}}", index);
+                let args: [&str; 3] = ["stash", op, &stash_ref];
+                let output = GitTracker::run_git_command(&cwd, &args)
+                    .ok_or_else(|| format!("Failed to run git stash {op}"))?;
+                if output.status.success() {
+                    Ok(())
+                } else {
+                    Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+                }
+            })
+            .await
+            .map_err(|e| format!("git stash {op} task failed: {e}"));
+            match result {
+                Ok(Ok(())) => {
+                    tracing::info!(path = %cwd_for_log, op, index, "git stash {op} ok");
+                    IpcBody::<()>::ok(())
+                }
+                Ok(Err(e)) => {
+                    tracing::warn!(path = %cwd_for_log, op, index, error = %e, "git stash {op} failed");
+                    IpcBody::<()>::err(e, code)
+                }
+                Err(e) => {
+                    tracing::error!(path = %cwd_for_log, op, index, error = %e, "git stash {op} task panicked");
+                    IpcBody::<()>::err(format!("git stash {op} task failed: {e}"), code)
+                }
+            }
+        },
+    )
+    .await;
     (StatusCode::OK, Json(body))
 }
 
-/// Run a branch-name write op (`switch`/`create`). `runner` builds the actual
-/// git command for the op (e.g. `checkout` vs `checkout -b`).
+/// Run a branch-name write op. `runner` builds the actual git command for the op.
 async fn run_branch_name_write(
     state: &AppState,
     peer: SocketAddr,
+    headers: &HeaderMap,
     req: GitBranchNameRequest,
-    label: &'static str,
+    (label, kind): (&'static str, &'static str),
     code: &'static str,
     runner: fn(&str, &str) -> Result<(), String>,
 ) -> (StatusCode, Json<IpcBody<()>>) {
@@ -972,91 +1023,58 @@ async fn run_branch_name_write(
         Ok(s) => s,
         Err((st, body)) => return (st, body),
     };
-    let cwd_for_log = cwd.clone();
-    let name = req.name;
-    let name_for_log = name.clone();
-    let result = tokio::task::spawn_blocking(move || runner(&cwd, &name))
-        .await
-        .map_err(|e| format!("git {label} task failed: {e}"));
-    let body = match result {
-        Ok(Ok(())) => {
-            tracing::info!(path = %cwd_for_log, op = label, name = %name_for_log, "git {label} ok");
-            IpcBody::<()>::ok(())
-        }
-        Ok(Err(e)) => {
-            tracing::warn!(path = %cwd_for_log, op = label, name = %name_for_log, error = %e, "git {label} failed");
-            IpcBody::<()>::err(e, code)
-        }
-        Err(e) => {
-            tracing::error!(path = %cwd_for_log, op = label, error = %e, "git {label} task panicked");
-            IpcBody::<()>::err(format!("git {label} task failed: {e}"), code)
-        }
-    };
+    if let Some(blocked) = checkout_refusal(state, &resolved).await {
+        return blocked;
+    }
+    let (raw_cwd, req_name) = (req.cwd, req.name);
+    let body = run_http(
+        state.relay.ledger(),
+        headers,
+        kind,
+        fingerprint_of(kind, &[("cwd", &raw_cwd), ("name", &req_name)]),
+        no_entity(),
+        async move {
+            let cwd_for_log = cwd.clone();
+            let name = req_name;
+            let name_for_log = name.clone();
+            let result = tokio::task::spawn_blocking(move || runner(&cwd, &name))
+                .await
+                .map_err(|e| format!("git {label} task failed: {e}"));
+            match result {
+                Ok(Ok(())) => {
+                    tracing::info!(path = %cwd_for_log, op = label, name = ?name_for_log, "git {label} ok");
+                    IpcBody::<()>::ok(())
+                }
+                Ok(Err(e)) => {
+                    tracing::warn!(path = %cwd_for_log, op = label, name = ?name_for_log, error = %e, "git {label} failed");
+                    IpcBody::<()>::err(e, code)
+                }
+                Err(e) => {
+                    tracing::error!(path = %cwd_for_log, op = label, error = %e, "git {label} task panicked");
+                    IpcBody::<()>::err(format!("git {label} task failed: {e}"), code)
+                }
+            }
+        },
+    )
+    .await;
     (StatusCode::OK, Json(body))
 }
 
-/// `git checkout <name>` (branch-switch desktop parity). F-007: the previous
+/// `git checkout <name>` (shared by `POST /git/branch-switch` and the desktop
+/// `git_branch_switch` command). F-007: the previous
 /// local re-implementation built `["checkout", "--", name]`, which makes
 /// `name` a PATHSPEC, not a branch — the switch never happened, and a branch
 /// name colliding with a worktree path silently reverted that file's local
-/// changes and returned success. The fix refuses any `name` that is not a
-/// resolvable branch ref BEFORE running git, so git's pathspec fallback can
-/// never trigger: `checkout <name>` with a non-branch name is an error, not a
-/// file revert.
-fn run_simple_checkout(cwd: &str, name: &str) -> Result<(), String> {
-    let Some(is_remote) = resolve_branch_ref(cwd, name)? else {
-        return Err(format!(
-            "'{name}' is not a branch; refusing checkout (a branch switch must target a branch, not a pathspec)"
-        ));
-    };
+/// changes and returned success. `git_checkout_branch` refuses any `name` that
+/// is not an existing branch ref BEFORE running git, so git's pathspec
+/// fallback can never trigger. A name that resolves to no branch takes the
+/// local path and is refused there.
+pub(crate) fn run_simple_checkout(cwd: &str, name: &str) -> Result<(), String> {
     // Remote-tracking refs (e.g. `origin/feature`) must go through
     // `--track` so git creates a local tracking branch — a plain
     // `checkout <remote-ref>` lands in detached HEAD instead.
+    let is_remote = git_tracker::resolve_branch_ref(cwd, name)?.unwrap_or(false);
     git_tracker::git_checkout_branch(cwd, name, is_remote)
-}
-
-/// `git checkout -b <name>` (branch-create desktop parity). F-008: the
-/// previous local re-implementation built `["checkout", "-b", "--", name]` —
-/// `-b` consumes `--` as the branch name and `name` as the start ref, so the
-/// route could NEVER succeed (git: "a branch '--' cannot be created"). The
-/// fix delegates to the SAME [`git_tracker::git_create_branch`] the desktop
-/// `git_create_branch` command calls, after refusing option-shaped names
-/// (`--detach` & co. would be parsed as flags — no legitimate branch starts
-/// with `-`, git's check-ref-format rejects it).
-fn run_simple_checkout_b(cwd: &str, name: &str) -> Result<(), String> {
-    if name.trim().is_empty() || name.starts_with('-') {
-        return Err(format!(
-            "invalid branch name '{name}': branch names must be non-empty and must not start with '-'"
-        ));
-    }
-    git_tracker::git_create_branch(cwd, name, None)
-}
-
-/// Whether `name` resolves as a branch ref in the repo at `cwd`, and if so
-/// whether it is remote-tracking. Returns `Some(false)` for a local branch
-/// (`refs/heads/<name>`), `Some(true)` for a remote-tracking branch
-/// (`refs/remotes/<name>`), `None` for anything else. Local wins when both
-/// exist (mirrors `git checkout <name>` ambiguity resolution). Refuses
-/// option-shaped names and anything git would treat as a pathspec instead of
-/// a ref. Uses `--verify` + `--quiet` with the fully-qualified ref so no
-/// ambiguity with worktree files is possible and no ref-name can be parsed
-/// as an option.
-fn resolve_branch_ref(cwd: &str, name: &str) -> Result<Option<bool>, String> {
-    if name.trim().is_empty() || name.starts_with('-') {
-        return Ok(None);
-    }
-    for (ref_name, is_remote) in [
-        (format!("refs/heads/{name}"), false),
-        (format!("refs/remotes/{name}"), true),
-    ] {
-        let output =
-            GitTracker::run_git_command(cwd, &["rev-parse", "--verify", "--quiet", &ref_name])
-                .ok_or_else(|| "Failed to run git rev-parse".to_string())?;
-        if output.status.success() {
-            return Ok(Some(is_remote));
-        }
-    }
-    Ok(None)
 }
 
 #[cfg(test)]

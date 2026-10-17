@@ -1,6 +1,8 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { PersistenceKeys } from '@shared/types/persistence.types'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { acpApi } from '@/lib/api'
 import { useAppSettingsStore } from '@/stores/app-settings-store'
 import { useSettingsModalStore } from '@/stores/settings-modal-store'
 import { DEFAULT_APP_SETTINGS } from '@/types/settings'
@@ -13,9 +15,18 @@ import { AppPreferencesModal } from './AppPreferences'
  */
 
 const mockWriteDebounced = vi.fn().mockResolvedValue(undefined)
+const mockWrite = vi.fn().mockResolvedValue({ success: true, data: undefined })
+const mockLogFrontendError = vi.fn().mockResolvedValue(undefined)
 
 vi.mock('@/lib/api', () => ({
-  acpApi: { setTurnTimeout: vi.fn().mockResolvedValue({ success: true }) },
+  acpApi: {
+    setTurnTimeout: vi.fn().mockResolvedValue({ success: true }),
+    setTurnIdleTimeout: vi.fn().mockResolvedValue({ success: true }),
+    setSessionNewTimeout: vi.fn().mockResolvedValue({ success: true }),
+    setSessionReopenTimeout: vi.fn().mockResolvedValue({ success: true }),
+    setAgentIdleWindow: vi.fn().mockResolvedValue(undefined),
+    getAgentIdleWindow: vi.fn().mockResolvedValue({ secs: 1800, source: 'default' })
+  },
   logApi: {
     revealLogDir: vi.fn(),
     exportLogFile: vi.fn(),
@@ -28,12 +39,17 @@ vi.mock('@/lib/api', () => ({
       data: { default: null, available: [] }
     })
   },
-  terminalApi: { updateOrphanDetection: vi.fn().mockResolvedValue({ success: true }) },
   persistenceApi: {
     read: vi.fn().mockResolvedValue({ success: true, data: null }),
-    write: vi.fn(),
+    write: (...args: unknown[]) => mockWrite(...args),
     writeDebounced: (...args: unknown[]) => mockWriteDebounced(...args)
   }
+}))
+
+// L-28: the screen reader toggle writes one `info` boundary entry; the real
+// facade would invoke Tauri or POST to the server.
+vi.mock('@/lib/log-api', () => ({
+  logFrontendError: (...args: unknown[]) => mockLogFrontendError(...args)
 }))
 
 vi.mock('@/lib/tauri-updater-api', () => ({
@@ -108,6 +124,10 @@ vi.mock('@/hooks/use-keyboard-shortcuts', () => ({
   useResetAllShortcuts: () => mockResetAllShortcuts
 }))
 
+vi.mock('@/hooks/use-agent-skills', () => ({
+  useAgentSkills: () => ({ skills: [], loading: false, reload: () => {} })
+}))
+
 vi.mock('@/components/settings/AcpAgentsSettings', () => ({
   AcpAgentsSettings: () => null
 }))
@@ -164,6 +184,27 @@ describe('AppPreferences editor auto-save controls (GH-539)', () => {
     fireEvent.change(screen.getByLabelText('Auto save delay'), { target: { value: '2000' } })
     await waitFor(() => {
       expect(useAppSettingsStore.getState().settings.editorAutoSaveDelayMs).toBe(2000)
+    })
+  })
+})
+
+describe('AppPreferences idle chat window', () => {
+  beforeEach(() => {
+    tauriRef.current = true
+    vi.clearAllMocks()
+    useAppSettingsStore.setState({ settings: { ...DEFAULT_APP_SETTINGS }, isLoaded: true })
+  })
+
+  it('saves Keep idle chats and pushes the window to the host', async () => {
+    renderPage()
+
+    fireEvent.change(await screen.findByLabelText('Close idle chats after'), {
+      target: { value: '7200' }
+    })
+
+    await waitFor(() => {
+      expect(useAppSettingsStore.getState().settings.agentIdleWindowSecs).toBe(7200)
+      expect(acpApi.setAgentIdleWindow).toHaveBeenCalledWith(7200)
     })
   })
 })
@@ -241,16 +282,22 @@ describe('AppPreferences web honesty gates (Story 8)', () => {
     ).not.toBeInTheDocument()
   })
 
-  it('replaces the ACP timeout selects with a read-only managed note on web', async () => {
+  it('keeps Close idle chats after editable on web and leaves the other timeouts read-only', async () => {
     renderWeb()
 
-    expect(
-      await screen.findByText(/Managed by the server — timeouts for agents spawned/i)
-    ).toBeInTheDocument()
-    expect(screen.queryByLabelText(/Turn Timeout \(hard cap\)/)).not.toBeInTheDocument()
-    expect(screen.queryByLabelText('Turn Idle Timeout')).not.toBeInTheDocument()
-    expect(screen.queryByLabelText('Session/New Timeout')).not.toBeInTheDocument()
-    expect(screen.queryByLabelText('Session Reopen Timeout')).not.toBeInTheDocument()
+    expect(await screen.findByText('Set on the server.')).toBeInTheDocument()
+    const keep = screen.getByLabelText('Close idle chats after')
+    expect(keep).toBeEnabled()
+    expect(screen.queryByLabelText('If an answer goes quiet')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Longest one answer')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Start a new chat')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Open a saved chat')).not.toBeInTheDocument()
+
+    fireEvent.change(keep, { target: { value: '7200' } })
+    await waitFor(() => {
+      expect(useAppSettingsStore.getState().settings.agentIdleWindowSecs).toBe(7200)
+      expect(acpApi.setAgentIdleWindow).toHaveBeenCalledWith(7200)
+    })
   })
 
   it('hides the New Browser Tab shortcut row on web but keeps other shortcuts', async () => {
@@ -278,5 +325,141 @@ describe('AppPreferences web honesty gates (Story 8)', () => {
     const reveal = screen.getByRole('button', { name: /Reveal Log Folder/ })
     expect(reveal).toBeEnabled()
     expect(reveal).not.toHaveAttribute('title')
+  })
+})
+
+// L-28 (spec-mobile-terminal-screen-reader-mode): a Switch in Terminal
+// Appearance, between Terminal Renderer and Preview. The row is shared by the
+// desktop and web roots (the same modal), so every behaviour runs on both.
+describe.each([
+  ['desktop', true],
+  ['web', false]
+])('AppPreferences screen reader mode (L-28) on %s', (_name, isTauri) => {
+  beforeEach(() => {
+    tauriRef.current = isTauri
+    vi.clearAllMocks()
+    useAppSettingsStore.setState({ settings: { ...DEFAULT_APP_SETTINGS }, isLoaded: true })
+  })
+
+  async function findSwitch(): Promise<HTMLElement> {
+    return screen.findByRole('switch', { name: 'Screen reader mode' })
+  }
+
+  it('renders an unchecked switch that explains it applies to new terminals', async () => {
+    renderPage()
+
+    const toggle = await findSwitch()
+    expect(toggle).toHaveAttribute('aria-checked', 'false')
+    expect(toggle).toHaveAttribute('data-state', 'unchecked')
+
+    const describedBy = toggle.getAttribute('aria-describedby')
+    expect(describedBy).toBeTruthy()
+    const description = document.getElementById(describedBy as string)
+    expect(description).not.toBeNull()
+    expect(description).toHaveTextContent('Changes apply to new terminals.')
+    expect(description).toHaveTextContent(/repeat typed characters/i)
+  })
+
+  it('sits after the Terminal Renderer control and before Preview', async () => {
+    renderPage()
+
+    const toggle = await findSwitch()
+    const rendererLabel = screen.getByText('Terminal Renderer', { selector: 'label' })
+    const renderer = within(rendererLabel.parentElement as HTMLElement).getByRole('combobox')
+    const preview = screen.getByText('Preview', { selector: 'label' })
+
+    expect(renderer.compareDocumentPosition(toggle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(toggle.compareDocumentPosition(preview) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('toggles through the label as well as the switch', async () => {
+    renderPage()
+
+    await findSwitch()
+    fireEvent.click(screen.getByText('Screen reader mode', { selector: 'label' }))
+
+    await waitFor(() => {
+      expect(useAppSettingsStore.getState().settings.terminalScreenReaderMode).toBe(true)
+    })
+  })
+
+  it('persists the setting and writes one info boundary log per toggle', async () => {
+    renderPage()
+
+    const toggle = await findSwitch()
+    fireEvent.click(toggle)
+
+    await waitFor(() => {
+      expect(useAppSettingsStore.getState().settings.terminalScreenReaderMode).toBe(true)
+    })
+    expect(toggle).toHaveAttribute('aria-checked', 'true')
+    expect(mockWriteDebounced).toHaveBeenCalledWith(
+      PersistenceKeys.appSettings,
+      expect.objectContaining({ terminalScreenReaderMode: true })
+    )
+    await waitFor(() => {
+      expect(mockLogFrontendError).toHaveBeenCalledTimes(1)
+    })
+    expect(mockLogFrontendError).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        level: 'info',
+        source: 'AppPreferences.terminalScreenReaderMode',
+        message: expect.stringMatching(/enabled.*new terminals.*3467/i)
+      })
+    )
+
+    fireEvent.click(toggle)
+
+    await waitFor(() => {
+      expect(useAppSettingsStore.getState().settings.terminalScreenReaderMode).toBe(false)
+    })
+    expect(toggle).toHaveAttribute('aria-checked', 'false')
+    expect(mockWriteDebounced).toHaveBeenLastCalledWith(
+      PersistenceKeys.appSettings,
+      expect.objectContaining({ terminalScreenReaderMode: false })
+    )
+    await waitFor(() => {
+      expect(mockLogFrontendError).toHaveBeenCalledTimes(2)
+    })
+    expect(mockLogFrontendError).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        level: 'info',
+        source: 'AppPreferences.terminalScreenReaderMode',
+        message: expect.stringMatching(/disabled/i)
+      })
+    )
+  })
+
+  it('renders checked when the setting is already on', async () => {
+    useAppSettingsStore.setState({
+      settings: { ...DEFAULT_APP_SETTINGS, terminalScreenReaderMode: true },
+      isLoaded: true
+    })
+    renderPage()
+
+    expect(await findSwitch()).toHaveAttribute('aria-checked', 'true')
+  })
+
+  it('returns to off after Reset Settings', async () => {
+    useAppSettingsStore.setState({
+      settings: { ...DEFAULT_APP_SETTINGS, terminalScreenReaderMode: true },
+      isLoaded: true
+    })
+    renderPage()
+
+    const toggle = await findSwitch()
+    expect(toggle).toHaveAttribute('aria-checked', 'true')
+
+    fireEvent.click(screen.getByRole('button', { name: /Reset to Defaults/ }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Reset' }))
+
+    await waitFor(() => {
+      expect(useAppSettingsStore.getState().settings.terminalScreenReaderMode).toBe(false)
+    })
+    expect(toggle).toHaveAttribute('aria-checked', 'false')
+    expect(mockWrite).toHaveBeenCalledWith(
+      PersistenceKeys.appSettings,
+      expect.objectContaining({ terminalScreenReaderMode: false })
+    )
   })
 })

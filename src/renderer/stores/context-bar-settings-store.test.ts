@@ -12,11 +12,12 @@ describe('context-bar-settings-store', () => {
   })
 
   describe('initial state', () => {
-    it('should have all elements visible by default', () => {
+    it('should hide project name and file counts by default', () => {
       const { settings } = useContextBarSettingsStore.getState()
 
+      expect(settings.showProjectName).toBe(false)
       expect(settings.showGitBranch).toBe(true)
-      expect(settings.showGitStatus).toBe(true)
+      expect(settings.showGitStatus).toBe(false)
       expect(settings.showWorkingDirectory).toBe(true)
       expect(settings.showExitCode).toBe(true)
     })
@@ -55,7 +56,16 @@ describe('context-bar-settings-store', () => {
       toggleElement('showGitStatus')
 
       const { settings } = useContextBarSettingsStore.getState()
-      expect(settings.showGitStatus).toBe(false)
+      expect(settings.showGitStatus).toBe(true)
+    })
+
+    it('should toggle showProjectName', () => {
+      const { toggleElement } = useContextBarSettingsStore.getState()
+
+      toggleElement('showProjectName')
+
+      const { settings } = useContextBarSettingsStore.getState()
+      expect(settings.showProjectName).toBe(true)
     })
 
     it('should toggle showWorkingDirectory', () => {
@@ -83,7 +93,8 @@ describe('context-bar-settings-store', () => {
 
       const { settings } = useContextBarSettingsStore.getState()
       expect(settings.showGitBranch).toBe(false)
-      expect(settings.showGitStatus).toBe(true)
+      expect(settings.showProjectName).toBe(false)
+      expect(settings.showGitStatus).toBe(false)
       expect(settings.showWorkingDirectory).toBe(true)
       expect(settings.showExitCode).toBe(true)
     })
@@ -92,6 +103,7 @@ describe('context-bar-settings-store', () => {
   describe('setSettings', () => {
     it('should replace all settings', () => {
       const newSettings = {
+        showProjectName: true,
         showGitBranch: false,
         showGitStatus: false,
         showWorkingDirectory: true,

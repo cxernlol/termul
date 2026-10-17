@@ -1,0 +1,616 @@
+//! Transport-neutral event sink for the ACP dispatcher.
+//!
+//! The dispatcher (see `crate::acp::manager` + `crate::acp::client`) emits every
+//! agent/session event through a fan-out of [`EventSink`] trait objects instead
+//! of calling `AppHandle::emit` directly. That decouples the live session stream
+//! from Tauri: the desktop app and the standalone `termul-server` both feed the
+//! same [`WsRelaySink`], the per-session event log every `/ws` carrier reads
+//! (a WebSocket for browsers and phones, a Tauri `ipc::Channel` for the desktop
+//! renderer).
+//!
+//! # Design rules baked in (do not deviate)
+//!
+//! - **Serialize ONCE, fan out N.** [`fan_out`] serializes the payload to a
+//!   `serde_json::Value` once; every sink emits the same `Value`.
+//! - **`type_` keeps the `acp:` prefix.** [`WsRelaySink`] strips it on the wire.
+//! - **`sid` is `Option<String>`.** `None` for agent-level events
+//!   (`agent_spawned`, `agent_disconnected`, `agent_error` without a session);
+//!   `Some(session_id)` for session-scoped events. Matches the WS envelope
+//!   `{sid, seq, type, payload}` shape.
+//!
+//! `AcpManager` holds `Vec<Arc<dyn EventSink>>` and threads clones into every
+//! driver spawn site, so no `AppHandle` reaches the driver thread.
+
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::Arc;
+
+use parking_lot::Mutex;
+use serde::Serialize;
+use serde_json::Value;
+use tracing::warn;
+
+use crate::acp::session_persistence::{
+    PersistedEventRecord, SessionPersistence, SessionPersistenceError,
+};
+
+mod fanout;
+mod session_log;
+mod tickets;
+mod watch_bridge;
+
+pub use fanout::{ClientId, EventStream, StreamItem};
+
+use fanout::ClientSub;
+use session_log::{RelaySeqAuthority, SessionState};
+
+// Global lock order for WsRelaySink (never invert — avoids deadlock):
+// 0. the session's persistence send lock (`with_ordered_sender`, durable
+//    publishes only)  1. `sessions`  2. `clients`  3. `session_subs`
+// Prefer releasing a lock before acquiring the next when both are not required
+// for the critical section. `pre_registration_events` is a leaf lock.
+
+/// A single ACP event ready for fan-out.
+///
+/// `sid` is the session id (`None` for agent-level events like `agent_spawned`
+/// / `agent_disconnected`). `type_` is the existing `acp:*` event name with the
+/// `acp:` prefix (e.g. `"acp:message_chunk"`) — `WsRelaySink` strips it on the
+/// wire. `payload` is the serialized JSON value so every sink emits
+/// byte-identical bytes (serialize ONCE, fan out N times).
+#[derive(Clone, Debug)]
+pub struct AcpEvent {
+    pub sid: Option<String>,
+    pub type_: &'static str,
+    pub payload: Value,
+}
+
+/// Transport-neutral sink for ACP events.
+///
+/// Object-safe (`dyn EventSink` usable via `Arc<dyn EventSink>`) and `Send +
+/// Sync` so clones can cross from the Tauri command thread into each agent's
+/// dedicated driver thread (see `AcpManager`'s threading model).
+pub trait EventSink: Send + Sync {
+    /// Deliver a single event. Errors must be logged, never propagated — a
+    /// missing renderer (or a wedged WS peer) must never tear down the agent
+    /// driver thread.
+    fn emit(&self, event: &AcpEvent);
+
+    /// Issue #836: notification that a session just registered with the
+    /// durable store. The WS relay uses it to flush events it buffered while
+    /// the session's durable writer was not yet installed (the agent's first
+    /// emits can beat `register_session`). Default no-op so sinks that do not
+    /// buffer (test recorders) need no change.
+    fn note_session_registered(&self, _session_id: &str) {}
+
+    /// The live relay behind this sink, if it is one. Host-authored records
+    /// (session title, agent switch) take their seq from the relay's single
+    /// allocator, so their callers need to reach it through `dyn EventSink`.
+    fn as_ws_relay(&self) -> Option<&WsRelaySink> {
+        None
+    }
+}
+
+/// Live WS relay sink (Story 1.4 — replaces the Story 1.1 in-memory recorder).
+///
+/// Owns the per-session append-only bounded event logs (the canonical replay
+/// source, D5), per-session monotonic `seq` counters, and the per-client
+/// subscriber set. It is the ONE seq authority of every session log: relay
+/// events and host-authored records alike are numbered here (see
+/// `session_log`). `emit` is called from the per-agent driver thread (via
+/// [`fan_out`]) and is NON-blocking: it assigns `seq`, persists, appends to
+/// the log, and fans out to each subscribed client's bounded
+/// `tokio::sync::mpsc::Sender` in one critical section.
+///
+/// # Tier handling (AC5)
+///
+/// Fan-out never waits: a subscription's channel holds
+/// `DEFAULT_CLIENT_QUEUE_CAPACITY` items (plus room for the replay it started
+/// with, capped at the event-log capacity) and a slow peer cannot grow it.
+///
+/// - **Lossy** events (`message_chunk`, `tool_call_update`, `commands_update`,
+///   `plan_update`) that find the channel full are dropped; the stream then
+///   yields one [`StreamItem::Gap`] as soon as it has drained the channel,
+///   whether or not another event follows. The client answers a gap with an
+///   atomic snapshot (and notices a hole by seq even without one).
+/// - **Reliable** events that find the channel full close the peer's
+///   connection (through the token handed to `subscribe`) instead of being
+///   dropped: the client reconnects and resumes by cursor.
+/// - **Idempotent** (`prompt_complete`) is deduped by turn-id when the payload
+///   carries one; the current `PromptCompleteEvent` has no turn-id field, so
+///   the relay sends it through (like reliable) and the client dedups by
+///   `seq` (Dev Notes #6).
+///
+/// Constructible WITHOUT a Tauri `AppHandle` (the standalone `termul-server`
+/// binary has no Tauri app). `Send + Sync` so clones
+/// of `Arc<WsRelaySink>` can cross from the Tauri command thread into each
+/// agent's dedicated driver thread.
+pub struct WsRelaySink {
+    /// Per-session seq counter + append-only bounded ring (canonical replay
+    /// source, D5). Combined under one mutex so seq assignment and log append
+    /// are atomic w.r.t. concurrent emits (AC4).
+    sessions: Arc<Mutex<HashMap<String, SessionState>>>,
+    /// Per-client subscription: client_id → client state (sender + sessions).
+    clients: Mutex<HashMap<ClientId, ClientSub>>,
+    /// Reverse index: session_id → set of subscribed client_ids.
+    session_subs: Mutex<HashMap<String, HashSet<ClientId>>>,
+    /// Bounded per-session ring capacity (default 4096, AC4).
+    event_log_capacity: usize,
+    /// Capacity of each subscription's bounded channel into its connection.
+    client_queue_capacity: usize,
+    /// Server-side permission rendezvous (Story 1.7). `None` for a relay built
+    /// without one (unit tests); the desktop host and `termul-server` attach
+    /// one at startup. When set, `emit` snapshots `acp:permission_request`
+    /// events into a relay-side ticket table that enforces the rendezvous
+    /// policy (at-most-one, first-wins, TOCTOU). Tickets have no timeout; the
+    /// turn end, session close and agent death events release them.
+    rendezvous: Mutex<Option<Arc<crate::web::permissions::PermissionRendezvous>>>,
+    /// Server-side question rendezvous (issue #411). `None` for a relay built
+    /// without one (unit tests); the desktop host and `termul-server` attach
+    /// one at startup. When set, `emit` snapshots `acp:question_request`
+    /// events into a relay-side ticket table (first-wins, TOCTOU, timeout).
+    question_rendezvous: Mutex<Option<Arc<crate::web::permissions::QuestionRendezvous>>>,
+    /// Server-side turn-id watermark (Story 1.7 T7.2 — FR13/FR11 plumbing).
+    /// Always present (cheap to construct; no external handle). 1.8's
+    /// `prompt_complete` / `send_prompt` handlers read this via
+    /// [`Self::turn_watermark`] to dedup agent turns by client turn-id.
+    turn_watermark: crate::web::permissions::TurnWatermark,
+    /// Issue #836: durable records that arrived BEFORE the session registered
+    /// with persistence (the agent's first events can beat
+    /// `register_session`). `enqueue_event` rejects those with
+    /// `SessionNotFound`; instead of dropping them (leaving a permanent seq
+    /// hole in the JSONL that cursor-replay must then skip), buffer them here
+    /// and flush on registration. Bounded: a session that never registers
+    /// (ephemeral, or registration failed) drops its buffer at the cap — the
+    /// live fan-out is unaffected either way.
+    pre_registration_events: Mutex<HashMap<String, VecDeque<PersistedEventRecord>>>,
+    /// Issue #836: per-session bound on the pre-registration buffer.
+    pre_registration_capacity: usize,
+    /// Standalone durable history. Desktop/shared-live leave this disabled.
+    persistence: Option<Arc<SessionPersistence>>,
+    /// Serializes each session's durable replay/catch-up/register handoff.
+    /// Emits remain non-blocking and use the synchronous session state lock.
+    replay_gates: tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// Single-flight gate per session for [`Self::ensure_turns_restored`].
+    restore_gates: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// Per-`projectId` notify watchers, armed while a connection watches the
+    /// project (`watch` with `watch: "fs"`). Their deltas go through `watches`.
+    fs_watches: crate::web::fs_watcher::FsWatchHub,
+    /// Watch subscriptions (`watch` / `unwatch`) for state that is not a
+    /// session log: projects, chat-history index, agent roster, file changes,
+    /// store keys and the terminal set.
+    watches: Arc<crate::web::watch::WatchHub>,
+    /// The command receipt ledger, shared by `/ws` dispatch and the Tauri
+    /// `acp_*` commands (one ledger per host).
+    ledger: Arc<crate::web::command_ledger::CommandLedger>,
+    /// Authenticated connections per `deviceId`, shared by `/ws` and
+    /// `/terminal/ws` (both reach the relay through `AppState.relay`).
+    presence: Arc<crate::web::presence::PresenceRegistry>,
+    chat_reads: crate::web::chat_reads::ChatReads,
+}
+
+/// Where a session's log stands at a point under the seq lock: the identity
+/// of the log incarnation and its head. Events with `seq <= head_seq` are
+/// replay, anything above is live.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogHead {
+    pub log_epoch: String,
+    pub head_seq: u64,
+}
+
+/// Cursor-replay result for [`WsRelaySink::subscribe`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReplayResult {
+    /// Replay succeeded; carries the number of events replayed from the log tail.
+    Ok(u64),
+    /// The session is unknown to both the relay live-map and the persistence
+    /// catalog — nothing was registered (Story 7: `not_found` parity with
+    /// `get_session_payload`).
+    NotFound,
+    /// `last_seq` is older than the log's oldest (evicted) event — the client
+    /// must re-sync (AC4).
+    Stale,
+}
+
+/// Issue #836: per-session bound on the pre-registration durable buffer. The
+/// window between an agent's first events and `register_session` is small
+/// (milliseconds); 256 covers a burst while bounding memory for sessions that
+/// never register.
+const DEFAULT_PRE_REGISTRATION_CAPACITY: usize = 256;
+
+/// Default per-session event-log capacity (AC4).
+pub const DEFAULT_EVENT_LOG_CAPACITY: usize = 4096;
+/// Default capacity of each subscription's bounded channel into its
+/// connection (the bound a slow peer can add to the host's memory).
+const DEFAULT_CLIENT_QUEUE_CAPACITY: usize = 256;
+
+impl WsRelaySink {
+    /// Create a live relay sink with default capacities
+    /// (`event_log_capacity = 4096`, `client_queue_capacity = 256`).
+    #[must_use]
+    pub fn new() -> Self {
+        Self::with_capacity(DEFAULT_EVENT_LOG_CAPACITY, DEFAULT_CLIENT_QUEUE_CAPACITY)
+    }
+
+    /// Create a live relay sink with explicit capacities: the per-session
+    /// event log and each subscription's bounded channel.
+    #[must_use]
+    pub fn with_capacity(event_log_capacity: usize, client_queue_capacity: usize) -> Self {
+        Self {
+            sessions: Arc::new(Mutex::new(HashMap::new())),
+            clients: Mutex::new(HashMap::new()),
+            session_subs: Mutex::new(HashMap::new()),
+            event_log_capacity: event_log_capacity.max(1),
+            client_queue_capacity: client_queue_capacity.max(1),
+            rendezvous: Mutex::new(None),
+            question_rendezvous: Mutex::new(None),
+            turn_watermark: crate::web::permissions::TurnWatermark::new(),
+            pre_registration_events: Mutex::new(HashMap::new()),
+            pre_registration_capacity: DEFAULT_PRE_REGISTRATION_CAPACITY,
+            persistence: None,
+            replay_gates: tokio::sync::Mutex::new(HashMap::new()),
+            restore_gates: Mutex::new(HashMap::new()),
+            fs_watches: crate::web::fs_watcher::FsWatchHub::default(),
+            watches: Arc::new(crate::web::watch::WatchHub::new()),
+            ledger: Arc::new(crate::web::command_ledger::CommandLedger::new(
+                std::time::Duration::from_secs(
+                    crate::web::config::DEFAULT_RECEIPT_RETENTION_SECS,
+                ),
+            )),
+            presence: Arc::new(crate::web::presence::PresenceRegistry::new()),
+            chat_reads: crate::web::chat_reads::ChatReads::default(),
+        }
+    }
+
+    /// The command receipt ledger.
+    #[must_use]
+    pub fn ledger(&self) -> &Arc<crate::web::command_ledger::CommandLedger> {
+        &self.ledger
+    }
+
+    /// Replace the ledger (outcome retention from `ServerConfig`, or a test
+    /// ledger with an injected clock). Call before the sink is shared.
+    #[must_use]
+    pub fn with_ledger(mut self, ledger: crate::web::command_ledger::CommandLedger) -> Self {
+        self.ledger = Arc::new(ledger);
+        self
+    }
+
+    /// The per-project filesystem watcher manager.
+    #[must_use]
+    pub fn fs_watches(&self) -> &crate::web::fs_watcher::FsWatchHub {
+        &self.fs_watches
+    }
+
+    /// The watch hub.
+    #[must_use]
+    pub fn watches(&self) -> &Arc<crate::web::watch::WatchHub> {
+        &self.watches
+    }
+
+    /// The shared last-read markers of the agent chats.
+    #[must_use]
+    pub fn chat_reads(&self) -> &crate::web::chat_reads::ChatReads {
+        &self.chat_reads
+    }
+
+    /// Device presence registry (connections per `deviceId`).
+    #[must_use]
+    pub fn presence(&self) -> &Arc<crate::web::presence::PresenceRegistry> {
+        &self.presence
+    }
+
+    /// Create a live relay sink with a custom per-session event-log capacity and
+    /// the default per-subscription channel capacity. Used by
+    /// `termul-server` to thread `ServerConfig::event_log_capacity`.
+    #[must_use]
+    pub fn with_log_capacity(event_log_capacity: usize) -> Self {
+        Self::with_capacity(event_log_capacity, DEFAULT_CLIENT_QUEUE_CAPACITY)
+    }
+
+    #[must_use]
+    pub fn with_persistence(
+        event_log_capacity: usize,
+        persistence: Arc<SessionPersistence>,
+    ) -> Self {
+        let mut sink = Self::with_capacity(event_log_capacity, DEFAULT_CLIENT_QUEUE_CAPACITY);
+        // Eagerly restoring completed turn IDs for every session on startup
+        // requires a full JSONL scan of all sessions (completed_turn_ids →
+        // replay_after → load_jsonl per session). With 1000+ sessions this
+        // added ~50s to startup. The `completed` watermark is only consulted
+        // when a live prompt_complete arrives for a session — and for active
+        // sessions, live events populate it naturally. For reconnected
+        // clients, `mark_seen` + `is_seen` handle dedup independently.
+        persistence.set_seq_authority(Arc::new(RelaySeqAuthority {
+            sessions: Arc::clone(&sink.sessions),
+            persistence: Arc::downgrade(&persistence),
+        }));
+        sink.persistence = Some(persistence);
+        sink
+    }
+
+    #[must_use]
+    pub fn persistence(&self) -> Option<Arc<SessionPersistence>> {
+        self.persistence.clone()
+    }
+
+    /// Whether the relay can serve this session id: live in the relay map
+    /// (events were emitted — covers ephemeral never-persisted sessions) or,
+    /// when persistence is attached, present in the catalog (finalized
+    /// sessions replay from disk). Read-only: never reopens writers or mutates
+    /// persisted state. `subscribe` / `open_persisted_session` gate on this so
+    /// an unknown id gets `not_found` (parity with `get_session_payload`)
+    /// instead of a silent empty subscribe.
+    #[must_use]
+    pub fn knows_session(&self, sid: &str) -> bool {
+        self.session_known_locked(&self.sessions.lock(), sid)
+    }
+
+    /// Existence check with the `sessions` lock already held: live in the
+    /// relay map or present in the persistence catalog. `subscribe` runs this
+    /// under the same `sessions` lock it registers under — the lock
+    /// `forget_session` removes under — so validation and registration are
+    /// atomic and a concurrent forget cannot slip a subscription through the
+    /// check→register gap.
+    fn session_known_locked(&self, sessions: &HashMap<String, SessionState>, sid: &str) -> bool {
+        if sessions.contains_key(sid) {
+            return true;
+        }
+        self.persistence.as_ref().is_some_and(|persistence| {
+            !matches!(
+                persistence.metadata(sid),
+                Err(SessionPersistenceError::SessionNotFound)
+            )
+        })
+    }
+
+    /// The configured per-session event-log capacity (AC4).
+    #[must_use]
+    pub fn event_log_capacity(&self) -> usize {
+        self.event_log_capacity
+    }
+
+    /// Attach the server-side permission rendezvous (Story 1.7). Once attached, `emit`
+    /// snapshots `acp:permission_request` events into the rendezvous so the
+    /// `/ws` `respond_permission` handler can enforce the rendezvous policy.
+    pub fn set_rendezvous(&self, rendezvous: Arc<crate::web::permissions::PermissionRendezvous>) {
+        *self.rendezvous.lock() = Some(rendezvous);
+    }
+
+    /// The attached rendezvous, if any (server path). Used by the `/ws`
+    /// `respond_permission` handler and the lifecycle release hooks.
+    #[must_use]
+    pub fn rendezvous(&self) -> Option<Arc<crate::web::permissions::PermissionRendezvous>> {
+        self.rendezvous.lock().clone()
+    }
+
+    /// Attach the server-side question rendezvous (issue #411). Server-only;
+    /// when set, `emit` snapshots `acp:question_request` events into the
+    /// rendezvous so the `/ws` `answer_question` handler can enforce the
+    /// rendezvous policy (first-wins, TOCTOU).
+    pub fn set_question_rendezvous(
+        &self,
+        rendezvous: Arc<crate::web::permissions::QuestionRendezvous>,
+    ) {
+        *self.question_rendezvous.lock() = Some(rendezvous);
+    }
+
+    /// The attached question rendezvous, if any (server path). Used by the `/ws`
+    /// `answer_question` handler.
+    #[must_use]
+    pub fn question_rendezvous(&self) -> Option<Arc<crate::web::permissions::QuestionRendezvous>> {
+        self.question_rendezvous.lock().clone()
+    }
+
+    /// Number of clients currently subscribed to `session_id`.
+    #[must_use]
+    pub fn session_subscriber_count(&self, session_id: &str) -> usize {
+        self.session_subs
+            .lock()
+            .get(session_id)
+            .map_or(0, HashSet::len)
+    }
+
+    /// The server-side turn-id watermark (Story 1.7 T7.2 — FR13/FR11 plumbing).
+    /// 1.8's `prompt_complete` / `send_prompt` handlers call this to dedup agent
+    /// turns by client turn-id (the wire-level `turnId` field lands in 1.8).
+    #[must_use]
+    pub fn turn_watermark(&self) -> &crate::web::permissions::TurnWatermark {
+        &self.turn_watermark
+    }
+
+    /// Restore `session_id`'s completed-turn set from durable history once,
+    /// before a prompt claims a turn. Completed turns are otherwise restored
+    /// only lazily on subscribe, so a resend of a completed `turnId` after a
+    /// host restart (before any subscribe) would find no record of the turn
+    /// and run it again. Single-flight per session: concurrent claims wait for
+    /// the first scan instead of repeating it.
+    ///
+    /// A session with no durable history (no persistence, or not in the
+    /// catalog: ephemeral) has nothing to restore. Any other failure is
+    /// returned: claiming without the completed set could re-run a finished
+    /// turn, so the caller must refuse the prompt (the next claim retries).
+    ///
+    /// # Errors
+    /// A generic message when the durable read failed; the cause is logged.
+    pub async fn ensure_turns_restored(&self, session_id: &str) -> Result<(), String> {
+        let Some(persistence) = &self.persistence else {
+            return Ok(());
+        };
+        if self.turn_watermark.is_restored(session_id) {
+            return Ok(());
+        }
+        let gate = Arc::clone(
+            self.restore_gates
+                .lock()
+                .entry(session_id.to_string())
+                .or_default(),
+        );
+        let _single_flight = gate.lock().await;
+        if self.turn_watermark.is_restored(session_id) {
+            return Ok(());
+        }
+        match persistence.completed_turn_ids_async(session_id.to_string()).await {
+            Ok(turn_ids) => {
+                self.turn_watermark.restore_completed(session_id, turn_ids);
+                self.turn_watermark.mark_restored(session_id);
+                Ok(())
+            }
+            Err(crate::acp::session_persistence::SessionPersistenceError::SessionNotFound) => {
+                Ok(())
+            }
+            Err(error) => {
+                warn!(
+                    "[prompt] completed turns could not be restored for session {}: {error}",
+                    crate::logging::redact_session_id(session_id)
+                );
+                Err("the session's turn history could not be read; retry the prompt".to_string())
+            }
+        }
+    }
+
+    /// Current session sequence frontier. Used as the snapshot watermark.
+    #[must_use]
+    pub fn session_watermark(&self, session_id: &str) -> u64 {
+        self.sessions.lock().get(session_id).map_or_else(
+            || {
+                self.persistence
+                    .as_ref()
+                    .and_then(|persistence| persistence.last_seq(session_id).ok())
+                    .unwrap_or(0)
+            },
+            |state| state.last_seq,
+        )
+    }
+}
+
+impl Default for WsRelaySink {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Fan an event out to every sink, serializing the payload ONCE so each sink
+/// emits byte-identical JSON.
+///
+/// `sid` is `None` for agent-level events, `Some(session_id)` for
+/// session-scoped events. `type_` is the `acp:*` event name (with prefix).
+/// `payload` is serialized to a `serde_json::Value` here, then handed to each
+/// sink by reference — `WsRelaySink` records the `Value` as-is.
+///
+/// Returns early without emitting when `sinks` is empty (avoids a wasted
+/// serialization + allocation on the `vec![]` path blessed for unit tests) or
+/// when the payload fails to serialize. A serialization failure is logged and
+/// the event is dropped — preserving the old `events::emit` drop-and-log
+/// semantics (a non-JSON-serializable payload must NOT be emitted as a `null`
+/// payload on the wire).
+pub fn fan_out<P: Serialize>(
+    sinks: &[Arc<dyn EventSink>],
+    sid: Option<&str>,
+    type_: &'static str,
+    payload: &P,
+) {
+    if sinks.is_empty() {
+        return;
+    }
+    let payload = match serde_json::to_value(payload) {
+        Ok(v) => v,
+        Err(e) => {
+            log::error!("[acp] skipping {type_} event: payload failed to serialize: {e}");
+            return;
+        }
+    };
+    let event = AcpEvent {
+        sid: sid.map(str::to_string),
+        type_,
+        payload,
+    };
+    for sink in sinks {
+        sink.emit(&event);
+    }
+}
+
+/// Where [`record_host_event`] delivers a host-authored record besides the
+/// relay that numbers it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostRecordFanout {
+    /// Only the relay (a durable record whose desktop twin is a different
+    /// event the caller fans out itself).
+    RelayOnly,
+    /// Every other sink too (any sink besides the relay gets the same event).
+    AllSinks,
+}
+
+/// Number, persist and fan out a host-authored record (session title, agent
+/// switch) through the sink that owns the session log. The relay is the only
+/// seq authority, so the record's seq is allocated there, in one critical
+/// section with its durable append and live fan-out.
+///
+/// `type_` carries the `acp:` prefix like [`fan_out`]. Returns the allocated
+/// seq. Any failure leaves nothing allocated, persisted or delivered.
+///
+/// # Errors
+///
+/// The relay's persistence error ([`SessionPersistenceError`]) or
+/// [`HostRecordError::NoSeqAuthority`] when `sinks` holds no relay.
+pub fn record_host_event<P: Serialize>(
+    sinks: &[Arc<dyn EventSink>],
+    sid: &str,
+    type_: &'static str,
+    payload: &P,
+    fanout: HostRecordFanout,
+) -> Result<u64, HostRecordError> {
+    let payload = serde_json::to_value(payload).map_err(|error| {
+        log::error!("[acp] skipping host record {type_}: payload failed to serialize: {error}");
+        HostRecordError::Serialize
+    })?;
+    let relay = sinks
+        .iter()
+        .find_map(|sink| sink.as_ws_relay())
+        .ok_or(HostRecordError::NoSeqAuthority)?;
+    let wire_type = type_.strip_prefix("acp:").unwrap_or(type_);
+    let seq = relay
+        .record_host_event(sid, wire_type, payload.clone())
+        .map_err(HostRecordError::Persistence)?
+        .seq;
+    if fanout == HostRecordFanout::AllSinks {
+        let event = AcpEvent {
+            sid: Some(sid.to_string()),
+            type_,
+            payload,
+        };
+        for sink in sinks.iter().filter(|sink| sink.as_ws_relay().is_none()) {
+            sink.emit(&event);
+        }
+    }
+    Ok(seq)
+}
+
+/// Why [`record_host_event`] produced no record.
+#[derive(Debug)]
+pub enum HostRecordError {
+    /// The payload could not be serialized.
+    Serialize,
+    /// No relay among the sinks to number the record.
+    NoSeqAuthority,
+    /// The relay could not persist the record (writer missing, stopped,
+    /// unhealthy). Nothing was allocated or fanned out.
+    Persistence(SessionPersistenceError),
+}
+
+impl std::fmt::Display for HostRecordError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Serialize => write!(f, "host record payload failed to serialize"),
+            Self::NoSeqAuthority => write!(f, "no relay available to number the host record"),
+            Self::Persistence(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for HostRecordError {}
+
+#[cfg(test)]
+mod epoch_tests;
+#[cfg(test)]
+mod log_integrity_tests;
+#[cfg(test)]
+mod tests;

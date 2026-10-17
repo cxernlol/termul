@@ -1,10 +1,45 @@
 import * as SelectPrimitive from '@radix-ui/react-select'
 import * as React from 'react'
 import { Check, ChevronDown, ChevronUp } from '@/components/icons'
+import { useNativeWebviewOcclusion } from '@/hooks/use-native-webview-occlusion'
 
 import { cn } from '@/lib/utils'
+import {
+  MENU_CONTENT_CLASS,
+  MENU_INDICATOR_CLASS,
+  MENU_ITEM_CLASS,
+  MENU_LABEL_CLASS,
+  MENU_MOTION_CLASS,
+  MENU_SEPARATOR_CLASS
+} from './menu-styles'
+import { FIELD_FOCUS_CLASS } from './panel-styles'
 
-const Select = SelectPrimitive.Root
+/**
+ * Occlusion is tracked on the root, not with a `NativeWebviewOccluder` in the
+ * content: Radix renders a closed Select's content children into a detached
+ * `DocumentFragment` so `SelectValue` can read item labels, so a mounted
+ * content child does not mean the list is open.
+ */
+function Select({
+  open,
+  defaultOpen = false,
+  onOpenChange,
+  ...props
+}: React.ComponentPropsWithoutRef<typeof SelectPrimitive.Root>): React.JSX.Element {
+  const [uncontrolledOpen, setUncontrolledOpen] = React.useState(defaultOpen)
+  useNativeWebviewOcclusion(open ?? uncontrolledOpen)
+  return (
+    <SelectPrimitive.Root
+      open={open}
+      defaultOpen={defaultOpen}
+      onOpenChange={(next) => {
+        setUncontrolledOpen(next)
+        onOpenChange?.(next)
+      }}
+      {...props}
+    />
+  )
+}
 
 const SelectGroup = SelectPrimitive.Group
 
@@ -17,7 +52,8 @@ const SelectTrigger = React.forwardRef<
   <SelectPrimitive.Trigger
     ref={ref}
     className={cn(
-      'flex h-10 w-full items-center justify-between rounded-lg border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 [&>span]:line-clamp-1',
+      'flex h-10 w-full items-center justify-between rounded-lg border border-input bg-background px-3 py-2 text-sm transition-colors duration-150 ease-out placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50 [&>span]:line-clamp-1',
+      FIELD_FOCUS_CLASS,
       className
     )}
     {...props}
@@ -66,7 +102,10 @@ const SelectContent = React.forwardRef<
     <SelectPrimitive.Content
       ref={ref}
       className={cn(
-        'relative z-50 max-h-96 min-w-[8rem] overflow-hidden rounded-lg border bg-popover text-popover-foreground shadow-md data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2',
+        // The Viewport carries the 4px padding so scroll buttons sit flush.
+        MENU_CONTENT_CLASS,
+        'relative max-h-96 p-0',
+        MENU_MOTION_CLASS,
         position === 'popper' &&
           'data-[side=bottom]:translate-y-1 data-[side=left]:-translate-x-1 data-[side=right]:translate-x-1 data-[side=top]:-translate-y-1',
         className
@@ -94,11 +133,7 @@ const SelectLabel = React.forwardRef<
   React.ElementRef<typeof SelectPrimitive.Label>,
   React.ComponentPropsWithoutRef<typeof SelectPrimitive.Label>
 >(({ className, ...props }, ref) => (
-  <SelectPrimitive.Label
-    ref={ref}
-    className={cn('py-1.5 pl-8 pr-2 text-sm font-semibold', className)}
-    {...props}
-  />
+  <SelectPrimitive.Label ref={ref} className={cn(MENU_LABEL_CLASS, 'pl-8', className)} {...props} />
 ))
 SelectLabel.displayName = SelectPrimitive.Label.displayName
 
@@ -108,15 +143,12 @@ const SelectItem = React.forwardRef<
 >(({ className, children, ...props }, ref) => (
   <SelectPrimitive.Item
     ref={ref}
-    className={cn(
-      'relative flex w-full cursor-default select-none items-center rounded-md py-1.5 pl-8 pr-2 text-sm outline-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 focus:bg-secondary focus:text-accent-foreground',
-      className
-    )}
+    className={cn(MENU_ITEM_CLASS, 'w-full pl-8', className)}
     {...props}
   >
-    <span className="absolute left-2 flex h-3.5 w-3.5 items-center justify-center">
+    <span className={MENU_INDICATOR_CLASS}>
       <SelectPrimitive.ItemIndicator>
-        <Check className="h-4 w-4" />
+        <Check className="h-3.5 w-3.5" />
       </SelectPrimitive.ItemIndicator>
     </span>
 
@@ -129,11 +161,7 @@ const SelectSeparator = React.forwardRef<
   React.ElementRef<typeof SelectPrimitive.Separator>,
   React.ComponentPropsWithoutRef<typeof SelectPrimitive.Separator>
 >(({ className, ...props }, ref) => (
-  <SelectPrimitive.Separator
-    ref={ref}
-    className={cn('-mx-1 my-1 h-px bg-muted', className)}
-    {...props}
-  />
+  <SelectPrimitive.Separator ref={ref} className={cn(MENU_SEPARATOR_CLASS, className)} {...props} />
 ))
 SelectSeparator.displayName = SelectPrimitive.Separator.displayName
 

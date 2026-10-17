@@ -5,9 +5,9 @@
  * All backend access goes through `@/lib/acp-api`. Backend events are wired into
  * this store exactly once via `initAcpEventListeners()` (called at app mount).
  *
- * P1 scope: text conversations. `toolCalls`, `plans`, `commands`,
- * `pendingPermissions`, and config/mode state are tracked here; tool, plan,
- * permission, and slash-command UI render them when present.
+ * `toolCalls`, `plans`, `commands`, `pendingPermissions`, and config/mode
+ * state are tracked here; tool, plan, permission, and slash-command UI render
+ * them when present.
  *
  * ## Architecture D6 reconciliation (Story 1.5)
  *
@@ -30,10 +30,6 @@
  * `./types` the `AcpState` contract; `./helpers` the pure helpers.
  */
 
-import type {
-  ProjectSwitchCompletedEvent,
-  ProjectSwitchFailedEvent
-} from '@shared/types/web-projects.types'
 import { toast } from 'sonner'
 import { create } from 'zustand'
 import { useShallow } from 'zustand/shallow'
@@ -48,6 +44,7 @@ import {
   type AgentSpawnedEvent,
   type AgentSwitchEvent,
   type AskUserQuestionEvent,
+  type AvailableCommand,
   acpApi,
   type BrowserAgentTabEvent,
   type BrowserConsentRequestEvent,
@@ -61,6 +58,7 @@ import {
   type PermissionRequestEvent,
   type PlanUpdateEvent,
   type PromptCompleteEvent,
+  type QuestionCancelledEvent,
   type SessionClosedEvent,
   type SessionCreatedEvent,
   type SessionId,
@@ -75,21 +73,24 @@ import {
 } from '@/lib/acp-api'
 import { AcpConnectionCoordinator, type AcpRecovery } from '@/lib/acp-connection'
 import { getAcpTransport, isTransientAcpTransportError } from '@/lib/acp-transport'
+import { noteTurnEndSeq } from '@/lib/chat-read-sync'
 import { logFrontendError } from '@/lib/log-api'
 import { wireBlocksToDisplay } from '@/lib/skills-wire-reverse'
-import { setTabFocusedSessionId } from '@/lib/web-tab-session'
-import { useProjectStore } from '@/stores/project-store'
-import { useWorkspaceStore } from '@/stores/workspace-store'
+import { getAgentChatSessionIdsInAllTrees, useWorkspaceStore } from '@/stores/workspace-store'
 import type { QueuedPrompt } from '../prompt-queue-orchestration'
+import { attachAgentRosterWatch } from './agent-roster-watch'
 import {
   collectProjectsWithActiveAgentChat,
   dropHiddenToolCalls,
   dropRecordKey,
   normalizeUserMessages,
   partitionTranscriptTurns,
+  plainLastError,
+  SWITCH_SPLICE_ID_PREFIX,
   selectAgentIdentity,
   selectConfigWarmState,
-  trimLiveToolCalls
+  trimLiveToolCalls,
+  withCommands
 } from './helpers'
 import { setLaunchPlaceholderNotedListener, setLiveLaunchSessionLookup } from './live-turn'
 import {
@@ -104,7 +105,12 @@ import { createLaunchSlice } from './slices/launch'
 import { createMcpSlice } from './slices/mcp'
 import { createMiscSlice } from './slices/misc'
 import { createPromptSlice } from './slices/prompt'
-import { createSessionSlice, recoverNotedLaunchChats } from './slices/session'
+import { reconcilePromptAfterRecovery, resendPendingPrompts } from './slices/prompt-reconcile'
+import {
+  createSessionSlice,
+  evictClosedSessionTranscript,
+  recoverNotedLaunchChats
+} from './slices/session'
 import { createSwitchSlice } from './slices/switch'
 import { appendBlocks, createTranscriptSlice } from './slices/transcript'
 import type {
@@ -125,19 +131,19 @@ export * from './helpers'
 export * from './live-turn'
 // Test + cross-module helpers living beside the slices (spec-04 PR B).
 export {
-  _acceptedServerPromptTurnIdsForTesting,
   _addEphemeralSessionIdForTesting,
   _handoffOnlyTurnIdsForTesting,
-  _resetAcceptedServerPromptTurnIdsForTesting,
   _resetEphemeralSessionIdsForTesting,
   _resetHistorySeqWatermarksForTesting,
   _resetInFlightPreparedForTesting,
   _resetInFlightPromotionsForTesting,
   _resetLiveSwitchSourcesForTesting,
+  _resetPromptReconcileForTesting,
   isEphemeralAcpSession,
   persistComposerOptions
 } from './shared-state'
 export { _resetAcpAuthForTesting } from './slices/agent'
+export { mcpServerDeletionCount } from './slices/mcp'
 export {
   _resetInFlightHistoryOpensForTesting,
   _resetSessionIndexLoadGenerationForTesting
@@ -173,6 +179,28 @@ setLiveLaunchSessionLookup((sessionId) => {
 setLaunchPlaceholderNotedListener(() => {
   void recoverNotedLaunchChats()
 })
+
+// --- Closed-chat transcript eviction on tab close ---------------------------
+
+/**
+ * A stopped chat keeps its transcript while a tab shows it (`_onSessionClosed`).
+ * When its last agent-chat tab leaves every tree (active and parked), evict the
+ * transcript so closed chats stay out of the WebView heap (#436). Live chats
+ * are untouched. Returns the unsubscribe.
+ */
+export function startClosedTranscriptEviction(): () => void {
+  let inTabs = getAgentChatSessionIdsInAllTrees(useWorkspaceStore.getState())
+  return useWorkspaceStore.subscribe((state, prev) => {
+    if (state.root === prev.root && state.parkedTrees === prev.parkedTrees) return
+    const next = getAgentChatSessionIdsInAllTrees(state)
+    for (const sessionId of inTabs) {
+      if (!next.has(sessionId)) {
+        evictClosedSessionTranscript(useAcpStore.getState, useAcpStore.setState, sessionId)
+      }
+    }
+    inTabs = next
+  })
+}
 
 // --- Event listener wiring (called once at app mount) ----------------------
 
@@ -211,8 +239,9 @@ async function installTransportRecovery(
               ...state.sessions,
               [recovery.sessionId]: {
                 ...session,
-                lastError:
-                  'Connection recovered live-only; events emitted while disconnected may be missing.'
+                ...plainLastError(
+                  'This session could not be fully re-synced; events emitted while disconnected may be missing.'
+                )
               }
             }
           : state.sessions
@@ -243,6 +272,7 @@ async function installTransportRecovery(
   // records — installed alongside the bubbles so reconnect recovery preserves
   // cards instead of blanking the session's tool-call list.
   const recoveredToolCalls: ToolCall[] = []
+  let recoveredCommands: { list: AvailableCommand[]; seq: number } | null = null
   let openRole: 'agent' | 'thought' | 'user' | null = null
   for (const event of recovery.events) {
     const payload = event.payload as Record<string, unknown>
@@ -366,6 +396,11 @@ async function installTransportRecovery(
     } else if (event.type === 'prompt_complete') {
       // Split boundary: the following chunk run opens a fresh bubble.
       openRole = null
+    } else if (event.type === 'commands_update') {
+      const { availableCommands } = payload as Partial<CommandsUpdateEvent>
+      if (Array.isArray(availableCommands)) {
+        recoveredCommands = { list: availableCommands, seq: event.seq }
+      }
     }
   }
   // Single wire→display pass over the folded user bubbles (chip rendering on
@@ -393,27 +428,50 @@ async function installTransportRecovery(
     if (!recoveryIsCurrent()) return {}
     const session = current.sessions[recovery.sessionId]
     const replacing = normalizedMessages.length > 0
+    const splicedMessages = (current.messages[recovery.sessionId] ?? []).filter((m) =>
+      m.id.startsWith(SWITCH_SPLICE_ID_PREFIX)
+    )
+    const splicedToolCalls = (current.toolCalls[recovery.sessionId] ?? []).filter((t) =>
+      t.toolCallId.startsWith(SWITCH_SPLICE_ID_PREFIX)
+    )
     return {
       messages: replacing
-        ? { ...current.messages, [recovery.sessionId]: installedMessages }
+        ? {
+            ...current.messages,
+            [recovery.sessionId]: [...splicedMessages, ...installedMessages]
+          }
         : current.messages,
       toolCalls: replacing
         ? {
             ...current.toolCalls,
-            [recovery.sessionId]: trimLiveToolCalls(
-              dropHiddenToolCalls(recoveredToolCalls, installedMessages, hidden)
-            )
+            [recovery.sessionId]: trimLiveToolCalls([
+              ...splicedToolCalls,
+              ...dropHiddenToolCalls(recoveredToolCalls, installedMessages, hidden)
+            ])
           }
         : current.toolCalls,
+      ...(recoveredCommands
+        ? withCommands(current, recovery.sessionId, recoveredCommands.list, {
+            logEpoch: recovery.logEpoch ?? null,
+            seq: recoveredCommands.seq
+          })
+        : {}),
       degradedRecoverySessions: dropRecordKey(current.degradedRecoverySessions, recovery.sessionId),
       sessions: session
         ? {
             ...current.sessions,
-            [recovery.sessionId]: { ...session, lastError: null }
+            [recovery.sessionId]: { ...session, ...plainLastError(null) }
           }
         : current.sessions
     }
   })
+  for (const event of recovery.events) {
+    if (event.type === 'prompt_complete') {
+      noteTurnEndSeq(recovery.sessionId, event.seq, recovery.logEpoch ?? null)
+    }
+  }
+  // AD-6: a prompt that lost its reply resolves from the recovered log.
+  reconcilePromptAfterRecovery(recovery.sessionId, recovery.events)
 }
 
 /** Test-only: drive the transport recovery path without wiring listeners. */
@@ -477,7 +535,7 @@ export function initAcpEventListeners(): () => void {
         )
       )
     ],
-    setReconnecting: (reconnecting) => {
+    setReconnecting: (reconnecting, recovered) => {
       useAcpStore.setState({ transportReconnecting: reconnecting })
       if (!reconnecting) {
         if (historyRetryTimer) {
@@ -486,101 +544,22 @@ export function initAcpEventListeners(): () => void {
         }
         historyRetryAttempt = 0
         refetchHistoryAfterReconnect()
+        // AD-6: the socket is back — resend every prompt command that lost its
+        // reply, with the same turn id (the host answers with a receipt). Only
+        // on a REAL recovery: the token-halt path also ends the reconnect
+        // cycle (`recovered === false`) but the host is unreachable then.
+        if (recovered === true) resendPendingPrompts()
       }
     }
   })
   connection.attach()
-  const applyCompletedProjectSwitch = (event: ProjectSwitchCompletedEvent): void => {
-    const state = useAcpStore.getState()
-    const previous = state.sessions[event.previousSessionId]
-    if (!previous) return
-    // Stale queued-switch guard: a queued (turn-active) switch completes
-    // AFTER the user already moved on to a DIFFERENT project. Applying the
-    // late outcome would re-run selectProject + reattach against the
-    // current tree — inserting the late project's chat tab into whatever
-    // the user is looking at and re-entering the restore flow (observed as
-    // cross-project tab accumulation during rapid multi-project rotation).
-    // The completion is legitimate when the user is ALREADY on the target
-    // project (immediate switch path; selectProject ran before the event)
-    // or when the queued switch itself asked for exactly this project (the
-    // queued flow does not change activeProjectId until the completion
-    // arrives, so the queue id is the user's pending intent). Drop
-    // everything else: the server already committed its per-connection
-    // state, and the late project's sessions stay reachable through its
-    // history index.
-    const activeProjectId = useProjectStore.getState().activeProjectId
-    const queuedForThisProject = state.queuedProjectSwitchId === event.projectId
-    if (activeProjectId !== event.projectId && !queuedForThisProject) {
-      if (state.queuedProjectSwitchId != null) {
-        useAcpStore.setState({ queuedProjectSwitchId: null })
-      }
-      return
-    }
-    // Queued switch-back restore (parity with switchProject's immediate-reopen
-    // branch): if the server reopened an existing session (detected via the
-    // server history index), fetch its transcript via `openHistorySession` +
-    // focus the workspace tab (`addAgentChatTab`) instead of minting a blank
-    // session. The transcript load is fire-and-forget (the event handler is
-    // void) — the restore preload shows immediately. Else the blank path below.
-    if (state.sessionIndex.some((e) => e.id === event.sessionId)) {
-      const opening = state.openHistorySession(event.sessionId)
-      useWorkspaceStore.getState().addAgentChatTab(event.sessionId)
-      useAcpStore.setState({
-        queuedProjectSwitchId: null,
-        activeSessionId: event.sessionId
-      })
-      setTabFocusedSessionId(event.sessionId)
-      useProjectStore.getState().selectProject(event.projectId)
-      void opening
-      return
-    }
-    useAcpStore.setState((s) => {
-      const existing = s.sessions[event.sessionId]
-      return {
-        queuedProjectSwitchId: null,
-        failedProjectSwitchId: null,
-        activeSessionId: event.sessionId,
-        sessions: {
-          ...s.sessions,
-          [event.sessionId]: {
-            id: event.sessionId,
-            agentId: previous.agentId,
-            cwd: event.cwd,
-            projectId: event.projectId,
-            status: 'active',
-            title: existing?.title ?? previous.title,
-            activeTurn: false,
-            mcpServerCount: event.mcpServerCount,
-            openTurnId: null,
-            modes: existing?.modes ?? previous.modes,
-            models: existing?.models ?? previous.models ?? null,
-            configOptions: existing?.configOptions ?? previous.configOptions,
-            lastError: existing?.lastError ?? null,
-            createdAt: existing?.createdAt ?? Date.now(),
-            replaying: null
-          }
-        },
-        messages: { ...s.messages, [event.sessionId]: s.messages[event.sessionId] ?? [] }
-      }
-    })
-    setTabFocusedSessionId(event.sessionId)
-    useProjectStore.getState().selectProject(event.projectId)
-  }
-  const applyFailedProjectSwitch = (event: ProjectSwitchFailedEvent): void => {
-    const state = useAcpStore.getState()
-    if (state.queuedProjectSwitchId !== event.projectId) return
-    useAcpStore.setState({
-      queuedProjectSwitchId: null,
-      failedProjectSwitchId: event.projectId
-    })
-    toast.error(event.message || 'Project switch failed')
-  }
   teardown = [
-    transport.onEvent<ProjectSwitchCompletedEvent>(
-      'project_switch_completed',
-      applyCompletedProjectSwitch
-    ),
-    transport.onEvent<ProjectSwitchFailedEvent>('project_switch_failed', applyFailedProjectSwitch),
+    startClosedTranscriptEviction(),
+    // Web only: the agent roster arrives through the `agents` watch (the
+    // desktop listens to the Tauri `acp:agent_*` events below).
+    ...(transport.watches
+      ? [attachAgentRosterWatch(transport.watches, () => useAcpStore.getState())]
+      : []),
     acpApi.onEvent<AgentSpawnedEvent>(ACP_EVENTS.agentSpawned, (e) =>
       useAcpStore.getState()._onAgentSpawned(e)
     ),
@@ -605,9 +584,12 @@ export function initAcpEventListeners(): () => void {
     acpApi.onEvent<PlanUpdateEvent>(ACP_EVENTS.planUpdate, (e) =>
       useAcpStore.getState()._onPlanUpdate(e)
     ),
-    acpApi.onEvent<CommandsUpdateEvent>(ACP_EVENTS.commandsUpdate, (e) =>
-      useAcpStore.getState()._onCommandsUpdate(e)
-    ),
+    acpApi.onEvent<CommandsUpdateEvent>(ACP_EVENTS.commandsUpdate, (e, eventSeq) => {
+      const logEpoch = getAcpTransport().getSessionCursor?.(e.sessionId)?.logEpoch ?? null
+      useAcpStore
+        .getState()
+        ._onCommandsUpdate(e, eventSeq === undefined ? undefined : { logEpoch, seq: eventSeq })
+    }),
     acpApi.onEvent<ModeUpdateEvent>(ACP_EVENTS.modeUpdate, (e) =>
       useAcpStore.getState()._onModeUpdate(e)
     ),
@@ -626,12 +608,17 @@ export function initAcpEventListeners(): () => void {
     acpApi.onEvent<AskUserQuestionEvent>(ACP_EVENTS.questionRequest, (e, eventSeq) =>
       useAcpStore.getState()._onQuestionRequest(e, eventSeq)
     ),
+    acpApi.onEvent<QuestionCancelledEvent>(ACP_EVENTS.questionCancelled, (e) =>
+      useAcpStore.getState()._onQuestionCancelled(e)
+    ),
     acpApi.onEvent<ElicitationRequestEvent>(ACP_EVENTS.elicitationRequest, (e, eventSeq) =>
       useAcpStore.getState()._onElicitationRequest(e, eventSeq)
     ),
-    acpApi.onEvent<PromptCompleteEvent>(ACP_EVENTS.promptComplete, (e, eventSeq) =>
+    acpApi.onEvent<PromptCompleteEvent>(ACP_EVENTS.promptComplete, (e, eventSeq) => {
+      const logEpoch = getAcpTransport().getSessionCursor?.(e.sessionId)?.logEpoch ?? null
+      noteTurnEndSeq(e.sessionId, eventSeq, logEpoch)
       useAcpStore.getState()._onPromptComplete(e, eventSeq)
-    ),
+    }),
     acpApi.onEvent<AgentCrashedEvent>(ACP_EVENTS.agentCrashed, (e) => {
       useAcpStore.getState()._onAgentCrashed(e)
       toast.error(e.message || 'Agent crashed')

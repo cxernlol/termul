@@ -43,10 +43,11 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use futures::future::{BoxFuture, FutureExt, Shared};
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 
-use crate::acp::atomic_file;
+use crate::acp::atomic_file::{self, NewerSchema};
 use crate::acp_registry_snapshot::{
     self, AcpRegistrySnapshot, ResolvedSnapshot, SnapshotFetchOutcome,
 };
@@ -181,9 +182,8 @@ pub struct SetCatalogOptInRequest {
 /// Current on-disk opt-in config schema version.
 const CATALOG_CONFIG_SCHEMA_VERSION: u32 = 1;
 
-/// Schema-versioned envelope for the opt-in config file. Mirrors the
-/// `WorkspaceManifestFile` pattern so future migrations route through a
-/// `migrate` hook. A corrupt file is backed up via
+/// Schema-versioned envelope for the opt-in config file, so future
+/// migrations route through a `migrate` hook. A corrupt file is backed up via
 /// [`atomic_file::backup_corrupt`] then treated as fresh (opt-in = false).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -277,10 +277,26 @@ fn snapshot_fetcher(delegate: SnapshotFetchDelegate) -> SnapshotFetcher {
     Arc::new(move |path, force_refresh| delegate(path, force_refresh))
 }
 
+type SharedSnapshotFetch = Shared<BoxFuture<'static, Result<ResolvedSnapshot, String>>>;
+
+/// The forced CDN fetch in flight, if any. Every concurrent forced caller
+/// joins it, so a peer looping forced refreshes costs one registry request
+/// at a time.
+type ForcedSnapshotFetch = Arc<Mutex<Option<SharedSnapshotFetch>>>;
+
+/// Clears the forced-fetch slot when the fetch task ends, panics included.
+struct ForcedFetchSlot(ForcedSnapshotFetch);
+
+impl Drop for ForcedFetchSlot {
+    fn drop(&mut self) {
+        *self.0.lock() = None;
+    }
+}
+
 /// Host-owned ACP catalog service. One instance per host runtime (desktop OR
 /// standalone `termul-server`, never shared across processes). Constructed via
 /// [`AcpCatalogService::open`], which creates the root directory + idempotent
-/// re-open (mirrors `WorkspaceManifestService::open`).
+/// re-open.
 ///
 /// The service:
 /// 1. Parses the bundled `agents.json` (embedded via `include_str!`) at
@@ -305,13 +321,19 @@ pub struct AcpCatalogService {
     /// catalog resolution (each time the 60s probe cache expires). Forced
     /// refreshes always bypass the gate; a success clears it.
     snapshot_fetch_gate: Mutex<Option<Instant>>,
+    /// Cached OpenCode 2 PATH/`~/.opencode/bin` probe. `None` inside the pair
+    /// means the last probe found no v2 binary. Shares [`PROBE_TTL`] with the
+    /// catalog probe cache so a catalog list does not spawn `--version` on
+    /// every call.
+    opencode_probe: Mutex<Option<(Instant, Option<PathBuf>)>>,
+    forced_snapshot_fetch: ForcedSnapshotFetch,
 }
 
 impl AcpCatalogService {
     /// Open (or re-open) an acp-catalog root. Creates the directory if
     /// missing; idempotent re-open returns a fresh `Arc<Self>` over the same
-    /// root. Mirrors `WorkspaceManifestService::open`: Unix 0700 root, create
-    /// the dir, return an `Arc<Self>`. A non-directory root is an error so a
+    /// root: Unix 0700 root, create the dir, return an `Arc<Self>`. A
+    /// non-directory root is an error so a
     /// misconfigured host fails loudly at startup.
     pub async fn open(root: PathBuf) -> io::Result<Arc<Self>> {
         if root.exists() && !root.is_dir() {
@@ -348,6 +370,8 @@ impl AcpCatalogService {
             cache: RwLock::new(None),
             snapshot_fetch: snapshot_fetcher(production_snapshot_delegate),
             snapshot_fetch_gate: Mutex::new(None),
+            opencode_probe: Mutex::new(None),
+            forced_snapshot_fetch: ForcedSnapshotFetch::default(),
         }))
     }
 
@@ -393,6 +417,47 @@ impl AcpCatalogService {
         Ok(catalog)
     }
 
+    /// When OpenCode has no Termul-managed install, attach a v2 binary found
+    /// on PATH or under `~/.opencode/bin`. A managed install already in
+    /// `installed` wins and this probe does not run.
+    pub async fn apply_external_opencode(&self, catalog: &mut AcpCatalog) {
+        let needs_probe = catalog
+            .agents
+            .iter()
+            .any(|agent| agent.id == "opencode" && agent.installed.is_none());
+        if !needs_probe {
+            return;
+        }
+        let binary = self.cached_external_opencode().await;
+        apply_external_opencode_binary(catalog, binary.as_deref());
+    }
+
+    async fn cached_external_opencode(&self) -> Option<PathBuf> {
+        {
+            let guard = self.opencode_probe.lock();
+            if let Some((probed_at, cached)) = guard.as_ref() {
+                if probed_at.elapsed() < PROBE_TTL {
+                    return cached.clone();
+                }
+            }
+        }
+        let probed = match tokio::task::spawn_blocking(
+            crate::acp::opencode_version::probe_external_opencode_v2,
+        )
+        .await
+        {
+            Ok(path) => path,
+            Err(_) => {
+                log::warn!("[acp-catalog] opencode probe task failed");
+                tracing::warn!("[acp-catalog] opencode probe task failed");
+                None
+            }
+        };
+        let mut guard = self.opencode_probe.lock();
+        *guard = Some((Instant::now(), probed.clone()));
+        probed
+    }
+
     /// Fetch the CDN registry snapshot through this host's shared snapshot
     /// cache (`root/acp-registry-snapshot-cache.json`). Backs the desktop
     /// "Check for updates" Tauri command (`acp_fetch_registry_snapshot`) so a
@@ -405,7 +470,17 @@ impl AcpCatalogService {
         &self,
         force_refresh: bool,
     ) -> Result<AcpRegistrySnapshot, String> {
-        let result = (self.snapshot_fetch)(self.snapshot_cache_path(), force_refresh).await;
+        let result = self.fetch_snapshot(force_refresh).await;
+        match &result {
+            Ok(resolved) => log::info!(
+                "[acp-catalog] registry check force_refresh={force_refresh} outcome={:?} agents={}",
+                resolved.outcome,
+                resolved.snapshot.agents.len()
+            ),
+            Err(error) => {
+                log::warn!("[acp-catalog] registry check force_refresh={force_refresh} failed: {error}")
+            }
+        }
         self.apply_snapshot_fetch_outcome(&result, force_refresh);
         match result {
             Ok(resolved) => {
@@ -429,6 +504,42 @@ impl AcpCatalogService {
             }
             Err(error) => Err(error),
         }
+    }
+
+    /// Run the CDN snapshot fetch. A forced fetch joins the forced fetch
+    /// already in flight. It runs on its own task, so a caller that goes away
+    /// does not stall the callers that joined it.
+    async fn fetch_snapshot(&self, force_refresh: bool) -> Result<ResolvedSnapshot, String> {
+        if !force_refresh {
+            return (self.snapshot_fetch)(self.snapshot_cache_path(), false).await;
+        }
+        let in_flight = {
+            let mut slot = self.forced_snapshot_fetch.lock();
+            match slot.as_ref() {
+                Some(in_flight) => {
+                    log::debug!("[acp-catalog] forced registry fetch joined the one in flight");
+                    in_flight.clone()
+                }
+                None => {
+                    let fetch = (self.snapshot_fetch)(self.snapshot_cache_path(), true);
+                    let owner = Arc::clone(&self.forced_snapshot_fetch);
+                    let shared = tokio::spawn(async move {
+                        let _slot = ForcedFetchSlot(owner);
+                        fetch.await
+                    })
+                    .map(|joined| {
+                        joined.unwrap_or_else(|error| {
+                            Err(format!("registry fetch task failed: {error}"))
+                        })
+                    })
+                    .boxed()
+                    .shared();
+                    *slot = Some(shared.clone());
+                    shared
+                }
+            }
+        };
+        in_flight.await
     }
 
     /// Whether a non-forced snapshot fetch is gated: a previous non-forced
@@ -473,8 +584,10 @@ impl AcpCatalogService {
     }
 
     /// Read the opt-in flag. Returns `false` when the file is missing (the
-    /// default — CDN augmentation is off) or when the file is corrupt (backed
-    /// up + treated as fresh, mirroring `WorkspaceManifestService`).
+    /// default — CDN augmentation is off) or when the file is corrupt / older
+    /// (backed up + treated as fresh). A
+    /// NEWER-schema file also reads as `false` but is logged and left untouched;
+    /// [`Self::set_opt_in`] refuses to overwrite it.
     pub fn is_opt_in(&self) -> bool {
         match self.read_opt_in_blocking() {
             Ok(enabled) => enabled,
@@ -490,6 +603,19 @@ impl AcpCatalogService {
     /// read-back is backed up + treated as fresh.
     pub fn set_opt_in(&self, enabled: bool) -> Result<(), CatalogError> {
         let path = self.config_path();
+        // Never overwrite a config a newer host wrote (AD-18).
+        match fs::read(&path) {
+            Ok(existing) => {
+                if let Err(newer) =
+                    NewerSchema::check(&path, &existing, CATALOG_CONFIG_SCHEMA_VERSION)
+                {
+                    log::error!("[acp-catalog] opt-in write refused: {newer}");
+                    return Err(CatalogError::NewerSchema(newer));
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
         let envelope = CatalogConfigFile {
             schema_version: CATALOG_CONFIG_SCHEMA_VERSION,
             opt_in_cdn: enabled,
@@ -518,11 +644,17 @@ impl AcpCatalogService {
             }
             Err(error) => return Err(error.into()),
         };
+        // AD-18: a config written by a NEWER host is refused (typed error,
+        // file untouched) — never backed up and replaced by a fresh one.
+        if let Err(newer) = NewerSchema::check(&path, &bytes, CATALOG_CONFIG_SCHEMA_VERSION) {
+            log::error!("[acp-catalog] opt-in config refused: {newer}");
+            return Err(CatalogError::NewerSchema(newer));
+        }
         match serde_json::from_slice::<CatalogConfigFile>(&bytes) {
             Ok(file) if file.schema_version == CATALOG_CONFIG_SCHEMA_VERSION => Ok(file.opt_in_cdn),
             Ok(file) => {
                 log::warn!(
-                    "[acp-catalog] opt-in bad schema_version expected={} found={} — backing up + fresh start",
+                    "[acp-catalog] opt-in older schema_version expected={} found={} — backing up + fresh start",
                     CATALOG_CONFIG_SCHEMA_VERSION,
                     file.schema_version
                 );
@@ -597,8 +729,7 @@ impl AcpCatalogService {
                         "snapshot fetch gated after recent failure and no cache present".to_string()
                     })
             } else {
-                let result =
-                    (self.snapshot_fetch)(self.snapshot_cache_path(), force_snapshot_refresh).await;
+                let result = self.fetch_snapshot(force_snapshot_refresh).await;
                 self.apply_snapshot_fetch_outcome(&result, force_snapshot_refresh);
                 result
             };
@@ -689,6 +820,9 @@ pub enum CatalogError {
     BundledParse(serde_json::Error),
     /// Filesystem read/write failure (permission, disk full, …).
     Io(io::Error),
+    /// The opt-in config was written by a NEWER Termul (AD-18): refused, the
+    /// file is left untouched.
+    NewerSchema(NewerSchema),
 }
 
 impl std::fmt::Display for CatalogError {
@@ -698,6 +832,7 @@ impl std::fmt::Display for CatalogError {
                 write!(f, "bundled catalog parse failed: {error}")
             }
             Self::Io(error) => write!(f, "acp-catalog io error: {error}"),
+            Self::NewerSchema(newer) => write!(f, "acp-catalog: {newer}"),
         }
     }
 }
@@ -707,6 +842,7 @@ impl std::error::Error for CatalogError {
         match self {
             Self::BundledParse(error) => Some(error),
             Self::Io(error) => Some(error),
+            Self::NewerSchema(newer) => Some(newer),
         }
     }
 }
@@ -949,6 +1085,35 @@ fn is_https_archive_url(url: &str) -> bool {
     path.ends_with(".zip") || path.ends_with(".tar.gz") || path.ends_with(".tgz")
 }
 
+/// Fill the OpenCode catalog row from an external v2 binary.
+///
+/// A row that already has `installed` (the Termul install manifest) is left
+/// alone. `binary == None` leaves an install-required row unchanged. The
+/// reported `version` is the catalog pin, so a newer PATH binary does not
+/// show as a downgrade against that pin.
+pub(crate) fn apply_external_opencode_binary(catalog: &mut AcpCatalog, binary: Option<&Path>) {
+    let Some(binary) = binary else {
+        return;
+    };
+    let Some(agent) = catalog
+        .agents
+        .iter_mut()
+        .find(|agent| agent.id == "opencode")
+    else {
+        return;
+    };
+    if agent.installed.is_some() {
+        return;
+    }
+    let version = agent.version.clone();
+    agent.status = SupportedAcpAgentStatus::Ready;
+    agent.installed = Some(InstalledCatalogInfo {
+        command: binary.to_string_lossy().into_owned(),
+        args: vec!["acp".to_string()],
+        version,
+    });
+}
+
 /// Overlay host-installed state onto a resolved catalog. For each catalog
 /// agent whose `id` matches an entry in `installed`, populate `installed` with
 /// the host-resolved `command`/`args` from the install manifest. Installed
@@ -994,7 +1159,7 @@ pub fn overlay_installed(
     }
 }
 
-/// Epoch-millis timestamp (mirrors `workspace_manifest::now_millis`).
+/// Epoch-millis timestamp.
 #[allow(dead_code)]
 fn now_millis() -> u64 {
     SystemTime::now()

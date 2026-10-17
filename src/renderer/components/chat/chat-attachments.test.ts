@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest'
 import {
   attachmentAriaLabel,
   attachmentToBlock,
-  basename,
   blockDisplayName,
   blockMimeType,
   blockToAttachmentData,
@@ -34,14 +33,6 @@ describe('fileExtension', () => {
   })
 })
 
-describe('basename', () => {
-  it('handles both slash styles', () => {
-    expect(basename('D:\\a\\b\\file.ts')).toBe('file.ts')
-    expect(basename('/home/x/file.ts')).toBe('file.ts')
-    expect(basename('plain.txt')).toBe('plain.txt')
-  })
-})
-
 describe('isImageMime', () => {
   it('detects image mime types', () => {
     expect(isImageMime('image/png')).toBe(true)
@@ -56,6 +47,7 @@ describe('isTextLike', () => {
     expect(isTextLike('data.json')).toBe(true)
     expect(isTextLike('notes.md')).toBe(true)
     expect(isTextLike('icon.svg')).toBe(true)
+    expect(isTextLike('ContactAvatar.astro')).toBe(true)
   })
 
   it('accepts known extension-less text files', () => {

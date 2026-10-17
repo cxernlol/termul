@@ -23,6 +23,7 @@ import {
   originOfEmbedUrl,
   toSupportedBridgeLocale
 } from '@/lib/canvas-bridge'
+import { basename } from '@/lib/path-basename'
 import { useAppearanceMode } from '@/stores/app-settings-store'
 import { type CanvasSession, useCanvasStore } from '@/stores/canvas-store'
 import { CanvasShell } from './CanvasShell'
@@ -31,11 +32,6 @@ interface CanvasPanelProps {
   projectId: string
   docPath: string
   isVisible: boolean
-}
-
-function basename(filePath: string): string {
-  const parts = filePath.split(/[\\/]/)
-  return parts[parts.length - 1] || filePath
 }
 
 function statusLabel(session: CanvasSession): string {

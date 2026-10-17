@@ -135,7 +135,7 @@ export function SettingsModal({
               <button
                 type="button"
                 onClick={onClose}
-                className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
                 title="Close"
                 aria-label={`Close ${title}`}
               >

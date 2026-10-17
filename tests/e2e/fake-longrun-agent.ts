@@ -42,6 +42,44 @@
  * arrives; the verbatim result is echoed into the transcript as
  * `ELICIT_ANSWER=<json>` in an `agent_message_chunk` so specs parse the
  * real wire response back, and the prompt resolves `end_turn`.
+ *
+ * Prompt marker (mobile-overlay-back-stack suite): `[RICH]` answers with one
+ * short turn that carries the content the chat's own overlays hang off — an
+ * external markdown link (link-safety confirm), an inline image (lightbox)
+ * and a subagent tool call (details dialog) — then ends it at once.
+ *
+ * `[PERMISSION]` (mobile shell suites): right after accepting the prompt the
+ * agent asks the host for a tool permission (`session/request_permission`)
+ * and leaves it unanswered, so the chat shows a pending approval — "needs
+ * you" — until a person answers it (the host keeps it through disconnects).
+ * The turn keeps streaming.
+ *
+ * Composer fixture (mobile-composer-row suite, additive): a `session/new`
+ * whose cwd contains `composer-row-e2e` advertises two modes plus a model and
+ * a thought-level config option (so the composer toolbar has every chip), and
+ * answers `session/set_config_option` for them. A `[USAGE]` prompt marker
+ * reports a baseline and a grown context-window snapshot (with a reported
+ * cost) so the context ring appears. Any other cwd or prompt behaves as before.
+ *
+ * Prompt markers (mobile chat dock suite), both applied right after the
+ * prompt is accepted; the turn then streams as usual:
+ * - `[DOCK]` pushes a 5-entry plan (3 completed) and three completed edit
+ *   tool calls (src/auth.ts +10, src/session.ts +4, src/token.ts +3 -2:
+ *   +17 -2 in total): the content of the chat dock's plan and
+ *   changed-files bars.
+ * - `[ASK:permission]`, `[ASK:permission-none]` (a request with no
+ *   options), `[ASK:question]` or `[ASK:elicitation]` sends the matching
+ *   agent-to-client request. When the client answers, the agent streams one
+ *   chunk `[ANSWERED <kind> <outcome>]` (outcome: the chosen optionId, the
+ *   chosen values, the elicitation action, or `cancelled`).
+ *
+ * Mobile approval edge states suite (additive): every `[ASK:<kind>]` accepts
+ * an optional delay, `[ASK:<kind>:<seconds>]`, so the request can reach a chat
+ * that is no longer on screen. `[ASK:elicitation-boolean]` sends a form with a
+ * REQUIRED boolean `confirm` and an optional boolean `notify`; its answer
+ * chunk lists the content the client sent, as
+ * `[ANSWERED elicitation-boolean accept confirm=false]` (`notify` is absent
+ * when the client left it out).
  */
 
 import { randomUUID } from 'node:crypto'
@@ -175,6 +213,288 @@ const ELICIT_SCHEMA: JsonValue = {
   }
 }
 
+/** A 1x1 PNG: small enough to inline, real enough for the browser to decode. */
+const TINY_PNG_BASE64 =
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='
+
+/**
+ * The `[RICH]` turn: a link, an image and a subagent call, then `end_turn`.
+ * Nothing is registered in `inFlightBySession`, so no timer streams after it.
+ */
+function replyRichTurn(id: number | string | undefined, sessionId: string): void {
+  const update = (body: JsonValue): void => notify('session/update', { sessionId, update: body })
+  update({
+    sessionUpdate: 'agent_message_chunk',
+    content: { type: 'text', text: 'Docs: [Example docs](https://example.com/docs)\n\n' }
+  })
+  update({
+    sessionUpdate: 'agent_message_chunk',
+    content: { type: 'image', data: TINY_PNG_BASE64, mimeType: 'image/png' }
+  })
+  update({
+    sessionUpdate: 'tool_call',
+    toolCallId: 'rich-subagent-1',
+    title: 'Delegate review',
+    kind: 'other',
+    status: 'completed',
+    rawInput: {
+      subagent_type: 'reviewer',
+      description: 'Review the overlay change',
+      prompt: 'Review the overlay change for dead back presses.'
+    }
+  })
+  respond(id, { stopReason: 'end_turn' })
+}
+
+/**
+ * Delay (seconds) before the permission request when the prompt text carries a
+ * `[PERMISSION[:n]]` marker (0 without a number), else null.
+ */
+function permissionDelaySeconds(prompt: JsonValue | undefined): number | null {
+  const match = /\[PERMISSION(?::(\d+(?:\.\d+)?))?\]/.exec(promptText(prompt))
+  if (!match) return null
+  return match[1] ? Number(match[1]) : 0
+}
+
+/** Ids of the permission requests this agent sent: the host's replies carry no method. */
+const permissionRequestIds = new Set<string>()
+
+function requestPermission(sessionId: string): void {
+  const requestId = `perm-${randomUUID().slice(0, 8)}`
+  permissionRequestIds.add(requestId)
+  write(
+    JSON.stringify({
+      jsonrpc: '2.0',
+      id: requestId,
+      method: 'session/request_permission',
+      params: {
+        sessionId,
+        toolCall: {
+          toolCallId: `call-${requestId}`,
+          title: 'Run the e2e tool',
+          kind: 'execute',
+          status: 'pending'
+        },
+        options: [
+          { optionId: 'allow', name: 'Allow', kind: 'allow_once' },
+          { optionId: 'reject', name: 'Reject', kind: 'reject_once' }
+        ]
+      }
+    })
+  )
+}
+
+/** A `session/new` cwd carrying this marker gets the composer fixture below. */
+const COMPOSER_CWD_MARKER = 'composer-row-e2e'
+
+type ComposerOptionValues = Record<string, string>
+const composerValuesBySession = new Map<string, ComposerOptionValues>()
+
+function composerConfigOptions(values: ComposerOptionValues): JsonValue[] {
+  return [
+    {
+      id: 'model',
+      name: 'Model',
+      category: 'model',
+      type: 'select',
+      currentValue: values.model ?? 'opus-5-5',
+      options: [
+        { value: 'opus-5-5', name: 'Opus 5.5' },
+        { value: 'sonnet-5-5', name: 'Sonnet 5.5' }
+      ]
+    },
+    {
+      id: 'thought_level',
+      name: 'Thinking',
+      category: 'thought_level',
+      type: 'select',
+      currentValue: values.thought_level ?? 'medium',
+      options: [
+        { value: 'low', name: 'Low' },
+        { value: 'medium', name: 'Medium' },
+        { value: 'high', name: 'High' }
+      ]
+    }
+  ]
+}
+
+/** Report a baseline then a grown context window, so the ring clears its 1% floor. */
+function reportUsage(sessionId: string): void {
+  const update = (used: number, extra: Record<string, JsonValue> = {}): void =>
+    notify('session/update', {
+      sessionId,
+      update: { sessionUpdate: 'usage_update', used, size: 200_000, ...extra }
+    })
+  update(20_000)
+  update(70_000, { cost: { amount: 0.0421, currency: 'USD' } })
+}
+
+type AskKind = 'permission' | 'permission-none' | 'question' | 'elicitation' | 'elicitation-boolean'
+
+const ASK_MARKER =
+  /\[ASK:(permission-none|permission|question|elicitation-boolean|elicitation)(?::(\d+(?:\.\d+)?))?\]/
+
+/** The agent-to-client request an `[ASK:<kind>]` marker asks for, else null. */
+function askKind(prompt: JsonValue | undefined): AskKind | null {
+  const match = ASK_MARKER.exec(promptText(prompt))
+  return match ? (match[1] as AskKind) : null
+}
+
+/** Seconds to wait before sending the `[ASK:<kind>:<seconds>]` request (0 without a delay). */
+function askDelaySeconds(prompt: JsonValue | undefined): number {
+  const match = ASK_MARKER.exec(promptText(prompt))
+  return match?.[2] ? Number(match[2]) : 0
+}
+
+/** Outstanding agent-to-client requests, keyed by the id this agent minted. */
+const pendingAsks = new Map<string, { sessionId: string; kind: AskKind }>()
+let nextAskId = 1
+
+function ask(sessionId: string, kind: AskKind): void {
+  const id = `fake-ask-${nextAskId++}`
+  pendingAsks.set(id, { sessionId, kind })
+  const send = (method: string, params: JsonValue): void =>
+    write(JSON.stringify({ jsonrpc: '2.0', id, method, params }))
+  switch (kind) {
+    case 'permission':
+    case 'permission-none':
+      send('session/request_permission', {
+        sessionId,
+        toolCall: {
+          toolCallId: `fake-perm-${id}`,
+          title: 'npm test -- auth',
+          kind: 'execute',
+          status: 'pending'
+        },
+        // Reject first on purpose: the prompt orders allows before rejects.
+        options:
+          kind === 'permission-none'
+            ? []
+            : [
+                { optionId: 'reject-once', name: 'Reject', kind: 'reject_once' },
+                { optionId: 'allow-always', name: 'Always allow', kind: 'allow_always' },
+                { optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' }
+              ]
+      })
+      break
+    case 'question':
+      send('_session/question', {
+        sessionId,
+        question: 'Which test suite should run?',
+        options: [
+          { value: 'unit', label: 'Unit tests', description: 'Fast, no network' },
+          { value: 'e2e', label: 'End-to-end tests' }
+        ]
+      })
+      break
+    case 'elicitation-boolean':
+      send('elicitation/create', {
+        mode: 'form',
+        sessionId,
+        message: 'Confirm the deployment',
+        // A required boolean and an optional one, both left Off by default.
+        requestedSchema: {
+          type: 'object',
+          properties: { confirm: { type: 'boolean' }, notify: { type: 'boolean' } },
+          required: ['confirm']
+        }
+      })
+      break
+    case 'elicitation':
+      send('elicitation/create', {
+        mode: 'form',
+        sessionId,
+        message: 'Name the branch to test',
+        // One field per kind the prompt renders differently: a required text
+        // input, an optional enum (select) and an optional boolean (switch).
+        requestedSchema: {
+          type: 'object',
+          properties: {
+            branch: { type: 'string' },
+            env: { type: 'string', enum: ['staging', 'production'] },
+            verbose: { type: 'boolean' }
+          },
+          required: ['branch']
+        }
+      })
+      break
+  }
+}
+
+/** The client answered one of our requests: report the outcome in the transcript. */
+function onAskAnswered(
+  id: string,
+  msg: JsonRpcMessage & { result?: JsonValue; error?: JsonValue }
+): void {
+  const pending = pendingAsks.get(id)
+  if (!pending) return
+  pendingAsks.delete(id)
+  const result = (msg.result ?? {}) as Record<string, JsonValue>
+  const outcome = result.outcome as Record<string, JsonValue> | undefined
+  let summary = 'error'
+  if (msg.error === undefined) {
+    if (pending.kind === 'elicitation') summary = String(result.action ?? 'unknown')
+    else if (pending.kind === 'elicitation-boolean') {
+      const content = (result.content ?? {}) as Record<string, JsonValue>
+      const sent = Object.entries(content).map(([name, value]) => `${name}=${String(value)}`)
+      summary = [String(result.action ?? 'unknown'), ...sent].join(' ')
+    } else if (pending.kind === 'question') {
+      summary = Array.isArray(result.values) ? result.values.join(',') : 'cancelled'
+    } else {
+      summary = outcome?.outcome === 'selected' ? String(outcome.optionId) : 'cancelled'
+    }
+  }
+  notify('session/update', {
+    sessionId: pending.sessionId,
+    update: {
+      sessionUpdate: 'agent_message_chunk',
+      content: { type: 'text', text: `[ANSWERED ${pending.kind} ${summary}]` }
+    }
+  })
+}
+
+/** `[DOCK]`: the plan and changed-files content of the mobile chat dock. */
+function pushDock(sessionId: string): void {
+  notify('session/update', {
+    sessionId,
+    update: {
+      sessionUpdate: 'plan',
+      entries: [
+        { content: 'Read the auth module', priority: 'high', status: 'completed' },
+        { content: 'Add the token store', priority: 'high', status: 'completed' },
+        { content: 'Wire the session refresh', priority: 'medium', status: 'completed' },
+        { content: 'Cover login with tests', priority: 'medium', status: 'in_progress' },
+        { content: 'Update the changelog', priority: 'low', status: 'pending' }
+      ]
+    }
+  })
+  const lines = (count: number, tag: string): string =>
+    Array.from({ length: count }, (_, i) => `${tag}${i + 1}`).join('\n')
+  const edits: Array<{ path: string; oldText: string | null; newText: string }> = [
+    { path: 'src/auth.ts', oldText: null, newText: lines(10, 'auth') },
+    { path: 'src/session.ts', oldText: 'a\nb', newText: `a\nb\n${lines(4, 'z')}` },
+    {
+      path: 'src/token.ts',
+      oldText: 'keep\nold1\nold2\nend',
+      newText: 'keep\nnew1\nnew2\nnew3\nend'
+    }
+  ]
+  edits.forEach((edit, i) => {
+    notify('session/update', {
+      sessionId,
+      update: {
+        sessionUpdate: 'tool_call',
+        toolCallId: `fake-edit-${i + 1}`,
+        title: `Edit ${edit.path}`,
+        kind: 'edit',
+        status: 'completed',
+        locations: [{ path: edit.path }],
+        content: [{ type: 'diff', path: edit.path, oldText: edit.oldText, newText: edit.newText }]
+      }
+    })
+  })
+}
+
 /** Per-session in-flight turns — concurrent sessions stream simultaneously. */
 const inFlightBySession = new Map<string, InFlight>()
 
@@ -296,17 +616,41 @@ function tick(): void {
   }
 }
 
-setInterval(tick, Math.max(100, Math.floor(1000 / RATE)))
+// The chunk clock. `setInterval` re-arms from the moment each tick actually
+// ran, so event-loop lag on a busy host adds up: a 360 s turn emitted only
+// 354 chunks under load, and a spec that expects about one chunk per second
+// failed. Re-arm against the fixed schedule instead: a late tick makes the
+// next wait shorter, so an n-second turn emits n × RATE chunks under load too.
+const TICK_MS = Math.max(100, Math.floor(1000 / RATE))
+let nextTickAt = Date.now() + TICK_MS
+function scheduleTick(): void {
+  setTimeout(
+    () => {
+      tick()
+      nextTickAt += TICK_MS
+      scheduleTick()
+    },
+    Math.max(0, nextTickAt - Date.now())
+  )
+}
+scheduleTick()
 
 function handle(msg: JsonRpcMessage): void {
   const { id, method, params } = msg
   // A RESPONSE to one of our outbound requests carries `id` + `result`/
-  // `error` but no `method`. The only outbound request this agent makes is
-  // `elicitation/create` (the `[ELICIT]` marker flow) — route it before the
-  // method switch so it never falls into the `default` reply arm (replying
-  // to a response would be protocol noise).
+  // `error` but no `method`. Route it before the method switch so it never
+  // falls into the `default` reply arm (replying to a response would be
+  // protocol noise). The host's reply to a permission request sent by the
+  // `[PERMISSION]` marker flow needs no answer; `[ASK:*]` requests (mobile
+  // chat dock suite) are tracked in `pendingAsks`; everything else is the
+  // `[ELICIT]` flow.
   if (method === undefined) {
-    resolveElicitation(msg)
+    if (id !== undefined && permissionRequestIds.delete(String(id))) return
+    if (typeof id === 'string' && pendingAsks.has(id)) {
+      onAskAnswered(id, msg as JsonRpcMessage & { result?: JsonValue; error?: JsonValue })
+    } else {
+      resolveElicitation(msg)
+    }
     return
   }
   const p = (params ?? {}) as Record<string, JsonValue>
@@ -324,7 +668,35 @@ function handle(msg: JsonRpcMessage): void {
     case 'newSession':
     case 'session/new': {
       const sid = `sess-${randomUUID().slice(0, 8)}`
+      if (String(p.cwd ?? '').includes(COMPOSER_CWD_MARKER)) {
+        composerValuesBySession.set(sid, {})
+        respond(id, {
+          sessionId: sid,
+          modes: {
+            currentModeId: 'default',
+            availableModes: [
+              { id: 'default', name: 'Default' },
+              { id: 'plan', name: 'Plan' }
+            ]
+          },
+          models: [],
+          configOptions: composerConfigOptions({})
+        })
+        break
+      }
       respond(id, { sessionId: sid, modes: [], models: [] })
+      break
+    }
+    case 'setSessionConfigOption':
+    case 'session/set_config_option': {
+      const sid = String(p.sessionId ?? 'unknown')
+      const values = composerValuesBySession.get(sid)
+      if (!values) {
+        respond(id, {})
+        break
+      }
+      values[String(p.configId)] = String(p.value)
+      respond(id, { configOptions: composerConfigOptions(values) })
       break
     }
     case 'loadSession':
@@ -342,6 +714,10 @@ function handle(msg: JsonRpcMessage): void {
       const sessionId = String(p.sessionId ?? 'unknown')
       if (inFlightBySession.has(sessionId)) {
         respondError(id, -32000, 'turn already in progress for this session')
+        return
+      }
+      if (/\[RICH\]/.test(promptText(p.prompt))) {
+        replyRichTurn(id, sessionId)
         return
       }
       const elicit = elicitationRequested(p.prompt)
@@ -374,6 +750,12 @@ function handle(msg: JsonRpcMessage): void {
         wireLog(`OUT: ${line}`)
         write(line)
       }
+      if (promptText(p.prompt).includes('[USAGE]')) reportUsage(sessionId)
+      const permissionDelaySec = permissionDelaySeconds(p.prompt)
+      if (permissionDelaySec !== null) {
+        if (permissionDelaySec === 0) requestPermission(sessionId)
+        else setTimeout(() => requestPermission(sessionId), permissionDelaySec * 1000)
+      }
       // Crash only when armed AND the marker is present: the host re-sends
       // the persisted open user turn verbatim on reopen (possibly on a
       // different session id), and a real crash is a one-time process
@@ -384,6 +766,19 @@ function handle(msg: JsonRpcMessage): void {
         // Die mid-turn without ever replying to session/prompt — the host
         // observes a dead child with an in-flight turn, same as a real crash.
         setTimeout(() => process.exit(1), Math.max(0, crashAfterSec * 1000))
+      }
+      if (promptText(p.prompt).includes('[DOCK]')) pushDock(sessionId)
+      const asked = askKind(p.prompt)
+      if (asked) {
+        const askDelaySec = askDelaySeconds(p.prompt)
+        if (askDelaySec === 0) ask(sessionId, asked)
+        else {
+          // A delayed request belongs to this turn: a cancel or the turn
+          // ending first must not leave a stale request for the next one.
+          setTimeout(() => {
+            if (inFlightBySession.get(sessionId)?.id === id) ask(sessionId, asked)
+          }, askDelaySec * 1000)
+        }
       }
       break
     }

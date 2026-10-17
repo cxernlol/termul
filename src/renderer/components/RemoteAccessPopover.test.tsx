@@ -25,28 +25,25 @@ vi.mock('@/lib/api', () => ({
     start: (...args: unknown[]) => startMock(...args),
     stop: () => stopMock(),
     status: vi.fn()
-  },
-  syncProjects: vi.fn(() => Promise.resolve({ success: true, data: undefined }))
-}))
-
-vi.mock('@/stores/project-store', () => ({
-  useProjectStore: {
-    getState: () => ({ projects: [], activeProjectId: null })
   }
 }))
 
+vi.mock('@/stores/project-store', () => ({
+  useProjectStore: { getState: () => ({ activeProjectId: 'p-active' }) }
+}))
+
+const { syncMcpRegistryToProjectFile } = vi.hoisted(() => ({
+  syncMcpRegistryToProjectFile: vi.fn(async () => {})
+}))
 vi.mock('@/stores/acp-store', () => ({
   useAcpStore: {
     getState: () => ({
       loadSessionIndex: vi.fn(async () => {}),
       sessionIndex: [],
-      messages: {}
+      messages: {},
+      syncMcpRegistryToProjectFile
     })
   }
-}))
-
-vi.mock('@/hooks/use-projects-persistence', () => ({
-  toProjectSummaries: vi.fn(() => [])
 }))
 
 vi.mock('@/lib/acp-history-persistence', () => ({
@@ -56,7 +53,6 @@ vi.mock('@/lib/acp-history-persistence', () => ({
 // Silence sonner toasts in test output.
 vi.mock('sonner', () => ({ toast: { error: vi.fn() } }))
 
-import { syncProjects } from '@/lib/api'
 import { useRemoteStatus } from '@/stores/remote-status-store'
 
 const RUNNING: RemoteStatus = {
@@ -65,7 +61,9 @@ const RUNNING: RemoteStatus = {
   port: 5123,
   bindMode: 'localhost',
   bindHost: '127.0.0.1',
-  tunnelUrl: 'https://foo-bar.trycloudflare.com'
+  // The host appends the bearer token as a `#token=` fragment (the form
+  // web-auth-token.ts reads); the QR and copy-link carry it verbatim.
+  tunnelUrl: 'https://foo-bar.trycloudflare.com#token=abc123'
 }
 
 function renderPopover(): ReturnType<typeof render> {
@@ -127,7 +125,7 @@ describe('RemoteAccessPopover', () => {
     expect(screen.queryByTestId('qr')).toBeNull()
   })
 
-  it('starts remote access with no bind-mode arg on toggle on and seeds the web client', async () => {
+  it('starts remote access with no bind-mode arg on toggle on and mirrors the MCP servers', async () => {
     startMock.mockResolvedValueOnce({ success: true, data: RUNNING })
     renderPopover()
 
@@ -140,10 +138,23 @@ describe('RemoteAccessPopover', () => {
     })
     expect(startMock).toHaveBeenCalledWith()
     expect(setStatus).toHaveBeenCalledWith(RUNNING)
-    // Project metadata is seeded; chat history is read directly from the
-    // durable Rust provider by the desktop-hosted browser.
+    // The host registry is durable: no project list is pushed. The desktop MCP
+    // servers are mirrored to the active project's file.
+    expect(syncMcpRegistryToProjectFile).toHaveBeenCalledTimes(1)
+    expect(syncMcpRegistryToProjectFile).toHaveBeenCalledWith('p-active')
+  })
+
+  it('does not mirror the MCP servers when turning remote access off', async () => {
+    vi.mocked(useRemoteStatus).mockReturnValue(RUNNING)
+    stopMock.mockResolvedValueOnce({ success: true, data: { ...RUNNING, running: false } })
+    renderPopover()
+
+    const toggle = await openPopover()
+    await fireEvent.click(toggle)
+
     await waitFor(() => {
-      expect(syncProjects).toHaveBeenCalledTimes(1)
+      expect(stopMock).toHaveBeenCalledTimes(1)
     })
+    expect(syncMcpRegistryToProjectFile).not.toHaveBeenCalled()
   })
 })

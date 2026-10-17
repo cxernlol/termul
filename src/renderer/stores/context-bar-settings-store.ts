@@ -25,6 +25,9 @@ export const useContextBarSettingsStore = create<ContextBarSettingsState>((set) 
 }))
 
 // Selectors for individual visibility settings
+export const useShowProjectName = (): boolean =>
+  useContextBarSettingsStore((state) => state.settings.showProjectName)
+
 export const useShowGitBranch = (): boolean =>
   useContextBarSettingsStore((state) => state.settings.showGitBranch)
 

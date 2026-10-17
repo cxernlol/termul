@@ -4,27 +4,44 @@
  * and no store closure — `set`/`get` arrive as parameters.
  */
 
+import { UNASSIGNED_PROJECT_ID } from '@shared/types/web-projects.types'
+import { flattenConfigOptionValues } from '@/components/chat/chat-input-bar-config'
 import { stripHandoffPreamble } from '@/components/chat/handoff-summary'
 import type { StoredAgentConfig } from '@/lib/acp-agents-persistence'
-import type {
-  AgentId,
-  ContentBlock,
-  McpServer,
-  PlanEntry,
-  SessionConfigOption,
-  SessionId,
-  SessionModelState,
-  SessionModeState,
-  StopReason,
-  ToolCall
+import {
+  type AgentId,
+  type AvailableCommand,
+  acpApi,
+  type ContentBlock,
+  type McpServer,
+  type PlanEntry,
+  parseAcpErrorDetail,
+  type SessionConfigOption,
+  type SessionConfigOptionEntry,
+  type SessionId,
+  type SessionModelState,
+  type SessionModeState,
+  type StopReason,
+  type ToolCall
 } from '@/lib/acp-api'
-import type { AgentSwitchRecord, SessionIndexEntry } from '@/lib/acp-history-persistence'
+import {
+  type AgentSwitchRecord,
+  maxPayloadSeq,
+  type PersistedTurnError,
+  type SessionIndexEntry,
+  UNTITLED_HOST_TITLE
+} from '@/lib/acp-history-persistence'
 import { getAcpTransport } from '@/lib/acp-transport'
 import { agentConfigIdentityKey } from '@/lib/agents/acp-config-identity'
 import { type AgentAuthPolicy, agentPolicyForConfigId } from '@/lib/agents/acp-registry'
-import { classifySetupError, isAgentAuthRequiredError } from '@/lib/agents/acp-spawn-errors'
+import {
+  classifySetupError,
+  describeProviderFailure,
+  isAgentAuthRequiredError
+} from '@/lib/agents/acp-spawn-errors'
 import { logFrontendError } from '@/lib/log-api'
 import {
+  isFolderTokenPath,
   parseFileSegments,
   replaceFileTokensInline,
   SKILL_PAD_END,
@@ -32,7 +49,13 @@ import {
 } from '@/lib/skill-tokens'
 import { wireBlocksToDisplay, wireTextToDisplay } from '@/lib/skills-wire-reverse'
 import { randomUUID } from '@/lib/uuid'
-import { agentReuseKey, configIdFromReuseKey, detachedReuseKey } from '../acp-reuse-keys'
+import { isAfter, type LogPoint } from '@/stores/agent-chat-unread-store'
+import {
+  configIdFromReuseKey,
+  detachedReuseKey,
+  isDetachedReuseKey,
+  parseReuseKey
+} from '../acp-reuse-keys'
 import {
   buildRecoverPromptToQueuePatch,
   dropPromptQueueForSession,
@@ -261,9 +284,8 @@ export const SKILL_PAD_BLOCK_RE = new RegExp(
  * live-only padding blocks and edge whitespace on both sides while KEEPING
  * the skill/command sentinels: chip text must stay distinguishable from
  * literal `(name)` / `/cmd` text or backfill could discard a distinct
- * prompt. File tokens reduce to their `(display)` marker — the wire form —
- * because the chip never round-trips (the file rides a `resource_link`
- * block); the resulting `(display)` vs literal ambiguity is resolved by
+ * prompt. File tokens reduce to their `(display)` marker — the wire form;
+ * the resulting `(display)` vs literal ambiguity is resolved by
  * `twinFileEvidence`. `wireTextToDisplay` also runs on the persisted side
  * so a record that skipped display normalization still canonicalizes (it
  * is a passthrough for any text lacking the exact framing).
@@ -286,7 +308,11 @@ export function canonicalTwinText(message: ChatMessage): string {
 export function twinFileEvidence(message: ChatMessage): string[] {
   const evidence: string[] = []
   for (const seg of parseFileSegments(transcriptText(message))) {
-    if (seg.kind === 'file') evidence.push(`file:${seg.display}`)
+    // Folder tokens send as plain text with no block, so they leave no
+    // persisted-side evidence to match.
+    if (seg.kind === 'file' && !isFolderTokenPath(seg.absPath)) {
+      evidence.push(`file:${seg.display}`)
+    }
   }
   for (const block of message.blocks) {
     if (block.type === 'resource_link' || block.type === 'resource') {
@@ -399,8 +425,46 @@ export function noteForStopReason(reason: StopReason): string | null {
       // Issue #842: the server wrote this synthetic marker at shutdown —
       // the turn was cut off mid-flight, not finished or user-cancelled.
       return 'Interrupted by server restart.'
+    case 'error':
+      // AD-5 turn terminators: the host closes an errored / timed-out /
+      // crashed turn with exactly one `prompt_complete` so no client keeps a
+      // turn open. These are failures, not completions.
+      return 'The turn ended with an error.'
+    case 'timeout':
+      return 'The turn timed out.'
+    case 'crashed':
+      return 'The agent stopped unexpectedly.'
     default:
       return `Response stopped: ${reason}`
+  }
+}
+
+/**
+ * Stop reasons the host writes for a turn that FAILED (as opposed to ending
+ * normally or by user cancel). The preceding `agent_error` / `agent_crashed`
+ * event carries the specific message; the terminator must not overwrite it.
+ */
+export function isFailedTurnStopReason(reason: StopReason): boolean {
+  return reason === 'error' || reason === 'timeout' || reason === 'crashed'
+}
+
+type LastErrorFields = Pick<AcpSession, 'lastError' | 'lastErrorCode' | 'lastErrorData'>
+
+/**
+ * `lastError` after a turn terminator: a failed-turn terminator keeps the
+ * specific error already recorded by the preceding `agent_error` and only
+ * falls back to the generic note; every other reason keeps the existing
+ * `note ?? current` rule. The code and data stay only with the error they
+ * came with.
+ */
+export function lastErrorAfterStop(current: LastErrorFields, reason: StopReason): LastErrorFields {
+  const note = noteForStopReason(reason)
+  const keep = isFailedTurnStopReason(reason) ? current.lastError !== null : note === null
+  if (!keep) return plainLastError(note)
+  return {
+    lastError: current.lastError,
+    lastErrorCode: current.lastErrorCode,
+    lastErrorData: current.lastErrorData
   }
 }
 
@@ -431,14 +495,63 @@ export function finalizeStreaming(
   }
 }
 
-/** Mark a reopened history session live after a successful load/resume IPC call. */
+/**
+ * Mark a reopened history session live after a successful load/resume IPC
+ * call. `keepLastError` keeps the failed-turn error the reopen restored from
+ * the payload instead of clearing it.
+ */
 export function withSessionActive(
   sessions: Record<SessionId, AcpSession>,
-  sessionId: SessionId
+  sessionId: SessionId,
+  keepLastError = false
 ): Record<SessionId, AcpSession> {
   const session = sessions[sessionId]
   if (!session) return sessions
-  return { ...sessions, [sessionId]: { ...session, status: 'active', lastError: null } }
+  return {
+    ...sessions,
+    [sessionId]: {
+      ...session,
+      status: 'active',
+      ...(keepLastError ? {} : plainLastError(null))
+    }
+  }
+}
+
+/**
+ * The banner fields for the last turn's failure recorded in a session
+ * payload. Mirrors what the live `agent_error` handler writes: the provider
+ * wording when the host classified one, else the message, falling back to the
+ * stop-reason note when the host kept no detail. The host persists no error
+ * `data`, so a restored banner has none.
+ */
+export function lastErrorFromPersistedTurn(turn: PersistedTurnError | undefined): LastErrorFields {
+  if (!turn) return plainLastError(null)
+  const message = turn.message || noteForStopReason(turn.stopReason)
+  if (message === null) return plainLastError(null)
+  const detail = parseAcpErrorDetail(turn)
+  return {
+    lastError: detail.providerCode
+      ? describeProviderFailure(detail.providerCode, message)
+      : message,
+    lastErrorCode: detail.code ?? null,
+    lastErrorData: undefined
+  }
+}
+
+export function plainLastError(message: string | null): LastErrorFields {
+  return { lastError: message, lastErrorCode: null, lastErrorData: undefined }
+}
+
+/** Prefix of the `lastError` a failed history load/resume writes. */
+export const RESUME_FAILED_PREFIX = 'Resume failed: '
+
+/**
+ * Whether `lastError` records a failed resume (as opposed to a turn note such
+ * as "Interrupted by server restart."). A failed resume blocks the seamless
+ * resume of a stopped chat; a leftover turn note does not.
+ */
+export function isResumeFailureError(lastError: string | null | undefined): boolean {
+  return typeof lastError === 'string' && lastError.startsWith(RESUME_FAILED_PREFIX)
 }
 
 /** Surface a failed history load/resume on the session without changing status. */
@@ -451,7 +564,11 @@ export function withSessionResumeError(
   if (!session) return sessions
   return {
     ...sessions,
-    [sessionId]: { ...session, replaying: null, lastError: `Resume failed: ${String(err)}` }
+    [sessionId]: {
+      ...session,
+      replaying: null,
+      ...plainLastError(`${RESUME_FAILED_PREFIX}${String(err)}`)
+    }
   }
 }
 
@@ -698,6 +815,31 @@ export function nextQueueId(): string {
   return newId('queue')
 }
 
+/**
+ * Install `list` as the session's slash commands unless the store holds a
+ * list from a newer record of the same log incarnation. `point` locates the
+ * `commands_update` record that set the list; a list without one (an older
+ * host) installs and drops the held point.
+ */
+export function withCommands(
+  state: Pick<AcpState, 'commands' | 'commandsSeq'>,
+  sessionId: SessionId,
+  list: AvailableCommand[],
+  point: LogPoint | undefined
+): Pick<AcpState, 'commands' | 'commandsSeq'> {
+  const held = state.commandsSeq[sessionId]
+  if (point !== undefined && held !== undefined && !isAfter(point, held) && point.seq < held.seq) {
+    return { commands: state.commands, commandsSeq: state.commandsSeq }
+  }
+  return {
+    commands: { ...state.commands, [sessionId]: list },
+    commandsSeq:
+      point === undefined
+        ? dropRecordKey(state.commandsSeq, sessionId)
+        : { ...state.commandsSeq, [sessionId]: point }
+  }
+}
+
 export function dropRecordKey<T>(
   record: Record<SessionId, T>,
   sessionId: SessionId
@@ -714,9 +856,10 @@ export function dropRecordKey<T>(
  * calls (`set_mode` / `set_config_option` / `set_model`) and `startChat`
  * promotion at a session whose agent may already be gone — the backend
  * answers `unknown agent`. Every session/agent teardown must drop its slots:
- * renderer-initiated kills emit no `session_closed`/`agent_disconnected`
- * events (intentional kills are silent), so `killAgent`/`closeSession` clean
- * up here just like the event handlers do.
+ * a renderer-initiated kill clears its own state here without waiting for the
+ * host's `session_closed`/`agent_disconnected`, so `killAgent`/`closeSession`
+ * clean up just like the event handlers do and the result never depends on
+ * event order.
  */
 export function dropPreparedSlots(
   prepared: Record<string, SessionId>,
@@ -729,6 +872,14 @@ export function dropPreparedSlots(
     delete next[key]
   }
   return next ?? prepared
+}
+
+export function isLivePreparedSession(
+  state: Pick<AcpState, 'sessions' | 'agentStatus'>,
+  sessionId: SessionId
+): boolean {
+  const session = state.sessions[sessionId]
+  return session?.status === 'active' && state.agentStatus[session.agentId] === 'connected'
 }
 
 /**
@@ -863,11 +1014,21 @@ export function mergeSessionIndexEntries(
             turnActive: mergeTurnActive(entry.turnActive, hostEntry.turnActive, true)
           }
         }
-      } else if (entry.turnActive === true && hostEntry.turnActive === undefined) {
-        // The host index omits `turnActive`. A newer host row must not erase
-        // a live-turn flag the client already projected.
+      } else {
+        // A newer host row must not erase what the client already projected
+        // and the host cannot know yet: the host titles a chat only once its
+        // first prompt is durable (a promoted warm session registers
+        // untitled), and its index omits `turnActive`.
+        const keepTitle = hostEntry.title === UNTITLED_HOST_TITLE
+        const keepTurn = entry.turnActive === true && hostEntry.turnActive === undefined
         const idx = merged.findIndex((e) => e.id === entry.id)
-        if (idx >= 0) merged[idx] = { ...hostEntry, turnActive: true }
+        if ((keepTitle || keepTurn) && idx >= 0) {
+          merged[idx] = {
+            ...hostEntry,
+            ...(keepTitle ? { title: entry.title } : {}),
+            ...(keepTurn ? { turnActive: true } : {})
+          }
+        }
       }
     } else if (liveSessionIds.has(entry.id) && !mergedIds.has(entry.id)) {
       // Host omits it but it is a live session (created/restored locally and
@@ -924,12 +1085,15 @@ export function normalizeIndexTitle(title: string): string {
 /**
  * CAP-2: history is host-owned. Refresh the desktop sidebar from the host
  * index after session lifecycle events — browser-origin sessions never flow
- * through `createSession`, and the host's `chat_history_changed` broadcast
+ * through `createSession`, and the host's `chat_history` watch
  * reaches WS clients only, not the desktop renderer. Skipped on the WS
  * transport (its sidebar refetches from the negotiated push).
  */
 export function refreshHostOwnedIndex(get: () => AcpState): void {
-  if (getAcpTransport().historyMode?.() !== undefined) return
+  // The relay-negotiated modes (`server`/`live_only`) refetch from the pushed
+  // index; the desktop's `tauri_store` still reads the host index on demand.
+  const mode = getAcpTransport().historyMode?.()
+  if (mode === 'server' || mode === 'live_only') return
   void get().loadSessionIndex()
 }
 
@@ -1015,6 +1179,23 @@ export function agentConfigIdentityChanged(
   return agentConfigIdentityKey(prev) !== agentConfigIdentityKey(next)
 }
 
+/**
+ * The project a chat session names: the live record's `projectId`, else its
+ * session-index entry (closed history chats are evicted from `sessions` but
+ * stay indexed). `''` (an unattributed `session_created` stub) and the host's
+ * unassigned sentinel name no project: `undefined`. A plain field read, not a
+ * filter — nothing is hidden or dropped on the basis of it.
+ */
+export function sessionProjectId(
+  state: Pick<AcpState, 'sessions' | 'sessionIndex'>,
+  sessionId: string
+): string | undefined {
+  const projectId =
+    state.sessions[sessionId]?.projectId ||
+    state.sessionIndex.find((entry) => entry.id === sessionId)?.projectId
+  return projectId && projectId !== UNASSIGNED_PROJECT_ID ? projectId : undefined
+}
+
 export function configIdForAgentId(state: AcpState, agentId: AgentId): string | null {
   for (const [key, id] of Object.entries(state.configToLiveAgent)) {
     if (id === agentId) return configIdFromReuseKey(key)
@@ -1092,6 +1273,93 @@ export function creationOptionDefaultsFrom(input: {
   }
 }
 
+function appendUnseen<T>(
+  current: T[],
+  incoming: T[],
+  key: (item: T) => string,
+  enrich?: (item: T, other: T) => T
+): T[] {
+  const incomingByKey = new Map(incoming.map((item) => [key(item), item]))
+  const enriched = enrich
+    ? current.map((item) => {
+        const other = incomingByKey.get(key(item))
+        return other ? enrich(item, other) : item
+      })
+    : current
+  const seen = new Set(current.map(key))
+  const added = incoming.filter((item) => !seen.has(key(item)))
+  const changed = enriched.some((item, index) => item !== current[index])
+  return changed || added.length > 0 ? [...enriched, ...added] : current
+}
+
+const configEntryKey = (entry: SessionConfigOptionEntry): string =>
+  Array.isArray(entry.options) ? `group:${entry.group ?? entry.name}` : `value:${entry.value}`
+
+function appendUnseenGroupValues(
+  entry: SessionConfigOptionEntry,
+  other: SessionConfigOptionEntry
+): SessionConfigOptionEntry {
+  if (!entry.options || !other.options) return entry
+  const options = appendUnseen(entry.options, other.options, (value) => value.value)
+  return options === entry.options ? entry : { ...entry, options }
+}
+
+function appendUnseenConfigValues(
+  option: SessionConfigOption,
+  other: SessionConfigOption
+): SessionConfigOption {
+  if (!option.options || !other.options) return option
+  const options = appendUnseen(
+    option.options,
+    other.options,
+    configEntryKey,
+    appendUnseenGroupValues
+  )
+  return options === option.options ? option : { ...option, options }
+}
+
+export function addAdvertisedOptionsKeepingCurrent(
+  current: Pick<AcpSession, 'modes' | 'models' | 'configOptions'>,
+  payload: {
+    modes?: SessionModeState | null
+    models?: SessionModelState | null
+    configOptions?: SessionConfigOption[] | null
+  }
+): Pick<AcpSession, 'modes' | 'models' | 'configOptions'> {
+  let modes = current.modes ?? payload.modes ?? null
+  if (current.modes && payload.modes) {
+    const availableModes = appendUnseen(
+      current.modes.availableModes,
+      payload.modes.availableModes,
+      (mode) => mode.id
+    )
+    if (availableModes !== current.modes.availableModes) {
+      modes = { ...current.modes, availableModes }
+    }
+  }
+  let models = current.models ?? payload.models ?? null
+  if (current.models && payload.models) {
+    const availableModels = appendUnseen(
+      current.models.availableModels,
+      payload.models.availableModels,
+      (model) => model.modelId
+    )
+    if (availableModels !== current.models.availableModels) {
+      models = { ...current.models, availableModels }
+    }
+  }
+  return {
+    modes,
+    models,
+    configOptions: appendUnseen(
+      current.configOptions,
+      payload.configOptions ?? [],
+      (option) => option.id,
+      appendUnseenConfigValues
+    )
+  }
+}
+
 /**
  * Merge an agent-provided config-option snapshot into the session state
  * without letting a backend-side desync clobber the user's model selection
@@ -1138,9 +1406,7 @@ export function mergeAgentConfigOptions(
       typeof prior.currentValue === 'boolean' || typeof option.currentValue === 'boolean'
     if (
       !booleanOption &&
-      !(option.options ?? []).some(
-        (entry) => typeof entry.value === 'string' && entry.value === priorComparable
-      )
+      !flattenConfigOptionValues(option).some((entry) => entry.value === priorComparable)
     ) {
       return option
     }
@@ -1183,13 +1449,21 @@ export function reapOrphanPreparedSession(get: AcpGet, set: AcpSet, sessionId: S
   // createSession may have set activeSessionId as a side effect; that must not
   // block reaping a session that never became a published preparedSessions entry.
   set((s) => (s.activeSessionId === sessionId ? { activeSessionId: null } : s))
-  void get()
-    .closeSession(sessionId)
-    .catch(() => {
-      /* best-effort: backend may already be gone */
-    })
+  const agentId = get().sessions[sessionId]?.agentId
+  const disposed = agentId
+    ? acpApi.disposeEphemeralSession(agentId, sessionId).catch((error) => {
+        void logFrontendError({
+          level: 'warn',
+          source: 'acp.reapOrphanPreparedSession',
+          message: `Failed to dispose warm session ${sessionId}: ${error instanceof Error ? error.message : String(error)}`
+        })
+      })
+    : Promise.resolve()
+  void disposed
+    .then(() => get().deleteHistorySession(sessionId))
     .finally(() => {
-      void get().deleteHistorySession(sessionId)
+      ephemeralSessionIds.delete(sessionId)
+      set((s) => (s.sessions[sessionId] ? dropEphemeralSessionState(s, sessionId) : s))
     })
 }
 
@@ -1271,6 +1545,7 @@ export function dropEphemeralSessionState(
     agentSwitches,
     plans,
     commands,
+    commandsSeq: dropRecordKey(state.commandsSeq, sessionId),
     sessionUsage,
     pendingPermissions: dropPermissionsForSession(state.pendingPermissions, sessionId),
     pendingQuestions: dropQuestionsForSession(state.pendingQuestions, sessionId),
@@ -1345,7 +1620,7 @@ export function setSwitchRejection(
         [sessionId]: {
           ...session,
           switching: null,
-          lastError: `Could not switch agent: ${message}`
+          ...plainLastError(`Could not switch agent: ${message}`)
         }
       }
     }
@@ -1365,14 +1640,23 @@ export function detachOldAgentForSwitch(
   cwd: string,
   agentId: AgentId
 ): void {
-  const reuseKey = agentReuseKey(configId, cwd)
+  const trimmedCwd = cwd.trim()
   set((s) => {
-    if (s.configToLiveAgent[reuseKey] !== agentId) return {}
+    // Detach every canonical key for this process (legacy and Project-scoped).
+    // A later prepare must not reuse any of them.
+    const reuseKeys = Object.keys(s.configToLiveAgent).filter((key) => {
+      if (isDetachedReuseKey(key) || s.configToLiveAgent[key] !== agentId) return false
+      const parsed = parseReuseKey(key)
+      return parsed.configId === configId && parsed.cwd === trimmedCwd
+    })
+    if (reuseKeys.length === 0) return {}
     const configToLiveAgent = { ...s.configToLiveAgent }
-    delete configToLiveAgent[reuseKey]
-    // Keep the superseded process resolvable for its (still-open) old session
-    // — the detached key is never consumed by a new prepare.
-    configToLiveAgent[detachedReuseKey(reuseKey, agentId)] = agentId
+    for (const reuseKey of reuseKeys) {
+      delete configToLiveAgent[reuseKey]
+      // Keep the superseded process resolvable for its (still-open) old session
+      // — the detached key is never consumed by a new prepare.
+      configToLiveAgent[detachedReuseKey(reuseKey, agentId)] = agentId
+    }
     return { configToLiveAgent }
   })
 }
@@ -1387,7 +1671,10 @@ export async function killSpawnedAgentIfUnused(
   get: () => AcpState,
   agentId: AgentId
 ): Promise<void> {
-  const hasOtherSession = Object.values(get().sessions).some((s) => s.agentId === agentId)
+  const { sessions, openingHistoryIds } = get()
+  const hasOtherSession = Object.values(sessions).some(
+    (s) => s.agentId === agentId && (s.status !== 'closed' || openingHistoryIds[s.id])
+  )
   if (hasOtherSession) return
   try {
     await get().killAgent(agentId)
@@ -1456,6 +1743,20 @@ export function resolveSwitchRedirect(
 export const SWITCH_SPLICE_ID_PREFIX = 'switch-splice:'
 
 /**
+ * The display blocks of the chat's last own user prompt, for a re-send.
+ * `switch-splice:` records are projected pre-switch history: re-sending one
+ * would send the OLD agent's prompt to the new session.
+ */
+export function lastOwnUserPromptBlocks(messages: ChatMessage[]): ContentBlock[] | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === 'user' && !messages[i].id.startsWith(SWITCH_SPLICE_ID_PREFIX)) {
+      return messages[i].blocks
+    }
+  }
+  return null
+}
+
+/**
  * Story 3 (CAP-7): splice a session's installed pre-switch transcript into the
  * redirect target's transcript under ONE consistent namespace.
  * Seq/id collision fix: the old session's durable records carry per-session
@@ -1464,8 +1765,9 @@ export const SWITCH_SPLICE_ID_PREFIX = 'switch-splice:'
  * target's own records interleaves the merged timeline wrongly (buildTimeline
  * sorts seq-first) and collides ids (duplicate React keys, wrong
  * `_onUserPrompt` dedup matches). Every spliced record is re-stamped:
- * `seq = (floor - 1000) + original seq` (a NEGATIVE band below the target's
- * whole seq space — spliced records sort before every target record) and
+ * `seq = original seq + floor - (source's highest seq) - 1` (a NEGATIVE band
+ * whose top sits just below the target's whole seq space — spliced records
+ * sort before every target record, however long the source ran) and
  * `id = switch-splice:<source session>:<original id>` — so the merged
  * timeline orders old-before-new with ids unique across hops.
  *
@@ -1493,7 +1795,7 @@ export function spliceSwitchTranscript(
     ...targetToolCalls.map((t) => (typeof t.seq === 'number' ? t.seq : 0)),
     ...targetSwitches.map((sw) => (typeof sw.seq === 'number' ? sw.seq : 0))
   )
-  const offset = floor - 1000
+  const offset = floor - maxPayloadSeq(installed) - 1
   // Namespaced ids: two hops may share original ids (each session's log
   // restarts its seq space), so the source session id keeps the React keys
   // unique.
@@ -1545,6 +1847,20 @@ export function spliceSwitchTranscript(
     }))
   const switches: AgentSwitchRecord[] = [...splicedSwitches, ...targetSwitches]
   return { messages, toolCalls, switches }
+}
+
+export type SwitchMarkerFacts = Omit<AgentSwitchRecord, 'id' | 'seq'>
+
+export function withSwitchMarker(
+  band: { messages: ChatMessage[]; toolCalls: ToolCall[]; switches: AgentSwitchRecord[] },
+  marker: SwitchMarkerFacts
+): { messages: ChatMessage[]; toolCalls: ToolCall[]; switches: AgentSwitchRecord[] } {
+  if (band.switches.some((sw) => sw.newSessionId === marker.newSessionId)) return band
+  const bandTop = maxPayloadSeq(band) + 1
+  return {
+    ...band,
+    switches: [...band.switches, { ...marker, id: `switch:fabricated:${bandTop}`, seq: bandTop }]
+  }
 }
 
 export function liveInlineKeyAuthPolicy(
@@ -1660,11 +1976,28 @@ export function selectConfigWarmState(state: AcpState, configId: string): Config
 }
 
 /**
+ * Server seq of the prompt that opened the trailing turn: the last user bubble
+ * when it is a real prompt (visible content, not a handoff boundary row) with
+ * a positive seq. `null` when the window cuts the turn off from its prompt or
+ * the trailing turn is a hidden one, whose cards never render.
+ */
+export function openTurnPromptSeq(messages: ChatMessage[]): number | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i]
+    if (message.role !== 'user') continue
+    const seq = message.seq
+    const prompt = message.handoffBoundary !== true && hasVisibleContent(message)
+    return prompt && typeof seq === 'number' && Number.isFinite(seq) && seq > 0 ? seq : null
+  }
+  return null
+}
+
+/**
  * Issue #838: derive the open turn (a `user_prompt` with no matching
  * `prompt_complete`) from an installed transcript. The server's session
- * metadata may carry `turnActive` (authoritative, set when the host knows a
- * turn is running); the transcript derivation covers older hosts and any
- * window where metadata lagged. Returns the open turn id (`turn:<turnId>`)
+ * metadata may carry `turnActive` (authoritative: `true` when a turn runs,
+ * `false` when it ended); the transcript derivation covers older hosts and a
+ * prompt without a turn id, where the host leaves it absent. Returns the open turn id (`turn:<turnId>`)
  * or null. A turn id missing from the bubble (older records) yields
  * `turn:<lastUserSeq>` so the stop button + spinner have a stable handle.
  */
@@ -1677,6 +2010,12 @@ export function deriveOpenTurn(
   // assistant reply after it — a streaming turn may have zero agent output
   // yet, so absence of a reply is not proof of completion, but its presence
   // IS proof the turn finished).
+  // An explicit `false` is the host saying the turn ended (a completion or a
+  // host terminator closed it, or the session is not active). A transcript can
+  // still end on the user's bubble then — a failed turn has no agent reply — so
+  // it must not be read as a turn still running (issue #1192). `undefined` is an
+  // older host, or an open prompt without a turn id: derive it from the tail.
+  if (metadataTurnActive === false) return null
   if (metadataTurnActive) {
     // Metadata says a turn runs; recover the id from the last user bubble.
     for (let i = messages.length - 1; i >= 0; i--) {

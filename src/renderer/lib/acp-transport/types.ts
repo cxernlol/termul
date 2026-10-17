@@ -1,16 +1,25 @@
 /**
  * ACP transport contract (Story 1.6): the shared error surface +
- * {@link AcpTransport} interface implemented by both transports —
- * Tauri `invoke`/`listen` on desktop (`./tauri-transport`) and the
- * multiplexed `/ws` client on web/server (`./ws-transport`).
+ * {@link AcpTransport} interface implemented by the multiplexed `/ws` client
+ * (`./ws-transport`) and its desktop subclass over the Tauri IPC Channel
+ * (`./desktop-transport`).
  */
 
-import type { SwitchProjectReply } from '@shared/types/web-projects.types'
+import type { AcpCatalog } from '@shared/types/acp-catalog.types'
 import type {
-  HistoryMode,
-  PersistedSessionSummary,
-  SessionSnapshotEvent,
-  WsAgentSummary
+  ClaudeAccountsSnapshot,
+  ClaudeAccountUsage
+} from '@shared/types/claude-accounts.types'
+import type { ProjectSummary } from '@shared/types/web-projects.types'
+import {
+  type AddProjectPayload,
+  type ChatReadMark,
+  type HistoryMode,
+  type PersistedSessionSummary,
+  type ProjectBusyDetails,
+  type SessionSnapshotEvent,
+  WS_ERROR_CODES,
+  type WsAgentSummary
 } from '@shared/types/web-protocol.types'
 import type {
   AcpRegistrySnapshot,
@@ -24,24 +33,81 @@ import type {
   McpServerConfig,
   NewSessionOutcome,
   ProbeResult,
+  PromptDispatchResult,
+  RegistryCheckReason,
   SessionConfigOption,
   SessionId,
   SessionReopenOutcome,
-  SpawnAgentResult,
-  StopReason
+  SpawnAgentResult
 } from '@/lib/acp-api'
 import type { SessionPayload } from '@/lib/acp-history-persistence'
 import type { AcpRuntimeAvailability } from '@/lib/agents/supported-acp-agents'
+import type { WatchClient } from './watch-client'
+
+/**
+ * What the user reads for a host `outcome_unknown` (the spec label): the host no
+ * longer knows whether the command took effect, and will not run it again.
+ */
+export const OUTCOME_UNKNOWN_MESSAGE = 'Outcome unknown — check whether it took effect'
 
 /** Thrown on WS (and mapped) failures — callers may toast `.message`. */
 export class AcpTransportError extends Error {
   readonly code: string
+  /**
+   * The session seq at which the host's reply became visible (`visible_at`),
+   * when the reply carried one. Absent on transport-local failures.
+   */
+  readonly visibleAt?: number
+  /** The host's structured context for the code: the bound entities of a `project_busy` refusal. */
+  readonly details?: ProjectBusyDetails
 
-  constructor(code: string, message: string) {
-    super(message)
+  constructor(code: string, message: string, visibleAt?: number, details?: ProjectBusyDetails) {
+    super(code === WS_ERROR_CODES.OUTCOME_UNKNOWN ? OUTCOME_UNKNOWN_MESSAGE : message)
     this.name = 'AcpTransportError'
     this.code = code
+    if (visibleAt !== undefined) this.visibleAt = visibleAt
+    if (details !== undefined) this.details = details
   }
+}
+
+/**
+ * Local code for "the first run of this command is still going" — the `/ws`
+ * `{ receipt: "in_progress" }` payload. The command is neither accepted nor rejected: it stays pending.
+ */
+export const COMMAND_IN_PROGRESS_CODE = 'command_in_progress'
+/**
+ * Local code for a `command_accepted` verdict: the command ran, its
+ * result is not retained. Resolves the command as accepted without a payload.
+ */
+export const COMMAND_ACCEPTED_CODE = 'command_accepted'
+
+/** Optional trailing bag on the ledgered mutating transport methods. */
+export interface CommandCallOptions {
+  /**
+   * Client-minted command id (AD-5): set on the frame (`/ws`) or passed as the
+   * `commandId` argument (Tauri) so the host can dedupe a same-id resend.
+   */
+  commandId?: string
+  /** Called with the host's `visible_at` session seq when the reply carries one. */
+  onVisibleAt?: (visibleAt: number) => void
+}
+
+/**
+ * Options for `session/load` and `session/resume`.
+ * `mcpServers` is set only by Reload this chat. It stays on this bag so a
+ * normal reopen still passes command options as the fifth argument.
+ */
+export type ReopenCallOptions = CommandCallOptions & {
+  /**
+   * Present only for a reload. An empty array still asks the host to attach
+   * the plan server. Omitted keeps a normal history reopen.
+   */
+  mcpServers?: McpServer[]
+}
+
+/** `visible_at` is a session seq; anything else on the wire is ignored. */
+export function parseVisibleAt(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined
 }
 
 export function isTransientAcpTransportError(error: unknown): error is AcpTransportError {
@@ -52,34 +118,100 @@ export function isTransientAcpTransportError(error: unknown): error is AcpTransp
 }
 
 /**
+ * A command failed in a way that says nothing about whether the host accepted
+ * it: the socket dropped / timed out (transient), the local client refused to
+ * connect (`unauthorized` — the token-halt state), the host no longer knows
+ * the outcome (`outcome_unknown`) or is still running the first attempt
+ * (`command_in_progress`). Such a command stays pending / pending-reconcile and
+ * is never reported as rejected; only any OTHER code is an explicit host
+ * rejection.
+ */
+export function isOutcomeUncertainError(error: unknown): error is AcpTransportError {
+  return (
+    isTransientAcpTransportError(error) ||
+    (error instanceof AcpTransportError &&
+      (error.code === WS_ERROR_CODES.UNAUTHORIZED ||
+        error.code === WS_ERROR_CODES.OUTCOME_UNKNOWN ||
+        error.code === COMMAND_IN_PROGRESS_CODE))
+  )
+}
+
+/**
  * Story 10: coarse connection-health states for the WS channels (control
  * `/ws` and terminal `/terminal/ws` share the union). Feeds the global
  * connection-status store + StatusBar indicator. `connecting` = initial
  * connect in flight; `connected` = socket open + authed; `reconnecting` =
  * drop detected, backoff retry in progress; `disconnected` = gave up (the
  * terminal channel exhausts its retry budget; the control channel retries
- * forever and never reaches this state).
+ * forever and never reaches this state); `host-offline` = the host stopped on
+ * purpose (`Close(1001)`): no backoff loop runs, a slow health probe or a user
+ * retry decides when to reconnect.
  */
-export type AcpConnectionState = 'connecting' | 'connected' | 'reconnecting' | 'disconnected'
+export type AcpConnectionState =
+  | 'connecting'
+  | 'connected'
+  | 'reconnecting'
+  | 'disconnected'
+  /** The host closed the socket with `1001` (it stopped); no reconnect loop runs. */
+  | 'host-offline'
+
+/**
+ * A session replay cursor. `lastSeq` is only meaningful against the host log
+ * incarnation `logEpoch` names (`null` when the host did not report one).
+ */
+export interface SessionCursor {
+  lastSeq: number
+  logEpoch: string | null
+}
+
+/** Live idle-chat window reported by the host. */
+export interface AgentIdleWindowStatus {
+  secs: number
+  source: 'default' | 'setting' | 'env' | 'operator'
+}
 
 export interface AcpTransport {
   installRegistryBinary(
     request: InstallAcpRegistryBinaryRequest
   ): Promise<InstallAcpRegistryBinaryOutcome>
   /**
-   * CAP-6 / Story 9: host-owned verified-atomic install. The web/remote
-   * transport falls back to the `acpInstallApi` facade (Tauri vs HTTP
-   * resolved at runtime); the desktop transport delegates to the new
-   * `acp_install_agent` Tauri command. The request is `{ agentId }` only; the
-   * host resolves everything from the trusted catalog.
+   * Host-owned verified-atomic install (`install_acp_agent`). Every carrier
+   * sends it over `/ws`. The request is `{ agentId }` only; the host resolves
+   * everything from the trusted catalog.
    */
-  installAcpAgent(agentId: string): Promise<InstallAcpRegistryBinaryOutcome>
+  installAcpAgent(
+    agentId: string,
+    options?: CommandCallOptions
+  ): Promise<InstallAcpRegistryBinaryOutcome>
+  /**
+   * Host-resolved ACP catalog (`list_acp_catalog`): OS/arch/runtime
+   * availability plus per-agent status. `refresh` bypasses the host's TTL.
+   * Failures throw {@link AcpTransportError} carrying the host's
+   * SCREAMING_SNAKE_CASE code (`ACP_CATALOG_UNAVAILABLE`, `CATALOG_LOAD_FAILED`).
+   */
+  listCatalog(refresh?: boolean): Promise<AcpCatalog>
+  /**
+   * Persist the host-side catalog opt-in (`set_catalog_opt_in`) that gates the
+   * CDN registry augmentation. Failures throw {@link AcpTransportError}.
+   */
+  setCatalogOptIn(enabled: boolean): Promise<void>
   probeRuntime(): Promise<AcpRuntimeAvailability>
   setTurnTimeout(secs: number | null): Promise<void>
   setTurnIdleTimeout(secs: number | null): Promise<void>
   setSessionNewTimeout(secs: number | null): Promise<void>
   setSessionReopenTimeout(secs: number | null): Promise<void>
-  fetchRegistrySnapshot(forceRefresh?: boolean): Promise<AcpRegistrySnapshot>
+  /**
+   * How long an idle agent chat stays open. `null` clears the App Preferences
+   * override. The desktop command updates the live reaper. The web transport
+   * ignores the call: the server window comes from its flag or env var.
+   */
+  setAgentIdleWindow(secs: number | null): Promise<void>
+  /**
+   * The window the host is using now. `source` is `env`, `operator`,
+   * `setting`, or `default`.
+   */
+  getAgentIdleWindow(): Promise<AgentIdleWindowStatus>
+  fetchRegistrySnapshot(reason: RegistryCheckReason): Promise<AcpRegistrySnapshot>
   /**
    * On-demand MCP client probe (Termul's own rmcp client connection — NOT the
    * agent's). Stateless: takes the renderer-supplied wire config, opens a fresh
@@ -91,13 +223,25 @@ export interface AcpTransport {
    * failures throw `AcpTransportError`.
    */
   probeMcpServer(server: McpServerConfig): Promise<ProbeResult>
-  spawnAgent(config: AgentConfig): Promise<SpawnAgentResult>
+  /** Claude Accounts of the host (ADR-0004); secret-free. */
+  listClaudeAccounts(): Promise<ClaudeAccountsSnapshot>
+  /** Usage of every Account; host-cached 5 min, `force` reuses reads under 60 s. */
+  listClaudeUsage(force?: boolean): Promise<ClaudeAccountUsage[]>
+  setDefaultClaudeAccount(accountId: string): Promise<void>
+  /** `null` returns the Project to the Default Account. */
+  setProjectClaudeAccount(projectId: string, accountId: string | null): Promise<void>
+  /** `projectId` selects the Claude Account of a managed Claude agent. */
+  spawnAgent(
+    config: AgentConfig,
+    options?: CommandCallOptions,
+    projectId?: string | null
+  ): Promise<SpawnAgentResult>
   killAgent(agentId: AgentId): Promise<void>
   listAgents(): Promise<AgentId[]>
   /**
    * CAP-11: identity-rich agent summaries (`{ id, name, configId?, namespace?,
-   * capabilities, ownsSession? }`). WS: the `list_agents` reply; desktop: the
-   * `acp_list_agent_details` command. `listAgents` keeps returning bare ids.
+   * capabilities, ownsSession? }`): the `list_agents` reply. `listAgents` keeps
+   * returning bare ids.
    * `ownsSession` (issue #837) is the agent's owned-session set — current
    * servers always send it; older servers omit it (treated as unknown/none).
    */
@@ -130,54 +274,71 @@ export interface AcpTransport {
       worktreePath?: string
       worktreeBranch?: string
       additionalDirectories?: string[]
-    }
+    } & CommandCallOptions
   ): Promise<NewSessionOutcome>
   loadSession(
     agentId: AgentId,
     sessionId: SessionId,
     cwd: string,
-    additionalDirectories?: string[]
+    additionalDirectories?: string[],
+    options?: ReopenCallOptions
   ): Promise<SessionReopenOutcome>
   resumeSession(
     agentId: AgentId,
     sessionId: SessionId,
     cwd: string,
-    additionalDirectories?: string[]
+    additionalDirectories?: string[],
+    options?: ReopenCallOptions
   ): Promise<SessionReopenOutcome>
-  deleteAgentSession(agentId: AgentId, sessionId: SessionId): Promise<void>
-  logout(agentId: AgentId): Promise<void>
+  deleteAgentSession(
+    agentId: AgentId,
+    sessionId: SessionId,
+    options?: CommandCallOptions
+  ): Promise<void>
+  logout(agentId: AgentId, options?: CommandCallOptions): Promise<void>
   respondElicitation(
     agentId: AgentId,
     requestId: string,
     action: 'accept' | 'decline' | 'cancel',
     // GH-935: `string[]` = multi-select (`multi-enum`) answers; both
     // transports forward the map verbatim to the host.
-    content?: Record<string, string | number | boolean | string[]>
+    content?: Record<string, string | number | boolean | string[]>,
+    options?: CommandCallOptions
   ): Promise<void>
-  closeSession(agentId: AgentId, sessionId: SessionId): Promise<void>
-  disposeEphemeralSession(agentId: AgentId, sessionId: SessionId): Promise<void>
+  closeSession(agentId: AgentId, sessionId: SessionId, options?: CommandCallOptions): Promise<void>
+  disposeEphemeralSession(
+    agentId: AgentId,
+    sessionId: SessionId,
+    options?: CommandCallOptions
+  ): Promise<void>
   /**
    * Story 8: promote a backend-ephemeral warm-pool session to durable
    * (registers persistence metadata + clears the ephemeral mark server-side),
    * then (web) subscribe so subsequent turns stream to this client.
    * Idempotent for already-durable sessions.
    */
-  promoteSession?(agentId: AgentId, sessionId: SessionId): Promise<void>
+  promoteSession?(
+    agentId: AgentId,
+    sessionId: SessionId,
+    options?: CommandCallOptions
+  ): Promise<void>
   listSessions(agentId: AgentId, cwd?: string, cursor?: string): Promise<ListSessionsResponse>
-  registerDiscoveredSession(input: {
-    sessionId: SessionId
-    agentId: AgentId
-    cwd: string
-    title?: string | null
-    updatedAt?: number
-    projectId?: string
-  }): Promise<PersistedSessionSummary>
+  registerDiscoveredSession(
+    input: {
+      sessionId: SessionId
+      agentId: AgentId
+      cwd: string
+      title?: string | null
+      updatedAt?: number
+      projectId?: string
+    },
+    options?: CommandCallOptions
+  ): Promise<PersistedSessionSummary>
   /**
    * CAP-2 (spec-in-chat-agent-switch): durably record an agent-switch
-   * marker. Host is the sole author — one durable `agent_switch` record,
-   * then the synthetic `acp:agent_switch` event fans out to live clients.
-   * Tauri: `acp_record_agent_switch`; WS: `record_agent_switch`. Throws on
-   * a host write failure (no partial state).
+   * marker. Host is the sole author — one `agent_switch` record that the
+   * relay numbers, persists and delivers live under the same seq. WS:
+   * `record_agent_switch`. Throws on a host write failure (no partial state).
    */
   recordAgentSwitch(
     sessionId: SessionId,
@@ -186,7 +347,8 @@ export interface AcpTransport {
       toConfigId: string
       newSessionId: string
       summaryText: string
-    }
+    },
+    options?: CommandCallOptions
   ): Promise<void>
   sendPrompt(
     agentId: AgentId,
@@ -201,14 +363,14 @@ export interface AcpTransport {
      * persisted verbatim.
      */
     displayContent?: ContentBlock[]
-  ): Promise<StopReason>
+  ): Promise<PromptDispatchResult>
   sendPromptBlocks(
     agentId: AgentId,
     sessionId: SessionId,
     content: ContentBlock[],
     turnId?: string,
     displayContent?: ContentBlock[]
-  ): Promise<StopReason>
+  ): Promise<PromptDispatchResult>
   cancelPrompt(agentId: AgentId, sessionId: SessionId): Promise<void>
   setConfigOption(
     agentId: AgentId,
@@ -218,24 +380,68 @@ export interface AcpTransport {
   ): Promise<SessionConfigOption[] | null>
   setMode(agentId: AgentId, sessionId: SessionId, modeId: string): Promise<void>
   setModel(agentId: AgentId, sessionId: SessionId, modelId: string): Promise<void>
-  respondPermission(agentId: AgentId, requestId: string, optionId?: string): Promise<void>
-  answerQuestion(agentId: AgentId, questionId: string, values?: string[]): Promise<void>
+  respondPermission(
+    agentId: AgentId,
+    requestId: string,
+    optionId?: string,
+    options?: CommandCallOptions
+  ): Promise<void>
+  answerQuestion(
+    agentId: AgentId,
+    questionId: string,
+    values?: string[],
+    options?: CommandCallOptions
+  ): Promise<void>
   /** Agent ACP auth (methodId) — NOT the WS relay token gate. */
   authenticate(
     agentId: AgentId,
     methodId: string,
-    gateway?: { baseUrl: string; apiKey?: string }
+    gateway?: { baseUrl: string; apiKey?: string },
+    options?: CommandCallOptions
   ): Promise<void>
   /**
    * Headless ACP auth paste-back (spec-acp-terminal-auth): deliver a
    * user-pasted loopback OAuth redirect URL to the agent's callback listener
    * on the host. The host validates http(s) + loopback-only before fetching
-   * (SSRF guard) and returns the replay's HTTP status. Tauri:
-   * `acp_auth_deliver_redirect`; WS: `acp_deliver_auth_redirect`.
+   * (SSRF guard) and returns the replay's HTTP status. WS:
+   * `acp_deliver_auth_redirect`.
    */
-  deliverAuthRedirect(agentId: AgentId, url: string): Promise<number>
-  /** Web/remote only: switch now or report that the switch was queued. */
-  switchProject?(projectId: string): Promise<SwitchProjectReply>
+  deliverAuthRedirect(agentId: AgentId, url: string, options?: CommandCallOptions): Promise<number>
+  /**
+   * Host project registry commands (`add_project`, `update_project`,
+   * `remove_project`, `set_default_project`), the same on every carrier. Each
+   * is idempotent by project id and has no `commandId`; the result reaches the
+   * renderer through the `projects` watch. A remove or archive that finds live
+   * sessions or terminals bound to the project throws an
+   * {@link AcpTransportError} with code `project_busy` and `details` listing
+   * them; the same call with `cascade: true` makes the host stop them first.
+   */
+  addProject(project: AddProjectPayload): Promise<ProjectSummary>
+  updateProject(
+    projectId: string,
+    patch: {
+      name?: string
+      color?: string
+      isArchived?: boolean
+      path?: string
+      cascade?: boolean
+    }
+  ): Promise<void>
+  removeProject(projectId: string, options?: { cascade?: boolean }): Promise<void>
+  setDefaultProject(projectId: string): Promise<void>
+  /**
+   * The watches (projects, chat-history index, agent roster, project file
+   * changes, store keys, terminal sets), on every carrier: the desktop speaks
+   * `/ws` over its Channel too.
+   */
+  readonly watches?: WatchClient
+  /**
+   * Tell the host this surface read `sessionId` up to `seq` (the newest turn
+   * end it showed) of the log incarnation `logEpoch`. Resolves to the shared
+   * marker as it stands; every `chat_reads` watcher hears when it moves. WS:
+   * `mark_chat_read`.
+   */
+  markChatRead?(sessionId: SessionId, seq: number, logEpoch: string | null): Promise<ChatReadMark>
   historyMode?(): HistoryMode | 'tauri_store'
   listPersistedSessions?(): Promise<PersistedSessionSummary[]>
   openPersistedSession?(sessionId: SessionId, lastSeq?: number): Promise<void>
@@ -256,10 +462,14 @@ export interface AcpTransport {
   subscribeSession?(sessionId: SessionId, lastSeq?: number | null, force?: boolean): Promise<void>
   /**
    * Story 5.3 (AC3): register a listener for transport-level reconnect state.
+   * The second argument is only meaningful when `reconnecting` is `false`:
+   * `true` = the channel genuinely recovered (open, authed, re-subscribed);
+   * `false` = the cycle ended WITHOUT recovery (token-class halt), so
+   * nothing may assume the host is reachable.
    * Only on the WS transport — absent on Tauri IPC (desktop). The store
    * checks for the method before calling it.
    */
-  setReconnectListener?(listener: (reconnecting: boolean) => void): void
+  setReconnectListener?(listener: (reconnecting: boolean, recovered?: boolean) => void): void
   /**
    * Story 10: register a listener for coarse connection-health state (feeds
    * the global StatusBar indicator via the connection-status store). Only on
@@ -277,6 +487,11 @@ export interface AcpTransport {
    * emitted before wiring are reflected. Only on the WS transport.
    */
   getConnectionState?(): AcpConnectionState
+  /**
+   * Ask the host `GET /health` now while the state is `host-offline`, and
+   * reconnect when it answers. No-op in any other state. Only on the WS transport.
+   */
+  retryHostOffline?(): void
   setRecoveryHandler?(
     handler: (
       recovery: SessionSnapshotEvent | { sessionId: string; degraded: true },
@@ -290,17 +505,17 @@ export interface AcpTransport {
    * that was torn down or replaced mid-recovery. WS only.
    */
   setRecoveryGenerationProvider?(provider: (sessionId: SessionId) => number): void
-  getSessionCursor?(sessionId: SessionId): number | null
+  getSessionCursor?(sessionId: SessionId): SessionCursor | null
   /** R2: fetch the server-authoritative replay watermark for a session
    * (without subscribing). Used by the refresh-resume hook to seed a fresh
    * transport's `lastSeq` BEFORE the first `subscribeSession` so the
    * reload-gap events replay instead of running live-only. Desktop: absent
    * (Tauri IPC resumes via `session/load` replay — no WS cursor). */
-  fetchSessionCursor?(sessionId: SessionId): Promise<number>
+  fetchSessionCursor?(sessionId: SessionId): Promise<SessionCursor>
   /** R2: seed the in-memory `lastSeq` from a server watermark without
    * subscribing (WS only). Call before `resumeSession` so its built-in
    * re-subscribe uses the server cursor, not a dead per-instance 0. */
-  seedSessionCursor?(sessionId: SessionId, cursor: number): void
+  seedSessionCursor?(sessionId: SessionId, cursor: SessionCursor): void
   setReconnectPriorityProvider?(provider: () => SessionId[]): void
   dispose(): void
 }

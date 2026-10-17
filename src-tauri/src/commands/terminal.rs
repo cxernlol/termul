@@ -1,6 +1,6 @@
 use super::IpcResult;
 use crate::pty::claims::RotatedClaim;
-use crate::pty::manager::{SpawnedTerminal, TerminalAttachResult};
+use crate::pty::manager::{PreservedTerminal, SpawnedTerminal, TerminalAttachResult, TerminalInstance};
 use crate::pty::{PtyManager, SpawnOptions};
 use crate::trackers::{CwdTracker, ExitCodeTracker, GitStatus, GitTracker};
 use serde::Deserialize;
@@ -9,35 +9,14 @@ use std::sync::{Arc, Mutex, OnceLock};
 use tauri::ipc::{Channel, Response};
 use tauri::State;
 
+use crate::web::command_ledger::terminal::{self as ledgered, Done, Effect, Outcome};
+use crate::web::WsRelaySink;
+
 /// Terminal visibility state
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SetVisibilityRequest {
     pub is_visible: bool,
-}
-
-/// Orphan detection settings
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct OrphanDetectionSettings {
-    pub enabled: bool,
-    pub timeout_minutes: Option<u64>,
-}
-
-/// Renderer ref request
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RendererRefRequest {
-    pub terminal_id: String,
-    pub renderer_id: String,
-}
-
-/// Request to update a terminal's orphan-reaping protection.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SetTerminalProtectedRequest {
-    pub terminal_id: String,
-    pub protected: bool,
 }
 
 // ==================== Terminal Commands ====================
@@ -52,22 +31,62 @@ pub struct SetTerminalProtectedRequest {
 /// CAP-3: the response carries the terminal info PLUS the issued `claim`
 /// credential (flattened camelCase, same shape as the web `spawn` reply).
 /// This is the only issuance path.
+///
+/// `options.commandId` makes a resend after a lost reply safe: it answers with
+/// the existing terminal plus a FRESH claim (never a second PTY). The reply
+/// has the same shape as a first spawn, but the resend's new `on_data` channel
+/// is dropped — the first spawn's channel stays bound to the PTY — so the
+/// client MUST follow a replay with `terminal_attach` using the fresh claim.
+/// A spawn that fails frees the id for a retry; a resend after the terminal is
+/// gone answers `OUTCOME_UNKNOWN` instead of spawning again.
 #[tauri::command]
 pub async fn terminal_spawn(
     options: SpawnOptions,
     on_data: Channel<Response>,
     pty_manager: State<'_, Arc<PtyManager>>,
+    relay: State<'_, Arc<WsRelaySink>>,
 ) -> Result<IpcResult<SpawnedTerminal>, String> {
-    match pty_manager.spawn(options, Some(on_data)).await {
-        Ok(spawned) => Ok(IpcResult::success(spawned)),
-        Err(e) => Ok(IpcResult::error(e, "SPAWN_FAILED")),
+    let outcome = ledgered::spawn(relay.ledger(), pty_manager.inner(), options, Some(on_data)).await;
+    Ok(terminal_value_reply(outcome, ledgered::SPAWN))
+}
+
+/// The IPC reply of a unit-returning ledgered command: a replay of a command
+/// that succeeded is a plain success.
+pub(crate) fn terminal_unit_reply(outcome: Outcome<()>, kind: &str) -> IpcResult<()> {
+    match outcome.into_result(kind) {
+        Ok(Done::InProgress) => in_progress_error(kind),
+        Ok(_) => IpcResult::success(()),
+        Err((code, message)) => IpcResult::error(message, code),
     }
+}
+
+/// The IPC reply of a value-returning ledgered command. A replay that holds no
+/// value (a rotation: the credential was never kept) is `OUTCOME_UNKNOWN`.
+pub(crate) fn terminal_value_reply<T: Send + 'static>(outcome: Outcome<T>, kind: &str) -> IpcResult<T> {
+    match outcome.into_result(kind) {
+        Ok(Done::Executed(value) | Done::Found(value)) => IpcResult::success(value),
+        Ok(Done::InProgress) => in_progress_error(kind),
+        Ok(Done::Receipt) => IpcResult::error(
+            format!(
+                "this `{kind}` already ran but its reply is not retained; list preserved terminals to recover a fresh credential"
+            ),
+            ledgered::OUTCOME_UNKNOWN_CODE,
+        ),
+        Err((code, message)) => IpcResult::error(message, code),
+    }
+}
+
+fn in_progress_error<T>(kind: &str) -> IpcResult<T> {
+    IpcResult::error(
+        format!("the first run of this `{kind}` is still going; resend later"),
+        ledgered::COMMAND_IN_PROGRESS_CODE,
+    )
 }
 
 /// Milliseconds between claim-generation checks in a desktop attach forwarder.
 /// Bounds how long a forwarder survives a rotate/revoke while its terminal is
 /// idle (no output events to piggyback the check on).
-const ATTACH_FORWARDER_GENERATION_CHECK_MS: u64 = 250;
+pub(crate) const ATTACH_FORWARDER_GENERATION_CHECK_MS: u64 = 250;
 
 /// Tracked desktop attach forwarders: terminal_id → (token, abort handle).
 /// Exactly one live forwarder per terminal — a re-attach aborts the
@@ -124,9 +143,57 @@ pub async fn terminal_attach(
     terminal_id: String,
     claim: String,
     last_seq: u64,
+    log_epoch: Option<String>,
     on_data: Channel<Response>,
     pty_manager: State<'_, Arc<PtyManager>>,
 ) -> Result<IpcResult<TerminalAttachResult>, String> {
+    Ok(attach_terminal(
+        pty_manager.inner(),
+        terminal_id,
+        &claim,
+        last_seq,
+        log_epoch.as_deref(),
+        on_data,
+    ))
+}
+
+struct ForwarderAttachment(Arc<TerminalInstance>);
+
+impl ForwarderAttachment {
+    fn take(instance: Arc<TerminalInstance>) -> Self {
+        instance.add_live_attachment();
+        Self(instance)
+    }
+}
+
+impl Drop for ForwarderAttachment {
+    fn drop(&mut self) {
+        self.0.remove_live_attachment();
+    }
+}
+
+/// Takes the successor's count so the live-attachment count never touches
+/// zero mid-swap: a zero lets a web `list_preserved` replace the claim and
+/// end the successor's stream.
+fn abort_predecessor(terminal_id: &str, _successor: &ForwarderAttachment) {
+    let mut forwarders = lock_forwarders();
+    if let Some((_, previous)) = forwarders.remove(terminal_id) {
+        previous.abort();
+        log::info!(
+            "[terminal-attach] aborted previous forwarder terminal_id={}",
+            terminal_id
+        );
+    }
+}
+
+pub(crate) fn attach_terminal(
+    pty_manager: &Arc<PtyManager>,
+    terminal_id: String,
+    claim: &str,
+    last_seq: u64,
+    log_epoch: Option<&str>,
+    on_data: Channel<Response>,
+) -> IpcResult<TerminalAttachResult> {
     // Capture the generation BEFORE verifying (TOCTOU-safe ordering): if a
     // rotate/revoke lands between capture and verify, verify fails (the
     // credential was invalidated) and we reject; if it lands after verify, the
@@ -134,34 +201,27 @@ pub async fn terminal_attach(
     // check. Capturing after verify would invert the race and let an
     // invalidated credential stream forever.
     let generation = pty_manager.claim_generation(&terminal_id);
-    if pty_manager.verify_claim(&terminal_id, &claim).is_err() {
+    if pty_manager.verify_claim(&terminal_id, claim).is_err() {
         // Registry already logged the failure (terminal id, never the
         // credential). Keep the response generic.
-        return Ok(IpcResult::error("Unauthorized", "UNAUTHORIZED"));
+        return IpcResult::error("Unauthorized", "UNAUTHORIZED");
     }
     let Some(instance) = pty_manager.get(&terminal_id) else {
         // Verified a heartbeat ago but gone now — same generic error.
-        return Ok(IpcResult::error("Unauthorized", "UNAUTHORIZED"));
+        return IpcResult::error("Unauthorized", "UNAUTHORIZED");
     };
 
     // Bounded replay + live subscription snapshot atomically (existing seq
     // infra, unchanged).
-    let replay = instance.subscribe_from(last_seq);
+    let replay = instance.subscribe_from(last_seq, log_epoch);
     let result = pty_manager.build_attach_result(&instance, &replay);
+
+    let attachment = ForwarderAttachment::take(Arc::clone(&instance));
 
     // Single-forwarder invariant: abort the predecessor BEFORE delivering the
     // replay so it cannot interleave a duplicate stream.
     let token = ATTACH_FORWARDER_TOKENS.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
-    {
-        let mut forwarders = lock_forwarders();
-        if let Some((_, previous)) = forwarders.remove(&terminal_id) {
-            previous.abort();
-            log::info!(
-                "[terminal-attach] aborted previous forwarder terminal_id={}",
-                terminal_id
-            );
-        }
-    }
+    abort_predecessor(&terminal_id, &attachment);
 
     for chunk in &replay.chunks {
         if on_data.send(Response::new(chunk.data.clone())).is_err() {
@@ -169,13 +229,14 @@ pub async fn terminal_attach(
                 "[terminal-attach] replay channel closed terminal_id={}",
                 terminal_id
             );
-            return Ok(IpcResult::success(result));
+            return IpcResult::success(result);
         }
     }
 
-    let pty = pty_manager.inner().clone();
+    let pty = Arc::clone(pty_manager);
     let forwarder_id = terminal_id.clone();
     let handle = tokio::spawn(async move {
+        let _attachment = attachment;
         let mut tick = tokio::time::interval(std::time::Duration::from_millis(
             ATTACH_FORWARDER_GENERATION_CHECK_MS,
         ));
@@ -242,7 +303,48 @@ pub async fn terminal_attach(
         result.latest_seq,
         result.gap
     );
-    Ok(IpcResult::success(result))
+    IpcResult::success(result)
+}
+
+/// List the terminals the host still runs for a project, each with a freshly
+/// issued claim, so a reloaded renderer reattaches to them instead of
+/// spawning new shells.
+///
+/// Re-issue replaces the claim record of a terminal no one streams, which
+/// invalidates the credential the dead page held. A terminal with a live
+/// stream (a web client, or a desktop forwarder) gets a shared claim instead.
+/// A `terminalId` lists (and re-issues) only that terminal.
+/// Never ledgered: every call re-issues, so a resend just lists again.
+#[tauri::command]
+pub async fn terminal_list_preserved(
+    project_id: String,
+    terminal_id: Option<String>,
+    pty_manager: State<'_, Arc<PtyManager>>,
+) -> Result<IpcResult<Vec<PreservedTerminal>>, String> {
+    Ok(list_preserved_reply(
+        pty_manager.inner(),
+        &project_id,
+        terminal_id.as_deref(),
+    ))
+}
+
+pub(crate) fn list_preserved_reply(
+    pty_manager: &PtyManager,
+    project_id: &str,
+    terminal_id: Option<&str>,
+) -> IpcResult<Vec<PreservedTerminal>> {
+    if project_id.is_empty() {
+        return IpcResult::error("missing projectId", "VALIDATION_ERROR");
+    }
+    let preserved = pty_manager.list_preserved(project_id, terminal_id);
+    log::info!(
+        "[terminal-list-preserved] project_id={} terminal_id={:?} count={} live_attachments={}",
+        project_id,
+        terminal_id,
+        preserved.len(),
+        preserved.iter().filter(|entry| entry.live_attachment).count()
+    );
+    IpcResult::success(preserved)
 }
 
 /// Rotate a terminal's claim credential (CAP-3).
@@ -252,16 +354,41 @@ pub async fn terminal_attach(
 /// generic UNAUTHORIZED error as attach. The generation bump terminates the
 /// tracked desktop attach forwarder (teardown of the invalidated holder's
 /// access) while the PTY itself keeps running.
+///
+/// With a `commandId` a resend of a rotation that already applied answers
+/// `OUTCOME_UNKNOWN` (the new credential was never retained); the client
+/// recovers a fresh one through `list_preserved`.
 #[tauri::command]
 pub async fn terminal_rotate_claim(
     terminal_id: String,
     claim: String,
+    command_id: Option<String>,
     pty_manager: State<'_, Arc<PtyManager>>,
+    relay: State<'_, Arc<WsRelaySink>>,
 ) -> Result<IpcResult<RotatedClaim>, String> {
-    match pty_manager.rotate_claim(&terminal_id, &claim) {
-        Ok(new_claim) => Ok(IpcResult::success(RotatedClaim { claim: new_claim })),
-        Err(_) => Ok(IpcResult::error("Unauthorized", "UNAUTHORIZED")),
-    }
+    let command_id = match ledgered::required_command_id(ledgered::ROTATE_CLAIM, command_id.as_deref()) {
+        Ok(id) => id.to_string(),
+        Err((code, message)) => return Ok(IpcResult::error(message, code)),
+    };
+    let pty = Arc::clone(pty_manager.inner());
+    let target = terminal_id.clone();
+    let outcome = ledgered::command(
+        relay.ledger(),
+        ledgered::ROTATE_CLAIM,
+        &command_id,
+        &[("terminalId", Some(&terminal_id))],
+        async move {
+            match pty.rotate_claim(&target, &claim) {
+                Ok(new_claim) => Effect::Done(RotatedClaim { claim: new_claim }),
+                Err(_) => Effect::Released {
+                    code: "UNAUTHORIZED",
+                    message: "Unauthorized".to_string(),
+                },
+            }
+        },
+    )
+    .await;
+    Ok(terminal_value_reply(outcome, ledgered::ROTATE_CLAIM))
 }
 
 /// Revoke a terminal's claim credential (CAP-3).
@@ -269,30 +396,83 @@ pub async fn terminal_rotate_claim(
 /// The PTY survives (never-clause) and stays attachable by a client holding a
 /// newly rotated credential; only the presented credential is invalidated. The
 /// generation bump terminates the tracked desktop attach forwarder. Any
-/// verification failure returns the same generic UNAUTHORIZED error.
+/// verification failure returns the same generic UNAUTHORIZED error. With a
+/// `commandId` a resend of a revocation that already applied answers ok.
 #[tauri::command]
 pub async fn terminal_revoke_claim(
     terminal_id: String,
     claim: String,
+    command_id: Option<String>,
     pty_manager: State<'_, Arc<PtyManager>>,
+    relay: State<'_, Arc<WsRelaySink>>,
 ) -> Result<IpcResult<()>, String> {
-    match pty_manager.revoke_claim(&terminal_id, &claim) {
-        Ok(()) => Ok(IpcResult::success(())),
-        Err(_) => Ok(IpcResult::error("Unauthorized", "UNAUTHORIZED")),
-    }
+    let command_id = match ledgered::required_command_id(ledgered::REVOKE_CLAIM, command_id.as_deref()) {
+        Ok(id) => id.to_string(),
+        Err((code, message)) => return Ok(IpcResult::error(message, code)),
+    };
+    let pty = Arc::clone(pty_manager.inner());
+    let target = terminal_id.clone();
+    let outcome = ledgered::command(
+        relay.ledger(),
+        ledgered::REVOKE_CLAIM,
+        &command_id,
+        &[("terminalId", Some(&terminal_id))],
+        async move {
+            match pty.revoke_claim(&target, &claim) {
+                Ok(()) => Effect::Done(()),
+                Err(_) => Effect::Released {
+                    code: "UNAUTHORIZED",
+                    message: "Unauthorized".to_string(),
+                },
+            }
+        },
+    )
+    .await;
+    Ok(terminal_unit_reply(outcome, ledgered::REVOKE_CLAIM))
 }
 
 /// Write data to a terminal
+///
+/// The `commandId` is optional on the desktop (see the body); with one a resend
+/// of a chunk that already reached the PTY answers ok instead of typing it twice.
 #[tauri::command]
 pub async fn terminal_write(
     terminal_id: String,
     data: String,
+    command_id: Option<String>,
     pty_manager: State<'_, Arc<PtyManager>>,
+    relay: State<'_, Arc<WsRelaySink>>,
 ) -> Result<IpcResult<()>, String> {
-    match pty_manager.write(&terminal_id, &data).await {
-        Ok(()) => Ok(IpcResult::success(())),
-        Err(e) => Ok(IpcResult::error(e, "WRITE_FAILED")),
-    }
+    // The desktop IPC has no lost-reply window and a keystroke per ledger entry
+    // would flood the shared ledger: an id is optional here and a write without
+    // one is plain. (`/terminal/ws` write requires one per chunk.)
+    let Some(command_id) = command_id else {
+        return Ok(match pty_manager.write(&terminal_id, &data).await {
+            Ok(()) => IpcResult::success(()),
+            Err(e) => IpcResult::error(e, "WRITE_FAILED"),
+        });
+    };
+    let pty = Arc::clone(pty_manager.inner());
+    let target = terminal_id.clone();
+    // The chunk is identified by its terminal and length, never its text.
+    let length = data.len().to_string();
+    let outcome = ledgered::command(
+        relay.ledger(),
+        ledgered::WRITE,
+        &command_id,
+        &[("terminalId", Some(&terminal_id)), ("length", Some(&length))],
+        async move {
+            match pty.write(&target, &data).await {
+                Ok(()) => Effect::Done(()),
+                Err(message) => Effect::Failed {
+                    code: "WRITE_FAILED",
+                    message,
+                },
+            }
+        },
+    )
+    .await;
+    Ok(terminal_unit_reply(outcome, ledgered::WRITE))
 }
 
 /// Resize a terminal
@@ -310,15 +490,39 @@ pub async fn terminal_resize(
 }
 
 /// Kill a terminal
+///
+/// With a `commandId` a repeat after a successful kill answers ok instead of
+/// failing with "Terminal not found".
 #[tauri::command]
 pub async fn terminal_kill(
     terminal_id: String,
+    command_id: Option<String>,
     pty_manager: State<'_, Arc<PtyManager>>,
+    relay: State<'_, Arc<WsRelaySink>>,
 ) -> Result<IpcResult<()>, String> {
-    match pty_manager.kill(&terminal_id).await {
-        Ok(()) => Ok(IpcResult::success(())),
-        Err(e) => Ok(IpcResult::error(e, "KILL_FAILED")),
-    }
+    let command_id = match ledgered::required_command_id(ledgered::KILL, command_id.as_deref()) {
+        Ok(id) => id.to_string(),
+        Err((code, message)) => return Ok(IpcResult::error(message, code)),
+    };
+    let pty = Arc::clone(pty_manager.inner());
+    let target = terminal_id.clone();
+    let outcome = ledgered::command(
+        relay.ledger(),
+        ledgered::KILL,
+        &command_id,
+        &[("terminalId", Some(&terminal_id))],
+        async move {
+            match pty.kill(&target).await {
+                Ok(()) => Effect::Done(()),
+                Err(message) => Effect::Failed {
+                    code: "KILL_FAILED",
+                    message,
+                },
+            }
+        },
+    )
+    .await;
+    Ok(terminal_unit_reply(outcome, ledgered::KILL))
 }
 
 /// Get the current working directory for a terminal
@@ -361,59 +565,6 @@ pub async fn terminal_get_exit_code(
     Ok(IpcResult::success(exit_code))
 }
 
-/// Update orphan detection settings
-#[tauri::command]
-pub async fn terminal_update_orphan_detection(
-    settings: OrphanDetectionSettings,
-    pty_manager: State<'_, Arc<PtyManager>>,
-) -> Result<IpcResult<()>, String> {
-    pty_manager
-        .update_orphan_detection_settings(settings.enabled, settings.timeout_minutes)
-        .await;
-    Ok(IpcResult::success(()))
-}
-
-/// Add a renderer reference to a terminal
-#[tauri::command]
-pub async fn terminal_add_renderer_ref(
-    request: RendererRefRequest,
-    pty_manager: State<'_, Arc<PtyManager>>,
-) -> Result<IpcResult<()>, String> {
-    match pty_manager.add_renderer_ref(&request.terminal_id, &request.renderer_id) {
-        Ok(()) => Ok(IpcResult::success(())),
-        Err(e) => Ok(IpcResult::error(e, "TERMINAL_NOT_FOUND")),
-    }
-}
-
-/// Remove a renderer reference from a terminal
-#[tauri::command]
-pub async fn terminal_remove_renderer_ref(
-    request: RendererRefRequest,
-    pty_manager: State<'_, Arc<PtyManager>>,
-) -> Result<IpcResult<()>, String> {
-    match pty_manager.remove_renderer_ref(&request.terminal_id, &request.renderer_id) {
-        Ok(()) => Ok(IpcResult::success(())),
-        Err(e) => Ok(IpcResult::error(e, "TERMINAL_NOT_FOUND")),
-    }
-}
-
-/// Update a terminal's orphan-reaping protection.
-///
-/// Protection is enabled automatically at spawn. The renderer calls this with
-/// `protected = false` only when a terminal is genuinely released (its project
-/// is closed or its tab is closed), so orphan detection may reclaim it. This
-/// keeps live background-project terminals from being killed mid-task.
-#[tauri::command]
-pub async fn terminal_set_protected(
-    request: SetTerminalProtectedRequest,
-    pty_manager: State<'_, Arc<PtyManager>>,
-) -> Result<IpcResult<()>, String> {
-    // `set_protected` is intentionally idempotent and infallible (it is a no-op
-    // when the terminal is already gone), so there is no error case to map.
-    pty_manager.set_protected(&request.terminal_id, request.protected);
-    Ok(IpcResult::success(()))
-}
-
 /// Set visibility state (affects polling behavior and PTY kill deferral)
 #[tauri::command]
 pub async fn terminal_set_visibility(
@@ -424,6 +575,10 @@ pub async fn terminal_set_visibility(
 ) -> Result<IpcResult<()>, String> {
     pty_manager.set_hidden(!request.is_visible);
     cwd_tracker.set_visibility(request.is_visible);
-    git_tracker.set_visibility(request.is_visible);
+    let git_tracker = Arc::clone(&git_tracker);
+    let is_visible = request.is_visible;
+    tokio::task::spawn_blocking(move || git_tracker.set_visibility(is_visible))
+        .await
+        .map_err(|e| format!("git tracker visibility update failed: {e}"))?;
     Ok(IpcResult::success(()))
 }

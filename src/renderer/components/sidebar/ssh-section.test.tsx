@@ -1,5 +1,6 @@
-import { render } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { resetShellLayoutStoreForTests, useShellLayoutStore } from '@/stores/shell-layout-store'
 import { SSHResizableSection } from './ssh-section'
 
 // Issue #843: the SSH sidebar panel is a desktop-only surface. On web it must
@@ -35,5 +36,36 @@ describe('SSHResizableSection web gating (#843)', () => {
 
     const { container } = render(<SSHResizableSection />)
     expect(container.innerHTML).toBe('')
+  })
+})
+
+describe('SSHResizableSection height (shell-layout store)', () => {
+  beforeEach(() => {
+    tauriRef.current = true
+    resetShellLayoutStoreForTests()
+    useShellLayoutStore.setState({ status: 'unavailable' })
+  })
+
+  it('reads its height from the shell-layout store', () => {
+    useShellLayoutStore.setState({ sshSectionHeight: 200 })
+    const { container } = render(<SSHResizableSection />)
+
+    expect((container.firstElementChild as HTMLElement).style.height).toBe('200px')
+  })
+
+  it('writes the dragged height to the store, clamped, and never to localStorage', () => {
+    const setItem = vi.spyOn(Storage.prototype, 'setItem')
+    useShellLayoutStore.setState({ sshSectionHeight: 140 })
+    render(<SSHResizableSection />)
+
+    fireEvent.mouseDown(screen.getByTitle('Drag to resize'), { clientY: 500 })
+    fireEvent.mouseMove(document, { clientY: 450 })
+    expect(useShellLayoutStore.getState().sshSectionHeight).toBe(190)
+    fireEvent.mouseMove(document, { clientY: -2000 })
+    expect(useShellLayoutStore.getState().sshSectionHeight).toBe(400)
+    fireEvent.mouseUp(document)
+
+    expect(setItem).not.toHaveBeenCalledWith('termul-ssh-panel-height', expect.anything())
+    setItem.mockRestore()
   })
 })

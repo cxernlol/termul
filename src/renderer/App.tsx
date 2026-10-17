@@ -8,8 +8,7 @@ import { DirectoryPicker } from '@/components/DirectoryPicker'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { GlobalContextMenu } from '@/components/GlobalContextMenu'
 import { Skeleton } from '@/components/ui/skeleton'
-import { Toaster as Sonner } from '@/components/ui/sonner'
-import { Toaster } from '@/components/ui/toaster'
+import { Toaster } from '@/components/ui/sonner'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { WhatsNewModal } from './components/WhatsNewModal'
 import { useAcpUpdateChecks } from './hooks/use-acp-update-checks'
@@ -22,9 +21,11 @@ import { useCwd } from './hooks/use-cwd'
 import { useExitCode } from './hooks/use-exit-code'
 import { useGitBranch } from './hooks/use-git-branch'
 import { useGitStatus } from './hooks/use-git-status'
+import { useGitStatusRefresh } from './hooks/use-git-status-refresh'
 import { useProjectGitBranch } from './hooks/use-project-git-branch'
 import { useProjectIcon } from './hooks/use-project-icon'
 import { useRemoteProjects } from './hooks/use-remote-projects'
+import { useSSHSessionEvents } from './hooks/use-ssh-session-events'
 import { useTerminalDetachedOutput } from './hooks/use-terminal-detached-output'
 import { useTerminalExitNotification } from './hooks/use-terminal-exit-notification'
 import { useTerminalIdleNotification } from './hooks/use-terminal-idle-notification'
@@ -50,23 +51,26 @@ function RouteFallback(): React.JSX.Element {
 
 import { isWindows } from '@/lib/platform'
 import { isTauriContext, primeServerCapability } from '@/lib/tauri-runtime'
+import { ensureClientIdentity } from '@/lib/web-client-identity'
 import { useUpdateToast } from './components/UpdateAvailableToast'
 import { useAcpAgents } from './hooks/use-acp-agents'
 import { useAcpHistory } from './hooks/use-acp-history'
 import { useAcpListeners } from './hooks/use-acp-listeners'
 import { useAcpMcp } from './hooks/use-acp-mcp'
 import { useAcpSessionResume } from './hooks/use-acp-session-resume'
-import { useAgentIdleShutdown } from './hooks/use-agent-idle-shutdown'
 import { useChatNotifications } from './hooks/use-chat-notifications'
 import { useKeyboardShortcutsLoader } from './hooks/use-keyboard-shortcuts'
 import { useMenuUpdaterListener } from './hooks/use-menu-updater-listener'
+import { usePersistenceErrorToasts } from './hooks/use-persistence-error-toasts'
 import { usePreventFileDropNavigation } from './hooks/use-prevent-file-drop-navigation'
 import { usePreventNativeContextMenu } from './hooks/use-prevent-native-context-menu'
-import { useProjectsAutoSave, useProjectsLoader } from './hooks/use-projects-persistence'
+import { useProjectRegistry } from './hooks/use-project-registry'
+import { useShellLayoutHydration } from './hooks/use-shell-layout-hydration'
 import { useSmoothWheelScroll } from './hooks/use-smooth-wheel-scroll'
 import { useAppliedUiZoomSync } from './hooks/use-ui-zoom'
 import { useUpdateCheck } from './hooks/use-updater'
 import { useVisibilityState } from './hooks/use-visibility-state'
+import { useWorktreeBranchRenamed } from './hooks/use-worktree-branch-renamed'
 
 // Hook to prevent Alt key from showing the default browser menu bar.
 // Only needed on Windows — on macOS, Alt/Option is used for typing special characters.
@@ -116,6 +120,13 @@ const queryClient = new QueryClient()
 // usePreventNativeContextMenu is ported for parity (portal regression defense).
 // usePreventAltMenu stays (web-only).
 function AppEffects(): null {
+  // Versioned handshake identity (AD-4, AD-15): mint `deviceId` (localStorage)
+  // and `clientInstanceId` (sessionStorage) at boot, before the first WS
+  // handshake. Both roots call this — keep them in parity.
+  useEffect(() => {
+    ensureClientIdentity()
+  }, [])
+
   usePreventAltMenu()
   // Background Update Check: advisory only, never auto-applies (Q8/Q10).
   // Same cadence as the desktop root; failures are silent on both surfaces.
@@ -130,13 +141,18 @@ function AppEffects(): null {
     primeServerCapability()
   }, [])
 
+  // Toast when a store write fails (value too large, partition full, ...).
+  // Mounted on both renderer roots for parity.
+  usePersistenceErrorToasts()
   useTerminalAutoSave()
   useTerminalRestore()
   useCrashRecovery()
   useTerminalDetachedOutput()
+  useSSHSessionEvents()
   useCwd()
   useGitBranch()
   useProjectGitBranch()
+  useGitStatusRefresh()
   useProjectIcon()
   useGitStatus()
   useExitCode()
@@ -145,8 +161,8 @@ function AppEffects(): null {
   useAppliedColorThemeSync()
   useAppliedUiZoomSync()
   useKeyboardShortcutsLoader()
-  useProjectsLoader()
-  useProjectsAutoSave()
+  useProjectRegistry()
+  useShellLayoutHydration()
   useMenuUpdaterListener()
   useUpdateCheck()
   useUpdateToast()
@@ -157,8 +173,9 @@ function AppEffects(): null {
   useRemoteProjects()
   useAcpListeners()
   useAcpAgents()
-  useAgentIdleShutdown()
   useAcpHistory()
+  // Story 16: host worktree branch renames reconcile + refresh (both roots).
+  useWorktreeBranchRenamed()
   useAcpSessionResume()
   // #853: chat notifications (turn finished / permission waiting / question
   // waiting), gated on the user not already watching the chat. Mounted on
@@ -246,7 +263,6 @@ const App = () => {
           <ErrorBoundary context="App Root">
             <AppEffects />
             <Toaster />
-            <Sonner />
             {/* Web/remote mode only: in-app directory picker registered with
                 dialogApi so NewProjectModal's Browse button works without a native
                 dialog.open (Story: Web/remote project creation). Desktop never

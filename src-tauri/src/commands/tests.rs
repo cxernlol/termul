@@ -58,6 +58,9 @@ fn host_entry_to_desktop_maps_renderer_shape() {
         resume_eligible: true,
         worktree_path: None,
         worktree_branch: None,
+        model_id: None,
+        model_name: None,
+        log_epoch: None,
     };
     let desktop = host_entry_to_desktop(entry);
     assert_eq!(desktop.id, "s-1");
@@ -93,6 +96,9 @@ fn host_entry_to_desktop_maps_renderer_shape() {
         resume_eligible: false,
         worktree_path: None,
         worktree_branch: None,
+        model_id: None,
+        model_name: None,
+        log_epoch: None,
     };
     let desktop = host_entry_to_desktop(bare);
     assert_eq!(desktop.agent_id, "");
@@ -106,6 +112,51 @@ fn host_entry_to_desktop_maps_renderer_shape() {
         desktop.status,
         crate::acp::ChatHistoryStatus::Error
     ));
+}
+
+/// CAP-3 reader parity: the desktop reader serializes the same `modelId` /
+/// `modelName` keys the WS reader emits (it serializes `SessionIndexEntry`
+/// directly), and omits both keys when the host recorded no model.
+#[test]
+fn host_entry_to_desktop_model_keys_match_ws_entry_serialization() {
+    let mut entry = crate::acp::SessionIndexEntry {
+        storage_key: "key".to_string(),
+        session_id: "s-m".to_string(),
+        stable_agent_namespace: Some("config:claude".to_string()),
+        runtime_agent_id: Some("runtime-1".to_string()),
+        project_id: Some("p-1".to_string()),
+        cwd: "/work".to_string(),
+        title: Some("Chat".to_string()),
+        title_source: None,
+        created_at: 10,
+        last_activity_at: 20,
+        status: crate::acp::PersistedSessionStatus::Active,
+        message_count: 3,
+        tool_count: 1,
+        last_seq: 5,
+        discovered: false,
+        resume_eligible: true,
+        worktree_path: None,
+        worktree_branch: None,
+        model_id: Some("claude-opus".to_string()),
+        model_name: Some("Claude Opus".to_string()),
+        log_epoch: None,
+    };
+    let ws = serde_json::to_value(&entry).unwrap();
+    let desktop = serde_json::to_value(host_entry_to_desktop(entry.clone())).unwrap();
+    assert_eq!(desktop["modelId"], "claude-opus");
+    assert_eq!(desktop["modelName"], "Claude Opus");
+    assert_eq!(desktop["modelId"], ws["modelId"]);
+    assert_eq!(desktop["modelName"], ws["modelName"]);
+
+    entry.model_id = None;
+    entry.model_name = None;
+    let ws = serde_json::to_value(&entry).unwrap();
+    let desktop = serde_json::to_value(host_entry_to_desktop(entry)).unwrap();
+    for json in [&ws, &desktop] {
+        assert!(json.get("modelId").is_none());
+        assert!(json.get("modelName").is_none());
+    }
 }
 
 #[test]
@@ -283,6 +334,7 @@ fn search_file_names_batch_event_omits_truncated_when_none() {
         files: vec![SearchFileHit {
             path: "a".to_string(),
             ignored: false,
+            kind: None,
         }],
         truncated: None,
     };
@@ -294,6 +346,7 @@ fn search_file_names_batch_event_omits_truncated_when_none() {
         files: vec![SearchFileHit {
             path: "a".to_string(),
             ignored: false,
+            kind: None,
         }],
         truncated: Some(true),
     };
@@ -338,24 +391,29 @@ fn rank_search_hits_puts_non_ignored_first_and_caps_total() {
         SearchFileHit {
             path: "a".to_string(),
             ignored: false,
+            kind: None,
         },
         SearchFileHit {
             path: "b".to_string(),
             ignored: false,
+            kind: None,
         },
     ];
     let ignored = vec![
         SearchFileHit {
             path: "c".to_string(),
             ignored: true,
+            kind: None,
         },
         SearchFileHit {
             path: "d".to_string(),
             ignored: true,
+            kind: None,
         },
         SearchFileHit {
             path: "e".to_string(),
             ignored: true,
+            kind: None,
         },
     ];
     // cap=3 → all non-ignored (2) + one ignored.
@@ -382,10 +440,12 @@ fn rank_search_hits_puts_non_ignored_first_and_caps_total() {
             SearchFileHit {
                 path: "a".to_string(),
                 ignored: false,
+                kind: None,
             },
             SearchFileHit {
                 path: "b".to_string(),
                 ignored: false,
+                kind: None,
             },
         ],
         vec![],
@@ -408,4 +468,22 @@ fn search_file_names_cancel_request_is_a_dto_not_aliased_to_content() {
         search_id: "search-1".to_string(),
     };
     assert_eq!(req.search_id, "search-1");
+}
+
+/// The refusals a caller can act on carry a stable code prefix on the Tauri
+/// carrier; git's own failures keep their text.
+#[test]
+fn a_refused_commit_maps_to_a_stable_code_prefix() {
+    use crate::trackers::git_tracker::CommitFailure;
+    let stale = git::commit_failure_text(CommitFailure::PreconditionFailed {
+        expected: "a".repeat(40),
+        actual: "b".repeat(40),
+    });
+    assert!(stale.starts_with("precondition_failed: "), "{stale}");
+    let invalid = git::commit_failure_text(CommitFailure::InvalidExpectedHead);
+    assert!(invalid.starts_with("validation_error: "), "{invalid}");
+    assert_eq!(
+        git::commit_failure_text(CommitFailure::Failed("Nothing staged to commit".to_string())),
+        "Nothing staged to commit"
+    );
 }

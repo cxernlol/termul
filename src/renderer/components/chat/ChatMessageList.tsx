@@ -9,6 +9,7 @@ import {
   MessageScrollerViewport,
   useMessageScroller
 } from '@/components/ui/message-scroller'
+import { useMobileWebShell } from '@/hooks/use-mobile-web-shell'
 import type { AgentId, SessionId, ToolCall } from '@/lib/acp-api'
 import type { FilePathResolutionContext } from '@/lib/file-path-links'
 import { cn } from '@/lib/utils'
@@ -23,6 +24,7 @@ import {
   type TimelineItem,
   type TurnTimelineItem
 } from './chat-timeline'
+import { opencodeStatusLine } from './opencode-status'
 import { RowReveal } from './RowReveal'
 import { SubagentDetailsDialog } from './SubagentDetailsDialog'
 import { ThoughtGroup } from './ThoughtGroup'
@@ -80,6 +82,9 @@ interface TimelineRenderProps {
   filePathContext?: FilePathResolutionContext
   onOpenSubagent: (toolCall: ToolCall) => void
   parentTurnActive: boolean
+  statusLine: string | null
+  /** Whether the scroller log announces additions (off on the mobile shell). */
+  live: boolean
 }
 
 /**
@@ -96,7 +101,9 @@ function VirtualizedTimeline({
   onRetry,
   filePathContext,
   onOpenSubagent,
-  parentTurnActive
+  parentTurnActive,
+  statusLine,
+  live
 }: TimelineRenderProps): React.JSX.Element {
   const { viewportEl, pinned } = useMessageScroller()
   const virtualizer = useVirtualizer({
@@ -177,6 +184,7 @@ function VirtualizedTimeline({
           attentionRequired={item.attentionRequired}
           hasFinalResponse={item.hasFinalResponse}
           enter={enter}
+          statusLine={item.active ? statusLine : null}
           filePathContext={filePathContext}
           onOpenSubagent={onOpenSubagent}
         />
@@ -203,6 +211,15 @@ function VirtualizedTimeline({
       )
     }
     // Worktree-creation progress row — a session-lifetime launch record.
+    if (item.kind === 'reload') {
+      return (
+        <div role="status" className="flex items-center gap-3 py-1 text-2xs text-muted-foreground">
+          <span aria-hidden="true" className="h-px flex-1 bg-border" />
+          <span>Agent reloaded</span>
+          <span aria-hidden="true" className="h-px flex-1 bg-border" />
+        </div>
+      )
+    }
     if (item.kind === 'worktree') {
       return (
         <RowReveal animate={enter.animate(item.key)} staggerIndex={enter.staggerIndex(item.key)}>
@@ -237,7 +254,7 @@ function VirtualizedTimeline({
   const virtualItems = virtualizer.getVirtualItems()
   if (viewportEl === null || virtualItems.length === 0) {
     return (
-      <MessageScrollerContent className="mx-auto w-full max-w-3xl">
+      <MessageScrollerContent live={live} className="mx-auto w-full max-w-3xl">
         {groupedItems.map((item, index) => (
           <MessageScrollerItem
             key={item.key}
@@ -253,6 +270,7 @@ function VirtualizedTimeline({
 
   return (
     <MessageScrollerContent
+      live={live}
       className="mx-auto w-full max-w-3xl"
       style={{ height: `${virtualizer.getTotalSize()}px`, position: 'relative' }}
     >
@@ -295,6 +313,11 @@ export function ChatMessageList({
   onRetry,
   filePathContext
 }: ChatMessageListProps): React.JSX.Element {
+  const opencodeNotice = useAcpStore((s) => s.sessions[sessionId]?.opencodeNotice)
+  const statusLine = opencodeStatusLine(opencodeNotice)
+  // The mobile shell announces turn events through its own live region, so the
+  // log stops re-announcing rows as the virtualiser mounts them.
+  const live = !useMobileWebShell()
   const groupedItems = useMemo(
     () => groupTurnActivity(items, showRunningIndicator),
     [items, showRunningIndicator]
@@ -351,6 +374,8 @@ export function ChatMessageList({
               onRetry={onRetry}
               onOpenSubagent={openSubagent}
               parentTurnActive={showRunningIndicator}
+              statusLine={statusLine}
+              live={live}
             />
           </MessageScrollerViewport>
           <MessageScrollerButton />
@@ -360,6 +385,7 @@ export function ChatMessageList({
         <SubagentDetailsDialog
           toolCall={selectedTool}
           parentTurnActive={showRunningIndicator}
+          filePathContext={filePathContext}
           open
           onOpenChange={(open) => {
             if (!open) setSelection(null)

@@ -28,7 +28,7 @@ describe('useAcpUpdateChecks', () => {
     expect(mockCheckForUpdates).toHaveBeenCalledTimes(1)
 
     // Background checks never auto-apply — force refresh, advisory only.
-    expect(mockCheckForUpdates).toHaveBeenCalledWith(true)
+    expect(mockCheckForUpdates).toHaveBeenCalledWith('background')
 
     await act(() => vi.advanceTimersByTimeAsync(6 * HOUR))
     expect(mockCheckForUpdates).toHaveBeenCalledTimes(1)

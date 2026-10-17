@@ -82,6 +82,10 @@ impl PartialEq for WebAuthToken {
 }
 impl Eq for WebAuthToken {}
 
+/// Request extension the web auth gate adds once the bearer token matched.
+#[derive(Debug, Clone, Copy)]
+pub struct BearerVerified;
+
 /// The active gate: one bearer token, compared in constant time.
 pub struct WebAuth {
     token: WebAuthToken,
@@ -98,6 +102,17 @@ impl WebAuth {
     #[must_use]
     pub fn accepts(&self, presented: &str) -> bool {
         self.token.0.as_bytes().ct_eq(presented.as_bytes()).into()
+    }
+
+    /// `base` with this gate's token in the URL fragment (`#token=<token>`,
+    /// the form `web-auth-token.ts` reads), so a device that scans the QR
+    /// connects without a manual token entry. Any existing fragment on
+    /// `base` is replaced. The returned string contains the secret: hand it
+    /// to the UI only, never log it.
+    #[must_use]
+    pub fn share_url(&self, base: &str) -> String {
+        let base = base.split('#').next().unwrap_or(base);
+        format!("{base}#token={}", encode_fragment_value(self.token.as_str()))
     }
 }
 
@@ -236,6 +251,39 @@ pub fn resolve(
             path.display()
         )),
     }
+}
+
+/// Resolve the gate for the desktop shared-live host (AD-3): ungated only
+/// when the host is loopback-only with no tunnel (`requires_token == false`);
+/// when it binds beyond loopback or advertises a tunnel URL the bearer token
+/// is REQUIRED on HTTP, `/ws` and `/terminal/ws`. The token is loaded from /
+/// generated into `<state_dir>/web-auth-token` (the caller passes the
+/// desktop's `app_data_dir`, never the service-account dir) and is never
+/// logged.
+pub fn resolve_shared_live(
+    requires_token: bool,
+    state_dir: &Path,
+) -> Result<WebAuthResolution, String> {
+    if !requires_token {
+        return Ok(WebAuthResolution::Ungated);
+    }
+    resolve(Some(BindMode::All), None, state_dir)
+}
+
+/// Percent-encode a fragment value so `URLSearchParams` (what
+/// `web-auth-token.ts` reads) decodes it back byte-for-byte. Generated tokens
+/// are hex and pass through unchanged.
+fn encode_fragment_value(raw: &str) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(raw.len());
+    for byte in raw.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            out.push(char::from(byte));
+        } else {
+            let _ = write!(out, "%{byte:02X}");
+        }
+    }
+    out
 }
 
 /// chars, URL-safe so the `#token=` bootstrap fragment needs no encoding).

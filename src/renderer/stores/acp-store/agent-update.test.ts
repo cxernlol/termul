@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const { toastError, toastWarning } = vi.hoisted(() => ({
   toastError: vi.fn(),
@@ -141,8 +141,60 @@ vi.mock('@/lib/api', async (importActual) => {
 })
 
 import { invoke } from '@tauri-apps/api/core'
+import { AcpTransportError } from '@/lib/acp-transport'
 import type { RegistryAgent } from '@/lib/agents/acp-registry'
-import { type AcpSession, agentReuseKey, useAcpStore } from '@/stores/acp-store'
+import {
+  _addEphemeralSessionIdForTesting,
+  _resetEphemeralSessionIdsForTesting,
+  type AcpSession,
+  agentReuseKey,
+  prepareChatKey,
+  useAcpStore
+} from '@/stores/acp-store'
+
+const CURSOR_CONFIG = {
+  id: 'acp-registry:cursor',
+  templateId: 'cursor',
+  configId: 'acp-registry:cursor',
+  name: 'Cursor',
+  command: '/opt/cursor-agent',
+  args: ['acp'],
+  env: {},
+  allowTerminal: false
+}
+
+const CURSOR_UPDATE = {
+  id: 'cursor',
+  name: 'Cursor',
+  version: '2026.09.18',
+  description: 'Cursor',
+  distribution: {
+    binary: {
+      'darwin-aarch64': {
+        archive: 'https://downloads.cursor.com/agent.zip',
+        cmd: 'cursor-agent'
+      }
+    }
+  }
+} as RegistryAgent
+
+function cursorSession(id: string, overrides: Partial<AcpSession> = {}): AcpSession {
+  return {
+    id,
+    agentId: 'warm-1',
+    cwd: '/work',
+    projectId: 'p1',
+    status: 'connected',
+    title: null,
+    activeTurn: false,
+    openTurnId: null,
+    modes: null,
+    configOptions: [],
+    lastError: null,
+    createdAt: 0,
+    ...overrides
+  } as AcpSession
+}
 
 describe('applyAgentUpdate', () => {
   beforeEach(() => {
@@ -215,6 +267,52 @@ describe('applyAgentUpdate', () => {
     const installCalls = vi.mocked(invoke).mock.calls.filter(([cmd]) => cmd === 'acp_install_agent')
     expect(installCalls).toHaveLength(1)
   })
+
+  it('installs under a commandId; a lost reply is resent with the SAME id (AD-5)', async () => {
+    useAcpStore.setState({
+      agentConfigs: [
+        {
+          id: 'acp-registry:cursor',
+          templateId: 'cursor',
+          configId: 'acp-registry:cursor',
+          name: 'Cursor',
+          command: '/opt/cursor-agent',
+          args: ['acp'],
+          env: {},
+          allowTerminal: false
+        }
+      ]
+    })
+    vi.mocked(invoke).mockReset()
+    let installs = 0
+    vi.mocked(invoke).mockImplementation(async (cmd) => {
+      if (cmd !== 'acp_install_agent') return undefined
+      installs += 1
+      // First attempt: the reply is lost to a transport drop.
+      if (installs === 1) throw new AcpTransportError('closed', 'ipc dropped')
+      return { success: true, data: { command: '/opt/cursor-2', args: ['acp'] } }
+    })
+    const result = await useAcpStore.getState().applyAgentUpdate('acp-registry:cursor', {
+      id: 'cursor',
+      name: 'Cursor',
+      version: '2026.09.18',
+      description: 'Cursor',
+      distribution: {
+        binary: {
+          'darwin-aarch64': {
+            archive: 'https://downloads.cursor.com/agent.zip',
+            cmd: 'cursor-agent'
+          }
+        }
+      }
+    } as RegistryAgent)
+    expect(result).toBe('applied')
+    const calls = vi.mocked(invoke).mock.calls.filter(([cmd]) => cmd === 'acp_install_agent')
+    expect(calls).toHaveLength(2)
+    const ids = calls.map(([, args]) => (args as { commandId?: string }).commandId)
+    expect(ids[0]).toEqual(expect.any(String))
+    expect(ids[1]).toBe(ids[0])
+  }, 15_000)
 
   it('kills idle warm processes on apply so the next chat spawns the applied version', async () => {
     vi.mocked(invoke).mockClear()
@@ -317,6 +415,149 @@ describe('applyAgentUpdate', () => {
     // …but the live process is never killed while its chat is open.
     expect(vi.mocked(invoke).mock.calls.some(([cmd]) => cmd === 'acp_kill_agent')).toBe(false)
     expect(useAcpStore.getState().sessions.s1).toBeDefined()
+  })
+
+  describe('old-process teardown', () => {
+    const installOk = () =>
+      vi.mocked(invoke).mockImplementation((cmd) => {
+        if (cmd === 'acp_install_agent') {
+          return Promise.resolve({
+            success: true,
+            data: { command: '/opt/cursor-2', args: ['acp'] }
+          })
+        }
+        return Promise.resolve(undefined)
+      })
+    const killed = () => vi.mocked(invoke).mock.calls.some(([cmd]) => cmd === 'acp_kill_agent')
+    const prepareKey = prepareChatKey('acp-registry:cursor', '/work', undefined)
+    const reuseKey = agentReuseKey('acp-registry:cursor', '/work')
+
+    beforeEach(() => {
+      vi.mocked(invoke).mockClear()
+      _resetEphemeralSessionIdsForTesting()
+      installOk()
+    })
+    afterEach(() => {
+      _resetEphemeralSessionIdsForTesting()
+    })
+
+    it('kills the old agent when it only holds an unclaimed prepared chat', async () => {
+      // Regression (agy process leak): the launcher keeps a warm-pool prepared
+      // session on the idle agent. That is not a live chat, so Update must still
+      // kill the old process and drop the prepared session.
+      _addEphemeralSessionIdForTesting('sess-prep')
+      useAcpStore.setState({
+        agentConfigs: [CURSOR_CONFIG],
+        configToLiveAgent: { [reuseKey]: 'warm-1' },
+        preparedSessions: { [prepareKey]: 'sess-prep' },
+        activeSessionId: null,
+        sessions: { 'sess-prep': cursorSession('sess-prep') }
+      })
+      await useAcpStore.getState().applyAgentUpdate('acp-registry:cursor', CURSOR_UPDATE)
+      expect(useAcpStore.getState().configToLiveAgent[reuseKey]).toBeUndefined()
+      expect(invoke).toHaveBeenCalledWith('acp_kill_agent', { agentId: 'warm-1' })
+      expect(useAcpStore.getState().preparedSessions[prepareKey]).toBeUndefined()
+    })
+
+    it('kills the old agent when its only session is closed', async () => {
+      useAcpStore.setState({
+        agentConfigs: [CURSOR_CONFIG],
+        configToLiveAgent: { [reuseKey]: 'warm-1' },
+        preparedSessions: {},
+        activeSessionId: null,
+        sessions: { s1: cursorSession('s1', { status: 'closed' }) }
+      })
+      await useAcpStore.getState().applyAgentUpdate('acp-registry:cursor', CURSOR_UPDATE)
+      expect(invoke).toHaveBeenCalledWith('acp_kill_agent', { agentId: 'warm-1' })
+    })
+
+    it('keeps the old agent when the prepared chat is the active session', async () => {
+      // The user is looking at the prepared chat: it is claimed in all but
+      // name, so the process must not be killed under them.
+      _addEphemeralSessionIdForTesting('sess-prep')
+      useAcpStore.setState({
+        agentConfigs: [CURSOR_CONFIG],
+        configToLiveAgent: { [reuseKey]: 'warm-1' },
+        preparedSessions: { [prepareKey]: 'sess-prep' },
+        activeSessionId: 'sess-prep',
+        sessions: { 'sess-prep': cursorSession('sess-prep') }
+      })
+      await useAcpStore.getState().applyAgentUpdate('acp-registry:cursor', CURSOR_UPDATE)
+      expect(useAcpStore.getState().configToLiveAgent[reuseKey]).toBeUndefined()
+      expect(killed()).toBe(false)
+    })
+
+    it('keeps the old agent for an ephemeral session that is not a prepared chat', async () => {
+      // A claimed chat whose promote failed is re-marked ephemeral but is no
+      // longer in `preparedSessions`; the user's chat must keep its process.
+      _addEphemeralSessionIdForTesting('claimed')
+      useAcpStore.setState({
+        agentConfigs: [CURSOR_CONFIG],
+        configToLiveAgent: { [reuseKey]: 'warm-1' },
+        preparedSessions: {},
+        activeSessionId: null,
+        sessions: { claimed: cursorSession('claimed') }
+      })
+      await useAcpStore.getState().applyAgentUpdate('acp-registry:cursor', CURSOR_UPDATE)
+      expect(useAcpStore.getState().configToLiveAgent[reuseKey]).toBeUndefined()
+      expect(killed()).toBe(false)
+      expect(useAcpStore.getState().sessions.claimed).toBeDefined()
+    })
+
+    it('keeps an agent whose prepared chat is claimed while teardown awaits', async () => {
+      // The loop awaits per agent; a prepared chat claimed during that await
+      // is a live chat by the time its agent is judged, so it must survive.
+      const reuseKey2 = agentReuseKey('acp-registry:cursor', '/work2')
+      const prepareKey2 = prepareChatKey('acp-registry:cursor', '/work2', undefined)
+      _addEphemeralSessionIdForTesting('sess-prep2')
+      vi.mocked(invoke).mockImplementation((cmd, args) => {
+        if (cmd === 'acp_install_agent') {
+          return Promise.resolve({
+            success: true,
+            data: { command: '/opt/cursor-2', args: ['acp'] }
+          })
+        }
+        if (cmd === 'acp_kill_agent' && (args as { agentId: string }).agentId === 'warm-1') {
+          // Claim the second agent's prepared chat mid-teardown.
+          useAcpStore.setState((s) => {
+            const preparedSessions = { ...s.preparedSessions }
+            delete preparedSessions[prepareKey2]
+            return { preparedSessions }
+          })
+        }
+        return Promise.resolve(undefined)
+      })
+      useAcpStore.setState({
+        agentConfigs: [CURSOR_CONFIG],
+        configToLiveAgent: { [reuseKey]: 'warm-1', [reuseKey2]: 'warm-2' },
+        preparedSessions: { [prepareKey2]: 'sess-prep2' },
+        activeSessionId: null,
+        sessions: {
+          'sess-prep2': cursorSession('sess-prep2', { agentId: 'warm-2', cwd: '/work2' })
+        }
+      })
+      await useAcpStore.getState().applyAgentUpdate('acp-registry:cursor', CURSOR_UPDATE)
+      expect(invoke).toHaveBeenCalledWith('acp_kill_agent', { agentId: 'warm-1' })
+      expect(invoke).not.toHaveBeenCalledWith('acp_kill_agent', { agentId: 'warm-2' })
+    })
+
+    it('keeps the old agent when it holds a live chat beside an unclaimed prepared chat', async () => {
+      _addEphemeralSessionIdForTesting('sess-prep')
+      useAcpStore.setState({
+        agentConfigs: [CURSOR_CONFIG],
+        configToLiveAgent: { [reuseKey]: 'warm-1' },
+        preparedSessions: { [prepareKey]: 'sess-prep' },
+        activeSessionId: null,
+        sessions: {
+          'sess-prep': cursorSession('sess-prep'),
+          live: cursorSession('live')
+        }
+      })
+      await useAcpStore.getState().applyAgentUpdate('acp-registry:cursor', CURSOR_UPDATE)
+      expect(useAcpStore.getState().configToLiveAgent[reuseKey]).toBeUndefined()
+      expect(killed()).toBe(false)
+      expect(useAcpStore.getState().sessions.live).toBeDefined()
+    })
   })
 
   it('rewrites the pinned launch args to the applied registry version and keeps the config identity', async () => {

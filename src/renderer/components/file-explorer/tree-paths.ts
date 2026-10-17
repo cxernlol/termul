@@ -1,0 +1,67 @@
+import type { DirectoryEntry } from '@shared/types/filesystem.types'
+
+/**
+ * Path helpers for the file tree. Tree paths use forward slashes; Windows
+ * backslash paths are normalized before they are compared or split.
+ */
+
+/** Forward slashes, no trailing slash (except the filesystem root `/`). */
+export function normalizeTreePath(path: string): string {
+  const forward = path.replace(/\\/g, '/')
+  return forward.length > 1 && forward.endsWith('/') ? forward.slice(0, -1) : forward
+}
+
+/** Parent folder of `path`: `/` for a top-level path, '' when there is no slash. */
+export function parentTreePath(path: string): string {
+  const normalized = normalizeTreePath(path)
+  const lastSlash = normalized.lastIndexOf('/')
+  return lastSlash > 0 ? normalized.slice(0, lastSlash) : lastSlash === 0 ? '/' : ''
+}
+
+/** Separator-safe join: a parent that ends in `/` does not get a second slash. */
+export function joinTreePath(parent: string, name: string): string {
+  return parent.endsWith('/') ? `${parent}${name}` : `${parent}/${name}`
+}
+
+/** Find a loaded entry by its absolute path across all loaded folders. */
+export function findTreeEntry(
+  directoryContents: ReadonlyMap<string, DirectoryEntry[]>,
+  path: string
+): DirectoryEntry | undefined {
+  for (const entries of directoryContents.values()) {
+    const found = entries.find((entry) => entry.path === path)
+    if (found) return found
+  }
+  return undefined
+}
+
+/**
+ * Entries a delete acts on. A right-clicked entry that belongs to the
+ * selection stands for the whole selection; one outside it stands alone.
+ * `clicked` is omitted for the Delete key, which always acts on the selection.
+ * An entry whose ancestor folder is also in the list is dropped: deleting the
+ * folder already removes it.
+ */
+export function resolveDeleteTargets(
+  directoryContents: ReadonlyMap<string, DirectoryEntry[]>,
+  selectedPaths: ReadonlySet<string>,
+  clicked?: DirectoryEntry
+): DirectoryEntry[] {
+  const entries =
+    clicked && !selectedPaths.has(clicked.path)
+      ? [clicked]
+      : [...selectedPaths].flatMap((path) => findTreeEntry(directoryContents, path) ?? [])
+  if (entries.length === 0 && clicked) return [clicked]
+
+  const paths = new Set(entries.map((entry) => normalizeTreePath(entry.path)))
+  return entries.filter((entry) => {
+    let ancestor = parentTreePath(entry.path)
+    while (ancestor) {
+      if (paths.has(ancestor)) return false
+      const next = parentTreePath(ancestor)
+      if (next === ancestor) break
+      ancestor = next
+    }
+    return true
+  })
+}

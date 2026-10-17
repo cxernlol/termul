@@ -1,6 +1,6 @@
 import { execSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { mkdir, mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -43,8 +43,8 @@ export default async function globalSetup(_config: FullConfig): Promise<() => Pr
 
   // Deterministic workspace: four project dirs (proj-a/b/c for the survival
   // suite, proj-e dedicated to the editor suite so chat-tab resume noise
-  // never races the editor-tab restore) + proj-w: a real git repo with one
-  // commit for the worktree-launch suite (the isolation picker requires a
+  // never races the editor-tab restore) + proj-w: a real git repo with two
+  // commits for the worktree-launch suite (the isolation picker requires a
   // git project — the launcher's `canUseWorktree` gate) + proj-x: a plain
   // dir dedicated to the crash-recovery suite, whose [CRASH] prompts kill
   // the owning agent process and must not share one with other suites.
@@ -58,6 +58,17 @@ export default async function globalSetup(_config: FullConfig): Promise<() => Pr
   execSync('git -c user.email=e2e@termul -c user.name=e2e commit -q --allow-empty -m init', {
     cwd: projW
   })
+  // Uncommitted changes for the shell-revamp journeys (Rail Diff stat, Changes
+  // panel): one tracked file modified (+2 -1) and one untracked file (+2) =
+  // 2 changed files, `+4 -1`. HEAD (and so every worktree born from `main`)
+  // is unaffected by them.
+  await writeFile(join(projW, 'notes.txt'), 'one\ntwo\nthree\n')
+  execSync('git add notes.txt', { cwd: projW })
+  execSync('git -c user.email=e2e@termul -c user.name=e2e commit -q -m "add notes"', {
+    cwd: projW
+  })
+  await writeFile(join(projW, 'notes.txt'), 'one\nTWO\nthree\nfour\n')
+  await writeFile(join(projW, 'scratch.txt'), 'draft one\ndraft two\n')
 
   server = await startSeededServer({
     serverBinary,

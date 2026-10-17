@@ -1,6 +1,6 @@
 use super::*;
 use crate::acp::AcpManager;
-use crate::web::project_registry::{ProjectRegistry, ProjectSummary};
+use crate::web::project_registry::ProjectSummary;
 use crate::web::sink::WsRelaySink;
 use crate::web::test_pty_manager;
 use axum::body::Body;
@@ -91,24 +91,21 @@ fn test_state_with_root(root: &Path) -> AppState {
         exit_code_tracker: pty.exit_code_tracker(),
         pty,
         relay: Arc::new(WsRelaySink::new()),
-        registry: Arc::new(ProjectRegistry::new()),
-        registry_persistence: None,
-        projects_file: None,
+        registry: crate::web::project_registry::ProjectRegistry::seeded_for_test(
+            &root.canonicalize().unwrap_or_else(|_| root.to_path_buf()),
+        ),
         history_mode: crate::web::ws::HistoryMode::LiveOnly,
-        project_root: Arc::new(parking_lot::RwLock::new(
-            root.canonicalize().unwrap_or_else(|_| root.to_path_buf()),
-        )),
         pending_oauth_flows: std::sync::Arc::new(parking_lot::RwLock::new(
             std::collections::HashMap::new(),
         )),
         oauth_base_url: "http://127.0.0.1".to_string(),
-        workspace_manifest: None,
         acp_catalog: None,
         acp_install: None,
         store: None,
         web_auth: None,
         allow_remote_writes: false,
         shared_live_writes_denied: false,
+        connections: Default::default(),
     }
 }
 
@@ -216,6 +213,10 @@ async fn post_json_from(
         .oneshot(
             Request::builder()
                 .method("POST")
+                .header(
+                    crate::web::command_ledger::COMMAND_ID_HEADER,
+                    crate::web::command_ledger::test_clock::fresh_command_id(),
+                )
                 .uri(uri)
                 .header("content-type", "application/json")
                 .extension(ConnectInfo(peer))
@@ -588,6 +589,54 @@ async fn mkdir_remote_admitted_inside_project_root_when_opt_in() {
         body.error
     );
     assert!(target.is_dir(), "target dir must exist");
+}
+
+/// Remote containment is registry-wide: an opted-in remote peer may write
+/// into ANY registered, non-archived project (not just the default), and is
+/// refused in an archived one.
+#[tokio::test]
+async fn mkdir_remote_follows_registered_projects_not_the_default() {
+    let default_root = TempDir::new("mkdir-reg-default");
+    let other = TempDir::new("mkdir-reg-other");
+    let state = test_state_remote_writes_with_root(default_root.path());
+    let summary = |id: &str, dir: &TempDir| ProjectSummary {
+        id: id.to_string(),
+        name: id.to_string(),
+        color: "blue".to_string(),
+        path: Some(dir.path().to_string_lossy().into_owned()),
+        is_archived: false,
+        is_default: id == "default",
+    };
+    state.registry.set(
+        vec![summary("default", &default_root), summary("other", &other)],
+        Some("default".to_string()),
+    );
+    let remote = SocketAddr::from(([10, 0, 0, 5], 50000));
+
+    let allowed = other.path().join("made");
+    let resp = post_json_from(
+        state.clone(),
+        "/fs/mkdir",
+        &serde_json::json!({ "path": allowed.to_string_lossy() }),
+        remote,
+    )
+    .await;
+    let body: IpcBody<()> = body_as_json(resp.into_body()).await;
+    assert!(body.success, "registered non-default project must admit: {:?}", body.error);
+    assert!(allowed.is_dir());
+
+    assert!(state.registry.update("other", None, None, Some(true)));
+    let refused = other.path().join("blocked");
+    let resp = post_json_from(
+        state,
+        "/fs/mkdir",
+        &serde_json::json!({ "path": refused.to_string_lossy() }),
+        remote,
+    )
+    .await;
+    let body: IpcBody<()> = body_as_json(resp.into_body()).await;
+    assert_eq!(body.code.as_deref(), Some("OUTSIDE_PROJECT_ROOT"));
+    assert!(!refused.exists());
 }
 
 /// Remote containment: a loopback peer can still write OUTSIDE
@@ -1564,8 +1613,8 @@ async fn fs_containment_boundary_relationship() {
     assert_eq!(body.code.as_deref(), Some("OUTSIDE_PROJECT_ROOT"));
 }
 
-/// CAP-2: a web client that switched to a non-default registered project
-/// (per-connection `switch_project`) can still run git/skills operations.
+/// CAP-2: a web client working in a non-default registered project can still
+/// run git/skills operations.
 /// The containment boundary follows ANY registered project root, not just
 /// the host default. An unregistered path is still rejected.
 #[tokio::test]
@@ -1578,9 +1627,7 @@ async fn operations_accept_registered_non_default_project() {
     let state = test_state_with_root(root.path());
 
     // Seed the registry with two projects: `root` (default) and
-    // `registered` (non-default, outside `root`). The `set` call's
-    // `rebind_project_root` is a no-op here (no handle registered in
-    // test state), so `project_root` stays as `root`.
+    // `registered` (non-default, outside `root`).
     state.registry.set(
         vec![
             ProjectSummary {
@@ -1659,4 +1706,26 @@ async fn operations_accept_registered_non_default_project() {
     assert_eq!(resp.status(), StatusCode::OK);
     let body: IpcBody<Vec<DirectoryEntryDto>> = body_as_json(resp.into_body()).await;
     assert!(body.success, "/fs/ls on registered project must succeed");
+}
+
+/// With no registered project at all, an opted-in remote peer is refused
+/// everywhere (loopback keeps ADR-007 breadth), so nothing is writable by
+/// default until a project is registered or seeded.
+#[tokio::test]
+async fn mkdir_remote_refused_when_no_project_is_registered() {
+    let dir = TempDir::new("mkdir-empty-registry");
+    let state = test_state_remote_writes_with_root(dir.path());
+    state.registry.set(Vec::new(), None);
+    let target = dir.path().join("made");
+    let remote = SocketAddr::from(([10, 0, 0, 5], 50000));
+    let resp = post_json_from(
+        state,
+        "/fs/mkdir",
+        &serde_json::json!({ "path": target.to_string_lossy() }),
+        remote,
+    )
+    .await;
+    let body: IpcBody<()> = body_as_json(resp.into_body()).await;
+    assert_eq!(body.code.as_deref(), Some("OUTSIDE_PROJECT_ROOT"));
+    assert!(!target.exists());
 }

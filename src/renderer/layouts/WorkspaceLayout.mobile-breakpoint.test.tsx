@@ -1,8 +1,12 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { MOBILE_WEB_SHELL_MAX_PX } from '@/hooks/use-mobile-web-shell'
+import { useContextBarSettingsStore } from '@/stores/context-bar-settings-store'
+import { useWorkspaceStore } from '@/stores/workspace-store'
+import { DEFAULT_CONTEXT_BAR_SETTINGS } from '@/types/settings'
+import type { LeafNode, SplitNode } from '@/types/workspace.types'
 
 // Story 12 (CAP-8, QA finding F3): regression test for the REAL
 // `useMobileWebShell` breakpoint detection. The sibling suites
@@ -40,6 +44,23 @@ const { tauriRef, projectRef, viewportWidthRef, viewportHeightRef } = vi.hoisted
   viewportHeightRef: { current: 900 as number }
 }))
 
+// The palette's project picks: `selectProject` is the desktop path, and the
+// shared `useProjectSwitch` routine (its own tests live in
+// use-project-switch.test.tsx) is the phone shell's.
+const { selectProjectSpy, switchToSpy, useProjectSwitchSpy } = vi.hoisted(() => {
+  const switchTo = vi.fn(() => 'selected' as const)
+  const projectSwitch = { switchTo }
+  return {
+    selectProjectSpy: vi.fn(),
+    switchToSpy: switchTo,
+    useProjectSwitchSpy: vi.fn((_source: string) => projectSwitch)
+  }
+})
+
+vi.mock('@/hooks/use-project-switch', () => ({
+  useProjectSwitch: useProjectSwitchSpy
+}))
+
 vi.mock('@/lib/tauri-runtime', async () => {
   const actual = await vi.importActual<typeof import('@/lib/tauri-runtime')>('@/lib/tauri-runtime')
   return { ...actual, isTauriContext: () => tauriRef.current }
@@ -58,13 +79,17 @@ vi.mock('@/lib/platform', async () => {
   }
 })
 
+// The shell resolves its working copy through the (heavily mocked) stores;
+// these suites exercise layout behaviour, so resolve to the project folder.
+vi.mock('@/hooks/use-active-working-copy', () => ({ useActiveWorkingCopy: () => null }))
+
 vi.mock('@/stores/project-store', () => ({
   useProjectsLoaded: () => true,
   useProjects: () => [projectRef.current],
   useActiveProject: () => projectRef.current,
   useActiveProjectId: () => 'p1',
   useProjectActions: () => ({
-    selectProject: vi.fn(),
+    selectProject: selectProjectSpy,
     addProject: vi.fn(),
     updateProject: vi.fn(),
     deleteProject: vi.fn(),
@@ -72,14 +97,19 @@ vi.mock('@/stores/project-store', () => ({
     restoreProject: vi.fn(),
     reorderProjects: vi.fn()
   }),
-  useProjectStore: Object.assign(vi.fn(), {
-    getState: () => ({
-      projects: [],
-      activeProjectId: 'p1',
-      isLoaded: true,
-      isWorktreeOperationLocked: false
-    })
-  })
+  useProjectStore: Object.assign(
+    vi.fn((selector?: (s: unknown) => unknown) =>
+      selector ? selector({ projects: [projectRef.current], activeProjectId: 'p1' }) : undefined
+    ),
+    {
+      getState: () => ({
+        projects: [],
+        activeProjectId: 'p1',
+        isLoaded: true,
+        isWorktreeOperationLocked: false
+      })
+    }
+  )
 }))
 
 vi.mock('@/stores/terminal-store', () => ({
@@ -105,7 +135,9 @@ vi.mock('@/stores/terminal-store', () => ({
 vi.mock('@/stores/app-settings-store', () => ({
   useAppSettingsStore: vi.fn(
     (selector?: (state: { settings: { remoteBindMode: 'localhost' } }) => unknown) => {
-      const state = { settings: { remoteBindMode: 'localhost' as const } }
+      const state = {
+        settings: { remoteBindMode: 'localhost' as const }
+      }
       return selector ? selector(state) : state
     }
   ),
@@ -114,7 +146,6 @@ vi.mock('@/stores/app-settings-store', () => ({
   useTerminalFontFamily: vi.fn(() => 'monospace'),
   useTerminalBufferSize: vi.fn(() => 10000),
   useDefaultShell: vi.fn(() => 'bash'),
-  useMaxTerminalsPerProject: vi.fn(() => 10),
   useConfirmTerminalClose: vi.fn(() => true),
   useUpdateAppSetting: vi.fn(() => vi.fn()),
   useDefaultProjectColor: vi.fn(() => 'blue'),
@@ -149,6 +180,31 @@ vi.mock('@/stores/keyboard-shortcuts-store', () => ({
   matchesShortcut: () => false
 }))
 
+// The desktop frame is stubbed to its two slots: this suite pins which shell
+// WorkspaceLayout picks, not the Rail / Side panel chrome (ShellFrame.test.tsx).
+vi.mock('@/components/shell/ShellFrame', () => ({
+  ShellFrame: ({
+    workspaceMain,
+    appModals,
+    setIsCommandPaletteOpen
+  }: {
+    workspaceMain: React.ReactNode
+    appModals: React.ReactNode
+    setIsCommandPaletteOpen: (open: boolean) => void
+  }) => (
+    <div data-testid="shell-frame">
+      {/* Stands in for the Rail's Search button, which opens the palette. */}
+      <button
+        type="button"
+        aria-label="Open projects"
+        onClick={() => setIsCommandPaletteOpen(true)}
+      />
+      {workspaceMain}
+      {appModals}
+    </div>
+  )
+}))
+
 vi.mock('@/hooks/use-snapshots', () => ({
   useCreateSnapshot: vi.fn(() => vi.fn().mockResolvedValue(undefined)),
   useSnapshotLoader: vi.fn()
@@ -173,9 +229,41 @@ vi.mock('@/hooks/use-command-history', () => ({
   useAllCommandHistory: vi.fn(() => [])
 }))
 
+// The stub exposes which optional commands the layout wired so the desktop
+// row can prove "New Project" stays off the desktop palette while "Open
+// Shortcut Menu" stays on it.
 vi.mock('@/components/CommandPalette', () => ({
-  CommandPalette: ({ isOpen }: { isOpen: boolean }) =>
-    isOpen ? <input placeholder="Search commands, projects, settings..." readOnly /> : null
+  CommandPalette: ({
+    isOpen,
+    onClose,
+    onNewProject,
+    onOpenShortcutMenu,
+    onSwitchProject
+  }: {
+    isOpen: boolean
+    onClose: () => void
+    onNewProject?: () => void
+    onOpenShortcutMenu?: () => void
+    onSwitchProject: (projectId: string) => void
+  }) =>
+    isOpen ? (
+      <div
+        data-palette-new-project={onNewProject ? 'wired' : 'absent'}
+        data-palette-shortcut-menu={onOpenShortcutMenu ? 'wired' : 'absent'}
+      >
+        <input placeholder="Search commands, projects, settings..." readOnly />
+        <button
+          type="button"
+          onClick={() => {
+            // A project entry: close first, then execute, as `executeCommand` does.
+            onClose()
+            onSwitchProject('p2')
+          }}
+        >
+          Palette: switch to Beta
+        </button>
+      </div>
+    ) : null
 }))
 
 // GitPanel dependencies (rendered inside the mobile git Sheet).
@@ -195,6 +283,7 @@ const { gitState } = vi.hoisted(() => ({
     selectedFile: null,
     setSelectedFile: vi.fn(),
     refreshStatus: vi.fn(),
+    refreshWorkingCopy: vi.fn(),
     fetchDiff: vi.fn(),
     stageFiles: vi.fn(),
     unstageFiles: vi.fn(),
@@ -215,7 +304,11 @@ const { gitState } = vi.hoisted(() => ({
     branchCreate: vi.fn()
   }
 }))
-vi.mock('@/stores/git-status-store', () => ({
+vi.mock('@/stores/git-status-store', async (importOriginal) => ({
+  selectChangedFileCount: (await importOriginal<typeof import('@/stores/git-status-store')>())
+    .selectChangedFileCount,
+  selectGitBranch: () => () => null,
+  countGitStatuses: () => ({ modified: 0, staged: 0, untracked: 0, hasChanges: false }),
   diffKey: (cwd: string, path: string, staged: boolean) => `${cwd}:${path}:${staged}`,
   useGitStatusStore: (selector: (s: Record<string, unknown>) => unknown) => selector(gitState)
 }))
@@ -231,22 +324,26 @@ vi.mock('@/lib/api', async () => {
 
 // Stub heavy child components so both branches render without dragging in
 // CodeMirror / xterm / page implementations.
+// The stub exposes the node it was handed so the desktop rows can prove a
+// split is passed through whole (only the mobile shell collapses it).
 vi.mock('@/components/workspace/PaneRenderer', () => ({
-  PaneRenderer: () => <div data-pane-renderer-stub />
+  PaneRenderer: ({ node }: { node: { id: string; type: string } }) => (
+    <div data-pane-renderer-stub data-node-id={node.id} data-node-type={node.type} />
+  )
 }))
 vi.mock('@/components/file-explorer/FileExplorer', () => ({
   FileExplorer: () => <div data-testid="file-explorer-stub" />
 }))
 
-vi.mock('@/hooks/use-workspace-manifest-sync', () => ({
-  useWorkspaceManifestSync: vi.fn(),
-  loadWorkspaceManifest: vi.fn().mockResolvedValue(false),
-  resolveManifestConflict: vi.fn().mockResolvedValue(undefined),
-  performManifestWrite: vi.fn().mockResolvedValue(undefined)
+// Persistence restore replaces the whole pane tree (resetLayout /
+// loadProjectWorkspace) when it finds nothing for the project. The pane-tree
+// rows below seed a specific tree, so keep the restore out of the way, as the
+// other WorkspaceLayout suites do.
+vi.mock('@/hooks/use-editor-persistence', () => ({
+  useEditorPersistence: vi.fn(),
+  persistState: vi.fn()
 }))
-vi.mock('@/components/workspace/WorkspaceConflictBanner', () => ({
-  WorkspaceConflictBanner: () => <div data-testid="workspace-conflict-banner" />
-}))
+
 vi.mock('@/pages/WorkspaceDashboard', () => ({ default: () => <div>dashboard</div> }))
 vi.mock('@/pages/WorkspaceSnapshots', () => ({ default: () => <div>snapshots</div> }))
 vi.mock('@/pages/AppPreferences', () => ({ AppPreferencesModal: () => <div>preferences</div> }))
@@ -257,6 +354,18 @@ vi.mock('@/components/TermulMark', () => ({ TermulMark: () => <span>mark</span> 
 vi.mock('@/components/chat/ChatHistoryTab', () => ({
   ChatHistoryTab: () => <div>history</div>
 }))
+// The drawer's Recents list reads the session index, which this file's
+// acp-store stub does not carry; its own suite covers it.
+vi.mock('@/components/mobile/MobileRecentsList', () => ({
+  MobileRecentsList: () => <div>recents</div>
+}))
+// The real hook subscribes to the acp and connection stores; this file mocks
+// `@/stores/acp-store` with a selector-only stub (no `subscribe`). The hook has
+// its own tests (use-shell-announcements.test.tsx).
+vi.mock('@/hooks/use-shell-announcements', () => ({
+  useShellAnnouncements: () => undefined
+}))
+
 vi.mock('@/components/chat/ProjectSwitcherDrawer', () => ({
   ProjectSwitcherDrawer: () => null
 }))
@@ -267,49 +376,28 @@ vi.mock('@/components/mobile/MobileTerminalControls', () => ({
   MobileTerminalControls: () => null
 }))
 
-vi.mock('@/stores/ssh-store', () => ({
+vi.mock('@/stores/ssh-store', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  useSSHWorkspaceOpen: () => false,
   useActiveSSHProfile: () => null,
   useActiveSSHProfileId: () => null,
-  // Desktop branch only: SSHPanel (inside ActivityRail) lists connections.
-  useSSHConnections: () => [],
+  useActiveSSHSession: () => null,
+  // Desktop branch only: SSHPanel (inside the Rail) lists hosts.
+  useSSHProfiles: () => [],
+  useSSHSessions: () => [],
   useSSHActions: () => ({
     loadProfiles: vi.fn(),
     saveProfile: vi.fn(),
     deleteProfile: vi.fn(),
+    duplicateProfile: vi.fn(),
+    toggleFavorite: vi.fn(),
     importConfig: vi.fn(),
-    connect: vi.fn(),
-    disconnect: vi.fn(),
-    startPortForward: vi.fn(),
-    stopPortForward: vi.fn(),
-    clearCompletedTransfers: vi.fn(),
     selectProfile: vi.fn(),
-    markConnecting: vi.fn(),
-    markDisconnected: vi.fn(),
-    updateConnectionId: vi.fn(),
-    updateConnectionStatusByProfile: vi.fn(),
-    setEditingFile: vi.fn()
-  }),
-  useSSHProfiles: () => [],
-  useSSHStore: Object.assign(vi.fn(), {
-    getState: () => ({ profiles: [], activeSSHProfileId: null })
-  })
-}))
-
-vi.mock('@/hooks/use-ssh-connection', () => ({
-  useSSHConnection: () => ({
-    connectionId: 'conn-1',
-    isConnected: true,
-    sftpReady: true,
-    entries: [],
-    currentPath: '/home',
-    expandedDirs: new Set(),
-    childEntries: {},
-    loadingDirs: new Set(),
-    isLoadingRoot: false,
-    handleConnect: vi.fn(),
-    handleBrowseFiles: vi.fn(),
-    toggleDirectory: vi.fn(),
-    loadDirectory: vi.fn()
+    openWorkspace: vi.fn(),
+    setActiveTab: vi.fn(),
+    clearCompletedTransfers: vi.fn(),
+    setEditingFile: vi.fn(),
+    setEditingContent: vi.fn()
   })
 }))
 
@@ -388,10 +476,16 @@ describe('WorkspaceLayout mobile breakpoint (real useMobileWebShell hook)', () =
     gitState.statuses = {}
     gitState.selectedFile = null
     gitState.commitContexts = {}
+    // The project name is hidden by default; show it so the "demo" presence /
+    // absence assertions below stay meaningful.
+    useContextBarSettingsStore.setState({
+      settings: { ...DEFAULT_CONTEXT_BAR_SETTINGS, showProjectName: true }
+    })
     installMatchMediaStub()
   })
 
   afterEach(() => {
+    useContextBarSettingsStore.setState({ settings: { ...DEFAULT_CONTEXT_BAR_SETTINGS } })
     if (originalMatchMedia !== undefined) {
       Object.defineProperty(window, 'matchMedia', originalMatchMedia)
     }
@@ -410,18 +504,25 @@ describe('WorkspaceLayout mobile breakpoint (real useMobileWebShell hook)', () =
     )
 
     // MobileChatShell is React.lazy — wait for it to load before asserting.
-    await waitFor(() => expect(document.querySelector('[data-mobile-chat-shell]')).toBeTruthy())
+    await waitFor(() => expect(document.querySelector('[data-mobile-chat-shell]')).toBeTruthy(), {
+      // The first test pays the cold React.lazy import of the whole shell.
+      timeout: 5000
+    })
 
-    // Desktop chrome must be absent: ActivityRail nav, ProjectSidebar,
+    // Desktop chrome must be absent: the desktop frame and the
     // StatusBar (which renders the lowercased project name, "demo").
-    expect(screen.queryByLabelText('Global actions')).toBeNull()
-    expect(screen.queryByTestId('header-new-project')).toBeNull()
+    expect(screen.queryByTestId('shell-frame')).toBeNull()
     expect(screen.queryByText('demo')).toBeNull()
+    expect(document.querySelector('[data-status-bar]')).toBeNull()
 
-    // The mobile header affordances are present.
+    // The mobile header affordances are present: ☰, the subtitle that opens
+    // the project sheet, and ⋯ whose sheet reaches Files.
     expect(screen.getByLabelText('Open menu')).toBeInTheDocument()
-    expect(screen.getByLabelText('Switch project')).toBeInTheDocument()
-    expect(screen.getByLabelText('Browse files')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /switch project/ })).toBeInTheDocument()
+    expect(screen.queryByLabelText('Switch project')).toBeNull()
+    expect(screen.queryByLabelText('Browse files')).toBeNull()
+    fireEvent.click(screen.getByLabelText('More'))
+    expect(await screen.findByRole('button', { name: 'Files' })).toBeInTheDocument()
     // Pin the flex sizing contract that keeps the workspace visible (this
     // story's production fix — jsdom performs no layout, so the class
     // contract is asserted directly): the workspace <main> sizes via flex-1
@@ -445,6 +546,28 @@ describe('WorkspaceLayout mobile breakpoint (real useMobileWebShell hook)', () =
     expect(main.parentElement).toHaveClass('flex-1')
     const header = document.querySelector('[data-mobile-chat-shell] header')
     expect(header).toHaveClass('shrink-0')
+    // No bottom bar on the main screen: the section switch lives in the drawer.
+    expect(document.querySelector('[data-mobile-chat-shell] nav')).toBeNull()
+  })
+
+  it('sends palette project picks through the shared switch routine at 390px, not selectProject', async () => {
+    viewportWidthRef.current = 390
+    render(
+      <TooltipProvider>
+        <MemoryRouter>
+          <WorkspaceLayout />
+        </MemoryRouter>
+      </TooltipProvider>
+    )
+
+    fireEvent.click(await screen.findByLabelText('More'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Command palette' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Palette: switch to Beta' }))
+
+    expect(useProjectSwitchSpy).toHaveBeenCalledWith('CommandPalette')
+    expect(switchToSpy).toHaveBeenCalledTimes(1)
+    expect(switchToSpy).toHaveBeenCalledWith('p2')
+    expect(selectProjectSpy).not.toHaveBeenCalled()
   })
 
   it('renders the desktop chrome — and NOT the mobile shell — at 1024px', async () => {
@@ -458,15 +581,16 @@ describe('WorkspaceLayout mobile breakpoint (real useMobileWebShell hook)', () =
     )
 
     // Desktop branch renders synchronously (only FileExplorer is lazy, and
-    // it is stubbed) — wait for effects to flush via the ActivityRail nav.
-    await waitFor(() => expect(screen.getByLabelText('Global actions')).toBeInTheDocument())
+    // it is stubbed) — wait for effects to flush via the desktop frame.
+    await waitFor(() => expect(screen.getByTestId('shell-frame')).toBeInTheDocument())
 
     // The mobile shell must be absent.
     expect(document.querySelector('[data-mobile-chat-shell]')).toBeNull()
+    expect(screen.queryByRole('navigation', { name: 'Sections' })).toBeNull()
 
-    // Desktop chrome present: ProjectSidebar + StatusBar ("demo").
-    expect(screen.getByTestId('header-new-project')).toBeInTheDocument()
+    // Desktop chrome present: the desktop frame + StatusBar ("demo").
     expect(screen.getByText('demo')).toBeInTheDocument()
+    expect(document.querySelector('[data-status-bar]')).toBeTruthy()
   })
 
   // The hook's contract is `(max-width: Npx)` — guard the exact boundary so
@@ -489,10 +613,119 @@ describe('WorkspaceLayout mobile breakpoint (real useMobileWebShell hook)', () =
 
     if (expectMobile) {
       await waitFor(() => expect(document.querySelector('[data-mobile-chat-shell]')).toBeTruthy())
-      expect(screen.queryByLabelText('Global actions')).toBeNull()
+      expect(screen.queryByTestId('shell-frame')).toBeNull()
     } else {
-      await waitFor(() => expect(screen.getByLabelText('Global actions')).toBeInTheDocument())
+      await waitFor(() => expect(screen.getByTestId('shell-frame')).toBeInTheDocument())
       expect(document.querySelector('[data-mobile-chat-shell]')).toBeNull()
     }
+  })
+})
+
+// The mobile shell fixes (split collapse, palette New Project) are gated on
+// the mobile shell. At desktop width the layout must behave exactly as before:
+// a split goes to PaneRenderer whole, a fullscreen leaf keeps its own path, and
+// the palette keeps "Open Shortcut Menu" and does not gain "New Project".
+describe('WorkspaceLayout desktop parity for the mobile shell fixes', () => {
+  const leafA: LeafNode = {
+    type: 'leaf',
+    id: 'pane-a',
+    tabs: [{ type: 'git', id: 'git-a', cwd: '/demo' }],
+    activeTabId: 'git-a'
+  }
+  const leafB: LeafNode = {
+    type: 'leaf',
+    id: 'pane-b',
+    tabs: [{ type: 'git-history', id: 'git-history-b', cwd: '/demo' }],
+    activeTabId: 'git-history-b'
+  }
+  const splitRoot: SplitNode = {
+    type: 'split',
+    id: 'split-1',
+    direction: 'horizontal',
+    children: [leafA, leafB],
+    sizes: [50, 50]
+  }
+
+  const renderDesktop = (): void => {
+    viewportWidthRef.current = 1024
+    render(
+      <TooltipProvider>
+        <MemoryRouter>
+          <WorkspaceLayout />
+        </MemoryRouter>
+      </TooltipProvider>
+    )
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    tauriRef.current = false
+    projectRef.current = { id: 'p1', name: 'Demo', path: '/demo', color: 'blue', gitBranch: 'main' }
+    gitState.statuses = {}
+    gitState.selectedFile = null
+    gitState.commitContexts = {}
+    installMatchMediaStub()
+  })
+
+  afterEach(() => {
+    useWorkspaceStore.getState().resetLayout()
+    if (originalMatchMedia !== undefined) {
+      Object.defineProperty(window, 'matchMedia', originalMatchMedia)
+    }
+  })
+
+  it('passes a split tree to PaneRenderer whole (no collapse on desktop)', async () => {
+    useWorkspaceStore.setState({
+      root: splitRoot,
+      activePaneId: 'pane-b',
+      fullscreenPaneId: null,
+      agentLauncherPaneId: null
+    })
+    renderDesktop()
+
+    await waitFor(() => expect(document.querySelector('[data-pane-renderer-stub]')).toBeTruthy())
+    const stubs = document.querySelectorAll('[data-pane-renderer-stub]')
+    expect(stubs).toHaveLength(1)
+    expect(stubs[0]).toHaveAttribute('data-node-id', 'split-1')
+    expect(stubs[0]).toHaveAttribute('data-node-type', 'split')
+  })
+
+  it('still renders the fullscreen leaf alone when a pane is fullscreen on desktop', async () => {
+    useWorkspaceStore.setState({
+      root: splitRoot,
+      activePaneId: 'pane-a',
+      fullscreenPaneId: 'pane-a',
+      agentLauncherPaneId: null
+    })
+    renderDesktop()
+
+    await waitFor(() => expect(document.querySelector('[data-pane-renderer-stub]')).toBeTruthy())
+    const stub = document.querySelector('[data-pane-renderer-stub]')
+    expect(stub).toHaveAttribute('data-node-id', 'pane-a')
+    expect(stub).toHaveAttribute('data-node-type', 'leaf')
+  })
+
+  it('keeps selectProject for palette project picks and never calls the shared switch routine', async () => {
+    renderDesktop()
+
+    fireEvent.click(await screen.findByLabelText('Open projects'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Palette: switch to Beta' }))
+
+    expect(selectProjectSpy).toHaveBeenCalledTimes(1)
+    expect(selectProjectSpy).toHaveBeenCalledWith('p2')
+    expect(switchToSpy).not.toHaveBeenCalled()
+  })
+
+  it('keeps Open Shortcut Menu wired and New Project off the desktop palette', async () => {
+    renderDesktop()
+
+    fireEvent.click(await screen.findByLabelText('Open projects'))
+
+    expect(
+      await screen.findByPlaceholderText('Search commands, projects, settings...')
+    ).toBeTruthy()
+    const palette = document.querySelector('[data-palette-shortcut-menu]')
+    expect(palette).toHaveAttribute('data-palette-shortcut-menu', 'wired')
+    expect(palette).toHaveAttribute('data-palette-new-project', 'absent')
   })
 })

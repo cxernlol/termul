@@ -1,5 +1,6 @@
 import type { AuthMethod, McpToolInfo, ProbeStatus } from '@/lib/acp-api'
 import type { StoredMcpServer } from '@/lib/acp-mcp-persistence'
+import type { Worktree } from '@/types/project'
 
 /**
  * Stable empty fixtures for the launcher's optional store slices — shared
@@ -13,3 +14,4 @@ export const EMPTY_MCP_SERVERS: StoredMcpServer[] = []
 export const EMPTY_PROBE_STATUS: Record<string, ProbeStatus> = {}
 export const EMPTY_MCP_TOOLS: Record<string, McpToolInfo[]> = {}
 export const EMPTY_PROBE_ERROR: Record<string, string | undefined> = {}
+export const EMPTY_WORKTREES: Worktree[] = []

@@ -40,7 +40,7 @@ vi.mock('@/lib/uuid', () => ({ randomUUID: mockUuid }))
 
 interface BatchEvent {
   searchId: string
-  files: Array<{ path: string; ignored: boolean }>
+  files: Array<{ path: string; ignored: boolean; kind?: 'file' | 'dir' }>
   truncated?: boolean
 }
 interface DoneEvent {
@@ -167,6 +167,90 @@ describe('useComposerMentions', () => {
     }))
     emitBatch({ searchId: 'search-inst-1', files })
     expect(result.current.sections[0].items).toHaveLength(100)
+  })
+
+  it('maps kind:dir hits to folder matches in a Folders section after Files', async () => {
+    const { result } = renderMentions()
+    act(() => result.current.update('@comp', 5))
+    await advance(90)
+    emitBatch({
+      searchId: 'search-inst-1',
+      files: [
+        { path: 'src/components.ts', ignored: false },
+        { path: 'src/renderer/components', ignored: false, kind: 'dir' },
+        { path: 'node_modules/comp', ignored: true, kind: 'dir' }
+      ]
+    })
+    expect(result.current.sections.map((s) => s.id)).toEqual(['files', 'folders'])
+    const folders = result.current.sections[1].items
+    expect(folders).toHaveLength(2)
+    expect(folders[0].label).toBe('components')
+    expect(folders[0].description).toBe('src/renderer/components')
+    expect(folders[0].payload).toEqual({
+      relPath: 'src/renderer/components',
+      absPath: '/work/src/renderer/components/',
+      name: 'components',
+      ignored: false,
+      kind: 'dir'
+    })
+    expect(folders[1].ignored).toBe(true)
+    // File rows stay byte-identical (no `kind` key).
+    expect(result.current.sections[0].items[0].payload).toEqual(match('src/components.ts'))
+  })
+
+  it('caps folders independently so a full page of files never crowds them out', async () => {
+    const { result } = renderMentions()
+    act(() => result.current.update('@rea', 4))
+    await advance(90)
+    const files = Array.from({ length: 120 }, (_, i) => ({ path: `f${i}.ts`, ignored: false }))
+    emitBatch({ searchId: 'search-inst-1', files })
+    emitBatch({
+      searchId: 'search-inst-1',
+      files: Array.from({ length: 30 }, (_, i) => ({
+        path: `d/dir${i}`,
+        ignored: false,
+        kind: 'dir' as const
+      }))
+    })
+    const [filesSection, foldersSection] = result.current.sections
+    expect(filesSection.items).toHaveLength(100)
+    expect(foldersSection.items).toHaveLength(20)
+  })
+
+  it('dedupes cumulative desktop batches (files re-sent with the final folder batch)', async () => {
+    const { result } = renderMentions()
+    act(() => result.current.update('@comp', 5))
+    await advance(90)
+    const files = Array.from({ length: 25 }, (_, i) => ({ path: `f${i}.ts`, ignored: false }))
+    emitBatch({ searchId: 'search-inst-1', files })
+    emitBatch({
+      searchId: 'search-inst-1',
+      files: [...files, { path: 'src/components', ignored: false, kind: 'dir' as const }]
+    })
+    const [filesSection, foldersSection] = result.current.sections
+    expect(filesSection.items).toHaveLength(25)
+    expect(foldersSection.items).toHaveLength(1)
+  })
+
+  it('select on a folder splices a folder token (relative-path display, trailing-slash absPath)', async () => {
+    const { result, onStageFileRef } = renderMentions()
+    act(() => result.current.update('@comp', 5))
+    await advance(90)
+    const picked: MentionMatch = {
+      relPath: 'src/renderer/components',
+      absPath: '/work/src/renderer/components/',
+      name: 'components',
+      ignored: false,
+      kind: 'dir'
+    }
+    let outcome: { value: string; caret: number } | null = null
+    act(() => {
+      outcome = result.current.select('@comp', 5, picked)
+    })
+    const expectedToken = fileToken('src/renderer/components/', '/work/src/renderer/components/')
+    expect(outcome).toEqual({ value: `${expectedToken} `, caret: expectedToken.length + 1 })
+    expect(onStageFileRef).toHaveBeenCalledWith(picked)
+    expect(result.current.menuOpen).toBe(false)
   })
 
   it('fires no search on a bare @ (empty filter) and renders Recents', () => {

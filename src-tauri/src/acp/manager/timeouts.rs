@@ -19,8 +19,7 @@ use super::*;
 // (`turn_idle_timeout`) is also unlimited by default, so neither a chatty
 // nor a silent agent is killed by default — the hard cap is an opt-in
 // diagnostic backstop. On either idle or hard timeout → cancel +
-// `CANCEL_GRACE` → `status: 'error'`. Distinct from 1.7's 60s permission
-// sub-timeout (`permissions.rs:47`).
+// `CANCEL_GRACE` → an `agent_error` and a `timeout` terminator for the turn.
 
 /// `session/new` timeout. Precedence: `TERMUL_ACP_SESSION_NEW_TIMEOUT_SECS`
 /// (env, operator/diagnostic; seconds, must be > 0) → in-process UI override
@@ -172,27 +171,56 @@ pub fn resolved_turn_timeout() -> Option<Duration> {
         })
 }
 
+/// Typed marker for an idle/hard turn deadline. `race_turn` builds this (never
+/// a bare string) so the caller can tell a timeout from an RPC failure
+/// without matching message text: `AcpErrorDetail` sets `timed_out`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct TurnTimeout {
+    pub(super) message: String,
+}
+
+impl From<TurnTimeout> for String {
+    fn from(timeout: TurnTimeout) -> Self {
+        timeout.message
+    }
+}
+
+impl From<TurnTimeout> for events::AcpErrorDetail {
+    fn from(timeout: TurnTimeout) -> Self {
+        Self {
+            message: timeout.message,
+            code: None,
+            data: None,
+            rpc_message_len: None,
+            timed_out: true,
+            connection_closed: false,
+        }
+    }
+}
+
 /// Race an in-flight ACP prompt turn against completion, a cancel signal, an
 /// optional idle deadline (reset on agent activity via `idle_rx`), and an
 /// optional hard wall-clock cap. On idle/hard timeout, invoke `on_timeout_cancel`
 /// (the caller's cancel hook — updates DriverState cancel/timeout state so the
 /// in-flight turn winds down), await `CANCEL_GRACE`, then return a typed timeout
-/// error. Extracted so the deadline loop is unit-testable with mock futures. A
+/// error ([`TurnTimeout`]). Extracted so the deadline loop is unit-testable with
+/// mock futures. A
 /// pre-iteration deadline check bounds a continuously-ready activity arm (under
 /// `biased`) so a streaming-but-non-completing agent can't slip past a cap. When
 /// a deadline is `None` (the unlimited default for idle and/or hard), it imposes
 /// no bound — a fully-unlimited turn (both `None`) is ended only by completion or
 /// cancel, so a wedged agent is NOT killed by default.
-pub(super) async fn race_turn<P>(
+pub(super) async fn race_turn<P, E>(
     prompt: P,
     mut cancel_rx: oneshot::Receiver<()>,
     idle_rx: &mut watch::Receiver<()>,
     on_timeout_cancel: impl Fn(),
     idle: Option<Duration>,
     hard: Option<Duration>,
-) -> Result<StopReason, String>
+) -> Result<StopReason, E>
 where
-    P: Future<Output = Result<StopReason, String>>,
+    P: Future<Output = Result<StopReason, E>>,
+    E: From<TurnTimeout>,
 {
     tokio::pin!(prompt);
     let hard_deadline = hard.map(|d| tokio::time::Instant::now() + d);
@@ -212,18 +240,28 @@ where
         if let Some(nd) = next_deadline {
             if tokio::time::Instant::now() >= nd {
                 on_timeout_cancel();
-                return match tokio::time::timeout(CANCEL_GRACE, &mut prompt).await {
-                    Ok(result) => result,
-                    Err(_) if idle_deadline == Some(nd) => {
+                let timeout_error = || {
+                    if idle_deadline == Some(nd) {
                         let idle_dur = idle.unwrap_or(Duration::ZERO);
-                        Err(format!(
-                            "turn idle timeout: no agent activity for {idle_dur:?}"
-                        ))
-                    }
-                    Err(_) => {
+                        E::from(TurnTimeout {
+                            message: format!(
+                                "turn idle timeout: no agent activity for {idle_dur:?}"
+                            ),
+                        })
+                    } else {
                         let hard_dur = hard.unwrap_or(Duration::ZERO);
-                        Err(format!("turn hard timeout: exceeded {hard_dur:?}"))
+                        E::from(TurnTimeout {
+                            message: format!("turn hard timeout: exceeded {hard_dur:?}"),
+                        })
                     }
+                };
+                // The cancel we just issued is OUR timeout cancel: an agent that
+                // honors it within the grace window answers `Cancelled`, which
+                // is still a deadline expiry (typed `TurnTimeout`), never a
+                // user cancel. Any other completion is the agent's own result.
+                return match tokio::time::timeout(CANCEL_GRACE, &mut prompt).await {
+                    Ok(Ok(StopReason::Cancelled)) | Err(_) => Err(timeout_error()),
+                    Ok(result) => result,
                 };
             }
         }

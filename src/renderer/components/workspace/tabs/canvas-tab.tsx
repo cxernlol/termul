@@ -1,4 +1,5 @@
 import { Edit2 } from '@/components/icons'
+import { basename } from '@/lib/path-basename'
 import { useCanvasStore } from '@/stores/canvas-store'
 import { TabContextMenu } from '../tab-context-menu'
 import { TabChrome } from './tab-chrome'
@@ -6,11 +7,6 @@ import type { TabInlineProps } from './types'
 
 interface CanvasTabInlineProps extends TabInlineProps {
   tab: { type: 'canvas'; id: string; projectId: string; docPath: string }
-}
-
-function basename(filePath: string): string {
-  const parts = filePath.split(/[\\/]/)
-  return parts[parts.length - 1] || filePath
 }
 
 /** Canvas tab (OpenPencil canvas mode): the dirty dot mirrors the editor's

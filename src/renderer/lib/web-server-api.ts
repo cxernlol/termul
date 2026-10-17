@@ -17,27 +17,49 @@
  * the web auth gate's 401 UNAUTHORIZED) keeps the server-provided code/message.
  */
 import type {
-  BranchInfo,
   DetectedShells,
   DirectoryEntry,
-  DirtyStatus,
-  FileContent,
   FileInfo,
   GitCommit,
   GitCommitContext,
+  GitCommitDetail,
+  GitCommitFileDiff,
+  GitDiffStat,
   GitStashInfo,
   GitStatusDetail,
   IpcResult,
-  ProjectIcon,
+  ProjectIcon
+} from '@shared/types/ipc.types'
+import {
+  COMMAND_ID_HEADER,
+  type FsWriteExpected,
+  type HashedFileContent
+} from '@shared/types/ipc.types'
+import type {
+  BaseBranchInfo,
+  BranchInfo,
+  DirtyStatus,
+  GitignoreDir,
+  IncludeCopyResult,
+  SymlinkResult,
   WorktreeInfo,
   WorktreeProgressEvent
-} from '@shared/types/ipc.types'
-import type { ProjectListPayload, ProjectSummary } from '@shared/types/web-projects.types'
-import { getJson, networkError, parseBody, postJson, putJson, serverBase } from './ipc/http'
+} from '@shared/types/worktree.types'
+import {
+  bodyToResult,
+  getJson,
+  ipcFailureError,
+  networkError,
+  parseBody,
+  postJson,
+  putJson,
+  runIpcCommand,
+  serverBase,
+  worktreeCreateKey
+} from './ipc/http'
 import { logFrontendError } from './log-api'
 import type { AgentSkillContent, AgentSkillSummary } from './skills-api'
 import { authHeader } from './web-auth-token'
-import type { BaseBranchInfo, IncludeCopyResult } from './worktree-api'
 
 /**
  * POST JSON and read an `application/x-ndjson` response stream. Each line is
@@ -50,12 +72,17 @@ import type { BaseBranchInfo, IncludeCopyResult } from './worktree-api'
 async function postNdjsonStream<T>(
   path: string,
   body: unknown,
-  onFrame: (frame: Record<string, unknown>) => void
+  onFrame: (frame: Record<string, unknown>) => void,
+  commandId?: string
 ): Promise<IpcResult<T>> {
   try {
     const res = await fetch(`${serverBase()}${path}`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', ...authHeader() },
+      headers: {
+        'content-type': 'application/json',
+        ...authHeader(),
+        ...(commandId ? { [COMMAND_ID_HEADER]: commandId } : {})
+      },
       body: JSON.stringify(body)
     })
     const contentType = res.headers.get('content-type') ?? ''
@@ -69,7 +96,7 @@ async function postNdjsonStream<T>(
       try {
         const frame = JSON.parse(trimmed) as Record<string, unknown>
         if (frame.type === 'result') {
-          result = frame.result as IpcResult<T>
+          result = bodyToResult<T>(frame.result) ?? (frame.result as IpcResult<T>)
         } else {
           onFrame(frame)
         }
@@ -113,12 +140,26 @@ export const webServerFilesystem = {
     return postJson<void>('/fs/mkdir', { path: dirPath })
   },
 
+  /** Creates (or truncates) the file, like the desktop `writeTextFile`; no precondition. */
   async createFile(filePath: string, content = ''): Promise<IpcResult<void>> {
     return postJson<void>('/fs/write', { path: filePath, content })
   },
 
-  async writeFile(filePath: string, content: string): Promise<IpcResult<void>> {
-    return postJson<void>('/fs/write', { path: filePath, content })
+  /**
+   * Replace a file. `expected` (the `contentHash` of the last read, or
+   * `"absent"`) makes the host refuse with `PRECONDITION_FAILED` when the file
+   * changed meanwhile; nothing is written then.
+   */
+  async writeFile(
+    filePath: string,
+    content: string,
+    options?: { expected?: FsWriteExpected }
+  ): Promise<IpcResult<void>> {
+    return postJson<void>('/fs/write', {
+      path: filePath,
+      content,
+      ...(options?.expected ? { expected: options.expected } : {})
+    })
   },
 
   async readDirectory(dirPath: string): Promise<IpcResult<DirectoryEntry[]>> {
@@ -148,9 +189,9 @@ export const webServerFilesystem = {
     }
   },
 
-  async readFile(filePath: string): Promise<IpcResult<FileContent>> {
+  async readFile(filePath: string): Promise<IpcResult<HashedFileContent>> {
     const encoded = encodeURIComponent(filePath)
-    return getJson<FileContent>(`/fs/read?path=${encoded}`)
+    return getJson<HashedFileContent>(`/fs/read?path=${encoded}`)
   },
 
   async getFileInfo(filePath: string): Promise<IpcResult<FileInfo>> {
@@ -206,6 +247,13 @@ export const webServerGit = {
     return res.data
   },
 
+  /** Working-tree `+added -removed` stat via `POST /git/diff-stat` (read route). */
+  async getDiffStat(cwd: string): Promise<GitDiffStat> {
+    const res = await postJson<GitDiffStat>('/git/diff-stat', { cwd })
+    if (!res.success) throw new Error(res.error)
+    return res.data
+  },
+
   async getDiff(cwd: string, path: string, staged = false): Promise<string> {
     const res = await postJson<string>('/git/diff', { cwd, path, staged })
     if (!res.success) throw new Error(res.error)
@@ -222,23 +270,72 @@ export const webServerGit = {
     if (!res.success) throw new Error(res.error)
   },
 
-  async discard(cwd: string, path: string): Promise<void> {
-    const res = await postJson<void>('/git/discard', { cwd, path })
-    if (!res.success) throw new Error(res.error)
+  async stageHunk(cwd: string, path: string, hunkPatch: string): Promise<void> {
+    const res = await postJson<void>('/git/stage-hunk', { cwd, path, hunkPatch })
+    if (!res.success) throw ipcFailureError(res)
   },
 
-  async getLog(cwd: string, limit?: number): Promise<GitCommit[]> {
+  async unstageHunk(cwd: string, path: string, hunkPatch: string): Promise<void> {
+    const res = await postJson<void>('/git/unstage-hunk', { cwd, path, hunkPatch })
+    if (!res.success) throw ipcFailureError(res)
+  },
+
+  async discard(cwd: string, path: string): Promise<void> {
+    const res = await postJson<void>('/git/discard', { cwd, path })
+    if (!res.success) throw ipcFailureError(res)
+  },
+
+  async getLog(cwd: string, limit?: number, all = false): Promise<GitCommit[]> {
     const res = await postJson<GitCommit[]>('/git/log', {
       cwd,
-      ...(limit !== undefined ? { limit } : {})
+      ...(limit !== undefined ? { limit } : {}),
+      ...(all ? { all } : {})
     })
     if (!res.success) throw new Error(res.error)
     return res.data
   },
 
-  async commit(cwd: string, summary: string, description = '', amend = false): Promise<void> {
-    const res = await postJson<void>('/git/commit', { cwd, summary, description, amend })
-    if (!res.success) throw new Error(res.error)
+  async getCommitDetail(cwd: string, hash: string): Promise<GitCommitDetail> {
+    const res = await postJson<GitCommitDetail>('/git/commit-detail', { cwd, hash })
+    if (!res.success) throw ipcFailureError(res)
+    return res.data
+  },
+
+  async getCommitFileDiff(
+    cwd: string,
+    hash: string,
+    path: string,
+    oldPath?: string
+  ): Promise<GitCommitFileDiff> {
+    const res = await postJson<GitCommitFileDiff>('/git/commit-file-diff', {
+      cwd,
+      hash,
+      path,
+      ...(oldPath ? { oldPath } : {})
+    })
+    if (!res.success) throw ipcFailureError(res)
+    return res.data
+  },
+
+  /**
+   * `expectedHead` (the full sha HEAD must be at; `""` for an unborn branch)
+   * makes the host refuse with `PRECONDITION_FAILED` when HEAD moved.
+   */
+  async commit(
+    cwd: string,
+    summary: string,
+    description = '',
+    amend = false,
+    expectedHead?: string
+  ): Promise<void> {
+    const res = await postJson<void>('/git/commit', {
+      cwd,
+      summary,
+      description,
+      amend,
+      ...(expectedHead !== undefined ? { expectedHead } : {})
+    })
+    if (!res.success) throw ipcFailureError(res)
   },
 
   async push(cwd: string): Promise<void> {
@@ -275,7 +372,7 @@ export const webServerGit = {
       branch,
       ...(startRef !== undefined ? { startRef } : {})
     })
-    if (!res.success) throw new Error(res.error)
+    if (!res.success) throw ipcFailureError(res)
   },
 
   async stashSave(cwd: string, message?: string, includeUntracked?: boolean): Promise<void> {
@@ -284,7 +381,7 @@ export const webServerGit = {
       ...(message !== undefined ? { message } : {}),
       ...(includeUntracked !== undefined ? { includeUntracked } : {})
     })
-    if (!res.success) throw new Error(res.error)
+    if (!res.success) throw ipcFailureError(res)
   },
 
   async stashList(cwd: string): Promise<GitStashInfo[]> {
@@ -296,17 +393,17 @@ export const webServerGit = {
 
   async stashApply(cwd: string, index: number): Promise<void> {
     const res = await postJson<void>('/git/stash-apply', { cwd, index })
-    if (!res.success) throw new Error(res.error)
+    if (!res.success) throw ipcFailureError(res)
   },
 
   async stashPop(cwd: string, index: number): Promise<void> {
     const res = await postJson<void>('/git/stash-pop', { cwd, index })
-    if (!res.success) throw new Error(res.error)
+    if (!res.success) throw ipcFailureError(res)
   },
 
   async stashDrop(cwd: string, index: number): Promise<void> {
     const res = await postJson<void>('/git/stash-drop', { cwd, index })
-    if (!res.success) throw new Error(res.error)
+    if (!res.success) throw ipcFailureError(res)
   },
 
   async branchList(cwd: string): Promise<string[]> {
@@ -319,11 +416,6 @@ export const webServerGit = {
   async branchSwitch(cwd: string, name: string): Promise<void> {
     const res = await postJson<void>('/git/branch-switch', { cwd, name })
     if (!res.success) throw new Error(res.error)
-  },
-
-  async branchCreate(cwd: string, name: string): Promise<void> {
-    const res = await postJson<void>('/git/branch-create', { cwd, name })
-    if (!res.success) throw new Error(res.error)
   }
 }
 
@@ -335,78 +427,17 @@ export const webServerShell = {
 }
 
 /**
- * Project-list mirror routed to `termul-server` (`GET /projects`). Returns the
- * desktop's non-archived + archived project summaries the renderer synced into
- * the in-memory `ProjectRegistry` (Epic-4 bridge). Web/remote mode only.
- *
- * Also exposes the explicit host-default change (`POST /projects/default`,
- * Epic 7) — mirrors the `set_host_default_project` Tauri command + the
- * `set_default_project` WS request (transport parity).
+ * MCP registry persistence shared by standalone and desktop-hosted web clients.
+ * The host keeps one `.termul/mcp-servers.json` per project, so every call names
+ * the `projectId` (an unknown or archived project is refused `NOT_FOUND`).
  */
-export const webServerProjects = {
-  async list(): Promise<IpcResult<ProjectListPayload>> {
-    return getJson<ProjectListPayload>('/projects')
-  },
-
-  /**
-   * Set the host's default project (Epic 7 — cross-client workspace
-   * continuity). Validates the project is switchable, updates
-   * `registry.set_default_project`, persists to the `FileProjectRegistry`
-   * (VPS), and broadcasts `projects_changed` to all connected clients.
-   */
-  async setDefaultProject(projectId: string): Promise<IpcResult<void>> {
-    return postJson<void>('/projects/default', { projectId })
-  },
-
-  /**
-   * Create / upsert a project (Option B: the standalone server is a first-class
-   * project-list authority). Canonicalizes + validates the path on the server,
-   * persists to `FileProjectRegistry` (VPS), and broadcasts `projects_changed`.
-   * Mirrors the `add_project` WS request.
-   */
-  async addProject(params: {
-    id: string
-    name: string
-    path: string
-    color: string
-    isArchived?: boolean
-  }): Promise<IpcResult<ProjectSummary>> {
-    return postJson<ProjectSummary>('/projects', params)
-  },
-
-  /**
-   * Patch a project's display fields (name, color, archived). All fields
-   * optional (partial update). Mirrors the `update_project` WS request +
-   * `PUT /projects/{id}`.
-   */
-  async updateProject(
-    projectId: string,
-    patch: { name?: string; color?: string; isArchived?: boolean }
-  ): Promise<IpcResult<void>> {
-    return putJson<void>(`/projects/${encodeURIComponent(projectId)}`, patch)
-  },
-
-  /**
-   * Remove a project. Mirrors the `remove_project` WS request +
-   * `DELETE /projects/{id}`.
-   */
-  async removeProject(projectId: string): Promise<IpcResult<void>> {
-    const res = await fetch(`${serverBase()}/projects/${encodeURIComponent(projectId)}`, {
-      method: 'DELETE',
-      headers: authHeader()
-    })
-    return parseBody<void>(res)
-  }
-}
-
-/** Global MCP registry persistence shared by standalone and desktop-hosted web clients. */
 export const webServerMcpServers = {
-  async get(): Promise<IpcResult<unknown>> {
-    return getJson<unknown>('/mcp-servers')
+  async get(projectId: string): Promise<IpcResult<unknown>> {
+    return getJson<unknown>(`/mcp-servers?projectId=${encodeURIComponent(projectId)}`)
   },
 
-  async put(registry: unknown[]): Promise<IpcResult<void>> {
-    return putJson<void>('/mcp-servers', registry)
+  async put(projectId: string, registry: unknown[]): Promise<IpcResult<void>> {
+    return putJson<void>(`/mcp-servers?projectId=${encodeURIComponent(projectId)}`, registry)
   }
 }
 
@@ -432,6 +463,16 @@ export const webServerSkills = {
   }
 }
 
+const SERVER_LOG_FIELD_CHARS = 4096
+
+function truncateCodePoints(value: string, max: number): string {
+  return value.length <= max ? value : Array.from(value).slice(0, max).join('')
+}
+
+function capLogField(value: string): string {
+  return truncateCodePoints(value, SERVER_LOG_FIELD_CHARS + 1)
+}
+
 /**
  * Frontend error forwarding routed to `termul-server` (`POST /log/frontend-error`).
  * CAP-2 parity: mirrors the desktop `log_frontend_error` Tauri command. Returns
@@ -447,10 +488,11 @@ export const webServerLog = {
   }): Promise<void> {
     const res = await postJson<void>('/log/frontend-error', {
       level: payload.level ?? 'error',
-      message: payload.message,
-      source: payload.source ?? 'renderer',
-      stack: payload.stack ?? null,
-      componentStack: payload.componentStack ?? null
+      message: capLogField(payload.message),
+      source: capLogField(payload.source ?? 'renderer'),
+      stack: payload.stack === undefined ? null : capLogField(payload.stack),
+      componentStack:
+        payload.componentStack === undefined ? null : capLogField(payload.componentStack)
     })
     if (!res.success) throw new Error(res.error)
   }
@@ -515,13 +557,13 @@ export const webServerSearch = {
     query: string,
     includeIgnored?: boolean
   ): Promise<{
-    files: Array<{ path: string; ignored: boolean }>
+    files: Array<{ path: string; ignored: boolean; kind?: 'file' | 'dir' }>
     truncated: boolean
   }> {
     const params = new URLSearchParams({ root, query })
     if (includeIgnored) params.set('includeIgnored', 'true')
     const res = await getJson<{
-      files: Array<{ path: string; ignored: boolean }>
+      files: Array<{ path: string; ignored: boolean; kind?: 'file' | 'dir' }>
       truncated: boolean
     }>(`/search/file-names?${params.toString()}`)
     if (!res.success) throw new Error(res.error)
@@ -562,8 +604,7 @@ export const webServerMcpProbe = {
  * parity: each method mirrors a desktop `#[tauri::command] worktree_*` handler
  * and returns the SAME `IpcResult<T>` contract (the renderer facade
  * `worktree-api.ts` branches `isTauriContext()` between `invoke(...)` and these
- * HTTP impls). Only the 7 launch-flow routes ship here; the 8 advanced ops
- * stay `WEB_UNSUPPORTED` on web (deferred — see deferred-work.md).
+ * HTTP impls).
  */
 export const webServerWorktree = {
   async list(projectPath: string): Promise<IpcResult<WorktreeInfo[]>> {
@@ -587,17 +628,26 @@ export const webServerWorktree = {
     }
     const { progressId, ...rest } = params
     const id = progressId ?? ''
-    return postNdjsonStream<WorktreeInfo>(
-      '/worktree/create',
-      { ...rest, progressId: progressId ?? null, streamProgress: true },
-      (frame) => {
-        if (frame.type === 'preparing') {
-          onProgress({ progressId: id, line: 'preparing' })
-        } else if (frame.type === 'progress' && typeof frame.line === 'string') {
-          onProgress({ progressId: id, line: frame.line })
-        }
-      }
-    )
+    const body = { ...rest, progressId: progressId ?? null, streamProgress: true }
+    // The streamed variant is not a plain `postJson`: it goes through the engine
+    // itself, under the same key `postJson` uses for this route.
+    return runIpcCommand<WorktreeInfo>({
+      kind: 'worktree_create',
+      entityKey: worktreeCreateKey(params),
+      send: (commandId) =>
+        postNdjsonStream<WorktreeInfo>(
+          '/worktree/create',
+          body,
+          (frame) => {
+            if (frame.type === 'preparing') {
+              onProgress({ progressId: id, line: 'preparing' })
+            } else if (frame.type === 'progress' && typeof frame.line === 'string') {
+              onProgress({ progressId: id, line: frame.line })
+            }
+          },
+          commandId
+        )
+    })
   },
 
   async remove(
@@ -606,6 +656,19 @@ export const webServerWorktree = {
     force: boolean
   ): Promise<IpcResult<void>> {
     return postJson<void>('/worktree/remove', { projectPath, worktreePath, force })
+  },
+
+  /**
+   * Rename a worktree's branch by hand (story 16). WRITE route: refused with
+   * `FORBIDDEN` on a read-only server (non-loopback peer without
+   * `--allow-remote-writes`, or shared-live).
+   */
+  async renameBranch(
+    worktreePath: string,
+    oldBranch: string,
+    newBranch: string
+  ): Promise<IpcResult<void>> {
+    return postJson<void>('/worktree/rename-branch', { worktreePath, oldBranch, newBranch })
   },
 
   async branches(projectPath: string): Promise<IpcResult<BranchInfo[]>> {
@@ -630,22 +693,57 @@ export const webServerWorktree = {
       projectPath,
       worktreePath
     })
+  },
+
+  async parseGitignore(projectPath: string): Promise<IpcResult<GitignoreDir[]>> {
+    return postJson<GitignoreDir[]>('/worktree/parse-gitignore', { projectPath })
+  },
+
+  async createSymlinks(
+    projectPath: string,
+    worktreePath: string,
+    symlinkDirs: string[]
+  ): Promise<IpcResult<SymlinkResult[]>> {
+    return postJson<SymlinkResult[]>('/worktree/create-symlinks', {
+      projectPath,
+      worktreePath,
+      symlinkDirs
+    })
+  },
+
+  async ensureSymlinks(
+    projectPath: string,
+    worktreePath: string,
+    symlinkDirs: string[]
+  ): Promise<IpcResult<SymlinkResult[]>> {
+    return postJson<SymlinkResult[]>('/worktree/ensure-symlinks', {
+      projectPath,
+      worktreePath,
+      symlinkDirs
+    })
   }
 }
-/** MCP OAuth web parity — mirrors the desktop Tauri commands. */
+/**
+ * MCP OAuth web parity — mirrors the desktop Tauri commands. Every call names
+ * the `projectId` it acts for; `start` authorizes the server URL against that
+ * project's MCP list. Tokens stay keyed by server URL on the host.
+ */
 export const webServerMcpOAuth = {
   /** Start the OAuth flow; returns the auth URL to redirect the browser to. */
-  async start(serverUrl: string): Promise<IpcResult<{ authUrl: string; redirectUri: string }>> {
-    return postJson('/mcp-servers/oauth/start', { serverUrl })
+  async start(
+    projectId: string,
+    serverUrl: string
+  ): Promise<IpcResult<{ authUrl: string; redirectUri: string }>> {
+    return postJson('/mcp-servers/oauth/start', { projectId, serverUrl })
   },
 
   /** Check whether a stored OAuth token exists for a server URL. */
-  async status(serverUrl: string): Promise<IpcResult<{ hasToken: boolean }>> {
-    return postJson('/mcp-servers/oauth/status', { serverUrl })
+  async status(projectId: string, serverUrl: string): Promise<IpcResult<{ hasToken: boolean }>> {
+    return postJson('/mcp-servers/oauth/status', { projectId, serverUrl })
   },
 
   /** Delete the stored OAuth token for a server URL. */
-  async disconnect(serverUrl: string): Promise<IpcResult<void>> {
-    return postJson('/mcp-servers/oauth/disconnect', { serverUrl })
+  async disconnect(projectId: string, serverUrl: string): Promise<IpcResult<void>> {
+    return postJson('/mcp-servers/oauth/disconnect', { projectId, serverUrl })
   }
 }

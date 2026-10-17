@@ -25,6 +25,7 @@ const {
       generateCommitMessage
     },
     gitState: {
+      errors: {},
       statuses: {
         '/work': [
           { path: 'a.ts', staged: false, status: 'modified' },
@@ -102,6 +103,11 @@ vi.mock('@/hooks/use-mobile-web-shell', () => ({
 
 import { GitPanel } from './GitPanel'
 
+// Write controls are gated on a read-only server; these tests cover the admitted path.
+vi.mock('@/hooks/use-server-admits-remote-writes', () => ({
+  useServerAdmitsRemoteWrites: () => true
+}))
+
 function resetState() {
   vi.clearAllMocks()
   mobileRef.current = true
@@ -137,13 +143,33 @@ describe('GitPanel mobile branch', () => {
     const { container } = render(<GitPanel cwd="/work" isVisible />)
 
     // File list is present: the branch dropdown + the filter input.
-    expect(screen.getByPlaceholderText('Filter changes...')).toBeInTheDocument()
+    expect(screen.getByPlaceholderText('Filter changes')).toBeInTheDocument()
     // No back button (only shown when a file is selected).
     expect(screen.queryByLabelText('Back to file list')).not.toBeInTheDocument()
     // No diff view rendered (mobile hides the diff panel until a file is picked).
     expect(screen.queryByTestId('git-diff-view')).not.toBeInTheDocument()
     // Mobile file list is full-width, not the desktop `w-80` sidebar.
     expect(container.querySelector('.w-80')).toBeNull()
+  })
+
+  it('keeps the filter field at 16px on a coarse pointer so iOS does not zoom', () => {
+    render(<GitPanel cwd="/work" isVisible />)
+
+    expect(screen.getByPlaceholderText('Filter changes')).toHaveClass('pointer-coarse:text-base')
+  })
+
+  it('reserves the sheet close target on the right of both header rows', () => {
+    // The sheet close box is absolute at the top right (44px on coarse pointers),
+    // so the header rows must keep clear of it; without pr-14 it covers the
+    // Stash changes button.
+    const { unmount } = render(<GitPanel cwd="/work" isVisible />)
+    const stash = screen.getByTitle('Stash changes')
+    expect(stash.closest('.pr-14')).not.toBeNull()
+    unmount()
+
+    gitState.selectedFile = 'a.ts'
+    render(<GitPanel cwd="/work" isVisible />)
+    expect(screen.getByLabelText('Back to file list').closest('.pr-14')).not.toBeNull()
   })
 
   it('swaps to the diff view with a back button when a file is selected', () => {
@@ -153,7 +179,7 @@ describe('GitPanel mobile branch', () => {
     // Diff view + back button render; file list is hidden.
     expect(screen.getByTestId('git-diff-view')).toBeInTheDocument()
     expect(screen.getByLabelText('Back to file list')).toBeInTheDocument()
-    expect(screen.queryByPlaceholderText('Filter changes...')).not.toBeInTheDocument()
+    expect(screen.queryByPlaceholderText('Filter changes')).not.toBeInTheDocument()
   })
 
   it('clears selectedFile when the back button is tapped', () => {
@@ -316,13 +342,17 @@ describe('GitPanel desktop branch (regression — byte-identical layout)', () =>
     // Desktop keeps the `w-80` file-list sidebar AND the diff view side-by-side.
     expect(container.querySelector('.w-80')).not.toBeNull()
     expect(screen.getByTestId('git-diff-view')).toBeInTheDocument()
-    expect(screen.getByPlaceholderText('Filter changes...')).toBeInTheDocument()
+    // The desktop twin keeps its 12px size for a fine pointer and still takes the coarse token.
+    expect(screen.getByPlaceholderText('Filter changes')).toHaveClass(
+      'text-xs',
+      'pointer-coarse:text-base'
+    )
     // Desktop never renders the mobile back button.
     expect(screen.queryByLabelText('Back to file list')).not.toBeInTheDocument()
   })
 
   // Matrix row 8: desktop unchanged — dense sizing + hover idioms preserved.
-  it('desktop keeps dense row actions, sub-12px text, and hover-gated stash actions', () => {
+  it('desktop keeps dense row actions, 28px rows, and hover-gated stash actions', () => {
     gitState.selectedFile = null
     gitState.statuses['/work'] = [{ path: 'src/a.ts', staged: false, status: 'modified' }]
     gitState.stashes['/work'] = [{ index: 0, message: 'wip on dev' }]
@@ -334,9 +364,10 @@ describe('GitPanel desktop branch (regression — byte-identical layout)', () =>
     expect(stage.className).not.toContain('size-8')
     expect(stage.className).not.toContain('after:-inset-1.5')
 
-    // Desktop filename keeps the dense text-2xs / dir text-4xs scale.
-    expect(screen.getByText('a.ts').className).toContain('text-2xs')
-    expect(screen.getByText('src').className).toContain('text-4xs')
+    // Desktop row: 28px row, 12px file name, 11px muted dir.
+    expect(screen.getByText('a.ts').className).toContain('text-xs')
+    expect(screen.getByText('src').className).toContain('text-2xs')
+    expect(screen.getByText('a.ts').closest('[role="option"]')?.className).toContain('h-7')
 
     // Desktop stash actions keep the hover-only opacity-0 group idiom and the
     // destructive token swap (token-equivalent, no layout change).

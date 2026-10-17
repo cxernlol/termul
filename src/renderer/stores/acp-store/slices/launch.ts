@@ -15,14 +15,17 @@ import {
 } from '@/lib/agents/acp-spawn-errors'
 import { logFrontendError } from '@/lib/log-api'
 import { pendingRestartVersionsAfterSpawn } from '../../agent-update-orchestration'
+import { dropPromptQueueForSession } from '../../prompt-queue-orchestration'
 import {
   cacheOptionsFromSession,
+  dropPreparedSlots,
   dropRecordKey,
+  isLivePreparedSession,
   newId,
+  plainLastError,
   prepareChatKey,
   reapOrphanPreparedSession
 } from '../helpers'
-import { isIndexedRealSession } from '../live-turn'
 import {
   cancelledChatLaunches,
   ensureLiveAgent,
@@ -38,7 +41,7 @@ import {
   ChatLaunchCancelledError,
   type ChatMessage
 } from '../types'
-import { runPromptTurn } from './prompt'
+import { flushNextQueuedPrompt, runPromptTurn } from './prompt'
 
 function cancelPreparedChatEntry(
   key: string,
@@ -62,6 +65,17 @@ function cancelPreparedChatEntry(
     delete preparingChatKeys[key]
     delete prepareChatErrors[key]
     return { preparedSessions, preparingChatKeys, prepareChatErrors }
+  })
+}
+
+function remarkEphemeralAndNotify(
+  sessionId: SessionId,
+  set: (fn: (s: AcpState) => Partial<AcpState> | AcpState) => void
+): void {
+  ephemeralSessionIds.add(sessionId)
+  set((s) => {
+    const session = s.sessions[sessionId]
+    return session ? { sessions: { ...s.sessions, [sessionId]: { ...session } } } : {}
   })
 }
 
@@ -105,15 +119,16 @@ function promotePreparedSession(
         // Keep renderer behavior consistent with the backend reality: the
         // session is STILL backend-ephemeral, so close/disconnect must drop
         // (never persist) it — same as an un-promoted pooled session.
-        ephemeralSessionIds.add(sessionId)
+        remarkEphemeralAndNotify(sessionId, set)
       })
       .finally(() => {
         inFlightPromotions.delete(sessionId)
       })
     inFlightPromotions.set(sessionId, promotion)
   }
-  // Prepared keys exclude projectId; if projects share a cwd, the seed's
-  // projectId would be wrong for the consumer — stamp the consuming project.
+  // Prepared keys exclude projectId. Stamp the consuming project when it is
+  // the seed's project. A different project must not claim this session:
+  // the agent process was spawned for the seed project's Claude Account.
   set((s) => {
     const session = s.sessions[sessionId]
     if (!session) return {}
@@ -140,6 +155,40 @@ function promotePreparedSession(
   ) {
     void state.prepareChat(kConfig, kCwd, undefined, projectId, { silent: true })
   }
+}
+
+/**
+ * A prepared session can be claimed only when it was seeded for this project.
+ * A session with no project was spawned on the default Claude Account.
+ */
+function preparedSessionFitsProject(
+  get: () => AcpState,
+  sessionId: SessionId,
+  projectId: string
+): boolean {
+  return get().sessions[sessionId]?.projectId === projectId
+}
+
+function reconcilePreparedSlot(
+  key: string,
+  get: () => AcpState,
+  set: (fn: (s: AcpState) => Partial<AcpState> | AcpState) => void
+): SessionId | null {
+  const sessionId = get().preparedSessions[key]
+  if (!sessionId) return null
+  if (isLivePreparedSession(get(), sessionId)) return sessionId
+  void logFrontendError({
+    level: 'info',
+    source: 'acp.preparedSlot.stale',
+    message: `Dropped stale prepared slot ${sessionId} (session ${get().sessions[sessionId]?.status ?? 'missing'})`
+  })
+  set((s) => ({
+    preparedSessions: dropPreparedSlots(s.preparedSessions, (sid) => sid === sessionId)
+  }))
+  if (get().sessions[sessionId] && get().activeSessionId !== sessionId) {
+    reapOrphanPreparedSession(get, set, sessionId)
+  }
+  return null
 }
 
 type LaunchSliceState = Pick<
@@ -175,32 +224,19 @@ export const createLaunchSlice: StateCreator<AcpState, [], [], LaunchSliceState>
     if (!sessionId) return
     // If the user already navigated to this session, don't reap it.
     if (get().activeSessionId === sessionId) return
-    // A prepare cancel must not close or delete a chat that already has a
-    // persisted history row (issue #882). Warm-pool ids are not indexed.
-    if (isIndexedRealSession(get().sessionIndex, sessionId)) {
-      ephemeralSessionIds.delete(sessionId)
-      void logFrontendError({
-        level: 'warn',
-        source: 'acp.cancelPreparedChat',
-        message: `Skipped teardown of indexed session ${sessionId}; prepare cancel must not close or delete a persisted chat`
-      })
-      return
-    }
-    void get()
-      .closeSession(sessionId)
-      .catch(() => {
-        /* best-effort: backend may already be gone */
-      })
-      .finally(() => {
-        void get().deleteHistorySession(sessionId)
-      })
+    reapOrphanPreparedSession(get, set, sessionId)
   },
 
   prepareChat: (configId, cwd, mcpServers, projectId, opts) => {
     const trimmedCwd = cwd.trim()
     if (!configId || trimmedCwd.length === 0) return
     const key = prepareChatKey(configId, trimmedCwd, mcpServers)
-    if (get().preparedSessions[key] || inFlightPrepared.has(key)) return
+    if (reconcilePreparedSlot(key, get, set) || inFlightPrepared.has(key)) return
+    // AD-5: a definite host rejection (missing binary / invalid config) is not
+    // retried by background (`silent`) seeds — pool reseed, retarget, model
+    // catalog. A user-initiated (non-silent) prepare, e.g. a Retry click, is a
+    // new intent and tries again.
+    if (opts?.silent && get().prepareChatErrors[key]?.definite) return
     set((s) => {
       const prepareChatErrors = { ...s.prepareChatErrors }
       delete prepareChatErrors[key]
@@ -220,7 +256,7 @@ export const createLaunchSlice: StateCreator<AcpState, [], [], LaunchSliceState>
 
     void (async (): Promise<void> => {
       try {
-        const agentId = await ensureLiveAgent(get, set, configId, trimmedCwd)
+        const agentId = await ensureLiveAgent(get, set, configId, trimmedCwd, { projectId })
         if (inFlightPrepared.get(key) !== task) {
           settle(null)
           return
@@ -330,28 +366,31 @@ export const createLaunchSlice: StateCreator<AcpState, [], [], LaunchSliceState>
     // Loop so a cancelled in-flight prepare that returns null can pick up a
     // newer prepare that started during the await (cancel+reopen race).
     for (;;) {
-      const prepared = get().preparedSessions[key]
+      const prepared = reconcilePreparedSlot(key, get, set)
       if (prepared) {
+        if (!preparedSessionFitsProject(get, prepared, projectId)) {
+          void logFrontendError({
+            level: 'info',
+            source: 'acp-store.startChat',
+            message: `Prepared session ${prepared} for ${configId} at ${trimmedCwd} belongs to another project; starting a separate agent`
+          })
+          break
+        }
         promotePreparedSession(key, prepared, projectId, get, set)
         return prepared
       }
       const inFlight = inFlightPrepared.get(key)
       if (!inFlight) break
-      const sessionId = await inFlight
-      if (sessionId) {
-        promotePreparedSession(key, sessionId, projectId, get, set)
-        return sessionId
-      }
-      // null: cancelled or failed — re-check for a newer prepare before spawning.
+      await inFlight
     }
-    const agentId = await ensureLiveAgent(get, set, configId, trimmedCwd)
+    const agentId = await ensureLiveAgent(get, set, configId, trimmedCwd, { projectId })
     if (!agentId) throw new Error(`failed to spawn agent for config ${configId}`)
     return get().createSession(agentId, trimmedCwd, mcpServers, projectId, opts)
   },
 
   claimPreparedChat: (key, projectId) => {
-    const sessionId = get().preparedSessions[key]
-    if (!sessionId) return null
+    const sessionId = reconcilePreparedSlot(key, get, set)
+    if (!sessionId || !preparedSessionFitsProject(get, sessionId, projectId)) return null
     promotePreparedSession(key, sessionId, projectId, get, set)
     return sessionId
   },
@@ -426,6 +465,7 @@ export const createLaunchSlice: StateCreator<AcpState, [], [], LaunchSliceState>
         sessions,
         messages,
         launchingSessionIds,
+        promptQueues: dropPromptQueueForSession(s.promptQueues, sessionId),
         activeSessionId: s.activeSessionId === sessionId ? null : s.activeSessionId
       }
     })
@@ -445,7 +485,7 @@ export const createLaunchSlice: StateCreator<AcpState, [], [], LaunchSliceState>
               ...current,
               activeTurn: true,
               openTurnId: current.openTurnId ?? newId('turn'),
-              lastError: null
+              ...plainLastError(null)
             }
           }
         }
@@ -469,7 +509,7 @@ export const createLaunchSlice: StateCreator<AcpState, [], [], LaunchSliceState>
             ...current,
             activeTurn: true,
             openTurnId: newId('turn'),
-            lastError: null
+            ...plainLastError(null)
           }
         },
         launchingSessionIds: { ...s.launchingSessionIds, [sessionId]: true }
@@ -636,6 +676,12 @@ export const createLaunchSlice: StateCreator<AcpState, [], [], LaunchSliceState>
           if (!real) return s
           const placeholderMessages = s.messages[placeholderId] ?? []
           const realMessages = s.messages[sessionId] ?? []
+          const promptQueues = { ...s.promptQueues }
+          const placeholderQueue = promptQueues[placeholderId] ?? []
+          if (placeholderQueue.length > 0) {
+            promptQueues[sessionId] = [...(promptQueues[sessionId] ?? []), ...placeholderQueue]
+          }
+          delete promptQueues[placeholderId]
           const messages = { ...s.messages }
           const sessions = { ...s.sessions }
           const launchingSessionIds = { ...s.launchingSessionIds }
@@ -663,6 +709,7 @@ export const createLaunchSlice: StateCreator<AcpState, [], [], LaunchSliceState>
           return {
             sessions,
             messages,
+            promptQueues,
             launchingSessionIds,
             activeSessionId: s.activeSessionId === placeholderId ? sessionId : s.activeSessionId,
             // Drop the placeholder's failed-launch index projection (if any) so
@@ -707,6 +754,7 @@ export const createLaunchSlice: StateCreator<AcpState, [], [], LaunchSliceState>
           { skipUserAppend: hadOptimisticUser }
         )
       }
+      flushNextQueuedPrompt(set, sessionId)
       return sessionId
     } catch (err) {
       // Cancellation bypasses failure stamping entirely: the user deleted the
@@ -733,7 +781,9 @@ export const createLaunchSlice: StateCreator<AcpState, [], [], LaunchSliceState>
       // lastError stamping and skip the launchConfigId + index projection —
       // the real session already has its index entry from createSession, and
       // its retry stays on the retryCrashedSession reopen path so no orphan
-      // host session is created.
+      // host session is created. It also keeps the code and data: runPromptTurn
+      // clears them at turn start, so any present belong to this prompt's
+      // agent_error.
       const placeholderAlive = Boolean(get().sessions[placeholderId])
       // Actionable banner text: the additive `agent_auth_required` wire code /
       // `ACP_AUTH_REQUIRED` prefix classifies as auth (sign-in guidance); any
@@ -764,14 +814,13 @@ export const createLaunchSlice: StateCreator<AcpState, [], [], LaunchSliceState>
               status: 'error',
               activeTurn: false,
               openTurnId: null,
-              lastError: placeholderAlive
-                ? `${classified.label}: ${classified.detail}`
-                : err instanceof Error
-                  ? err.message
-                  : String(err),
               ...(placeholderAlive
-                ? { launchConfigId: configId, pendingLauncherOptions: pending ?? null }
-                : {})
+                ? {
+                    ...plainLastError(`${classified.label}: ${classified.detail}`),
+                    launchConfigId: configId,
+                    pendingLauncherOptions: pending ?? null
+                  }
+                : { lastError: err instanceof Error ? err.message : String(err) })
             }
           },
           launchingSessionIds: dropRecordKey(launchingSessionIds, failedId)

@@ -1,7 +1,10 @@
 import { PersistenceKeys, type WindowState } from '@shared/types/persistence.types'
 import { useEffect, useRef, useState } from 'react'
 import { persistenceApi } from '@/lib/api'
+import { registerCloseWriter, withinCloseTimeout } from '@/lib/close-flush'
+import { logFrontendError } from '@/lib/log-api'
 import { cleanupTauriListener, isTauriContext } from '@/lib/tauri-runtime'
+import { isWaylandSession } from '@/lib/tauri-wayland'
 import {
   availableMonitors,
   getCurrentWindow,
@@ -10,10 +13,18 @@ import {
   type Monitor,
   primaryMonitor
 } from '@/lib/tauri-window'
+import { hasAppCloseOwner } from '@/lib/tauri-window-api'
 
 const DEFAULT_WIDTH = 1200
 const DEFAULT_HEIGHT = 800
 const MIN_VISIBLE_PIXELS = 100
+
+/**
+ * Upper bound for the geometry-restore phase. If `loadWindowState`,
+ * `setPosition` or `setSize` never settle (gh-719: Wayland/Hyprland), `isReady`
+ * still flips so `TauriApp` can show the window.
+ */
+export const WINDOW_RESTORE_TIMEOUT_MS = 1500
 
 interface LogicalRect {
   x: number
@@ -194,7 +205,13 @@ export function useWindowState(): boolean {
       return state
     }
 
+    // True while the geometry restore is still running (including after a
+    // timeout). Move/resize events it triggers must not be persisted as if the
+    // user moved the window.
+    let restoreInFlight = true
+
     const persistWindowState = async (immediate = false): Promise<void> => {
+      if (!immediate && restoreInFlight) return
       const state = await buildWindowState()
       const operation = immediate
         ? persistenceApi.write(PersistenceKeys.windowState, state)
@@ -202,7 +219,41 @@ export function useWindowState(): boolean {
       await operation
     }
 
-    const initialize = async (): Promise<Array<() => void>> => {
+    let closeWrite: Promise<void> | null = null
+    const persistImmediateShared = (): Promise<void> => {
+      closeWrite ??= persistWindowState(true).finally(() => {
+        closeWrite = null
+      })
+      return closeWrite
+    }
+
+    const registerListeners = (): Array<() => void> => {
+      const movedUnlisten = window.onMoved(() => void persistWindowState())
+      const resizedUnlisten = window.onResized(() => void persistWindowState())
+      // Persist only; never decide the close. Tauri destroys the window for
+      // every close listener that does not prevent its own event, which would
+      // override the app-close owner: quit (killing agents) instead of hiding
+      // to the tray on Linux/macOS, and skip the unsaved-files prompt on
+      // Windows (issue #1146). With no owner mounted (error fallback, unknown
+      // route) the default destroy stays, so the window can still close.
+      const closeRequestedUnlisten = window.onCloseRequested((event) => {
+        if (hasAppCloseOwner()) event.preventDefault()
+        persistImmediateShared().catch((error) => {
+          void logFrontendError({
+            source: 'use-window-state',
+            message: `Failed to persist window state on close: ${error instanceof Error ? error.message : String(error)}`
+          })
+        })
+      })
+
+      return [
+        () => cleanupTauriListener(movedUnlisten),
+        () => cleanupTauriListener(resizedUnlisten),
+        () => cleanupTauriListener(closeRequestedUnlisten)
+      ]
+    }
+
+    const restoreGeometry = async (): Promise<void> => {
       const restoredState = await loadWindowState()
 
       normalStateRef.current = {
@@ -210,39 +261,61 @@ export function useWindowState(): boolean {
         isMaximized: false
       }
 
-      await window.setPosition(new LogicalPosition(restoredState.x, restoredState.y))
+      // Wayland compositors own window placement; a client-side setPosition is
+      // ignored at best and can never settle at worst (gh-719).
+      if (!(await isWaylandSession())) {
+        await window.setPosition(new LogicalPosition(restoredState.x, restoredState.y))
+      }
       await window.setSize(new LogicalSize(restoredState.width, restoredState.height))
 
       if (restoredState.isMaximized) {
         await window.maximize()
       }
-
-      const movedUnlisten = window.onMoved(() => void persistWindowState())
-      const resizedUnlisten = window.onResized(() => void persistWindowState())
-      const closeRequestedUnlisten = window.onCloseRequested(() => void persistWindowState(true))
-
-      const cleanups = [
-        () => cleanupTauriListener(movedUnlisten),
-        () => cleanupTauriListener(resizedUnlisten),
-        () => cleanupTauriListener(closeRequestedUnlisten)
-      ]
-
-      return cleanups
     }
 
     let cleanups: Array<() => void> = []
+    let unregisterCloseWriter = (): void => {}
+    let restoreTimer: ReturnType<typeof setTimeout> | undefined
+
+    const initialize = async (): Promise<void> => {
+      const restore = restoreGeometry()
+      const markRestoreSettled = (): void => {
+        restoreInFlight = false
+      }
+      restore.then(markRestoreSettled, markRestoreSettled)
+      const timeout = new Promise<'timeout'>((resolve) => {
+        restoreTimer = setTimeout(() => resolve('timeout'), WINDOW_RESTORE_TIMEOUT_MS)
+      })
+
+      // A late rejection of a restore that lost the race must not surface as an
+      // unhandled rejection (swallowed below).
+      const outcome = await Promise.race([restore.then(() => 'done' as const), timeout]).finally(
+        () => {
+          clearTimeout(restoreTimer)
+        }
+      )
+
+      if (outcome === 'timeout') {
+        console.warn(
+          `Window state restore timed out after ${WINDOW_RESTORE_TIMEOUT_MS}ms; showing window anyway`
+        )
+        void logFrontendError({
+          level: 'warn',
+          source: 'use-window-state',
+          message: `Window state restore timed out after ${WINDOW_RESTORE_TIMEOUT_MS}ms`
+        })
+        // Let the hung restore finish in the background; swallow its late result.
+        restore.catch(() => {})
+      }
+
+      if (disposed) return
+      cleanups = registerListeners()
+      unregisterCloseWriter = registerCloseWriter(() =>
+        withinCloseTimeout('use-window-state', 'window state', persistImmediateShared)
+      )
+    }
 
     void initialize()
-      .then((listeners) => {
-        if (disposed) {
-          listeners.forEach((cleanup) => {
-            cleanup()
-          })
-          return
-        }
-
-        cleanups = listeners
-      })
       .catch((error) => {
         console.error('Failed to initialize window state:', error)
       })
@@ -254,6 +327,8 @@ export function useWindowState(): boolean {
 
     return () => {
       disposed = true
+      clearTimeout(restoreTimer)
+      unregisterCloseWriter()
       void persistWindowState(true)
       cleanups.forEach((cleanup) => {
         cleanup()

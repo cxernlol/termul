@@ -1,15 +1,18 @@
-import type { BranchInfo } from '@shared/types/ipc.types'
+import type { BranchInfo } from '@shared/types/worktree.types'
 import { AnimatePresence, motion } from 'framer-motion'
 import { type KeyboardEvent, useCallback, useEffect, useState } from 'react'
+import { toast } from 'sonner'
 import { WorktreeCreationCard } from '@/components/chat/WorktreeCreationCard'
 import { AlertTriangle, GitBranch, Link2, Search, Terminal, X } from '@/components/icons'
 import { Button } from '@/components/ui/button'
+import { FIELD_FOCUS_CLASS } from '@/components/ui/panel-styles'
 import { Spinner } from '@/components/ui/spinner'
-import { toast } from '@/hooks/use-toast'
 import { worktreeApi } from '@/lib/api'
-import { activateAndOpenTerminal } from '@/lib/terminal-spawn'
+import { logFrontendError } from '@/lib/log-api'
+import { openTerminalAtCwd } from '@/lib/terminal-spawn'
 import { cn } from '@/lib/utils'
 import { randomUUID } from '@/lib/uuid'
+import { reconcileProjectWorktrees } from '@/lib/worktree-reconciler'
 import { useProjectActions, useProjectStore } from '@/stores/project-store'
 import { useWorktreeProgressStore } from '@/stores/worktree-progress-store'
 import type { Worktree } from '@/types/project'
@@ -23,7 +26,7 @@ interface NewWorktreeModalProps {
 export function NewWorktreeModal({ isOpen, onClose, projectId }: NewWorktreeModalProps) {
   const project = useProjectStore((state) => state.projects.find((p) => p.id === projectId))
   const isWorktreeOperationLocked = useProjectStore((state) => state.isWorktreeOperationLocked)
-  const { addWorktree, setWorktreeOperationLock } = useProjectActions()
+  const { setWorktreeOperationLock } = useProjectActions()
 
   // Form state
   const [branchType, setBranchType] = useState<'existing' | 'new'>('new')
@@ -243,14 +246,9 @@ export function NewWorktreeModal({ isOpen, onClose, projectId }: NewWorktreeModa
       }
 
       if (result.success && result.data) {
-        const newWorktree: Worktree = {
-          id: randomUUID(),
-          name: result.data.name,
-          branch: result.data.branch,
-          path: result.data.path,
-          createdAt: new Date().toISOString()
-        }
-        addWorktree(projectId, newWorktree)
+        // Register through the single-flight reconciler (the only writer of
+        // `project.worktrees`). The switcher pick is not touched.
+        await reconcileProjectWorktrees(projectId)
 
         // Create symlinks for enabled directories
         const enabledDirs = Array.from(enabledSymlinkDirs)
@@ -266,68 +264,67 @@ export function NewWorktreeModal({ isOpen, onClose, projectId }: NewWorktreeModa
               const skipped = symlinkResult.data.filter((r) => r.status === 'skipped').length
               const failed = symlinkResult.data.filter((r) => r.status === 'failed').length
               if (failed > 0) {
-                toast({
-                  title: 'Worktree created with symlink warnings',
+                toast('Worktree created with symlink warnings', {
                   description: `${created} symlink(s) created, ${skipped} skipped, ${failed} failed.`
                 })
               } else {
-                toast({
-                  title: 'Worktree created',
+                toast('Worktree created', {
                   description: `"${result.data.name}" created on branch "${result.data.branch}" with ${created} symlink(s).`
                 })
               }
             } else {
               // Symlink creation failed but worktree was created successfully
-              toast({
-                title: 'Worktree created',
+              toast('Worktree created', {
                 description: `"${result.data.name}" created on branch "${result.data.branch}". Symlink setup had issues.`
               })
             }
           } catch {
             // Symlink failure is non-blocking
-            toast({
-              title: 'Worktree created',
+            toast('Worktree created', {
               description: `"${result.data.name}" created on branch "${result.data.branch}". Symlink setup skipped.`
             })
           }
         } else {
-          toast({
-            title: 'Worktree created',
+          toast('Worktree created', {
             description: `"${result.data.name}" created successfully on branch "${result.data.branch}".`
           })
         }
 
-        // Land the user inside the new worktree: activate it and open a terminal there.
+        // Open a terminal in the new worktree (the switcher pick is unchanged).
         // Best-effort — a spawn failure must not block the (already successful) creation.
-        const outcome = await activateAndOpenTerminal(projectId, newWorktree.id, result.data.path)
+        const outcome = await openTerminalAtCwd(projectId, result.data.path)
         if (outcome.status === 'no-pane') {
-          toast({
-            title: 'Worktree ready — terminal not opened',
+          toast('Worktree ready — terminal not opened', {
             description: 'No active pane to open a terminal in. Switch to a workspace pane first.'
           })
         } else if (outcome.status === 'spawn-failed') {
-          toast({
-            title: 'Worktree ready — terminal not opened',
+          toast('Worktree ready — terminal not opened', {
             description: outcome.error || 'Could not open a terminal in the new worktree.'
           })
         }
 
         onClose()
       } else {
+        void logFrontendError({
+          level: 'warn',
+          source: 'newWorktreeModal.worktreeCreate',
+          message: `worktree create failed code=${result.success ? 'UNKNOWN' : result.code}`
+        })
         setValidationError(!result.success ? result.error : 'Failed to create worktree')
-        toast({
-          title: 'Failed to create worktree',
-          description: !result.success ? result.error : 'Unknown error',
-          variant: 'destructive'
+        toast.error('Failed to create worktree', {
+          description: !result.success ? result.error : 'Unknown error'
         })
       }
     } catch (err) {
       const msg = String(err)
+      void logFrontendError({
+        level: 'warn',
+        source: 'newWorktreeModal.worktreeCreate',
+        message: 'worktree create threw code=UNKNOWN'
+      })
       setValidationError(msg)
-      toast({
-        title: 'Error creating worktree',
-        description: msg,
-        variant: 'destructive'
+      toast.error('Error creating worktree', {
+        description: msg
       })
     } finally {
       setIsCreating(false)
@@ -344,7 +341,6 @@ export function NewWorktreeModal({ isOpen, onClose, projectId }: NewWorktreeModa
     startRef,
     projectPath,
     projectId,
-    addWorktree,
     setWorktreeOperationLock,
     onClose,
     enabledSymlinkDirs,
@@ -415,7 +411,7 @@ export function NewWorktreeModal({ isOpen, onClose, projectId }: NewWorktreeModa
                   type="text"
                   value={project.name}
                   readOnly
-                  className="w-full bg-secondary/50 border border-border rounded px-3 py-1.5 text-sm text-muted-foreground cursor-not-allowed"
+                  className={`w-full bg-secondary/50 border border-border rounded px-3 py-1.5 text-sm text-muted-foreground cursor-not-allowed ${FIELD_FOCUS_CLASS}`}
                 />
               </div>
 
@@ -427,7 +423,7 @@ export function NewWorktreeModal({ isOpen, onClose, projectId }: NewWorktreeModa
                   value={worktreeName}
                   onChange={(e) => setWorktreeName(e.target.value)}
                   placeholder="e.g. try-new-hero"
-                  className="w-full bg-secondary border border-border rounded px-3 py-1.5 text-sm text-foreground focus:ring-1 focus:ring-primary outline-none placeholder-muted-foreground"
+                  className={`w-full bg-secondary border border-border rounded px-3 py-1.5 text-sm text-foreground placeholder-muted-foreground ${FIELD_FOCUS_CLASS}`}
                 />
                 <p className="text-3xs text-muted-foreground mt-0.5">
                   A separate place to work. Your main project stays untouched.
@@ -505,7 +501,7 @@ export function NewWorktreeModal({ isOpen, onClose, projectId }: NewWorktreeModa
                               value={branchSearch}
                               onChange={(e) => setBranchSearch(e.target.value)}
                               placeholder="Search branches..."
-                              className="w-full bg-secondary border border-border rounded pl-7 pr-3 py-1 text-xs text-foreground focus:ring-1 focus:ring-primary outline-none placeholder-muted-foreground"
+                              className={`w-full bg-secondary border border-border rounded pl-7 pr-3 py-1 text-xs text-foreground placeholder-muted-foreground ${FIELD_FOCUS_CLASS}`}
                             />
                           </div>
                           {/* Remote toggle */}
@@ -569,7 +565,7 @@ export function NewWorktreeModal({ isOpen, onClose, projectId }: NewWorktreeModa
                           placeholder={
                             worktreeName ? sanitizeBranchName(worktreeName) : 'feature/my-feature'
                           }
-                          className="w-full bg-secondary border border-border rounded px-3 py-1.5 text-sm text-foreground focus:ring-1 focus:ring-primary outline-none placeholder-muted-foreground"
+                          className={`w-full bg-secondary border border-border rounded px-3 py-1.5 text-sm text-foreground placeholder-muted-foreground ${FIELD_FOCUS_CLASS}`}
                         />
                         <p className="text-3xs text-muted-foreground mt-0.5">
                           {newBranchName && sanitizeBranchName(newBranchName) !== newBranchName
@@ -587,7 +583,7 @@ export function NewWorktreeModal({ isOpen, onClose, projectId }: NewWorktreeModa
                           value={startRef}
                           onChange={(e) => setStartRef(e.target.value)}
                           placeholder="HEAD, main, or a commit hash"
-                          className="w-full bg-secondary border border-border rounded px-3 py-1.5 text-sm text-foreground focus:ring-1 focus:ring-primary outline-none placeholder-muted-foreground"
+                          className={`w-full bg-secondary border border-border rounded px-3 py-1.5 text-sm text-foreground placeholder-muted-foreground ${FIELD_FOCUS_CLASS}`}
                         />
                         <p className="text-3xs text-muted-foreground mt-0.5">
                           Defaults to HEAD if not specified

@@ -2,10 +2,12 @@
  * Pure helpers for the @-file mention menu. Kept free of React/store so they
  * can be unit-tested directly. Mirrors the slash-menu-model split.
  *
- * A mention token is an `@` preceded by start-of-text or whitespace, plus the
- * contiguous non-whitespace, non-`@` run after it. The token is "active" while
- * the caret sits within `(at, end]`. See ADR 0003.
+ * A mention token is an `@` preceded by start-of-text, whitespace, or the end
+ * of a pill, plus the contiguous non-whitespace, non-`@` run after it. The
+ * token is "active" while the caret sits within `(at, end]`. See ADR 0003.
  */
+
+import { isComposerTriggerBoundary } from '@/lib/skill-tokens'
 
 export interface MentionToken {
   /** Index of the `@` in the composer value. */
@@ -28,8 +30,7 @@ export function activeMentionToken(value: string, caret: number): MentionToken |
   if (caret < 0 || caret > value.length) return null
   for (let i = caret - 1; i >= 0; i--) {
     if (value[i] !== '@') continue
-    const prev = i === 0 ? '' : value[i - 1]
-    if (prev !== '' && !/\s/.test(prev)) continue
+    if (!isComposerTriggerBoundary(value, i)) continue
     let end = i + 1
     while (end < value.length && isTokenChar(value[end])) end++
     if (caret > i && caret <= end) {
@@ -58,9 +59,23 @@ export function spliceMentionToken(value: string, token: MentionToken): string {
  */
 export interface MentionMatch {
   relPath: string
+  /**
+   * Absolute OS path. Folder matches (`kind: 'dir'`) carry a trailing `/` — the
+   * dir marker the file token reuses (see `isFolderTokenPath`) — so a folder and
+   * a same-named file never share a key.
+   */
   absPath: string
   name: string
   ignored: boolean
+  /** Absent means `'file'` (old persisted recents and payloads). */
+  kind?: 'file' | 'dir'
+}
+
+/** Folders render in their own section and never crowd out files. */
+export const MAX_FOLDER_RESULTS = 20
+
+export function isFolderMatch(m: MentionMatch): boolean {
+  return m.kind === 'dir'
 }
 
 export interface MentionItem {
@@ -68,6 +83,7 @@ export interface MentionItem {
   label: string
   description: string
   ignored: boolean
+  kind: 'file' | 'dir'
   payload: MentionMatch
 }
 
@@ -83,6 +99,7 @@ function toMentionItem(m: MentionMatch): MentionItem {
     label: m.name,
     description: m.relPath,
     ignored: m.ignored,
+    kind: isFolderMatch(m) ? 'dir' : 'file',
     payload: m
   }
 }
@@ -100,8 +117,9 @@ function dedupByPath(matches: MentionMatch[]): MentionMatch[] {
 
 /**
  * Build picker sections from live matches + recents. Per ADR 0003: an empty
- * query shows Recents; a non-empty query shows Files (the ripgrep results,
- * already ranked non-ignored-first by the backend). Returns no sections when
+ * query shows Recents (files and folders mixed); a non-empty query shows Files
+ * (the ripgrep results, already ranked non-ignored-first by the backend)
+ * followed by Folders (gh-896, capped at {@link MAX_FOLDER_RESULTS}). Returns no sections when
  * there is nothing to show so the menu can render its empty state.
  */
 export function buildMentionSections(input: {
@@ -115,7 +133,11 @@ export function buildMentionSections(input: {
     if (items.length === 0) return []
     return [{ id: 'recents', heading: 'Recent', items }]
   }
-  const items = dedupByPath(matches).map(toMentionItem)
-  if (items.length === 0) return []
-  return [{ id: 'files', heading: 'Files', items }]
+  const deduped = dedupByPath(matches)
+  const files = deduped.filter((m) => !isFolderMatch(m)).map(toMentionItem)
+  const folders = deduped.filter(isFolderMatch).slice(0, MAX_FOLDER_RESULTS).map(toMentionItem)
+  const sections: MentionSection[] = []
+  if (files.length > 0) sections.push({ id: 'files', heading: 'Files', items: files })
+  if (folders.length > 0) sections.push({ id: 'folders', heading: 'Folders', items: folders })
+  return sections
 }

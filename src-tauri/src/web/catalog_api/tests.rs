@@ -45,22 +45,21 @@ async fn state_with_store(root: &std::path::Path) -> AppState {
         exit_code_tracker: pty.exit_code_tracker(),
         pty,
         relay: Arc::new(crate::web::sink::WsRelaySink::new()),
-        registry: Arc::new(crate::web::project_registry::ProjectRegistry::new()),
-        registry_persistence: None,
-        projects_file: None,
+        registry: crate::web::project_registry::ProjectRegistry::seeded_for_test(
+            &std::env::temp_dir(),
+        ),
         history_mode: HistoryMode::LiveOnly,
-        project_root: Arc::new(parking_lot::RwLock::new(std::env::temp_dir())),
         pending_oauth_flows: std::sync::Arc::new(parking_lot::RwLock::new(
             std::collections::HashMap::new(),
         )),
         oauth_base_url: "http://127.0.0.1".to_string(),
-        workspace_manifest: None,
         acp_catalog: Some(store),
         acp_install: None,
         store: None,
         web_auth: None,
         allow_remote_writes: false,
         shared_live_writes_denied: false,
+        connections: Default::default(),
     }
 }
 
@@ -74,22 +73,21 @@ async fn state_without_store() -> AppState {
         exit_code_tracker: pty.exit_code_tracker(),
         pty,
         relay: Arc::new(crate::web::sink::WsRelaySink::new()),
-        registry: Arc::new(crate::web::project_registry::ProjectRegistry::new()),
-        registry_persistence: None,
-        projects_file: None,
+        registry: crate::web::project_registry::ProjectRegistry::seeded_for_test(
+            &std::env::temp_dir(),
+        ),
         history_mode: HistoryMode::LiveOnly,
-        project_root: Arc::new(parking_lot::RwLock::new(std::env::temp_dir())),
         pending_oauth_flows: std::sync::Arc::new(parking_lot::RwLock::new(
             std::collections::HashMap::new(),
         )),
         oauth_base_url: "http://127.0.0.1".to_string(),
-        workspace_manifest: None,
         acp_catalog: None,
         acp_install: None,
         store: None,
         web_auth: None,
         allow_remote_writes: false,
         shared_live_writes_denied: false,
+        connections: Default::default(),
     }
 }
 

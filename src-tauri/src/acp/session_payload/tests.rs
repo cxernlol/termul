@@ -20,9 +20,18 @@ fn metadata() -> SessionMetadata {
         tool_count: 0,
         last_seq: 0,
         fold_open_role: None,
+        fold_counted: false,
         discovered: false,
         worktree_path: Some("/work/project/.termul/worktrees/chat/abc123".to_string()),
         worktree_branch: Some("chat/abc123".to_string()),
+        model_id: None,
+        model_name: None,
+        worktree_branch_source: None,
+        worktree_launch_branch: None,
+        command_id: None,
+        log_epoch: None,
+        head_ahead_of_durable: false,
+        sweep_checkpoint: None,
     }
 }
 
@@ -173,9 +182,26 @@ fn metadata_maps_agent_config_prefix_and_fallbacks() {
             "messageCount": 0,
             "lastSeq": 0,
             "status": "active",
+            // Issue #1192: an empty log has no open turn, said explicitly.
+            "turnActive": false,
             "worktreePath": "/work/project/.termul/worktrees/chat/abc123",
             "worktreeBranch": "chat/abc123",
         })
+    );
+}
+
+#[test]
+fn metadata_carries_the_log_epoch_when_the_session_has_one() {
+    let mut meta = metadata();
+    meta.log_epoch = Some("epoch-7".to_string());
+    let value = serde_json::to_value(materialize_session_payload(&meta, &[]).metadata).unwrap();
+    assert_eq!(value["logEpoch"], "epoch-7");
+
+    meta.log_epoch = None;
+    let value = serde_json::to_value(materialize_session_payload(&meta, &[]).metadata).unwrap();
+    assert!(
+        value.get("logEpoch").is_none(),
+        "absent, never null: {value}"
     );
 }
 
@@ -604,7 +630,7 @@ fn superseded_unmatched_prompt_does_not_hold_turn_active() {
     ];
     assert_eq!(open_turn_from_records(&records), None);
     let payload = materialize_session_payload(&metadata(), &records);
-    assert!(!payload.metadata.turn_active);
+    assert_eq!(payload.metadata.turn_active, Some(false));
 }
 
 #[test]
@@ -617,7 +643,7 @@ fn latest_unmatched_prompt_is_the_open_turn() {
     ];
     assert_eq!(open_turn_from_records(&records).as_deref(), Some("turn-2"));
     let payload = materialize_session_payload(&metadata(), &records);
-    assert!(payload.metadata.turn_active);
+    assert_eq!(payload.metadata.turn_active, Some(true));
 }
 
 #[test]
@@ -652,6 +678,32 @@ fn all_completed_prompts_yield_no_open_turn() {
     assert_eq!(open_turn_from_records(&records), None);
 }
 
+/// ACPM-F1: a host terminator (`error` / `timeout` / `crashed`
+/// `prompt_complete`, matched by turn id) closes the turn exactly like an ACP
+/// stop reason — reopening shows no open turn and the session is not busy.
+#[test]
+fn host_terminators_close_the_open_turn_on_reopen() {
+    for stop_reason in ["error", "timeout", "crashed"] {
+        let records = vec![
+            user_prompt(1, Some("turn-1"), "ran into trouble"),
+            chunk(2, "agent", "partial"),
+            record(
+                3,
+                "prompt_complete",
+                json!({"sessionId": "session-1", "turnId": "turn-1", "stopReason": stop_reason}),
+            ),
+        ];
+        assert_eq!(open_turn_from_records(&records), None, "{stop_reason}");
+        let payload = materialize_session_payload(&metadata(), &records);
+        assert_eq!(payload.metadata.turn_active, Some(false), "{stop_reason}");
+        // Without the terminator the same log IS open (the pre-fix state).
+        assert_eq!(
+            open_turn_from_records(&records[..2]).as_deref(),
+            Some("turn-1")
+        );
+    }
+}
+
 #[test]
 fn null_turn_id_prompt_is_unnameable_not_uncloseable() {
     // Producers serialize `Option<String>` inside `json!`, so a client that
@@ -680,7 +732,7 @@ fn agent_switch_closes_abandoned_open_turn() {
     ];
     assert_eq!(open_turn_from_records(&records), None);
     let payload = materialize_session_payload(&metadata(), &records);
-    assert!(!payload.metadata.turn_active);
+    assert_eq!(payload.metadata.turn_active, Some(false));
 }
 
 #[test]
@@ -696,5 +748,313 @@ fn closed_status_never_reports_turn_active() {
     let mut meta = metadata();
     meta.status = PersistedSessionStatus::Closed;
     let payload = materialize_session_payload(&meta, &records);
-    assert!(!payload.metadata.turn_active);
+    assert_eq!(payload.metadata.turn_active, Some(false));
+}
+
+fn tool_record(seq: u64, type_: &str, tool: Value) -> PersistedEventRecord {
+    let key = if type_ == "tool_call" {
+        "toolCall"
+    } else {
+        "update"
+    };
+    record(
+        seq,
+        type_,
+        json!({"agentId": "runtime-1", "sessionId": "session-1", key: tool}),
+    )
+}
+
+#[test]
+fn tool_call_summaries_fold_latest_field_wins_with_first_seq() {
+    let records = vec![
+        user_prompt(1, Some("turn-1"), "edit"),
+        // UPDATE_DIFF: the call carries the path, the update the counts.
+        tool_record(
+            2,
+            "tool_call",
+            json!({"toolCallId": "e1", "kind": "edit", "status": "pending",
+                "locations": [{"path": "/w/a.ts"}]}),
+        ),
+        chunk(3, "agent", "working"),
+        tool_record(
+            4,
+            "tool_call_update",
+            json!({"toolCallId": "e1", "status": "completed",
+                "locations": [{"path": "/w/a.ts"}], "diffStat": {"added": 3, "removed": 1}}),
+        ),
+        // A later update without the summary fields keeps the earlier ones.
+        tool_record(
+            5,
+            "tool_call_update",
+            json!({"toolCallId": "e1", "status": "failed"}),
+        ),
+        // REFRESH: a second edit on the same file stays its own summary (the
+        // panel aggregates per path).
+        tool_record(
+            6,
+            "tool_call",
+            json!({"toolCallId": "e2", "kind": "edit", "status": "completed",
+                "locations": [{"path": "/w/a.ts"}], "diffStat": {"added": 2, "removed": 0}}),
+        ),
+        // READ_CALL: never a summary.
+        tool_record(
+            7,
+            "tool_call",
+            json!({"toolCallId": "r1", "kind": "read", "locations": [{"path": "/w/a.ts"}]}),
+        ),
+        // LEGACY: an edit without summary fields yields nothing.
+        tool_record(
+            8,
+            "tool_call",
+            json!({"toolCallId": "old", "kind": "edit", "status": "completed"}),
+        ),
+        // An update for an unknown id is dropped (renderer recovery parity).
+        tool_record(
+            9,
+            "tool_call_update",
+            json!({"toolCallId": "ghost", "kind": "edit",
+                "locations": [{"path": "/w/ghost.ts"}]}),
+        ),
+        // A call re-kinded by a later update follows the latest kind.
+        tool_record(
+            10,
+            "tool_call",
+            json!({"toolCallId": "m1", "kind": "other", "locations": [{"path": "/w/m.ts"}]}),
+        ),
+        tool_record(
+            11,
+            "tool_call_update",
+            json!({"toolCallId": "m1", "kind": "move", "locations": [{"path": "/w/n.ts"}]}),
+        ),
+        prompt_complete(12, "turn-1"),
+    ];
+    let payload = materialize_session_payload(&metadata(), &records);
+    let value = serde_json::to_value(&payload).unwrap();
+    assert_eq!(
+        value["toolCalls"],
+        json!([
+            {"toolCallId": "e1", "kind": "edit", "status": "failed",
+                "locations": [{"path": "/w/a.ts"}], "diffStat": {"added": 3, "removed": 1},
+                "seq": 2, "timestamp": 102, "restoredSummary": true},
+            {"toolCallId": "e2", "kind": "edit", "status": "completed",
+                "locations": [{"path": "/w/a.ts"}], "diffStat": {"added": 2, "removed": 0},
+                "seq": 6, "timestamp": 106, "restoredSummary": true},
+            {"toolCallId": "m1", "kind": "move",
+                "locations": [{"path": "/w/n.ts"}],
+                "seq": 10, "timestamp": 110, "restoredSummary": true},
+        ])
+    );
+    // The message fold is untouched by the summaries.
+    let ids: Vec<&str> = payload.messages.iter().map(|m| m.id.as_str()).collect();
+    assert_eq!(ids, vec!["turn:turn-1", "snapshot:agent:3"]);
+}
+
+#[test]
+fn tool_call_summaries_skip_malformed_fields_and_always_serialize() {
+    let records = vec![
+        tool_record(
+            1,
+            "tool_call",
+            json!({"toolCallId": "e1", "kind": "edit",
+                "locations": [{"path": ""}, {"line": 3}, "bogus"],
+                "diffStat": {"added": -1, "removed": 2}}),
+        ),
+        tool_record(2, "tool_call", json!({"kind": "edit"})),
+        record(3, "tool_call", json!({"toolCall": "not-an-object"})),
+    ];
+    let payload = materialize_session_payload(&metadata(), &records);
+    assert!(payload.tool_calls.is_empty());
+    // Absent summaries still serialize as `[]` (byte-identical shape on
+    // both transports).
+    let empty = serde_json::to_value(materialize_session_payload(&metadata(), &[])).unwrap();
+    assert_eq!(empty["toolCalls"], json!([]));
+}
+
+#[test]
+fn payload_omits_commands_when_the_log_has_no_command_list() {
+    let payload = materialize_session_payload(&metadata(), &[user_prompt(1, Some("t1"), "hi")]);
+    assert!(serde_json::to_value(&payload)
+        .unwrap()
+        .as_object()
+        .is_some_and(|object| !object.contains_key("commands")));
+}
+
+#[test]
+fn payload_reports_the_seq_of_the_last_command_list_record() {
+    let records = vec![
+        record(
+            1,
+            "commands_update",
+            json!({"availableCommands": [{"name": "init"}]}),
+        ),
+        user_prompt(2, Some("t1"), "hi"),
+        record(
+            3,
+            "commands_update",
+            json!({"availableCommands": [{"name": "review"}]}),
+        ),
+        user_prompt(4, Some("t2"), "again"),
+    ];
+    let payload = serde_json::to_value(materialize_session_payload(&metadata(), &records)).unwrap();
+    assert_eq!(payload["commands"], json!([{"name": "review"}]));
+    assert_eq!(payload["commandsSeq"], json!(3));
+}
+
+// --- issue #1192: the payload says explicitly when no turn is running --------
+
+/// The wire value of `metadata.turnActive` for `records`, or `None` when the
+/// key is absent from the serialized payload.
+fn wire_turn_active(records: &[PersistedEventRecord]) -> Option<Value> {
+    let payload = materialize_session_payload(&metadata(), records);
+    let value = serde_json::to_value(&payload.metadata).expect("metadata serializes");
+    value.get("turnActive").cloned()
+}
+
+#[test]
+fn a_failed_turn_serializes_turn_active_false_not_an_absent_key() {
+    // The agent answered `session/prompt` with an error: the host wrote an
+    // `error` terminator and nothing else. The transcript ends on the user
+    // bubble, so a client that only sees an absent key reads it as a turn
+    // still running and shows "Working…" after a reload.
+    let records = vec![
+        user_prompt(1, Some("turn-1"), "this will fail"),
+        record(
+            2,
+            "prompt_complete",
+            json!({"sessionId": "session-1", "turnId": "turn-1", "stopReason": "error"}),
+        ),
+    ];
+    assert_eq!(wire_turn_active(&records), Some(json!(false)));
+}
+
+#[test]
+fn a_completed_turn_and_an_empty_log_serialize_turn_active_false() {
+    let completed = vec![
+        user_prompt(1, Some("turn-1"), "hi"),
+        chunk(2, "agent", "hello"),
+        prompt_complete(3, "turn-1"),
+    ];
+    assert_eq!(wire_turn_active(&completed), Some(json!(false)));
+    assert_eq!(wire_turn_active(&[]), Some(json!(false)));
+}
+
+#[test]
+fn a_named_open_turn_serializes_turn_active_true() {
+    let records = vec![user_prompt(1, Some("turn-1"), "still going")];
+    assert_eq!(wire_turn_active(&records), Some(json!(true)));
+}
+
+#[test]
+fn an_open_prompt_without_a_turn_id_leaves_turn_active_absent() {
+    // Open but unnameable (pre-1.8 record): the client derives it from the
+    // transcript tail, so the host must not claim either answer.
+    let records = vec![user_prompt(1, None, "legacy tail")];
+    assert_eq!(wire_turn_active(&records), None);
+}
+
+#[test]
+fn a_non_active_session_serializes_turn_active_false() {
+    let mut closed = metadata();
+    closed.status = PersistedSessionStatus::Closed;
+    let records = vec![user_prompt(1, Some("turn-1"), "left open at close")];
+    let payload = materialize_session_payload(&closed, &records);
+    let value = serde_json::to_value(&payload.metadata).expect("metadata serializes");
+    assert_eq!(value.get("turnActive"), Some(&json!(false)));
+}
+
+// --- issue #1298: the payload names how the last turn failed -----------------
+
+fn wire_last_turn_error(records: &[PersistedEventRecord]) -> Option<Value> {
+    let payload = materialize_session_payload(&metadata(), records);
+    let value = serde_json::to_value(&payload.metadata).expect("metadata serializes");
+    value.get("lastTurnError").cloned()
+}
+
+fn failed_terminator(seq: u64, stop_reason: &str, error: Option<Value>) -> PersistedEventRecord {
+    let mut payload =
+        json!({"sessionId": "session-1", "turnId": "turn-1", "stopReason": stop_reason});
+    if let Some(error) = error {
+        payload["error"] = error;
+    }
+    record(seq, "prompt_complete", payload)
+}
+
+#[test]
+fn a_failed_last_turn_carries_its_error_detail() {
+    let records = vec![
+        user_prompt(1, Some("turn-1"), "this will fail"),
+        failed_terminator(
+            2,
+            "error",
+            Some(json!({
+                "message": "Internal error",
+                "code": -32603,
+                "providerCode": "provider_quota_exceeded",
+            })),
+        ),
+    ];
+    assert_eq!(
+        wire_last_turn_error(&records),
+        Some(json!({
+            "stopReason": "error",
+            "message": "Internal error",
+            "code": -32603,
+            "providerCode": "provider_quota_exceeded",
+        }))
+    );
+}
+
+#[test]
+fn a_failed_terminator_without_detail_still_names_its_stop_reason() {
+    let records = vec![
+        user_prompt(1, Some("turn-1"), "agent died"),
+        failed_terminator(2, "crashed", None),
+    ];
+    assert_eq!(
+        wire_last_turn_error(&records),
+        Some(json!({"stopReason": "crashed"}))
+    );
+}
+
+#[test]
+fn a_timed_out_last_turn_is_a_turn_error() {
+    let records = vec![
+        user_prompt(1, Some("turn-1"), "wedged"),
+        failed_terminator(2, "timeout", Some(json!({"message": "turn idle timeout"}))),
+    ];
+    assert_eq!(
+        wire_last_turn_error(&records),
+        Some(json!({"stopReason": "timeout", "message": "turn idle timeout"}))
+    );
+}
+
+#[test]
+fn a_successful_last_turn_has_no_turn_error() {
+    let records = vec![
+        user_prompt(1, Some("turn-1"), "hi"),
+        chunk(2, "agent", "hello"),
+        prompt_complete(3, "turn-1"),
+    ];
+    assert_eq!(wire_last_turn_error(&records), None);
+    assert_eq!(wire_last_turn_error(&[]), None);
+}
+
+#[test]
+fn a_newer_prompt_or_switch_retires_the_earlier_failure() {
+    let failed = failed_terminator(2, "error", Some(json!({"message": "Internal error"})));
+    let retried = vec![
+        user_prompt(1, Some("turn-1"), "fails"),
+        failed.clone(),
+        user_prompt(3, Some("turn-2"), "try again"),
+    ];
+    assert_eq!(wire_last_turn_error(&retried), None);
+
+    let later_success = vec![
+        user_prompt(1, Some("turn-1"), "fails"),
+        failed,
+        user_prompt(3, Some("turn-2"), "try again"),
+        chunk(4, "agent", "ok"),
+        prompt_complete(5, "turn-2"),
+    ];
+    assert_eq!(wire_last_turn_error(&later_success), None);
 }

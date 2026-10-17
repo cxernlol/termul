@@ -93,6 +93,40 @@ describe('prompt-queue-orchestration', () => {
     })
   })
 
+  it('gh-821: a recover-to-queue patch clears the error code and data with the error', () => {
+    const patch = buildRecoverPromptToQueuePatch(
+      {
+        sessions: {
+          s1: {
+            openTurnId: 'attempt',
+            activeTurn: true,
+            lastError: 'Internal error',
+            lastErrorCode: -32603,
+            lastErrorData: { reason: 'login' }
+          }
+        },
+        messages: { s1: [{ id: 'msg-1' }] },
+        promptQueues: {}
+      },
+      {
+        sessionId: 's1',
+        userMessage: { id: 'msg-1' },
+        blocks: [{ type: 'text', text: 'retry' }],
+        previousOpenTurnId: null,
+        attemptedTurnId: 'attempt',
+        createQueueId: () => 'q-recover'
+      }
+    )
+
+    expect(patch.sessions.s1).toEqual({
+      openTurnId: null,
+      activeTurn: false,
+      lastError: null,
+      lastErrorCode: null,
+      lastErrorData: undefined
+    })
+  })
+
   it('restores queuedOrigin at the front with the same id', () => {
     const origin = {
       id: 'q-a',

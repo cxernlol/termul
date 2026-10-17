@@ -52,6 +52,12 @@ pub struct ChatHistoryIndexEntry {
     pub worktree_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_branch: Option<String>,
+    /// Host-recorded model (CAP-3). Additive: absent on old entries and on
+    /// discovered/imported sessions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -237,37 +243,6 @@ impl ChatHistoryStore {
             Err(ChatHistoryStoreError::SessionNotFound) => Ok(0),
             Err(error) => Err(error),
         }
-    }
-
-    #[must_use]
-    pub fn find_most_recent_for_project(
-        &self,
-        project_id: &str,
-        cwd: &str,
-        agent_namespace: Option<&str>,
-    ) -> Option<ChatHistoryIndexEntry> {
-        self.state
-            .lock()
-            .sessions
-            .iter()
-            .filter(|entry| {
-                entry.project_id == project_id
-                    && entry.cwd == cwd
-                    && (!entry.agent_id.is_empty() || entry.agent_config_id.is_some())
-                    && agent_namespace.is_none_or(|namespace| {
-                        entry
-                            .agent_config_id
-                            .as_ref()
-                            .is_some_and(|id| namespace == format!("config:{id}"))
-                    })
-            })
-            .max_by(|left, right| {
-                left.last_activity_at
-                    .cmp(&right.last_activity_at)
-                    .then(left.created_at.cmp(&right.created_at))
-                    .then(left.id.cmp(&right.id))
-            })
-            .cloned()
     }
 
     pub fn save(&self, session_id: &str, payload: Value) -> Result<()> {

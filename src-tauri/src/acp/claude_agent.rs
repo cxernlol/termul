@@ -1,16 +1,32 @@
 //! Host-managed lifecycle for the Claude ACP adapter.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use super::atomic_file;
+use super::claude_accounts::{AccountResolution, ClaudeAccountStore};
 use super::config::resolve_runtime_executable;
 use super::credentials;
 
 const MIN_NODE_MAJOR: u64 = 22;
 const CLAUDE_PACKAGE_PREFIX: &str = "@agentclientprotocol/claude-agent-acp@";
 const API_KEY_ACCOUNT: &str = "acp.claude-agent.api-key";
+/// Legacy keychain account for the auth-mode preference. Kept for one-time
+/// migration reads; the mode file is authoritative once it exists.
 const AUTH_MODE_ACCOUNT: &str = "acp.claude-agent.auth-mode";
+/// Non-secret auth-mode preference file in the host state dir (sibling of
+/// `acp-registry-binaries`). Not a secret — it must not live in the keychain,
+/// or hosts without a working keychain cannot even launch `claude-code` mode.
+const AUTH_MODE_FILE_NAME: &str = "claude-auth-mode";
 const ANTHROPIC_API_KEY_ENV: &str = "ANTHROPIC_API_KEY";
+const CLAUDE_CONFIG_DIR_ENV: &str = "CLAUDE_CONFIG_DIR";
+
+mod accounts;
+mod cli;
+mod usage;
+
+use cli::{claude_cli_command, SystemClaudeRuntimeProbe};
+use usage::{ClaudeUsageProbe, SystemClaudeUsageProbe, UsageCache};
 
 /// Extract the major version from Node's canonical `vMAJOR.MINOR.PATCH` output.
 pub fn parse_node_major(output: &str) -> Option<u64> {
@@ -36,7 +52,9 @@ pub(crate) fn probe_node_major() -> Option<u64> {
 fn probe_node_major_uncached() -> Option<u64> {
     let path = super::config::runtime_resolution_path();
     let node = resolve_runtime_executable("node", &path)?;
-    let mut child = std::process::Command::new(node)
+    let mut command = std::process::Command::new(node);
+    crate::process_util::hide_console(&mut command);
+    let mut child = command
         .arg("--version")
         .env("PATH", path)
         .stdout(std::process::Stdio::piped())
@@ -219,6 +237,80 @@ pub enum ClaudeAuthMode {
     ApiKey,
 }
 
+/// Parse the stored preference value (the same `claude-code`/`api-key`
+/// strings used by the legacy keychain account). Anything else is a corrupt
+/// preference and fails with the historical invalid-preference error.
+fn parse_auth_mode(value: &str) -> Result<ClaudeAuthMode, String> {
+    match value {
+        "claude-code" => Ok(ClaudeAuthMode::ClaudeCode),
+        "api-key" => Ok(ClaudeAuthMode::ApiKey),
+        _ => Err("Claude auth preference is invalid".to_string()),
+    }
+}
+
+/// Which setting chose the Claude config dir of a managed agent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConfigDirSource {
+    /// The host's own Claude config dir.
+    Host,
+    /// The dir of the Project's linked Claude Account.
+    Linked,
+    /// An explicit `CLAUDE_CONFIG_DIR` in the agent env (the client spawns
+    /// with the project env underneath the agent config's own).
+    ProjectEnv,
+}
+
+impl ConfigDirSource {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Host => "host",
+            Self::Linked => "linked",
+            Self::ProjectEnv => "project env",
+        }
+    }
+}
+
+/// The `CLAUDE_CONFIG_DIR` a managed Claude agent runs with, and so the one
+/// its auth preflight must check: the agent env's own value over the linked
+/// Account dir. `None` is the host's own dir. A blank env value counts as
+/// unset. The preflight probe and the agent run with different working
+/// directories, so an env value that cannot resolve to an absolute path is
+/// ignored in favor of the next source.
+fn effective_config_dir(
+    env: &std::collections::HashMap<String, String>,
+    linked_dir: Option<&Path>,
+    home: Option<&Path>,
+) -> (Option<PathBuf>, ConfigDirSource) {
+    if let Some(value) = env
+        .get(CLAUDE_CONFIG_DIR_ENV)
+        .filter(|dir| !dir.trim().is_empty())
+    {
+        match absolute_config_dir(value, home) {
+            Some(dir) => return (Some(dir), ConfigDirSource::ProjectEnv),
+            None => log::warn!(
+                "[acp-claude] the project env CLAUDE_CONFIG_DIR is not an absolute path and was ignored"
+            ),
+        }
+    }
+    match linked_dir {
+        Some(dir) => (Some(dir.to_path_buf()), ConfigDirSource::Linked),
+        None => (None, ConfigDirSource::Host),
+    }
+}
+
+/// Expand a leading `~` to `home`, then keep the result only when absolute.
+fn absolute_config_dir(value: &str, home: Option<&Path>) -> Option<PathBuf> {
+    let is_separator = |c: char| c == '/' || (cfg!(windows) && c == '\\');
+    let path = match value.strip_prefix('~') {
+        Some("") => home?.to_path_buf(),
+        Some(rest) if rest.starts_with(is_separator) => {
+            home?.join(rest.trim_start_matches(is_separator))
+        }
+        _ => PathBuf::from(value),
+    };
+    path.is_absolute().then_some(path)
+}
+
 /// Secret-store interface used by the Claude lifecycle module.
 trait ClaudeCredentialStore: Send + Sync {
     fn get(&self, account: &str) -> Result<Option<String>, String>;
@@ -229,65 +321,12 @@ trait ClaudeCredentialStore: Send + Sync {
 #[async_trait::async_trait]
 trait ClaudeRuntimeProbe: Send + Sync {
     async fn ensure_supported(&self) -> Result<(), String>;
-    async fn cli_authentication_status(&self) -> Result<Option<bool>, String>;
-}
-
-struct SystemClaudeRuntimeProbe;
-
-#[async_trait::async_trait]
-impl ClaudeRuntimeProbe for SystemClaudeRuntimeProbe {
-    async fn ensure_supported(&self) -> Result<(), String> {
-        let path = super::config::runtime_resolution_path();
-        if resolve_runtime_executable("claude", &path).is_none() {
-            return Err(
-                "Claude Code CLI is not installed. Install it from Anthropic, then restart Termul."
-                    .to_string(),
-            );
-        }
-        if resolve_runtime_executable("node", &path).is_none() {
-            return Err(
-                "Claude Agent ACP requires Node.js 22 or newer. Install or upgrade Node.js, then restart Termul."
-                    .to_string(),
-            );
-        }
-        if !node_major_is_supported(probe_node_major_async().await) {
-            return Err(
-                "Claude Agent ACP requires Node.js 22 or newer. Install or upgrade Node.js, then restart Termul."
-                    .to_string(),
-            );
-        }
-        Ok(())
-    }
-
-    async fn cli_authentication_status(&self) -> Result<Option<bool>, String> {
-        let path = super::config::runtime_resolution_path();
-        let Some(cli_path) = resolve_runtime_executable("claude", &path) else {
-            return Ok(None);
-        };
-        let cli = crate::pty::manager::resolve_spawn_program(
-            cli_path
-                .to_str()
-                .ok_or_else(|| "Claude CLI path is not valid Unicode".to_string())?,
-        )?;
-        let mut command = tokio::process::Command::new(cli.program);
-        command
-            .args(cli.prepend_args)
-            .args(["auth", "status"])
-            .env("PATH", path)
-            .env_remove(ANTHROPIC_API_KEY_ENV)
-            .kill_on_drop(true)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
-        let mut child = command
-            .spawn()
-            .map_err(|_| "could not check Claude CLI authentication".to_string())?;
-        let result = tokio::time::timeout(std::time::Duration::from_secs(10), child.wait()).await;
-        Ok(match result {
-            Ok(Ok(exit)) if exit.success() => Some(true),
-            Ok(Ok(exit)) if exit.code() == Some(1) => Some(false),
-            _ => None,
-        })
-    }
+    /// Login state of the Claude CLI for one config directory (`None` = the
+    /// host's own Claude config directory).
+    async fn cli_authentication_status(
+        &self,
+        config_dir: Option<&Path>,
+    ) -> Result<Option<bool>, String>;
 }
 
 /// System keychain adapter over the shared ACP credentials plumbing. It
@@ -323,6 +362,10 @@ impl ClaudeCredentialStore for SystemClaudeCredentialStore {
 pub struct ClaudeAuthStatus {
     pub auth_mode: ClaudeAuthMode,
     pub api_key_configured: bool,
+    /// `false` when the OS keychain could not be probed at all — key-derived
+    /// fields (`api_key_configured`) then report "unavailable" rather than
+    /// erroring the whole status read.
+    pub keychain_available: bool,
     pub cli_installed: bool,
     pub cli_authenticated: Option<bool>,
 }
@@ -333,16 +376,34 @@ pub struct ClaudeAgentService {
     credentials: Arc<dyn ClaudeCredentialStore>,
     install_root: Option<PathBuf>,
     runtime_probe: Arc<dyn ClaudeRuntimeProbe>,
+    /// Claude Accounts of this host state dir; `None` without host state.
+    // Not named `accounts`: CodeQL treats that word as secret data.
+    profile_store: Option<Arc<ClaudeAccountStore>>,
+    usage_probe: Arc<dyn ClaudeUsageProbe>,
+    usage_cache: UsageCache,
+    /// Cancel handle of each running browser login, by Account id.
+    login_cancels: accounts::LoginCancels,
 }
 
 impl ClaudeAgentService {
     #[must_use]
     pub fn system(install_root: PathBuf) -> Self {
-        Self::new_with_runtime(
+        let store = install_root
+            .parent()
+            .zip(ClaudeAccountStore::host_shared_dir())
+            .map(|(state_dir, shared)| Arc::new(ClaudeAccountStore::new(state_dir, shared)));
+        if store.is_none() {
+            log::warn!(
+                "[claude-accounts] no home directory; only the built-in account is available"
+            );
+        }
+        let mut service = Self::new_with_runtime(
             Arc::new(SystemClaudeCredentialStore),
             Some(install_root),
             Arc::new(SystemClaudeRuntimeProbe),
-        )
+        );
+        service.profile_store = store;
+        service
     }
 
     #[must_use]
@@ -371,20 +432,34 @@ impl ClaudeAgentService {
     ) -> Self {
         Self {
             credentials,
+            usage_probe: Arc::new(SystemClaudeUsageProbe {
+                install_root: install_root.clone(),
+            }),
             install_root,
             runtime_probe,
+            profile_store: None,
+            usage_cache: UsageCache::default(),
+            login_cancels: parking_lot::Mutex::default(),
         }
     }
 
     pub fn status(&self) -> Result<ClaudeAuthStatus, String> {
         let auth_mode = self.auth_mode()?;
-        let api_key_configured = self
-            .credentials
-            .get(API_KEY_ACCOUNT)?
-            .is_some_and(|key| !key.is_empty());
+        // A missing/unavailable keychain degrades the key-derived fields
+        // instead of erroring, so headless operators can still inspect the
+        // auth mode and CLI state.
+        let (api_key_configured, keychain_available) =
+            match self.credentials.get(API_KEY_ACCOUNT) {
+                Ok(key) => (key.is_some_and(|key| !key.trim().is_empty()), true),
+                Err(error) => {
+                    log::warn!("[acp-claude] keychain probe failed; reporting unavailable: {error}");
+                    (false, false)
+                }
+            };
         Ok(ClaudeAuthStatus {
             auth_mode,
             api_key_configured,
+            keychain_available,
             cli_installed: false,
             cli_authenticated: None,
         })
@@ -397,7 +472,7 @@ impl ClaudeAgentService {
         let path = super::config::runtime_resolution_path();
         status.cli_installed = resolve_runtime_executable("claude", &path).is_some();
         if status.cli_installed {
-            status.cli_authenticated = self.runtime_probe.cli_authentication_status().await?;
+            status.cli_authenticated = self.runtime_probe.cli_authentication_status(None).await?;
         }
         Ok(status)
     }
@@ -405,6 +480,12 @@ impl ClaudeAgentService {
     /// Run Anthropic's interactive `claude auth login` in the caller's
     /// terminal. Termul never installs or updates the external Claude CLI.
     pub fn run_cli_login(&self) -> Result<(), String> {
+        self.run_cli_login_in(None)
+    }
+
+    /// [`run_cli_login`](Self::run_cli_login) for one Claude config directory
+    /// (`None` = the host's own).
+    fn run_cli_login_in(&self, config_dir: Option<&Path>) -> Result<(), String> {
         let path = super::config::runtime_resolution_path();
         let cli_path = resolve_runtime_executable("claude", &path)
             .ok_or_else(|| "Claude Code CLI is not installed or is not on PATH".to_string())?;
@@ -413,7 +494,11 @@ impl ClaudeAgentService {
                 .to_str()
                 .ok_or_else(|| "Claude CLI path is not valid Unicode".to_string())?,
         )?;
-        let status = std::process::Command::new(cli.program)
+        let mut command = std::process::Command::new(cli.program);
+        if let Some(dir) = config_dir {
+            command.env(CLAUDE_CONFIG_DIR_ENV, dir);
+        }
+        let status = command
             .args(cli.prepend_args)
             .args(["auth", "login"])
             .env("PATH", path)
@@ -434,22 +519,139 @@ impl ClaudeAgentService {
         }
     }
 
+    /// The non-secret auth-mode preference file: `<state dir>/claude-auth-mode`,
+    /// a sibling of the `acp-registry-binaries` install root. `None` for
+    /// `without_host_state()` services, which always run the default mode.
+    fn mode_file_path(&self) -> Option<PathBuf> {
+        Some(
+            self.install_root
+                .as_ref()?
+                .parent()?
+                .join(AUTH_MODE_FILE_NAME),
+        )
+    }
+
+    /// Resolve the auth mode from the host-state preference file. When the
+    /// file is absent, fall back to the legacy keychain account once and
+    /// migrate a valid value into the file; a keychain read failure there is
+    /// treated as unset (default `claude-code`, not persisted) so a recovered
+    /// keychain can still migrate the true preference.
     pub fn auth_mode(&self) -> Result<ClaudeAuthMode, String> {
-        match self.credentials.get(AUTH_MODE_ACCOUNT)?.as_deref() {
-            None | Some("claude-code") => Ok(ClaudeAuthMode::ClaudeCode),
-            Some("api-key") => Ok(ClaudeAuthMode::ApiKey),
-            Some(_) => Err("Claude auth preference is invalid".to_string()),
+        let Some(path) = self.mode_file_path() else {
+            return Ok(ClaudeAuthMode::ClaudeCode);
+        };
+        match std::fs::read_to_string(&path) {
+            Ok(contents) => match parse_auth_mode(contents.trim()) {
+                Ok(mode) => Ok(mode),
+                Err(error) => {
+                    log::warn!(
+                        "[acp-claude] invalid auth mode file content path={} error={error}",
+                        path.display()
+                    );
+                    Err(error)
+                }
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                self.legacy_auth_mode(&path)
+            }
+            Err(error) => {
+                log::warn!(
+                    "[acp-claude] auth mode file read failed path={} error={error}",
+                    path.display()
+                );
+                if error.kind() == std::io::ErrorKind::InvalidData {
+                    Err("Claude auth preference is invalid".to_string())
+                } else {
+                    Err("Could not read Claude auth preference".to_string())
+                }
+            }
         }
     }
 
+    /// One-time fallback for hosts whose preference predates the mode file:
+    /// read the legacy keychain account, migrate a valid value into the file
+    /// (the file is authoritative afterward), and treat a keychain failure as
+    /// unset without persisting that default.
+    fn legacy_auth_mode(&self, path: &Path) -> Result<ClaudeAuthMode, String> {
+        match self.credentials.get(AUTH_MODE_ACCOUNT) {
+            Ok(Some(value)) => {
+                let value = value.trim();
+                let mode = match parse_auth_mode(value) {
+                    Ok(mode) => mode,
+                    Err(error) => {
+                        log::warn!(
+                            "[acp-claude] legacy auth mode keychain account {AUTH_MODE_ACCOUNT} is invalid: {error}"
+                        );
+                        return Err(error);
+                    }
+                };
+                // Migrate create-if-absent: a concurrent `set_auth_mode` may
+                // have written the file since the caller observed it absent.
+                // The file is authoritative once it exists, so the migration
+                // write must fail rather than clobber it.
+                match atomic_file::create_new(path, value.as_bytes()) {
+                    Ok(()) => {
+                        log::info!(
+                            "[acp-claude] auth mode migrated from OS keychain to {}",
+                            path.display()
+                        );
+                        // The file is now authoritative; drop the legacy
+                        // keychain value so a stale entry cannot re-migrate.
+                        if let Err(error) = self.credentials.delete(AUTH_MODE_ACCOUNT) {
+                            log::warn!(
+                                "[acp-claude] legacy auth mode keychain cleanup failed: {error}"
+                            );
+                        }
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                        // A concurrent writer won — resolve through the now-
+                        // existing file (parse, or its invalid-content error).
+                        return self.auth_mode();
+                    }
+                    Err(error) => log::warn!(
+                        "[acp-claude] auth mode migration write failed path={} error={error}",
+                        path.display()
+                    ),
+                }
+                Ok(mode)
+            }
+            Ok(None) => Ok(ClaudeAuthMode::ClaudeCode),
+            Err(error) => {
+                log::warn!(
+                    "[acp-claude] auth mode keychain probe failed; using default: {error}"
+                );
+                Ok(ClaudeAuthMode::ClaudeCode)
+            }
+        }
+    }
+
+    /// Persist the auth mode to the host-state file (atomic replace), then
+    /// best-effort delete the legacy keychain account — the file is
+    /// authoritative once it exists.
     pub fn set_auth_mode(&self, mode: ClaudeAuthMode) -> Result<(), String> {
         let value = match mode {
             ClaudeAuthMode::ClaudeCode => "claude-code",
             ClaudeAuthMode::ApiKey => "api-key",
         };
-        let result = self.credentials.set(AUTH_MODE_ACCOUNT, value);
+        let Some(path) = self.mode_file_path() else {
+            return Err("Could not save Claude auth preference".to_string());
+        };
+        let result = atomic_file::replace(&path, value.as_bytes()).map_err(|error| {
+            log::warn!(
+                "[acp-claude] auth mode write failed path={} error={error}",
+                path.display()
+            );
+            "Could not save Claude auth preference".to_string()
+        });
         match &result {
-            Ok(()) => log::info!("[acp-claude] auth mode set to {value}"),
+            Ok(()) => {
+                log::info!("[acp-claude] auth mode set to {value}");
+                if let Err(error) = self.credentials.delete(AUTH_MODE_ACCOUNT) {
+                    log::warn!(
+                        "[acp-claude] legacy auth mode keychain cleanup failed: {error}"
+                    );
+                }
+            }
             Err(error) => log::warn!("[acp-claude] auth mode set to {value} failed: {error}"),
         }
         result
@@ -485,6 +687,17 @@ impl ClaudeAgentService {
         &self,
         config: &mut crate::acp::config::AgentConfig,
     ) -> Result<bool, String> {
+        self.prepare_managed_config_for_project(config, None).await
+    }
+
+    /// [`prepare_managed_config`](Self::prepare_managed_config) for a spawn in
+    /// `project_id`: in Claude Code mode the agent runs with the config
+    /// directory of that Project's Account.
+    pub async fn prepare_managed_config_for_project(
+        &self,
+        config: &mut crate::acp::config::AgentConfig,
+        project_id: Option<&str>,
+    ) -> Result<bool, String> {
         if !self.is_managed_config(config) {
             // A config that claims the managed claude-acp identity but fails
             // verification is a security-relevant boundary — log it. Custom
@@ -498,20 +711,43 @@ impl ClaudeAgentService {
         }
         if let Err(reason) = self.runtime_probe.ensure_supported().await {
             log::warn!("[acp-claude] managed config rejected: {reason}");
-            return Err(reason);
+            // Missing Claude CLI / Node runtime: nothing a retry can fix.
+            return Err(super::manager::agent_unavailable(reason));
         }
         match self.auth_mode() {
             Ok(ClaudeAuthMode::ClaudeCode) => {
-                match self.runtime_probe.cli_authentication_status().await {
+                let account = self.resolve_account(project_id);
+                let (config_dir, source) = effective_config_dir(
+                    &config.env,
+                    account.config_dir.as_deref(),
+                    ClaudeAccountStore::host_home_dir().as_deref(),
+                );
+                if source == ConfigDirSource::ProjectEnv && account.config_dir.is_some() {
+                    log::info!(
+                        "[acp-claude] the project env CLAUDE_CONFIG_DIR overrides the project's linked Claude profile"
+                    );
+                }
+                match self
+                    .runtime_probe
+                    .cli_authentication_status(config_dir.as_deref())
+                    .await
+                {
                     Ok(Some(true)) => {}
                     Ok(status) => {
                         log::warn!(
-                            "[acp-claude] managed config rejected: Claude Code CLI not signed in (status={status:?})"
+                            "[acp-claude] managed config rejected: {} profile is not signed in (status={status:?})",
+                            source.label()
                         );
-                        return Err(
-                            "Claude Code CLI is not signed in. Run `claude auth login`, then retry."
+                        return Err(match source {
+                            ConfigDirSource::Host => "Claude Code CLI is not signed in. Run `claude auth login`, then retry."
                                 .to_string(),
-                        );
+                            ConfigDirSource::Linked => format!(
+                                "The Claude account \"{}\" is not signed in. Sign in to it in Settings → Provider, then retry.",
+                                account.account_name
+                            ),
+                            ConfigDirSource::ProjectEnv => "The Claude profile set by CLAUDE_CONFIG_DIR in the project environment is not signed in. Run `claude auth login` with that CLAUDE_CONFIG_DIR, then retry."
+                                .to_string(),
+                        });
                     }
                     Err(error) => {
                         log::warn!("[acp-claude] managed config rejected: {error}");
@@ -519,6 +755,24 @@ impl ClaudeAgentService {
                     }
                 }
                 config.env.remove(ANTHROPIC_API_KEY_ENV);
+                match &config_dir {
+                    Some(dir) => {
+                        let dir = dir.to_str().ok_or_else(|| {
+                            log::warn!("[acp-claude] account config dir is not valid Unicode");
+                            "The Claude account folder path is not supported".to_string()
+                        })?;
+                        config
+                            .env
+                            .insert(CLAUDE_CONFIG_DIR_ENV.to_string(), dir.to_string());
+                    }
+                    None => {
+                        config.env.remove(CLAUDE_CONFIG_DIR_ENV);
+                    }
+                }
+                log::info!(
+                    "[acp-claude] managed config uses the {} Claude profile",
+                    source.label()
+                );
                 Ok(true)
             }
             Ok(ClaudeAuthMode::ApiKey) => match self.credentials.get(API_KEY_ACCOUNT) {

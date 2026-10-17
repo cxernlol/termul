@@ -16,6 +16,8 @@ const { mockRegistryCatalog, mockListCatalog } = vi.hoisted(() => ({
   },
   mockListCatalog: vi.fn()
 }))
+const toast = vi.hoisted(() => ({ success: vi.fn(), warning: vi.fn(), error: vi.fn() }))
+vi.mock('sonner', () => ({ toast }))
 
 vi.mock('@/hooks/use-acp-registry-catalog', () => ({
   useAcpRegistryCatalog: () => mockRegistryCatalog
@@ -174,5 +176,76 @@ describe('AcpAgentsSettings per-agent update', () => {
     render(<AcpAgentsSettings />)
 
     await screen.findByText('Latest')
+  })
+})
+
+describe('AcpAgentsSettings Check for updates', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    useAcpStore.setState({ agentConfigs: [] })
+    seedCatalog()
+  })
+
+  it('sends a manual check', async () => {
+    mockRegistryCatalog.checkForUpdates.mockResolvedValue(null)
+    render(<AcpAgentsSettings />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Check for updates' }))
+
+    await waitFor(() => expect(mockRegistryCatalog.checkForUpdates).toHaveBeenCalledWith('manual'))
+  })
+
+  it('warns that the registry was unreachable instead of saying everything is up to date', async () => {
+    mockRegistryCatalog.checkForUpdates.mockResolvedValue({
+      updatedCount: 0,
+      newAgentIds: [],
+      fetchedAt: '2026-10-15T12:00:00+00:00',
+      source: 'cache',
+      registryUnreachable: true
+    })
+    render(<AcpAgentsSettings />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Check for updates' }))
+
+    await waitFor(() => expect(toast.warning).toHaveBeenCalledTimes(1))
+    const [title, options] = toast.warning.mock.calls[0] as [string, { description: string }]
+    expect(title).toBe("Couldn't reach the agent registry.")
+    expect(options.description).toMatch(/^Cached results from Oct 15, 2026, .+ show no updates\.$/)
+    expect(toast.success).not.toHaveBeenCalled()
+  })
+
+  it('counts the updates the cached results show when the registry was unreachable', async () => {
+    mockRegistryCatalog.checkForUpdates.mockResolvedValue({
+      updatedCount: 2,
+      newAgentIds: [],
+      fetchedAt: '2026-10-15T12:00:00+00:00',
+      source: 'cache',
+      registryUnreachable: true
+    })
+    render(<AcpAgentsSettings />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Check for updates' }))
+
+    await waitFor(() => expect(toast.warning).toHaveBeenCalledTimes(1))
+    const [, options] = toast.warning.mock.calls[0] as [string, { description: string }]
+    expect(options.description).toMatch(
+      /^Cached results from Oct 15, 2026, .+ show 2 agent updates\.$/
+    )
+  })
+
+  it('still says all agents are up to date after a reachable check', async () => {
+    mockRegistryCatalog.checkForUpdates.mockResolvedValue({
+      updatedCount: 0,
+      newAgentIds: [],
+      fetchedAt: '2026-10-16T09:30:00+00:00',
+      source: 'network',
+      registryUnreachable: false
+    })
+    render(<AcpAgentsSettings />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Check for updates' }))
+
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('All agents are up to date.'))
+    expect(toast.warning).not.toHaveBeenCalled()
   })
 })

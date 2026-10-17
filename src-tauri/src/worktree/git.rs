@@ -7,8 +7,6 @@ use super::*;
 
 /// Build the `git worktree add` argument vector (subcommand args only — the
 /// `git -c color.ui=false` prefix is added by `run_git`/`run_git_streaming`).
-/// `-b <branch> <target> [start_ref]` selects new-branch mode; existing-branch
-/// mode is `<target> <branch>`. `start_ref` is ignored unless `is_new_branch`.
 pub(super) fn worktree_add_args<'a>(
     branch: &'a str,
     is_new_branch: bool,
@@ -19,19 +17,29 @@ pub(super) fn worktree_add_args<'a>(
     if is_new_branch {
         args.push("-b");
         args.push(branch);
+        args.push("--");
         args.push(target);
         if let Some(ref_val) = start_ref {
             args.push(ref_val);
         }
     } else {
+        args.push("--");
         args.push(target);
         args.push(branch);
     }
     args
 }
 
-/// Run a git command and return (stdout, stderr, success).
-pub(super) fn run_git(args: &[&str], cwd: Option<&str>) -> Result<(String, String), WorktreeError> {
+/// What a finished git process produced, for callers that read the exit code
+/// themselves (`git merge-tree` exits 1 for a merge that has conflicts).
+pub(super) struct GitOutput {
+    pub(super) code: Option<i32>,
+    pub(super) stdout: String,
+    pub(super) stderr: String,
+}
+
+/// Run a git command and return its exit code and output without judging success.
+pub(super) fn run_git_output(args: &[&str], cwd: Option<&str>) -> Result<GitOutput, WorktreeError> {
     let git = which_git()?;
 
     let mut cmd = quiet_command(&git);
@@ -52,14 +60,20 @@ pub(super) fn run_git(args: &[&str], cwd: Option<&str>) -> Result<(String, Strin
         }
     })?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    Ok(GitOutput {
+        code: output.status.code(),
+        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+    })
+}
 
-    if !output.status.success() {
-        return Err(parse_git_stderr(&stderr));
+/// Run a git command and return (stdout, stderr, success).
+pub(super) fn run_git(args: &[&str], cwd: Option<&str>) -> Result<(String, String), WorktreeError> {
+    let output = run_git_output(args, cwd)?;
+    if output.code != Some(0) {
+        return Err(parse_git_stderr(&output.stderr));
     }
-
-    Ok((stdout, stderr))
+    Ok((output.stdout, output.stderr))
 }
 
 /// Drain complete lines from `buf`. Git worktree progress uses `\r`-delimited
@@ -207,4 +221,18 @@ pub(super) fn which_git() -> Result<String, WorktreeError> {
     }
 
     Err(WorktreeError::GitNotFound)
+}
+
+/// A leading `-` is refused before git sees it: git would parse it as an
+/// option, and `worktree add -b` hands the branch to an internal `git branch`
+/// that ignores the caller's `--`.
+pub(super) fn ensure_valid_branch_name(name: &str, repo: &str) -> Result<(), WorktreeError> {
+    if name.is_empty() || name.starts_with('-') {
+        return Err(WorktreeError::InvalidBranchName);
+    }
+    match run_git(&["check-ref-format", "--branch", name], Some(repo)) {
+        Ok(_) => Ok(()),
+        Err(WorktreeError::GitError(_)) => Err(WorktreeError::InvalidBranchName),
+        Err(other) => Err(other),
+    }
 }

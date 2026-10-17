@@ -75,7 +75,7 @@ This preserves a browser/dev/test path while keeping the Tauri-specific app as t
 Core shell files:
 
 - `WorkspaceLayout.tsx`
-- `TitleBar.tsx`
+- `components/shell/ShellFrame.tsx` (Rail, Side panel and main area)
 - `StatusBar.tsx`
 - route pages such as `ProjectSettings.tsx`, `AppPreferences.tsx`, and `WorkspaceSnapshots.tsx`
 
@@ -130,7 +130,7 @@ This is a strongly store-driven architecture with hooks providing side-effect or
 
 Hooks such as:
 
-- `use-projects-persistence`
+- `use-project-registry`
 - `use-terminal-restore`
 - `useTerminalAutoSave`
 - `use-file-watcher`
@@ -192,9 +192,8 @@ Responsibilities:
 - process spawn/kill/resize/write
 - terminal lifecycle tracking
 - Windows-specific ConPTY handling
-- renderer attachment bookkeeping
 - transcript / output event streaming
-- orphan detection policies
+- exited-terminal expiry (a live terminal ends only by kill, exit or shutdown)
 
 ### 4. Tracker Subsystem
 
@@ -226,10 +225,13 @@ This is one of the most custom parts of the app architecture.
 
 ### Renderer-Side Persistence
 
-The renderer uses Tauri plugin-store adapters through versioned persistence APIs
-for settings and lightweight application data. Desktop ACP chat transcripts are
-an exception: they are owned by a Rust file store under Tauri app data, with a
-lightweight index and one atomic JSON payload per session.
+The renderer keeps settings and lightweight application data in the host store
+through one versioned persistence facade on every surface: browsers and phones
+reach it over a WebSocket, the desktop over its Tauri channel connection to the
+host store it runs in-process. Keys are scoped per device or shared (see
+`docs/api-contracts.md`). ACP chat transcripts are an exception: the host owns
+them as session logs (see "Session persistence" under "ACP agent chat"), and
+the renderer reads them through the host instead of keeping its own copy.
 
 Primary persisted domains include:
 
@@ -239,14 +241,13 @@ Primary persisted domains include:
 - command history
 - window state
 - app settings
-- Rust-backed desktop ACP chat history
-- standalone ACP event-log session persistence
+- host-owned ACP session logs (`SessionPersistence`), on the desktop and on `termul-server`
 
 ### Shared Persistence Contracts
 
 `src/shared/types/persistence.types.ts` defines structures like:
 
-- `PersistedProjectData`
+- `ProjectPrefsRecord` (per-device project settings and sidebar layout; the project list itself lives in the host registry)
 - `PersistedTerminalLayout`
 - `PersistedSnapshotList`
 - `WindowState`
@@ -255,9 +256,9 @@ Primary persisted domains include:
 
 - debounced writes with flush-on-close behavior
 - version-wrapped persisted records
-- atomic Rust replacement for desktop ACP payload/index files
+- append-only JSONL session logs with torn-tail repair, plus an atomically replaced session index
 - bounded renderer LRU for inactive full chat payloads; trimmed live sessions stay pinned
-- verified, fail-closed legacy ACP import from `termul-data.json`
+- verified, fail-closed legacy ACP import from the retired `termul-data.json` (now itself imported once into the host store)
 - desktop shared-live browser history reads durable files on demand instead of renderer clones
 - transcript/scrollback persistence for restore scenarios
 - session stores separated from general app data store
@@ -347,6 +348,86 @@ The renderer terminal seam is `terminal-api.ts`: Tauri uses typed commands and b
 Standalone `termul-server` owns its `PtyManager` and terminates those PTYs after graceful shutdown. Desktop shared-live mode passes the already-managed desktop `Arc<PtyManager>` into Axum, so stopping sharing detaches browser clients without killing desktop terminals. Output broadcast queues and replay scrollback remain bounded.
 
 **Security boundary:** terminal authentication, authorization, TLS, and sandbox hardening are deferred. `/terminal/ws` must not be exposed to public or untrusted networks; existing server exposure controls are the only boundary in this version. Logs record lifecycle/request outcomes only and must never record terminal input, output, environment values, or secrets.
+
+## ACP agent chat
+
+The agent chat runs coding agents that speak the [Agent Client Protocol](https://agentclientprotocol.com) (ACP): JSON-RPC 2.0 over the agent subprocess's stdin and stdout. Termul is the ACP client. The Rust host starts the agent, completes the `initialize` handshake, creates sessions, streams prompt turns, and answers the agent's reverse requests (permission prompts, file reads and writes, terminals, elicitations). The renderer shows the result as a chat. The ACP client library is the `agent-client-protocol` crate (`src-tauri/Cargo.toml`).
+
+The subsystem has four parts that the sections below cover in turn: a runtime with one thread per agent, a relay that carries one protocol to every client, a renderer facade, and a host-owned session store. This section explains how they fit. `docs/api-contracts.md` ("ACP command and event reference") lists every command, request, event and route.
+
+```text
+Renderer (src/renderer)
+  acp-store → acp-api.ts (facade) → acp-transport
+        ┌───────────────────────────────┴──────────────────────────────┐
+        │ desktop: Tauri ipc::Channel (ws_channel_*)                   │ browser/phone: /ws WebSocket
+        └───────────────────────────────┬──────────────────────────────┘
+                                         ↓
+Host relay (src-tauri/src/web)  `/ws` dispatch → AcpManager → WsRelaySink (seq, replay, fan-out)
+                                         ↓                              ↓
+Agent runtime (src-tauri/src/acp)  one thread per agent        SessionPersistence (JSONL)
+                                         ↓
+                              agent subprocess (stdio, JSON-RPC)
+```
+
+### One thread per agent
+
+`AcpManager` (`src-tauri/src/acp/manager/`) owns the agents. The `agent-client-protocol` connection lives only inside one scoped `connect_with` call, and Tauri commands need `Send` futures, so the manager cannot keep a connection in shared state and await it from a command. Each agent therefore gets a dedicated OS thread named `acp-agent-<id>`. The thread builds a current-thread Tokio runtime, spawns the subprocess, and drives the connection with `block_on` (`driver.rs`).
+
+Callers reach that thread through a channel. Each call sends an `AcpCommand` variant on an unbounded `mpsc` channel. The variant carries a `oneshot` sender for the reply, and the caller awaits the `Send` receiver. `command_loop.rs` handles the variants one by one: new, load, resume and close session, send and cancel prompt, mode, model and config changes, permission, question and elicitation answers, and shutdown.
+
+The driver thread never calls into Tauri. It publishes every event through a list of `EventSink` trait objects (`src-tauri/src/web/sink/`), so the same driver serves the desktop and the standalone `termul-server`. A wedged or missing client cannot stop a driver, because `EventSink::emit` must log failures and never return them.
+
+The host is the ACP client of record. It answers file reads and writes (`fs/read_text_file`, `fs/write_text_file`) and `terminal/*` requests itself, and it relays only the human-facing requests (permission prompts, questions and elicitations) to clients. A `/ws` request for a host-fulfilled capability is `unsupported`. The file handlers (`acp/client.rs`) serve any absolute path the agent asks for. They reject relative paths and `..` components and resolve symlinks, and they do not confine the path to the project root.
+
+### One protocol, two carriers
+
+Every client talks to the host in the same protocol, the `/ws` relay. A request is `{id, type, payload}`. The host replies by `id`, and it pushes session events as `{sid, seq, type, payload}`. `src/shared/types/web-protocol.types.ts` and `src-tauri/src/web/ws/` define it. Only the carrier of the frames differs.
+
+- **Browser and phone.** A WebSocket to `/ws` on `termul-server`, or on the desktop's shared-live server (`src-tauri/src/remote/host.rs`). The connection starts with `auth_required`, and the client answers with an `authenticate` request that checks the protocol version, the client identity and, when the host has a token gate, the token.
+- **Desktop renderer.** A Tauri `ipc::Channel` per connection (`ws_channel_open`, `ws_channel_send`, `ws_channel_close` in `src-tauri/src/web/ws/channel/`). `ChannelCarrier` gives the unchanged relay loop the same stream-and-sink surface a WebSocket has, so dispatch, queues, the watchdog and capabilities are shared code. This path has its own `AppState` with no token gate. It never binds a network listener, and the process boundary is its authentication.
+
+Host-local operations stay as plain Tauri commands because they only make sense on the desktop host: timeout overrides, the Factory key, MCP probes and OAuth, Claude Account management, and legacy history. A few `/acp/*` HTTP routes mirror the operations a browser needs outside `/ws`. The command and event tables in `docs/api-contracts.md` mark which operation uses which path.
+
+Delivery is built so a slow or dropped client cannot lose a session. The relay numbers every session event with one `seq` authority. A client keeps a cursor `(logEpoch, lastSeq)` and reconnects with `subscribe`. The host replays what the client missed, or answers `stale` and the client installs a snapshot. A lossy event that a slow client cannot take is dropped and followed by a `gap` frame, and a reliable event that does not fit closes the connection instead of being dropped. Events with no session (agent lifecycle, worktree renames) are state, so they travel as `watch` deltas.
+
+Choosing one protocol for both runtimes costs the desktop a hop through serialized frames that a direct Tauri event would skip. It buys one implementation of ordering, replay and permission races, which `docs/api-contracts.md` pins down, and it keeps the desktop-hosted browser client on the same behavior as the desktop itself.
+
+### The renderer facade
+
+`src/renderer/lib/acp-api.ts` is the only renderer module that talks to the ACP backend. Components and `acp-store` (`src/renderer/stores/acp-store/`) call it and never import `invoke` or a socket. It exposes typed methods and the `ACP_EVENTS` names, and it forwards failures as thrown errors (`AcpTransportError` for a `/ws` error reply, a string for a Tauri command).
+
+Underneath, `getAcpTransport()` (`src/renderer/lib/acp-transport/index.ts`) returns one process-wide transport. `DesktopAcpTransport` is used when `isTauriContext()` is true and `WsAcpTransport` otherwise. The desktop class extends the WebSocket client and swaps its socket for `ChannelSocket`, so cursors, reconnects, gap recovery and watches have one implementation. Host-local commands go through `invoke` in the facade. The `acp:worktree_progress` event is the one `acp:*` name the desktop receives as a plain Tauri event (`desktop-local-events.ts`).
+
+A capability that exists on one surface only is gated explicitly with `isTauriContext()` and tested in its unsupported state, as `AGENTS.md` requires.
+
+### Session persistence
+
+The relay is also the session log. `WsRelaySink` (`src-tauri/src/web/sink/`) assigns every seq, keeps a bounded in-memory ring per session (4096 events by default), and hands durable events to `SessionPersistence` (`src-tauri/src/acp/session_persistence/`) in one critical section, so the disk, the ring and the live stream agree on what seq N is.
+
+`SessionPersistence` keeps a versioned `sessions.json` index and one directory per session with `metadata.json`, `messages.jsonl` and `tool-calls.jsonl`. A writer thread appends records through a bounded queue. Durable producers divert to an overflow queue instead of dropping a record or blocking the driver thread, because a blocked write would freeze that agent's reads, permission replies and timers. Startup repairs torn JSONL tails. Permission requests, `auth_required` and the agent spawn, disconnect and crash events are live only and never reach the log (`is_durable_event`).
+
+The desktop and `termul-server` each own a private sessions root (`<app data dir>/acp-sessions` and `--sessions-dir`). Two processes must never share one root. The two hosts differ when the store fails to open. `termul-server` refuses to start. The desktop continues in live-only history mode, where chats stream live and the host keeps no durable history.
+
+The renderer reads history through `get_session_payload`, `get_session_payload_tail` and `recover_session_snapshot`, never from its own copy. `<app data dir>/acp-chat-history` is the legacy renderer-written store. The host imports it into `SessionPersistence` at startup and after each legacy write, and the renderer's wipe migration is its only remaining writer.
+
+### Host MCP server
+
+Every `session/new` receives a host-side MCP server in its `mcp_servers` list (`AcpManager::new_session_with_context`). It gives every agent the same four tools whatever the agent's own tooling is.
+
+- `plan` replaces the agent's todo tool and drives the plan panel through `acp:plan_update`.
+- `ask_user` asks the user a structured question and returns the answer.
+- `set_session_title` sets the chat title once and proposes a worktree branch slug.
+- `browser` drives the in-app browser pane. It works on the Windows desktop only, and other hosts report `capability_unavailable`. A consent prompt gates the first call of a session.
+
+The server has two halves, in `src-tauri/src/acp/host_mcp/`. The parent half is a TCP listener on `127.0.0.1` with an ephemeral port, shared by all sessions and started lazily. The child half is a stdio MCP server, the host binary itself started as `current_exe() --internal-mcp-plan-server` (`CHILD_ARG`). Both `main` functions, desktop and standalone, branch on that flag before any app setup. The child forwards each tool call to the parent as one frame over a fresh connection. A per-session random token in the frame identifies the session, and the parent ignores frames with an unknown token. The design needs no Tauri `AppHandle`, so it works the same in both binaries.
+
+### Where to start reading
+
+- Runtime: `src-tauri/src/acp/manager/mod.rs` (the threading comment), `driver.rs`, `command_loop.rs`.
+- Relay: `src-tauri/src/web/ws/mod.rs`, `dispatch.rs`, `src-tauri/src/web/sink/session_log.rs`.
+- Persistence: `src-tauri/src/acp/session_persistence/mod.rs`.
+- Renderer: `src/renderer/lib/acp-api.ts`, `src/renderer/lib/acp-transport/index.ts`, `src/renderer/stores/acp-store/`.
+- Wire contract: `src/shared/types/web-protocol.types.ts`.
 
 ## Architectural Risks / Constraints
 

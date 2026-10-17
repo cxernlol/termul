@@ -1,6 +1,8 @@
 import { useEffect } from 'react'
 import { logFrontendError } from '@/lib/log-api'
-import { useAcpStore } from '@/stores/acp-store'
+import { isTauriContext } from '@/lib/tauri-runtime'
+import { mcpServerDeletionCount, useAcpStore } from '@/stores/acp-store'
+import { useProjectStore } from '@/stores/project-store'
 
 /**
  * Load the persisted MCP server registry once at app mount, then auto-probe
@@ -12,17 +14,19 @@ import { useAcpStore } from '@/stores/acp-store'
  * The pass runs only after the registry resolves (both roots mount this hook —
  * desktop `TauriApp` and web `App`). A server id is probed at most once per
  * app run (module-scope set): toggling other servers off/on never re-probes
- * it, a newly added server is probed automatically, and a re-enabled one
- * refills on the next popover expand via `loadMcpTools` (which still
- * auto-probes unloaded ids). A root remount (StrictMode-style double-mount,
+ * it, a newly added server (or one re-added under a deleted server's id) is
+ * probed automatically, and a re-enabled one refills on the next popover
+ * expand via `loadMcpTools` (which still auto-probes unloaded ids). A root remount (StrictMode-style double-mount,
  * error-boundary retry) is the same app run, so it does not re-fan-out.
  * `probeMcpServer` is read-only, never throws, and dedupes concurrent probes
  * per id — a popover expand mid-probe cannot double-probe.
  */
 
-// Per-app-run probe bookkeeping (module scope — survives root remounts).
-// Dynamic membership with insertion at runtime → Set (project rule).
-const autoProbedServerIds = new Set<string>()
+// Per-app-run probe bookkeeping (module scope — survives root remounts):
+// each probed id with the store's deletion count at that time. A deleted and
+// re-added id has a newer count and is probed again; absence from the list
+// proves nothing (a web project switch swaps the whole list).
+const autoProbedServerIds = new Map<string, number>()
 
 /**
  * True when the boot auto-probe pass already covered `id` this app run.
@@ -30,12 +34,12 @@ const autoProbedServerIds = new Set<string>()
  * duplicate probe for servers whose status is already live.
  */
 export function isMcpServerAutoProbed(id: string): boolean {
-  return autoProbedServerIds.has(id)
+  return autoProbedServerIds.get(id) === mcpServerDeletionCount(id)
 }
 
 /** Mark `id` as covered by the auto-probe pass (probe fan-out caller). */
 export function markMcpServerAutoProbed(id: string): void {
-  autoProbedServerIds.add(id)
+  autoProbedServerIds.set(id, mcpServerDeletionCount(id))
 }
 
 /** Test-only: clear the per-app-run probe set between tests. */
@@ -48,9 +52,14 @@ export function useAcpMcp(): void {
   const probeMcpServer = useAcpStore((s) => s.probeMcpServer)
   const mcpServers = useAcpStore((s) => s.mcpServers)
   const mcpServersLoaded = useAcpStore((s) => s.mcpServersLoaded)
+  // A web client reads the host MCP file of the active project, so the load
+  // re-runs when the active project changes. The desktop reads its one app
+  // store list either way and never reloads on a switch.
+  const webProjectKey = useProjectStore((s) => (isTauriContext() ? '' : s.activeProjectId))
   // Registry load — best-effort; the store's action catches its own failures
   // (toast + boundary log), and the `.catch` here guards a transport-level
   // rejection from surfacing as an unhandled rejection.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `webProjectKey` is the trigger — the store action reads the active project itself.
   useEffect(() => {
     loadMcpServers().catch((err: unknown) => {
       void logFrontendError({
@@ -58,7 +67,7 @@ export function useAcpMcp(): void {
         message: `MCP registry load rejected (${String(err)})`
       })
     })
-  }, [loadMcpServers])
+  }, [loadMcpServers, webProjectKey])
 
   // Auto-probe pass — only after the registry has loaded, and each enabled
   // id at most once per app run (`autoProbedServerIds`). `mcpServers` is

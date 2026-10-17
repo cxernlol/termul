@@ -1,21 +1,11 @@
 import { useShallow } from 'zustand/shallow'
 import { MaterialFileIcon } from '@/components/file-explorer/MaterialFileIcon'
+import { fileNeedsAttention } from '@/lib/editor-file-attention'
+import { basename } from '@/lib/path-basename'
 import { useEditorStore } from '@/stores/editor-store'
 import { type TabBulkMenuProps, TabContextMenu } from './tab-context-menu'
 import { TabChrome } from './tabs/tab-chrome'
 import type { TabInlineProps } from './tabs/types'
-
-function getBasename(filePath: string): string {
-  const parts = filePath.split(/[\\/]/)
-  return parts[parts.length - 1] || filePath
-}
-
-function getExtname(filePath: string): string {
-  const name = getBasename(filePath)
-  const dotIndex = name.lastIndexOf('.')
-  if (dotIndex <= 0) return ''
-  return name.slice(dotIndex)
-}
 
 export interface EditorTabProps extends TabInlineProps {
   tab: { type: 'editor'; id: string; filePath: string }
@@ -40,14 +30,13 @@ export function EditorTab({
   onDragLeave,
   onDrop
 }: EditorTabProps): React.JSX.Element {
-  const fileName = getBasename(tab.filePath)
-  const ext = getExtname(tab.filePath).slice(1) || null
+  const fileName = basename(tab.filePath)
 
   const { isDirty, operationStatus } = useEditorStore(
     useShallow((state) => {
       const file = state.openFiles.get(tab.filePath)
       return {
-        isDirty: file?.isDirty ?? false,
+        isDirty: fileNeedsAttention(file),
         operationStatus: file?.operationStatus ?? 'idle'
       }
     })
@@ -88,7 +77,6 @@ export function EditorTab({
         icon={
           <MaterialFileIcon
             name={fileName}
-            extension={ext}
             isDirectory={false}
             isExpanded={false}
             depth={0}

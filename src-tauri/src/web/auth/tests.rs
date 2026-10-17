@@ -276,6 +276,60 @@ fn generated_tokens_are_unique_and_url_safe() {
     );
 }
 
+#[test]
+fn shared_live_without_exposure_is_ungated_and_never_touches_the_token_file() {
+    let dir = TempDir::new("shared-ungated");
+    let resolution = resolve_shared_live(false, &dir.0).expect("resolve");
+    assert!(matches!(resolution, WebAuthResolution::Ungated));
+    assert!(
+        !dir.0.join(WEB_AUTH_TOKEN_FILE).exists(),
+        "an ungated loopback host must not create a token file"
+    );
+}
+
+#[test]
+fn shared_live_with_exposure_requires_a_persisted_token_that_survives_restart() {
+    let dir = TempDir::new("shared-gated");
+    let WebAuthResolution::Gated { auth, origin } =
+        resolve_shared_live(true, &dir.0).expect("resolve")
+    else {
+        panic!("exposed shared-live must be gated");
+    };
+    assert!(matches!(origin, WebAuthOrigin::Generated(_)));
+    let token_path = dir.0.join(WEB_AUTH_TOKEN_FILE);
+    let persisted = std::fs::read_to_string(&token_path).expect("token persisted under state dir");
+    assert!(auth.accepts(persisted.trim()));
+    assert!(!auth.accepts(""), "a missing token is never accepted");
+
+    // Next start (stop/start cycle or app restart) reuses the same token.
+    let WebAuthResolution::Gated { auth: again, origin } =
+        resolve_shared_live(true, &dir.0).expect("resolve")
+    else {
+        panic!("still gated");
+    };
+    assert!(matches!(origin, WebAuthOrigin::Loaded(_)));
+    assert!(again.accepts(persisted.trim()));
+}
+
+#[test]
+fn share_url_carries_the_token_in_the_fragment_and_replaces_any_existing_one() {
+    let auth = WebAuth::new(WebAuthToken::new("abc123").expect("non-empty"));
+    assert_eq!(
+        auth.share_url("https://x.trycloudflare.com"),
+        "https://x.trycloudflare.com#token=abc123"
+    );
+    assert_eq!(
+        auth.share_url("https://x.trycloudflare.com/#old"),
+        "https://x.trycloudflare.com/#token=abc123"
+    );
+    // Characters `URLSearchParams` would mangle are percent-encoded.
+    let odd = WebAuth::new(WebAuthToken::new("a b+c&d=é").expect("non-empty"));
+    assert_eq!(
+        odd.share_url("https://h"),
+        "https://h#token=a%20b%2Bc%26d%3D%C3%A9"
+    );
+}
+
 /// Windows: the token file must be created with its owner-only DACL in
 /// place from the first byte (CreateFileW + SECURITY_ATTRIBUTES), and a
 /// second create must report `AlreadyExists` so `resolve` can adopt the

@@ -1,39 +1,46 @@
-//! Server-side filesystem watcher for web clients (#856).
+//! Per-project filesystem watchers for web clients (#856, per-`projectId`).
 //!
 //! On the desktop the renderer uses `tauri-plugin-fs`'s `watchImmediate`
 //! (notify) and receives `FileChangeEvent`s over Tauri event listeners; on
-//! the web the browser cannot watch the host's filesystem, so the explorer
-//! only refreshed after an agent turn or a manual reload. This module
-//! closes that parity gap: a host-side `notify` watcher over the ACTIVE
-//! PROJECT ROOT batches change events and broadcasts them to every
-//! connected web client over the control WS as an agent-level
-//! `fs_changed` event (`{root, paths[]}` — reliable tier, sid null, seq 0).
-//! The renderer's existing `useFileWatcher` chain then refreshes the
-//! explorer tree (debounced) exactly as it does on desktop.
+//! the web the browser cannot watch the host's filesystem. A connection asks
+//! the host to watch a registered project with the `watch` WS request
+//! (`watch: "fs"`, scope = the project id). The host sends the root as the
+//! full state and then one `fs` watch delta (`{root, paths[]}`) per debounced
+//! batch to exactly the subscribed connections, through the
+//! [`WatchHub`](crate::web::watch::WatchHub) (contiguous revisions, so a batch
+//! dropped for a full queue shows as a gap and the client resubscribes). The
+//! renderer's existing `useFileWatcher` chain then refreshes the explorer
+//! tree (debounced) exactly as it does on desktop.
 //!
-//! Scope: ONE watcher over the current project root (per the issue — a
-//! watcher per project is heavier than needed). The root is
-//! `AppState.project_root` (an `Arc<RwLock<PathBuf>>` that live-rebinds on
-//! project switch); the watcher task re-arms whenever the root changes.
+//! This module owns only the notify watchers; the subscriptions live in the
+//! watch hub, and the subscriber lists here decide when a watcher is armed
+//! and dropped. The watcher is refcounted per `projectId`: the first subscriber arms one
+//! `notify` watcher over the project's canonical root, later subscribers share
+//! it, and the watcher is dropped on the last unsubscribe, on connection
+//! close (`unsubscribe_all`), when a delivery finds every subscriber gone, or
+//! when the project is archived/removed/unresolvable (checked on a 1 s tick
+//! against the registry, so every registry mutation path is covered).
 //!
-//! Robustness: watcher errors are logged and retried after a backoff — a
-//! transitory inotify exhaustion must not silently kill change events for
-//! the rest of the session. The watcher task is a daemon: it runs until
-//! the process exits; each broadcast is fire-and-forget (the sink drops
-//! events when no client is connected, which is the desired idle posture).
+//! Robustness: a watcher error is logged and retried after a backoff — a
+//! transient inotify exhaustion must not silently kill change events for the
+//! rest of the subscription. A moved project root re-arms at the new root.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use notify::{recommended_watcher, RecursiveMode, Result as NotifyResult, Watcher};
-use parking_lot::RwLock as ParkingRwLock;
+use parking_lot::Mutex;
+use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-use crate::web::sink::{broadcast_fs_changed, WsRelaySink};
+use crate::web::project_registry::ProjectRegistry;
+use crate::web::watch::{WatchHub, WatchKind};
+use crate::web::ws::OutboundSender;
 
-/// How long to batch raw notify events before broadcasting one
-/// `fs_changed` frame. A save, a build, and a git checkout each fan dozens
+/// How long to batch raw notify events before publishing one `fs` delta. A save, a build, and a git checkout each fan dozens
 /// of events within a few hundred milliseconds; one debounced frame keeps
 /// the WS quiet while staying well under the explorer's own refresh
 /// debounce (300 ms in `useFileWatcher`).
@@ -43,6 +50,10 @@ const BATCH_WINDOW: Duration = Duration::from_millis(200);
 /// away). Doubles up to the cap on consecutive failures.
 const RETRY_BASE: Duration = Duration::from_secs(1);
 const RETRY_MAX: Duration = Duration::from_secs(30);
+
+/// How often a running or backing-off watch re-resolves its project in the
+/// registry, so archive/remove/path changes take effect within a second.
+const REGISTRY_CHECK_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Directory names commonly git-ignored; changes under them are noise for
 /// an explorer tree (build churn, caches). Mirrors the renderer facade's
@@ -89,6 +100,16 @@ fn is_reportable_below_root(path: &std::path::Path, root: &std::path::Path) -> b
     })
 }
 
+/// Whether a notify event is a change worth reporting. Access events are not:
+/// notify 8 watches `IN_OPEN` on Linux, so the host's own `/fs/read` of an
+/// open editor file (or `/fs/ls` of a directory) would come back as a change,
+/// the client would read again, and loop forever. A real write always also
+/// fires a `Modify` event, so dropping `Access(Close(Write))` loses nothing.
+#[must_use]
+fn is_change_event(kind: &notify::EventKind) -> bool {
+    !matches!(kind, notify::EventKind::Access(_))
+}
+
 /// Normalize a changed path for the wire: forward slashes, empty on
 /// failure. Pure.
 #[must_use]
@@ -102,56 +123,385 @@ fn normalize_path(path: &std::path::Path) -> Option<String> {
     }
 }
 
-/// Spawn the FS watcher daemon over the live project-root handle (call
-/// once per server from `serve_router`; both the standalone binary and the
-/// desktop shared-live host get it). Returns immediately — the watcher
-/// runs until process exit.
-pub fn spawn_fs_watcher(
-    project_root: Arc<ParkingRwLock<PathBuf>>,
-    relay: Arc<WsRelaySink>,
-) {
-    tokio::spawn(async move {
-        let mut retry_delay = RETRY_BASE;
-        loop {
-            let root = project_root.read().clone();
-            match watch_root(root, &project_root, &relay).await {
-                WatchOutcome::RootChanged => {
-                    // The active project switched — re-arm immediately at
-                    // the new root (reset the backoff: a new root is a
-                    // fresh chance, not a failure streak).
-                    retry_delay = RETRY_BASE;
-                    info!("[fs-watcher] project root changed — re-arming watcher");
-                }
-                WatchOutcome::Failed => {
-                    warn!(
-                        "[fs-watcher] watcher failed; retrying in {:?}",
-                        retry_delay
-                    );
-                    tokio::time::sleep(retry_delay).await;
-                    retry_delay = std::cmp::min(retry_delay * 2, RETRY_MAX);
-                }
+/// Wire delta of the `fs` watch: the watched project's canonical root and the
+/// changed paths (forward-slash normalized).
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FsDelta {
+    pub root: String,
+    pub paths: Vec<String>,
+}
+
+/// Why a watch request was refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WatchError {
+    /// The project is unknown, archived, pathless, or its root cannot be
+    /// resolved — there is nothing to watch.
+    NotFound,
+}
+
+/// One watched project: its subscribed connections and the stop handle of the
+/// watcher task. `generation` lets a finishing task remove only its own entry.
+struct ProjectWatch {
+    generation: u64,
+    subscribers: Vec<OutboundSender>,
+    cancel: CancellationToken,
+    /// `true` while the notify watcher is armed on the project's root (read by
+    /// `FsWatchHub::wait_armed`, which tests use to act only once it is live).
+    #[cfg_attr(not(test), allow(dead_code))]
+    armed: tokio::sync::watch::Receiver<bool>,
+}
+
+type WatchMap = Arc<Mutex<HashMap<String, ProjectWatch>>>;
+
+/// Refcounted per-`projectId` watch manager. Owned by the relay sink so every
+/// WS handler and the per-connection cleanup reach it through `relay`.
+#[derive(Default)]
+pub struct FsWatchHub {
+    watches: WatchMap,
+    next_generation: AtomicU64,
+}
+
+impl FsWatchHub {
+    /// Subscribe a connection (identified by its outbound channel) to
+    /// `project_id`. Arms the project's watcher when this is the first
+    /// subscriber; an already-subscribed connection is a no-op. Must run
+    /// inside a Tokio runtime (the watcher task is spawned here).
+    pub(crate) fn subscribe(
+        &self,
+        registry: &Arc<ProjectRegistry>,
+        hub: &Arc<WatchHub>,
+        project_id: &str,
+        conn: &OutboundSender,
+    ) -> Result<(), WatchError> {
+        if registry.canonical_root(project_id).is_none() {
+            warn!(
+                project_id,
+                "[fs-watch] watch refused: project not found or not watchable"
+            );
+            return Err(WatchError::NotFound);
+        }
+        let mut watches = self.watches.lock();
+        if let Some(watch) = watches.get_mut(project_id) {
+            if !watch.subscribers.iter().any(|s| s.same_channel(conn)) {
+                watch.subscribers.push(conn.clone());
+                info!(
+                    project_id,
+                    subscribers = watch.subscribers.len(),
+                    "[fs-watch] subscriber added"
+                );
+            }
+            return Ok(());
+        }
+        let generation = self.next_generation.fetch_add(1, Ordering::Relaxed);
+        let cancel = CancellationToken::new();
+        let (armed_tx, armed_rx) = tokio::sync::watch::channel(false);
+        watches.insert(
+            project_id.to_string(),
+            ProjectWatch {
+                generation,
+                subscribers: vec![conn.clone()],
+                cancel: cancel.clone(),
+                armed: armed_rx,
+            },
+        );
+        drop(watches);
+        info!(
+            project_id,
+            "[fs-watch] first subscriber; arming project watcher"
+        );
+        tokio::spawn(run_project_watch(
+            project_id.to_string(),
+            generation,
+            Arc::clone(registry),
+            Arc::clone(hub),
+            Arc::clone(&self.watches),
+            cancel,
+            armed_tx,
+        ));
+        Ok(())
+    }
+
+    /// Remove one connection's subscription. Drops the watcher on the last
+    /// unsubscribe. Returns `true` when the connection was subscribed.
+    pub(crate) fn unsubscribe(&self, project_id: &str, conn: &OutboundSender) -> bool {
+        let mut watches = self.watches.lock();
+        let Some(watch) = watches.get_mut(project_id) else {
+            return false;
+        };
+        let before = watch.subscribers.len();
+        watch.subscribers.retain(|s| !s.same_channel(conn));
+        let removed = watch.subscribers.len() != before;
+        if watch.subscribers.is_empty() {
+            if let Some(watch) = watches.remove(project_id) {
+                watch.cancel.cancel();
+                info!(
+                    project_id,
+                    "[fs-watch] last subscriber left; watcher dropped"
+                );
             }
         }
-    });
+        removed
+    }
+
+    /// Remove a closed connection from every project it watches (the
+    /// per-connection cleanup hook). Projects left without subscribers drop
+    /// their watcher.
+    pub(crate) fn unsubscribe_all(&self, conn: &OutboundSender) {
+        let mut watches = self.watches.lock();
+        let mut emptied = Vec::new();
+        for (project_id, watch) in watches.iter_mut() {
+            watch.subscribers.retain(|s| !s.same_channel(conn));
+            if watch.subscribers.is_empty() {
+                emptied.push(project_id.clone());
+            }
+        }
+        for project_id in emptied {
+            if let Some(watch) = watches.remove(&project_id) {
+                watch.cancel.cancel();
+                info!(project_id = %project_id, "[fs-watch] connection closed; watcher dropped");
+            }
+        }
+    }
+
+    /// Drop the watcher of a project that was archived or removed, whatever
+    /// connections were subscribed. Returns how many subscriptions ended.
+    pub(crate) fn unwatch_project(&self, project_id: &str) -> usize {
+        let Some(watch) = self.watches.lock().remove(project_id) else {
+            return 0;
+        };
+        watch.cancel.cancel();
+        info!(
+            project_id,
+            subscribers = watch.subscribers.len(),
+            "[fs-watch] project archived or removed; watcher dropped"
+        );
+        watch.subscribers.len()
+    }
+
+    /// Wait until `project_id`'s notify watcher is armed (events under the
+    /// root are observed from then on). `false` on timeout or when the project
+    /// has no watch. Lets tests act only once the watcher is live.
+    #[cfg(test)]
+    pub(crate) async fn wait_armed(&self, project_id: &str, wait: Duration) -> bool {
+        let Some(mut armed) = self
+            .watches
+            .lock()
+            .get(project_id)
+            .map(|watch| watch.armed.clone())
+        else {
+            return false;
+        };
+        tokio::time::timeout(wait, armed.wait_for(|armed| *armed))
+            .await
+            .is_ok_and(|result| result.is_ok())
+    }
+
+    /// Number of subscribed connections for `project_id` (0 when unwatched).
+    #[must_use]
+    pub fn subscriber_count(&self, project_id: &str) -> usize {
+        self.watches
+            .lock()
+            .get(project_id)
+            .map_or(0, |watch| watch.subscribers.len())
+    }
+
+    /// Number of projects with an armed watcher.
+    #[must_use]
+    pub fn watched_project_count(&self) -> usize {
+        self.watches.lock().len()
+    }
+}
+
+/// Publish one batch of changes to `project_id`'s subscribers through the
+/// watch hub. Returns `false` when this generation no longer owns the
+/// project's watch, or when no subscriber is left (the watcher is dropped then;
+/// the hub itself prunes connections that are closing).
+fn deliver(
+    watches: &WatchMap,
+    hub: &WatchHub,
+    project_id: &str,
+    generation: u64,
+    delta: &FsDelta,
+) -> bool {
+    let Ok(delta) = serde_json::to_value(delta) else {
+        warn!(project_id, "[fs-watch] failed to serialize the fs delta");
+        return true;
+    };
+    {
+        let mut guard = watches.lock();
+        let Some(watch) = guard
+            .get(project_id)
+            .filter(|w| w.generation == generation)
+        else {
+            return false;
+        };
+        if watch.subscribers.is_empty() {
+            if let Some(watch) = guard.remove(project_id) {
+                watch.cancel.cancel();
+                info!(
+                    project_id,
+                    "[fs-watch] all subscribers gone; watcher dropped"
+                );
+            }
+            return false;
+        }
+    }
+    // A subscriber whose queue is full misses this batch as a hole in its
+    // revisions; it resubscribes and rebuilds from fresh state.
+    hub.publish(WatchKind::Fs, project_id, || delta);
+    true
 }
 
 /// Result of one watcher session.
 enum WatchOutcome {
-    /// The project root changed while watching — re-arm at the new root.
+    /// Unsubscribed / connections gone — stop for good.
+    Stopped,
+    /// The project's root moved — re-arm at the new root.
     RootChanged,
-    /// The watcher errored or the root vanished — backoff and retry.
+    /// The project was archived/removed/unresolvable — drop the watch.
+    ProjectGone,
+    /// The watcher errored — backoff and retry.
     Failed,
 }
 
-/// Watch `root` until the project root handle points elsewhere (or the
-/// watcher errors). Events are debounced into `fs_changed` broadcasts.
+/// Own one project's watcher lifecycle: arm, re-arm on a moved root, retry
+/// with backoff on failure, and end (removing this generation's entry) when
+/// the project disappears.
+async fn run_project_watch(
+    project_id: String,
+    generation: u64,
+    registry: Arc<ProjectRegistry>,
+    hub: Arc<WatchHub>,
+    watches: WatchMap,
+    cancel: CancellationToken,
+    armed: tokio::sync::watch::Sender<bool>,
+) {
+    let mut retry_delay = RETRY_BASE;
+    while let Some(root) = registry.canonical_root(&project_id) {
+        let outcome = watch_root(
+            &project_id,
+            generation,
+            root.clone(),
+            &registry,
+            &hub,
+            &watches,
+            &cancel,
+            &armed,
+        )
+        .await;
+        armed.send_replace(false);
+        match outcome {
+            WatchOutcome::Stopped => return,
+            WatchOutcome::ProjectGone => break,
+            WatchOutcome::RootChanged => {
+                retry_delay = RETRY_BASE;
+                info!(project_id = %project_id, "[fs-watch] project root changed; re-arming watcher");
+            }
+            WatchOutcome::Failed => {
+                warn!(
+                    project_id = %project_id,
+                    "[fs-watch] watcher failed; retrying in {:?}", retry_delay
+                );
+                match backoff(&project_id, &root, retry_delay, &registry, &cancel).await {
+                    BackoffOutcome::Stopped => return,
+                    BackoffOutcome::ProjectGone => break,
+                    BackoffOutcome::RootChanged => {
+                        retry_delay = RETRY_BASE;
+                        continue;
+                    }
+                    BackoffOutcome::Elapsed => {}
+                }
+                retry_delay = std::cmp::min(retry_delay * 2, RETRY_MAX);
+            }
+        }
+    }
+    let mut guard = watches.lock();
+    if guard
+        .get(&project_id)
+        .is_some_and(|w| w.generation == generation)
+    {
+        if guard.remove(&project_id).is_some() {
+            drop(guard);
+            notify_watch_ended(&hub, &project_id);
+        }
+        warn!(project_id = %project_id, "[fs-watch] project archived/removed; watcher and subscriptions dropped");
+    }
+}
+
+/// Tell every subscriber that its watch of `project_id` ended because the
+/// project is no longer watchable (archived, removed, root gone), so the client
+/// can ask for the watch again instead of waiting for deltas that never come.
+/// The hub releases the subscriptions after the notice.
+fn notify_watch_ended(hub: &WatchHub, project_id: &str) {
+    hub.end(
+        WatchKind::Fs,
+        project_id,
+        &serde_json::json!({ "ended": true, "reason": "project_unavailable" }),
+    );
+}
+
+/// Why a retry backoff ended.
+enum BackoffOutcome {
+    /// Unsubscribed / connections gone — stop for good.
+    Stopped,
+    /// The project was archived/removed/unresolvable during the wait.
+    ProjectGone,
+    /// The project's root moved during the wait — re-arm at once.
+    RootChanged,
+    /// The delay ran out — retry the same root.
+    Elapsed,
+}
+
+/// Wait out `delay` before a retry, re-checking the registry every second so
+/// an archived/removed project drops its subscriptions, and a moved root
+/// re-arms, without waiting for the full (up to 30 s) backoff.
+async fn backoff(
+    project_id: &str,
+    root: &std::path::Path,
+    delay: Duration,
+    registry: &Arc<ProjectRegistry>,
+    cancel: &CancellationToken,
+) -> BackoffOutcome {
+    let deadline = tokio::time::Instant::now() + delay;
+    loop {
+        let step = deadline
+            .saturating_duration_since(tokio::time::Instant::now())
+            .min(REGISTRY_CHECK_INTERVAL);
+        tokio::select! {
+            () = cancel.cancelled() => return BackoffOutcome::Stopped,
+            () = tokio::time::sleep(step) => {}
+        }
+        match registry.canonical_root(project_id) {
+            None => return BackoffOutcome::ProjectGone,
+            Some(current) if current != root => return BackoffOutcome::RootChanged,
+            Some(_) => {}
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return BackoffOutcome::Elapsed;
+        }
+    }
+}
+
+/// Watch `root` until cancelled, the project goes away or moves, or the
+/// watcher errors. Events are debounced into one `fs` delta per batch.
+#[allow(clippy::too_many_arguments)]
 async fn watch_root(
+    project_id: &str,
+    generation: u64,
     root: PathBuf,
-    project_root: &Arc<ParkingRwLock<PathBuf>>,
-    relay: &Arc<WsRelaySink>,
+    registry: &Arc<ProjectRegistry>,
+    hub: &WatchHub,
+    watches: &WatchMap,
+    cancel: &CancellationToken,
+    armed: &tokio::sync::watch::Sender<bool>,
 ) -> WatchOutcome {
     if !root.is_dir() {
-        warn!("[fs-watcher] project root is not a directory: {}", root.display());
+        warn!(
+            project_id,
+            "[fs-watch] project root is not a directory: {}",
+            root.display()
+        );
         return WatchOutcome::Failed;
     }
 
@@ -162,6 +512,9 @@ async fn watch_root(
         let Ok(event) = result else {
             return;
         };
+        if !is_change_event(&event.kind) {
+            return;
+        }
         for path in event.paths {
             // A full channel drops that path — the next event for the
             // same tree lands anyway once the drain catches up (watchers
@@ -171,29 +524,36 @@ async fn watch_root(
     }) {
         Ok(watcher) => watcher,
         Err(error) => {
-            warn!("[fs-watcher] failed to create watcher: {error}");
+            warn!(project_id, "[fs-watch] failed to create watcher: {error}");
             return WatchOutcome::Failed;
         }
     };
 
     if let Err(error) = watcher.watch(&root, RecursiveMode::Recursive) {
         warn!(
-            "[fs-watcher] failed to watch {}: {error}",
+            project_id,
+            "[fs-watch] failed to watch {}: {error}",
             root.display()
         );
         return WatchOutcome::Failed;
     }
-    info!("[fs-watcher] watching project root: {}", root.display());
+    info!(
+        project_id,
+        "[fs-watch] watching project root: {}",
+        root.display()
+    );
+    armed.send_replace(true);
 
-    // Root-change detection tick: the root handle is re-read cheaply; when
-    // it no longer matches the watched root, re-arm. Much cheaper than a
-    // channel of root clones and safe for the switch latency (≤1s).
-    let mut root_check = tokio::time::interval(Duration::from_secs(1));
+    // Validity tick: re-resolve the project's root against the registry so an
+    // archive/remove/path change (from any mutation path) ends or re-arms the
+    // watch within a second.
+    let mut root_check = tokio::time::interval(REGISTRY_CHECK_INTERVAL);
     root_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
     let root_display = root.display().to_string();
     loop {
         tokio::select! {
+            () = cancel.cancelled() => return WatchOutcome::Stopped,
             maybe_path = event_rx.recv() => {
                 let Some(path) = maybe_path else {
                     // Sender dropped — only possible on watcher thread exit.
@@ -222,12 +582,20 @@ async fn watch_root(
                 paths.sort();
                 paths.dedup();
                 if !paths.is_empty() {
-                    broadcast_fs_changed(relay, &root_display, &paths);
+                    let delta = FsDelta {
+                        root: root_display.clone(),
+                        paths,
+                    };
+                    if !deliver(watches, hub, project_id, generation, &delta) {
+                        return WatchOutcome::Stopped;
+                    }
                 }
             }
             _ = root_check.tick() => {
-                if *project_root.read() != root {
-                    return WatchOutcome::RootChanged;
+                match registry.canonical_root(project_id) {
+                    Some(current) if current == root => {}
+                    Some(_) => return WatchOutcome::RootChanged,
+                    None => return WatchOutcome::ProjectGone,
                 }
             }
         }

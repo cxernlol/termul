@@ -22,11 +22,7 @@ import {
   resolveSyntaxColors
 } from '@/lib/themes'
 
-const EDITOR_FONT_LOADS = [
-  '13px "Ioskeley Mono"',
-  'italic 13px "Ioskeley Mono"',
-  '700 13px "Ioskeley Mono"'
-] as const
+const EDITOR_FONT_LOADS = ['400 0.8125rem "Paper Mono"', '700 0.8125rem "Paper Mono"'] as const
 
 /** Load the editor faces before the first measure so the caret matches the real width. */
 async function loadEditorFont(): Promise<void> {
@@ -38,7 +34,7 @@ async function loadEditorFont(): Promise<void> {
     void logFrontendError({
       level: 'warn',
       source: 'use-codemirror.font',
-      message: `Ioskeley Mono failed to load — editor uses the fallback stack (${message})`
+      message: `Paper Mono failed to load — editor uses the monospace fallback (${message})`
     })
   }
 }
@@ -76,6 +72,11 @@ async function loadLanguage(lang: string): Promise<Extension | null> {
         extension = html()
         break
       }
+      case 'astro': {
+        const { astro } = await import('@/lib/codemirror-lang-astro')
+        extension = astro()
+        break
+      }
       case 'markdown': {
         const { markdown } = await import('@codemirror/lang-markdown')
         extension = markdown()
@@ -102,7 +103,13 @@ async function loadLanguage(lang: string): Promise<Extension | null> {
       default:
         return null
     }
-  } catch {
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    void logFrontendError({
+      level: 'warn',
+      source: 'use-codemirror.loadLanguage',
+      message: `syntax language failed to load lang=${lang} (${message})`
+    })
     return null
   }
 
@@ -147,6 +154,11 @@ interface UseCodeMirrorOptions {
   onCursorChange: (line: number, col: number) => void
   onScrollChange: (scrollTop: number) => void
   onVisibleRangeChange?: (range: VisibleLineRange) => void
+  /**
+   * Replaces the editor-store save on Mod-s (e.g. a remote SFTP file). Gets
+   * the text on screen, since `onChange` lags behind by its debounce.
+   */
+  onSave?: (content: string) => void
 }
 
 interface UseCodeMirrorResult {
@@ -179,6 +191,7 @@ export function useCodeMirror(
   const onCursorChangeRef = useRef(options.onCursorChange)
   const onScrollChangeRef = useRef(options.onScrollChange)
   const onVisibleRangeChangeRef = useRef(options.onVisibleRangeChange)
+  const onSaveRef = useRef(options.onSave)
   const contentRef = useRef(options.content)
   const isExternalUpdate = useRef(false)
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -197,6 +210,7 @@ export function useCodeMirror(
   onCursorChangeRef.current = options.onCursorChange
   onScrollChangeRef.current = options.onScrollChange
   onVisibleRangeChangeRef.current = options.onVisibleRangeChange
+  onSaveRef.current = options.onSave
   contentRef.current = options.content
 
   // Create editor
@@ -255,8 +269,9 @@ export function useCodeMirror(
         keymap.of([
           {
             key: 'Mod-s',
-            run: () => {
-              void requestSaveEditorFile(filePathRef.current)
+            run: (view) => {
+              if (onSaveRef.current) onSaveRef.current(view.state.doc.toString())
+              else void requestSaveEditorFile(filePathRef.current)
               return true
             },
             preventDefault: true

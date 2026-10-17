@@ -2,7 +2,9 @@ import type { DirectoryEntry, FileSearchResult } from '@shared/types/filesystem.
 import { create } from 'zustand'
 import { useShallow } from 'zustand/shallow'
 import { filesystemApi } from '@/lib/api'
+import { renamePathWithOpenEditors } from '@/lib/editor-tab-rename'
 import { logFrontendError } from '@/lib/log-api'
+import { useSidePanelVisible } from '@/stores/shell-layout-store'
 
 function normalizePath(p: string): string {
   return p.replace(/\\/g, '/')
@@ -63,7 +65,6 @@ export interface FileExplorerState {
   selectedPaths: Set<string>
   lastClickedPath: string | null
   clipboard: FileClipboard | null
-  isVisible: boolean
   loadingDirs: Set<string>
   rootLoadError: FileExplorerRootError | null
   searchQuery: string
@@ -115,11 +116,9 @@ export interface FileExplorerState {
   cutSelected: () => void
   paste: (destinationPath: string) => Promise<void>
   duplicateSelected: () => Promise<void>
-  toggleVisibility: () => void
   collapseAll: () => void
   setDirectoryContents: (path: string, entries: DirectoryEntry[]) => void
   removeDirectoryContents: (path: string) => void
-  setVisible: (visible: boolean) => void
   setExpandedDirs: (dirs: Set<string>) => void
   setRootLoadError: (error: FileExplorerRootError | null) => void
   restoreExpandedDirs: (dirs: string[]) => Promise<void>
@@ -184,8 +183,14 @@ function ensureFileNameStreamSubscription(
     const activeId = `search-${state.searchRequestId}`
     if (event.searchId !== activeId) return
 
+    // Folder hits (`kind: 'dir'`) exist for the composer @-picker only; the
+    // explorer lists files, so drop them to keep its results unchanged.
+    // Hits are root-relative; the explorer opens absolute paths.
+    const root = (state.rootPath ?? '').replace(/\/$/, '')
     set({
-      searchFileNameMatches: event.files.map((f) => f.path),
+      searchFileNameMatches: event.files
+        .filter((f) => f.kind !== 'dir')
+        .map((f) => `${root}/${f.path}`),
       searchTruncated: event.truncated || state.searchTruncated
     })
   })
@@ -249,7 +254,6 @@ export const useFileExplorerStore = create<FileExplorerState>((set, get) => ({
   selectedPaths: new Set<string>(),
   lastClickedPath: null,
   clipboard: null,
-  isVisible: true,
   loadingDirs: new Set<string>(),
   rootLoadError: null,
   searchQuery: '',
@@ -692,7 +696,7 @@ export const useFileExplorerStore = create<FileExplorerState>((set, get) => ({
         await copyPath(normalizedSrc, destPath)
       } else {
         // Move file/folder
-        const renameResult = await filesystemApi.renameFile(normalizedSrc, destPath)
+        const renameResult = await renamePathWithOpenEditors(normalizedSrc, destPath)
         if (!renameResult.success) {
           console.error('Failed to move:', renameResult.error)
         }
@@ -730,10 +734,6 @@ export const useFileExplorerStore = create<FileExplorerState>((set, get) => ({
         await refreshDirectory(dir)
       }
     }
-  },
-
-  toggleVisibility: (): void => {
-    set((state) => ({ isVisible: !state.isVisible }))
   },
 
   finalizeDirectoryCollapse: (path: string): void => {
@@ -796,10 +796,6 @@ export const useFileExplorerStore = create<FileExplorerState>((set, get) => ({
     const newContents = new Map(get().directoryContents)
     newContents.delete(normalized)
     set({ directoryContents: newContents })
-  },
-
-  setVisible: (visible: boolean): void => {
-    set({ isVisible: visible })
   },
 
   setExpandedDirs: (dirs: Set<string>): void => {
@@ -1055,7 +1051,6 @@ export function useFileExplorer(): Pick<
   | 'selectedPaths'
   | 'lastClickedPath'
   | 'clipboard'
-  | 'isVisible'
   | 'loadingDirs'
   | 'rootLoadError'
   | 'searchQuery'
@@ -1076,7 +1071,6 @@ export function useFileExplorer(): Pick<
       selectedPaths: state.selectedPaths,
       lastClickedPath: state.lastClickedPath,
       clipboard: state.clipboard,
-      isVisible: state.isVisible,
       loadingDirs: state.loadingDirs,
       rootLoadError: state.rootLoadError,
       searchQuery: state.searchQuery,
@@ -1110,9 +1104,7 @@ export function useFileExplorerActions(): Pick<
   | 'cutSelected'
   | 'paste'
   | 'duplicateSelected'
-  | 'toggleVisibility'
   | 'collapseAll'
-  | 'setVisible'
   | 'setExpandedDirs'
   | 'setRootLoadError'
   | 'restoreExpandedDirs'
@@ -1138,9 +1130,7 @@ export function useFileExplorerActions(): Pick<
       cutSelected: state.cutSelected,
       paste: state.paste,
       duplicateSelected: state.duplicateSelected,
-      toggleVisibility: state.toggleVisibility,
       collapseAll: state.collapseAll,
-      setVisible: state.setVisible,
       setExpandedDirs: state.setExpandedDirs,
       setRootLoadError: state.setRootLoadError,
       restoreExpandedDirs: state.restoreExpandedDirs,
@@ -1152,5 +1142,5 @@ export function useFileExplorerActions(): Pick<
 }
 
 export function useFileExplorerVisible(): boolean {
-  return useFileExplorerStore((state) => state.isVisible)
+  return useSidePanelVisible()
 }

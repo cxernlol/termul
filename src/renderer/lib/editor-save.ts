@@ -1,11 +1,7 @@
 import { toast } from 'sonner'
+import { basename } from '@/lib/path-basename'
 import { useEditorStore } from '@/stores/editor-store'
 import { matchesShortcut, useKeyboardShortcutsStore } from '@/stores/keyboard-shortcuts-store'
-
-export function getEditorFileBaseName(filePath: string): string {
-  const parts = filePath.split(/[\\/]/)
-  return parts[parts.length - 1] || filePath
-}
 
 export function getSaveFileShortcutKey(): string {
   const shortcut = useKeyboardShortcutsStore.getState().shortcuts.saveFile
@@ -18,7 +14,7 @@ export function isSaveFileShortcut(event: KeyboardEvent): boolean {
 
 /** Flush live editor buffer (if mounted) and persist the file. */
 export async function requestSaveEditorFile(filePath: string): Promise<boolean> {
-  const fileName = getEditorFileBaseName(filePath)
+  const fileName = basename(filePath)
   try {
     const saved = await useEditorStore.getState().saveFile(filePath)
     if (saved) {

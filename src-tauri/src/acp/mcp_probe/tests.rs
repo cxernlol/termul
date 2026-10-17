@@ -157,3 +157,132 @@ async fn unreachable_http_url_returns_disconnected() {
     );
     assert!(result.tools.is_empty());
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn concurrent_identical_probes_share_one_spawn() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let spawn_log = dir.path().join("spawns");
+    let config = || McpServerConfig {
+        r#type: Some("stdio".to_string()),
+        name: "spawn-counter".to_string(),
+        command: Some("sh".to_string()),
+        args: vec![
+            "-c".to_string(),
+            format!("echo spawn >> '{}'; sleep 1", spawn_log.display()),
+        ],
+        env: Vec::new(),
+        url: None,
+        headers: Vec::new(),
+    };
+    let spawns = || {
+        std::fs::read_to_string(&spawn_log)
+            .unwrap_or_default()
+            .lines()
+            .count()
+    };
+
+    let (first, second) = tokio::join!(probe(config()), probe(config()));
+    assert_eq!(first.status, ProbeStatus::Disconnected);
+    assert_eq!(second.status, ProbeStatus::Disconnected);
+    assert_eq!(first.error, second.error);
+    assert_eq!(spawns(), 1);
+
+    probe(config()).await;
+    assert_eq!(spawns(), 2, "a finished probe is not cached");
+}
+
+/// Serves `POST /mcp` with a slow OAuth challenge and counts the requests.
+async fn serve_slow_oauth_challenge() -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    let requests = Arc::new(AtomicUsize::new(0));
+    let counter = requests.clone();
+    let app = axum::Router::new().route(
+        "/mcp",
+        axum::routing::post(move || {
+            let counter = counter.clone();
+            async move {
+                counter.fetch_add(1, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                (
+                    axum::http::StatusCode::UNAUTHORIZED,
+                    [(
+                        axum::http::header::WWW_AUTHENTICATE,
+                        r#"Bearer resource_metadata="http://127.0.0.1/.well-known/oauth-protected-resource""#,
+                    )],
+                )
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    (url, requests)
+}
+
+#[tokio::test]
+async fn probe_started_before_a_token_change_is_not_joined() {
+    use std::sync::atomic::Ordering;
+    let (url, requests) = serve_slow_oauth_challenge().await;
+    let config = || McpServerConfig {
+        r#type: Some("http".to_string()),
+        name: "oauth-server".to_string(),
+        command: None,
+        args: Vec::new(),
+        env: Vec::new(),
+        url: Some(url.clone()),
+        headers: Vec::new(),
+    };
+
+    let (first, second) = tokio::join!(probe(config()), probe(config()));
+    assert_eq!(first.status, ProbeStatus::AuthRequired);
+    assert_eq!(second.status, ProbeStatus::AuthRequired);
+    assert_eq!(requests.load(Ordering::SeqCst), 1);
+
+    let stale = tokio::spawn(probe(config()));
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while requests.load(Ordering::SeqCst) < 2 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the stale probe reached the server");
+    crate::acp::mcp_oauth::delete_stored_token(&url).expect("disconnect");
+    let fresh = probe(config()).await;
+    let stale = stale.await.unwrap();
+
+    assert_eq!(stale.status, ProbeStatus::AuthRequired);
+    assert_eq!(fresh.status, ProbeStatus::AuthRequired);
+    assert_eq!(requests.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test]
+async fn panicking_probe_task_leaves_no_in_flight_entry() {
+    let config = McpServerConfig {
+        r#type: Some("stdio".to_string()),
+        name: "panicking-probe".to_string(),
+        command: Some("unused".to_string()),
+        args: Vec::new(),
+        env: Vec::new(),
+        url: None,
+        headers: Vec::new(),
+    };
+    let stale = futures::future::ready(ProbeResult::disconnected("stale"))
+        .boxed()
+        .shared();
+    let key = (config, 0);
+    IN_FLIGHT_PROBES.lock().insert(key.clone(), stale);
+
+    let entry = key.clone();
+    let joined = tokio::spawn(async move {
+        let _entry = InFlightEntry(entry);
+        panic!("probe panicked");
+    })
+    .await;
+
+    assert!(joined.unwrap_err().is_panic());
+    assert!(!IN_FLIGHT_PROBES.lock().contains_key(&key));
+}

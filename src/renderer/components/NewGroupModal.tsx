@@ -2,6 +2,7 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { type KeyboardEvent, useCallback, useEffect, useState } from 'react'
 import { X } from '@/components/icons'
 import { Button } from '@/components/ui/button'
+import { FIELD_FOCUS_CLASS } from '@/components/ui/panel-styles'
 
 interface NewGroupModalProps {
   isOpen: boolean
@@ -108,7 +109,7 @@ export function NewGroupModal({
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   placeholder={placeholder}
-                  className="w-full bg-secondary border border-border rounded px-3 py-1.5 text-sm text-foreground focus:ring-1 focus:ring-primary focus:border-primary outline-none placeholder-muted-foreground"
+                  className={`w-full bg-secondary border border-border rounded px-3 py-1.5 text-sm text-foreground placeholder-muted-foreground ${FIELD_FOCUS_CLASS}`}
                 />
               </div>
             </div>

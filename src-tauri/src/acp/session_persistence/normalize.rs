@@ -1,3 +1,4 @@
+use super::diff_stat;
 use super::*;
 
 pub(super) fn validate_and_sort(records: &mut [PersistedEventRecord]) -> Result<()> {
@@ -14,13 +15,9 @@ pub(super) fn validate_and_sort(records: &mut [PersistedEventRecord]) -> Result<
 
 #[must_use]
 pub fn is_durable_event(type_: &str) -> bool {
-    // CAP-2: `agent_switch` is excluded because the ONLY durable write for a
-    // switch is the host-authored `WriterCommand::AppendAgentSwitch` record
-    // (the `record_local_title` precedent). The synthetic live fan-out event
-    // is excluded here so `WsRelaySink::emit` → `assign_and_append` →
-    // `enqueue_event` cannot append a SECOND durable record for the same
-    // switch (the fold would render two separators). The durable record
-    // itself flows through the writer command, never through this gate.
+    // CAP-2: an `agent_switch` marker is a durable host-authored record: the
+    // relay's `record_host_event` allocates its seq and appends it once, and
+    // the same event is its live fan-out (never a second record).
     !matches!(
         type_,
         "permission_request"
@@ -28,10 +25,6 @@ pub fn is_durable_event(type_: &str) -> bool {
             | "agent_spawned"
             | "agent_disconnected"
             | "agent_crashed"
-            | "projects_changed"
-            | "project_switch_completed"
-            | "project_switch_failed"
-            | "agent_switch"
     )
 }
 
@@ -138,11 +131,141 @@ pub(crate) fn fold_step(state: FoldState, type_: &str, payload: &Value) -> (Fold
         _ => (state, false),
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct FoldCounts {
+    pub message_count: u64,
+    pub tool_count: u64,
+    pub state: FoldState,
+}
+
+pub(super) fn fold_counts(records: &mut [PersistedEventRecord]) -> FoldCounts {
+    records.sort_by_key(|record| record.seq);
+    let mut counts = FoldCounts::default();
+    for record in records.iter() {
+        counts.tool_count += u64::from(is_tool_event(&record.type_));
+        let (next, opens_message) = fold_step(counts.state, &record.type_, &record.payload);
+        counts.state = next;
+        counts.message_count += u64::from(opens_message);
+    }
+    counts
+}
+
+/// Paths longer than this (in chars) are never persisted in a file-change
+/// summary — the field is omitted instead.
+pub(crate) const MAX_SUMMARY_PATH_CHARS: usize = 4096;
+
+/// Tool kinds whose calls change files (the Changed files panel's domain).
+pub(crate) fn is_file_change_kind(kind: Option<&str>) -> bool {
+    matches!(kind, Some("edit" | "delete" | "move"))
+}
+
+/// Renderer `PATH_KEYS` (`tool-call-summary.ts`) — same keys, same order.
+const PATH_KEYS: &[&str] = &[
+    "path",
+    "filePath",
+    "file_path",
+    "file",
+    "target_file",
+    "targetFile",
+    "abspath",
+    "absPath",
+    "filename",
+    "fileName",
+];
+
+/// Best-effort file path for one tool event, mirroring the renderer's
+/// `toolCallPath`: `locations[0].path` → the first non-blank `rawInput`
+/// `PATH_KEYS` string (trimmed) → the first diff item's `path`.
+fn tool_event_path(tool: &serde_json::Map<String, Value>) -> Option<&str> {
+    let location = tool
+        .get("locations")
+        .and_then(Value::as_array)
+        .and_then(|locations| locations.first())
+        .and_then(|location| location.get("path"))
+        .and_then(Value::as_str)
+        .filter(|path| !path.is_empty());
+    if location.is_some() {
+        return location;
+    }
+    if let Some(input) = tool.get("rawInput").and_then(Value::as_object) {
+        let from_input = PATH_KEYS.iter().find_map(|key| {
+            input
+                .get(*key)
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|path| !path.is_empty())
+        });
+        if from_input.is_some() {
+            return from_input;
+        }
+    }
+    tool.get("content")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|item| diff_stat::is_diff_item(item))
+        .find_map(|item| {
+            item.get("path")
+                .and_then(Value::as_str)
+                .filter(|path| !path.is_empty())
+        })
+}
+
+/// Add the bounded, path-only file-change summary (`locations: [{path}]`,
+/// `diffStat: {added, removed}`) to a reduced tool DTO when the gate admits
+/// the event: a `tool_call` whose `kind` is edit/delete/move, or a
+/// `tool_call_update` whose own `kind` is one of those OR that carries diff
+/// content. Fields are added only when derivable; a path that is longer than
+/// [`MAX_SUMMARY_PATH_CHARS`] is omitted. Diff text, titles, `rawInput`, and
+/// line numbers are never persisted — only the derived path and counts.
+fn add_file_change_summary(
+    type_: &str,
+    tool: &serde_json::Map<String, Value>,
+    reduced: &mut serde_json::Map<String, Value>,
+) {
+    // Gate first: the diff stat (up to a bounded LCS) is computed only for
+    // events that can be admitted.
+    let kind_gate = is_file_change_kind(tool.get("kind").and_then(Value::as_str));
+    let admitted = match type_ {
+        "tool_call" => kind_gate,
+        _ => {
+            kind_gate
+                || tool
+                    .get("content")
+                    .and_then(Value::as_array)
+                    .is_some_and(|items| items.iter().any(diff_stat::is_diff_item))
+        }
+    };
+    if !admitted {
+        return;
+    }
+    let stat = diff_stat::content_diff_stat(tool.get("content"));
+    if let Some(path) =
+        tool_event_path(tool).filter(|path| path.chars().count() <= MAX_SUMMARY_PATH_CHARS)
+    {
+        reduced.insert(
+            "locations".to_string(),
+            serde_json::json!([{ "path": path }]),
+        );
+    }
+    if let Some(counts) = stat {
+        reduced.insert(
+            "diffStat".to_string(),
+            serde_json::json!({ "added": counts.added, "removed": counts.removed }),
+        );
+    }
+}
+
 pub(super) fn normalize_durable_payload(type_: &str, payload: &Value) -> Value {
     if matches!(type_, "tool_call" | "tool_call_update") {
         // Strict DTO: tool-authored free-form content, arguments, output, and
         // unknown fields are never durable. Only structural routing/status
-        // fields required to reconstruct the timeline are admitted.
+        // fields required to reconstruct the timeline are admitted, plus a
+        // host-derived file-change summary for file-changing calls
+        // (`add_file_change_summary`: path-only `locations` + `diffStat`
+        // counts) so restored sessions can repopulate the Changed files
+        // panel without persisting any diff text.
         let mut event = serde_json::Map::new();
         for field in ["agentId", "sessionId"] {
             if let Some(value) = payload.get(field) {
@@ -161,6 +284,7 @@ pub(super) fn normalize_durable_payload(type_: &str, payload: &Value) -> Value {
                     reduced.insert(field.to_string(), value.clone());
                 }
             }
+            add_file_change_summary(type_, tool, &mut reduced);
             event.insert(key.to_string(), Value::Object(reduced));
         }
         Value::Object(event)
@@ -169,7 +293,7 @@ pub(super) fn normalize_durable_payload(type_: &str, payload: &Value) -> Value {
     }
 }
 
-pub(super) fn sanitize_value(key: Option<&str>, value: &Value) -> Value {
+pub(crate) fn sanitize_value(key: Option<&str>, value: &Value) -> Value {
     if key.is_some_and(is_secret_key) {
         return Value::String("[REDACTED]".to_string());
     }
@@ -284,8 +408,49 @@ pub(super) fn derive_title(payload: &Value) -> String {
                 None => Some(text.to_string()),
             },
         )
+        .map(|text| skills_framing_title(&text).unwrap_or(text))
         .unwrap_or_else(|| "Untitled Chat".to_string());
     normalize_title(&text)
+}
+
+fn skills_framing_title(text: &str) -> Option<String> {
+    let text = text.replace("\r\n", "\n");
+    let (command, framed) = match text.strip_prefix('/').and_then(|rest| rest.split_once(' ')) {
+        Some((name, rest)) if !name.is_empty() && !name.contains(['/', '\n', '\t']) => {
+            (Some(name), rest)
+        }
+        _ => (None, text.as_str()),
+    };
+    let body = framed.strip_prefix("# Agent Skills\n\n")?;
+    let (header, user_text) = body
+        .split_once("\n\n---\n\n")
+        .map_or((body, ""), |(header, user_text)| (header, user_text.trim()));
+    let is_skill_name = |name: &str| {
+        !name.is_empty()
+            && name
+                .chars()
+                .all(|ch| ch.is_alphanumeric() || matches!(ch, '_' | '.' | '-'))
+    };
+    let names = header
+        .split('\n')
+        .map(|line| {
+            let (name, path) = line.split_once(": ")?;
+            (is_skill_name(name) && !path.is_empty()).then_some(name)
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let rest = if user_text.is_empty() {
+        names
+            .iter()
+            .map(|name| format!("({name})"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    } else {
+        user_text.to_string()
+    };
+    Some(match command {
+        Some(command) => format!("/{command} {rest}"),
+        None => rest,
+    })
 }
 
 #[must_use]
@@ -295,3 +460,7 @@ pub fn now_millis() -> u64 {
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or(0)
 }
+
+#[cfg(test)]
+#[path = "normalize_tests.rs"]
+mod tests;

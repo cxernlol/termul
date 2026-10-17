@@ -1,6 +1,12 @@
 import { act, render, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger
+} from '@/components/ui/dropdown-menu'
+import {
   browserTabCreate,
   browserTabDestroy,
   browserTabHide,
@@ -9,6 +15,20 @@ import {
 } from '@/lib/browser-api'
 import { useBrowserSessionStore } from '@/stores/browser-session-store'
 import { useBrowserWebview } from './use-browser-webview'
+import {
+  resetNativeWebviewOcclusionForTests,
+  useNativeWebviewOcclusion
+} from './use-native-webview-occlusion'
+import { applyUiZoom } from './use-ui-zoom'
+
+vi.mock('@/lib/tauri-runtime', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/tauri-runtime')>('@/lib/tauri-runtime')
+  return { ...actual, isTauriContext: () => true }
+})
+
+vi.mock('@/lib/tauri-webview', () => ({
+  getCurrentWebview: () => ({ setZoom: () => Promise.resolve() })
+}))
 
 vi.mock('@/lib/browser-api', () => ({
   browserTabCreate: vi.fn(),
@@ -59,7 +79,7 @@ describe('useBrowserWebview bounds updates', () => {
     vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue(LOGICAL_RECT)
     vi.mocked(browserTabCreate).mockResolvedValue({
       success: true,
-      data: { id: 'browser-1', url: 'https://example.com', title: '' }
+      data: { id: 'browser-1', url: 'https://example.com', title: '', agentControlled: false }
     })
     vi.mocked(browserTabDestroy).mockResolvedValue({ success: true, data: undefined })
     vi.mocked(browserTabResize).mockResolvedValue({ success: true, data: undefined })
@@ -113,6 +133,45 @@ describe('useBrowserWebview bounds updates', () => {
     expect(consoleLog).not.toHaveBeenCalled()
 
     view.unmount()
+  })
+
+  it('sends window-logical bounds under UI zoom: the CSS rect times the applied zoom', async () => {
+    vi.mocked(HTMLElement.prototype.getBoundingClientRect).mockReturnValue({
+      ...LOGICAL_RECT,
+      x: 263,
+      y: 85,
+      width: 1264,
+      height: 704
+    })
+    Object.defineProperty(window, '__TAURI_INTERNALS__', {
+      value: {},
+      configurable: true,
+      writable: true
+    })
+    try {
+      await applyUiZoom(1.25)
+      const view = render(<BrowserWebviewHarness />)
+
+      await waitFor(() => expect(browserTabCreate).toHaveBeenCalledTimes(1))
+      expect(browserTabCreate).toHaveBeenCalledWith('browser-1', 'https://example.com', {
+        x: 328.75,
+        y: 106.25,
+        width: 1580,
+        height: 880
+      })
+      await waitFor(() => expect(browserTabResize).toHaveBeenCalledTimes(1))
+      expect(browserTabResize).toHaveBeenLastCalledWith('browser-1', {
+        x: 328.75,
+        y: 106.25,
+        width: 1580,
+        height: 880
+      })
+
+      view.unmount()
+    } finally {
+      await applyUiZoom(1)
+      delete (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__
+    }
   })
 
   it('resyncs to settled bounds after creation, not stale creation bounds (#644)', async () => {
@@ -196,5 +255,125 @@ describe('useBrowserWebview bounds updates', () => {
     expect(browserTabResize).not.toHaveBeenCalled()
     expect(browserTabShow).not.toHaveBeenCalled()
     expect(browserTabDestroy).toHaveBeenCalled()
+  })
+
+  it('hides while a shell popover occludes and reveals only a visible pane afterwards', async () => {
+    const OccluderHarness = ({ open }: { open: boolean }): null => {
+      useNativeWebviewOcclusion(open)
+      return null
+    }
+    const visible = render(<BrowserWebviewHarness />)
+    await waitFor(() => expect(browserTabShow).toHaveBeenCalled())
+    vi.mocked(browserTabShow).mockClear()
+    vi.mocked(browserTabHide).mockClear()
+
+    const occluder = render(<OccluderHarness open />)
+    await waitFor(() => expect(browserTabHide).toHaveBeenCalledWith('browser-1'))
+    expect(browserTabShow).not.toHaveBeenCalled()
+
+    occluder.rerender(<OccluderHarness open={false} />)
+    await waitFor(() => expect(browserTabShow).toHaveBeenCalledWith('browser-1'))
+
+    occluder.unmount()
+    visible.unmount()
+    resetNativeWebviewOcclusionForTests()
+  })
+
+  it('hides while a shared menu primitive is open and reveals once it closes', async () => {
+    const Page = ({ menuOpen }: { menuOpen: boolean }): JSX.Element => (
+      <>
+        <BrowserWebviewHarness />
+        <DropdownMenu open={menuOpen}>
+          <DropdownMenuTrigger>Tab</DropdownMenuTrigger>
+          <DropdownMenuContent>
+            <DropdownMenuItem>Close</DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </>
+    )
+    const view = render(<Page menuOpen={false} />)
+    await waitFor(() => expect(browserTabShow).toHaveBeenCalledTimes(1))
+    expect(browserTabHide).not.toHaveBeenCalled()
+
+    view.rerender(<Page menuOpen />)
+    await waitFor(() => expect(browserTabHide).toHaveBeenCalledTimes(1))
+    expect(browserTabHide).toHaveBeenLastCalledWith('browser-1')
+
+    view.rerender(<Page menuOpen={false} />)
+    await waitFor(() => expect(browserTabShow).toHaveBeenCalledTimes(2))
+    expect(browserTabShow).toHaveBeenLastCalledWith('browser-1')
+
+    view.unmount()
+    resetNativeWebviewOcclusionForTests()
+  })
+
+  it('keeps a pane-hidden webview hidden after the occluder closes', async () => {
+    const OccluderHarness = ({ open }: { open: boolean }): null => {
+      useNativeWebviewOcclusion(open)
+      return null
+    }
+    const view = render(<BrowserWebviewHarness visible={false} />)
+    await waitFor(() => expect(browserTabCreate).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(browserTabResize).toHaveBeenCalledTimes(1))
+
+    const occluder = render(<OccluderHarness open />)
+    occluder.rerender(<OccluderHarness open={false} />)
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(browserTabShow).not.toHaveBeenCalled()
+
+    occluder.unmount()
+    view.unmount()
+    resetNativeWebviewOcclusionForTests()
+  })
+})
+
+describe('useBrowserWebview agent control', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.stubGlobal('ResizeObserver', ResizeObserverMock)
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue(LOGICAL_RECT)
+    vi.mocked(browserTabDestroy).mockResolvedValue({ success: true, data: undefined })
+    vi.mocked(browserTabResize).mockResolvedValue({ success: true, data: undefined })
+    vi.mocked(browserTabShow).mockResolvedValue({ success: true, data: undefined })
+    vi.mocked(browserTabHide).mockResolvedValue({ success: true, data: undefined })
+    useBrowserSessionStore.getState().createTab('browser-1', 'https://example.com')
+  })
+
+  afterEach(() => {
+    useBrowserSessionStore.getState().removeTab('browser-1')
+    vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+  })
+
+  function createResolves(agentControlled: boolean): void {
+    vi.mocked(browserTabCreate).mockResolvedValue({
+      success: true,
+      data: { id: 'browser-1', url: 'https://example.com', title: '', agentControlled }
+    })
+  }
+
+  it('clears a stale Agent flag when the host did not claim the created webview', async () => {
+    useBrowserSessionStore.getState().setAgentControlled('browser-1', true)
+    createResolves(false)
+
+    const view = render(<BrowserWebviewHarness />)
+
+    await waitFor(() =>
+      expect(useBrowserSessionStore.getState().getTab('browser-1')?.agentControlled).toBe(false)
+    )
+    view.unmount()
+  })
+
+  it('flags the tab once the host claims the created webview for an agent', async () => {
+    createResolves(true)
+
+    const view = render(<BrowserWebviewHarness />)
+
+    await waitFor(() =>
+      expect(useBrowserSessionStore.getState().getTab('browser-1')?.agentControlled).toBe(true)
+    )
+    view.unmount()
   })
 })

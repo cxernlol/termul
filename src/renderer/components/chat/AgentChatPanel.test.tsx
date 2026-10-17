@@ -1,22 +1,35 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { RECONNECT_GRACE_MS } from '@/hooks/use-delayed-flag'
+import {
+  NativeWebviewOccluder,
+  resetNativeWebviewOcclusionForTests
+} from '@/hooks/use-native-webview-occlusion'
 import { CODEX_CLI_SIGNED_OUT_MESSAGE } from '@/lib/agents/codex-cli-auth'
 import { commandToken } from '@/lib/skill-tokens'
 import { mockAcpSession } from '@/lib/test-utils/acp'
 import type { AcpSession } from '@/stores/acp-store'
 import { useConsentCardHost } from '@/stores/browser-consent-card-store'
+import { useConnectionStatusStore } from '@/stores/connection-status-store'
 
 const {
   mockOpen,
   mockOpenDiscovered,
+  mockRecheckPromptCommand,
   mockRetryCrashed,
   mockRetryFailed,
+  agentStatusRef,
+  mockMarkResumeFailed,
+  mockSendPrompt,
   mockSendPromptBlocks,
+  promptQueueRef,
   mockSetSwitchPendingOption,
   mockSetConfigOption,
   mockSetMode,
   mockSetModel,
   sessionsMapRef,
+  agentsRef,
+  commandsRef,
   preparedSessionsRef,
   optionsCacheRef,
   mockRemoveTab,
@@ -31,6 +44,7 @@ const {
   launchingRef,
   oskRef,
   transportReconnectingRef,
+  promptCommandStatesRef,
   changedFilesPanelPropsRef,
   discoveredContextRef,
   messagesRef,
@@ -40,17 +54,37 @@ const {
   timelineCallCountRef,
   chatMessageListPropsRef,
   pendingBrowserConsentsRef,
-  browserConsentCardPropsRef
+  browserConsentCardPropsRef,
+  mobileRef,
+  pendingPermissionsRef,
+  pendingQuestionsRef,
+  pendingElicitationsRef,
+  plansRef,
+  planPanelPropsRef,
+  askQuestionPropsRef,
+  elicitationPropsRef,
+  openGitSheetRef,
+  permissionPromptPropsRef
 } = vi.hoisted(() => ({
   mockOpen: vi.fn(),
   mockOpenDiscovered: vi.fn(),
+  mockRecheckPromptCommand: vi.fn(),
   // Story 5: failed-launch retry routing (Retry must reach retryFailedLaunch,
   // never retryCrashedSession, and never toast a circular "Could not retry").
   mockRetryCrashed: vi.fn(),
   mockRetryFailed: vi.fn(),
+  agentStatusRef: { current: {} as Record<string, string> },
+  // spec-stopped-chat-status-signals: the idle-stop auto-resume records a
+  // failure through this store action when the store wrote none itself.
+  mockMarkResumeFailed: vi.fn(),
   // Live-turn retry (handleRetry): asserts the sanitized wire blocks the
   // panel dispatches through the store's sendPromptBlocks.
   mockSendPromptBlocks: vi.fn(),
+  // Composer text sends (handleSend): the idle-stop resume orders the open
+  // before this call.
+  mockSendPrompt: vi.fn(),
+  // usePromptQueue answer (the idle-stop resume failure toast reads it).
+  promptQueueRef: { current: [] as Array<{ id: string }> },
   // spec-acp-composer-option-fidelity: while a switch is armed, composer picks
   // route to this store action (queued on session.switching) — never the old
   // session's setConfigOption/setMode/setModel.
@@ -63,6 +97,8 @@ const {
   // Extra sessions addressable by id (e.g. the switch target's prepared warm
   // session) so useAcpSession('s-warm') resolves in armed-switch tests.
   sessionsMapRef: { current: {} as Record<string, object> },
+  agentsRef: { current: {} as Record<string, object> },
+  commandsRef: { current: {} as Record<string, unknown[]> },
   // Armed-switch option scoping seams: the target's prepared session id (per
   // prepareChatKey) and its cached advertised options.
   preparedSessionsRef: { current: {} as Record<string, string> },
@@ -79,6 +115,8 @@ const {
   errorNoticePropsRef: {
     current: null as {
       message: string | null
+      code?: number | null
+      data?: unknown
       onRetry?: () => void
       onDismiss: () => void
     } | null
@@ -98,7 +136,15 @@ const {
   // Story 5.3 (AC1/AC3): test seams for OSK + reconnect overlay.
   oskRef: { current: { isOskOpen: false, keyboardHeight: 0, height: 0, offsetTop: 0 } },
   transportReconnectingRef: { current: false },
-  changedFilesPanelPropsRef: { current: [] as Array<{ cwd: string; toolCalls: unknown[] }> },
+  promptCommandStatesRef: { current: {} as Record<string, unknown> },
+  changedFilesPanelPropsRef: {
+    current: [] as Array<{
+      cwd: string
+      toolCalls: unknown[]
+      forceCollapsed?: boolean
+      onOpenGitChanges?: (opener: HTMLElement) => void
+    }>
+  },
   discoveredContextRef: {
     current: {} as Record<string, { agentId: string; cwd: string; projectId: string }>
   },
@@ -122,9 +168,14 @@ const {
   // so tests can assert hidden panels skip per-flush work.
   timelineCallCountRef: { current: { build: 0, consolidate: 0 } },
   // Latest ChatMessageList props per render (onRetry drives the live-turn
-  // retry wire rebuild; items asserts the worktree-row injection).
+  // retry wire rebuild; items asserts the worktree-row injection;
+  // filePathContext asserts the web/desktop open-in-editor parity).
   chatMessageListPropsRef: {
-    current: null as { onRetry?: () => void; items?: unknown[] } | null
+    current: null as {
+      onRetry?: () => void
+      items?: unknown[]
+      filePathContext?: { cwd?: string; projectRoot?: string }
+    } | null
   },
   // CAP-5: seedable browser-consent map so the panel's per-session filter can
   // be asserted (the pending card belongs to THIS panel's session only).
@@ -134,6 +185,23 @@ const {
   // CAP-5: latest BrowserConsentCard props per render.
   browserConsentCardPropsRef: {
     current: null as { consent?: { requestId: string; sessionId: string } } | null
+  },
+  // Mobile dock: `useMobileWebShell()` answer (default true, as before) and
+  // seedable approval / plan state + captured child props for the wiring tests.
+  mobileRef: { current: true },
+  pendingPermissionsRef: { current: {} as Record<string, object> },
+  pendingQuestionsRef: { current: {} as Record<string, object> },
+  pendingElicitationsRef: { current: {} as Record<string, object> },
+  plansRef: { current: {} as Record<string, object[]> },
+  planPanelPropsRef: {
+    current: [] as Array<{ defaultCollapsed?: boolean; forceCollapsed?: boolean }>
+  },
+  askQuestionPropsRef: { current: [] as Array<{ autoFocusFirstOption?: boolean }> },
+  elicitationPropsRef: { current: [] as Array<{ autoFocusHeading?: boolean }> },
+  openGitSheetRef: { current: vi.fn() },
+  // The props the morph branch hands PermissionPrompt.
+  permissionPromptPropsRef: {
+    current: [] as Array<{ isVisible?: boolean; embedded?: boolean }>
   }
 }))
 
@@ -164,21 +232,22 @@ vi.mock('@/stores/workspace-store', () => ({
 
 vi.mock('@/stores/acp-store', () => {
   const state = () => ({
-    agents: {},
-    commands: {},
+    agents: agentsRef.current,
+    agentStatus: agentStatusRef.current,
+    commands: commandsRef.current,
     agentSwitches: agentSwitchesRef.current,
     agentConfigs: agentConfigsRef.current,
     toolCalls: toolCallsRef.current,
-    plans: {},
-    pendingPermissions: {},
-    pendingQuestions: {},
-    pendingElicitations: {},
+    plans: plansRef.current,
+    pendingPermissions: pendingPermissionsRef.current,
+    pendingQuestions: pendingQuestionsRef.current,
+    pendingElicitations: pendingElicitationsRef.current,
     pendingBrowserConsents: pendingBrowserConsentsRef.current,
     // The panel's gate selects `s.messages[sessionId]`; the legacy
     // useAcpMessages mock serves one flat list for ANY session, so the map
     // is a Proxy answering every key with messagesRef.
     messages: new Proxy({}, { get: () => messagesRef.current }),
-    sessions: {},
+    sessions: sessionsMapRef.current,
     configToLiveAgent: {},
     preparedSessions: preparedSessionsRef.current,
     agentOptionsCache: optionsCacheRef.current,
@@ -188,22 +257,32 @@ vi.mock('@/stores/acp-store', () => {
     launchingSessionIds: launchingRef.current,
     discoveredReopenContexts: discoveredContextRef.current,
     transportReconnecting: transportReconnectingRef.current,
+    promptCommandStates: promptCommandStatesRef.current,
+    recheckPromptCommand: mockRecheckPromptCommand,
     openHistorySession: mockOpen,
     openDiscoveredSession: mockOpenDiscovered,
-    sendPrompt: vi.fn(),
+    sendPrompt: mockSendPrompt,
     sendPromptBlocks: mockSendPromptBlocks,
     cancelPrompt: vi.fn(),
     removeQueuedPrompt: vi.fn(),
     sendQueuedPromptNow: vi.fn(),
     retryCrashedSession: mockRetryCrashed,
     retryFailedLaunch: mockRetryFailed,
+    markResumeFailed: mockMarkResumeFailed,
     setConfigOption: mockSetConfigOption,
     setMode: mockSetMode,
     setModel: mockSetModel,
     setSwitchPendingOption: mockSetSwitchPendingOption
   })
   return {
-    useAcpStore: (sel: (s: unknown) => unknown) => sel(state()),
+    useAcpStore: Object.assign((sel: (s: unknown) => unknown) => sel(state()), {
+      // Imperative reads (e.g. the manual resume's still-closed check) see the
+      // seeded session through the same ref the session hook serves.
+      getState: () => ({
+        ...state(),
+        sessions: sessionRef.current ? { [sessionRef.current.id]: sessionRef.current } : {}
+      })
+    }),
     // Armed-switch tests seed a second session by id (the target's prepared
     // warm session); a null id resolves to null (matching the real hook) and
     // every other caller keeps the legacy sessionRef answer.
@@ -221,7 +300,7 @@ vi.mock('@/stores/acp-store', () => {
     },
     useAgentIcon: () => null,
     useAcpMessages: () => messagesRef.current,
-    usePromptQueue: () => [],
+    usePromptQueue: () => promptQueueRef.current,
     configIdFromReuseKey: (key: string) => key,
     // Mirrors acp-store's prepareChatKey — the panel looks up the switch
     // target's prepared session by (toConfigId, session.cwd, mcpServers).
@@ -265,7 +344,12 @@ vi.mock('@/hooks/use-osk-viewport', () => ({
   useOskViewport: () => oskRef.current
 }))
 vi.mock('@/hooks/use-mobile-web-shell', () => ({
-  useMobileWebShell: () => true
+  useMobileWebShell: () => mobileRef.current
+}))
+vi.mock('@/stores/git-sheet-store', () => ({
+  useGitSheetStore: (
+    sel: (s: { openGitSheet: (cwd?: string, opener?: HTMLElement | null) => void }) => unknown
+  ) => sel({ openGitSheet: (cwd, opener) => openGitSheetRef.current(cwd, opener) })
 }))
 
 // Child components pull in heavy chat rendering; the states under test render
@@ -273,6 +357,8 @@ vi.mock('@/hooks/use-mobile-web-shell', () => ({
 vi.mock('./ChatErrorNotice', () => ({
   ChatErrorNotice: (props: {
     message: string | null
+    code?: number | null
+    data?: unknown
     onRetry?: () => void
     retryLabel?: string
     onDismiss: () => void
@@ -282,16 +368,35 @@ vi.mock('./ChatErrorNotice', () => ({
   }
 }))
 vi.mock('./ChatChangedFilesPanel', () => ({
-  ChatChangedFilesPanel: (props: { cwd: string; toolCalls: unknown[] }) => {
+  ChatChangedFilesPanel: (props: {
+    cwd: string
+    toolCalls: unknown[]
+    forceCollapsed?: boolean
+    onOpenGitChanges?: (opener: HTMLElement) => void
+  }) => {
     changedFilesPanelPropsRef.current.push(props)
-    return null
+    // A marker, so the dock tests can assert the bar sits inside the dock wrapper.
+    return <div data-testid="changed-files-stub" />
   }
 }))
 const { chatInputBarPropsRef } = vi.hoisted(() => ({
   chatInputBarPropsRef: {
     current: [] as Array<{
       isVisible?: boolean
-      session?: { models?: unknown; modes?: unknown; configOptions?: unknown[] }
+      disabled?: boolean
+      controlsDisabled?: boolean
+      onSend?: (text: string) => void
+      onSendBlocks?: (blocks: unknown[], displayBlocks?: unknown[]) => void
+      onDraftStart?: () => void
+      session?: {
+        models?: unknown
+        modes?: unknown
+        configOptions?: unknown[]
+        mcpServerCount?: number
+      }
+      commands?: unknown[]
+      imageCapable?: boolean
+      embedCapable?: boolean
       configOptions?: unknown[]
       modes?: unknown
       onSetConfig?: (configId: string, valueId: string) => Promise<void>
@@ -300,10 +405,22 @@ const { chatInputBarPropsRef } = vi.hoisted(() => ({
     }>
   }
 }))
+// The stub keeps the real composer-card contract the dock relies on
+// (`data-chat-composer`, `tabIndex=-1`) and renders the embedded permission
+// prompt marker + button, so focus return can be asserted through the panel.
 vi.mock('./ChatInputBar', () => ({
-  ChatInputBar: (props: { isVisible?: boolean }) => {
+  ChatInputBar: (props: { isVisible?: boolean; permission?: { requestId: string } | null }) => {
     chatInputBarPropsRef.current.push(props)
-    return null
+    return (
+      <div data-chat-composer="true" tabIndex={-1} data-testid="composer-stub">
+        {props.permission ? (
+          <section data-approval-prompt={`permission:${props.permission.requestId}`}>
+            <button type="button">Allow once</button>
+          </section>
+        ) : null}
+        <input aria-label="editor" />
+      </div>
+    )
   }
 }))
 vi.mock('./ChatMessageList', () => ({
@@ -312,15 +429,38 @@ vi.mock('./ChatMessageList', () => ({
     return null
   }
 }))
-vi.mock('./PermissionPrompt', () => ({ PermissionPrompt: () => null }))
-vi.mock('./AskUserQuestion', () => ({ AskUserQuestion: () => null }))
+// The three prompt stubs render a marker each (like `composer-stub`) so the dock
+// tests can assert they sit inside the dock wrapper.
+vi.mock('./PermissionPrompt', () => ({
+  PermissionPrompt: (props: { isVisible?: boolean; embedded?: boolean }) => {
+    permissionPromptPropsRef.current.push(props)
+    return <div data-testid="permission-stub" />
+  }
+}))
+vi.mock('./AskUserQuestion', () => ({
+  AskUserQuestion: (props: { autoFocusFirstOption?: boolean }) => {
+    askQuestionPropsRef.current.push(props)
+    return <div data-testid="question-stub" />
+  }
+}))
+vi.mock('./ElicitationPrompt', () => ({
+  ElicitationPrompt: (props: { autoFocusHeading?: boolean }) => {
+    elicitationPropsRef.current.push(props)
+    return <div data-testid="elicitation-stub" />
+  }
+}))
 vi.mock('./BrowserConsentCard', () => ({
   BrowserConsentCard: (props: { consent?: { requestId: string; sessionId: string } }) => {
     browserConsentCardPropsRef.current = props
     return null
   }
 }))
-vi.mock('./PlanPanel', () => ({ PlanPanel: () => null }))
+vi.mock('./PlanPanel', () => ({
+  PlanPanel: (props: { defaultCollapsed?: boolean; forceCollapsed?: boolean }) => {
+    planPanelPropsRef.current.push(props)
+    return null
+  }
+}))
 vi.mock('./chat-timeline', () => {
   return {
     buildTimeline: (
@@ -342,9 +482,37 @@ vi.mock('./chat-timeline', () => {
 })
 
 import { AgentChatPanel } from './AgentChatPanel'
+import {
+  AUTO_RESUME_FAILED_QUEUED_TOAST,
+  AUTO_RESUME_FAILED_REASON
+} from './use-idle-stop-auto-resume'
 
 function seedLiveSession(id: string, lastError: string | null = null): void {
   sessionRef.current = mockAcpSession({ id, cwd: '/w', status: 'closed', lastError })
+}
+
+/** The props of the most recent ChatInputBar render. */
+function lastComposerProps(): (typeof chatInputBarPropsRef.current)[number] | undefined {
+  return chatInputBarPropsRef.current.at(-1)
+}
+
+/** Advance fake timers past a render-driven delay (e.g. the reconnect grace period). */
+function advanceTimers(ms: number): void {
+  act(() => {
+    vi.advanceTimersByTime(ms)
+  })
+}
+
+/** A prompt command waiting to confirm (AD-6), as the store publishes it. */
+function pendingCommand(outcomeUnknown: boolean): Record<string, unknown> {
+  return {
+    commandId: 'turn-1',
+    kind: 'send_prompt',
+    entityKey: 's1',
+    phase: 'pending-reconcile',
+    outcomeUnknown,
+    attempts: 1
+  }
 }
 
 describe('AgentChatPanel restored-tab rehydration', () => {
@@ -462,11 +630,13 @@ describe('AgentChatPanel restored-tab rehydration', () => {
     })
   })
 
-  it('shows a reconnecting banner while a closed session is being reopened', () => {
+  it('announces a resuming banner while a closed session is being reopened', () => {
     seedLiveSession('s1')
     openingRef.current = { s1: true }
     render(<AgentChatPanel sessionId="s1" isVisible />)
-    expect(screen.getByText('Resuming chat…')).toBeInTheDocument()
+    const banner = screen.getByRole('status')
+    expect(banner).toHaveTextContent('Resuming chat…')
+    expect(banner).toHaveAttribute('aria-live', 'polite')
   })
 
   it('keeps the failed discovered restore banner hidden while reopen is pending', () => {
@@ -490,9 +660,9 @@ describe('AgentChatPanel restored-tab rehydration', () => {
   })
 
   it('offers a Reconnect action for a closed session with history (no dead end)', () => {
-    // A failed background reconnect leaves the session registered but closed;
-    // the pane must offer a working way to re-attempt the reopen.
-    seedLiveSession('s1')
+    // A failed reconnect leaves the session registered but closed with the
+    // resume error; the pane must offer a working way to re-attempt the reopen.
+    seedLiveSession('s1', 'Resume failed: boom')
     indexRef.current = [{ id: 's1' }]
     render(<AgentChatPanel sessionId="s1" isVisible />)
     fireEvent.click(screen.getByRole('button', { name: 'Resume chat' }))
@@ -508,14 +678,489 @@ describe('AgentChatPanel restored-tab rehydration', () => {
     expect(mockShowAgentLauncher).toHaveBeenCalledWith('pane-1')
   })
 
-  it('surfaces a read-only banner when a closed session has history and no reopen context (CAP-4)', () => {
-    // Remap failed or strategy was 'local' → session lands closed with a
-    // history entry and no discovered reopen context → explicit read-only hint.
+  it('surfaces a read-only banner when a closed session has history and no reopen context (CAP-4)', async () => {
+    // Remap failed or strategy was 'local' → the automatic resume settles
+    // with the session still closed (no live agent) → explicit read-only hint.
     seedLiveSession('s1')
     indexRef.current = [{ id: 's1' }]
     render(<AgentChatPanel sessionId="s1" isVisible />)
+    await act(async () => {
+      lastComposerProps()?.onDraftStart?.()
+    })
     expect(screen.getByText('This chat stopped.')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Resume chat' })).toBeInTheDocument()
+    expect(lastComposerProps()?.disabled).toBe(true)
+  })
+})
+
+// spec-idle-stopped-chat-seamless-resume: a chat the host idle reaper stopped
+// (closed, has history, lastError is not a resume failure) resumes on the
+// first keystroke or send.
+describe('AgentChatPanel idle-stopped chat seamless resume', () => {
+  beforeEach(() => {
+    sessionsMapRef.current = {}
+    mockOpen.mockReset().mockResolvedValue(undefined)
+    mockSendPrompt.mockReset().mockResolvedValue(undefined)
+    mockSendPromptBlocks.mockReset().mockResolvedValue(undefined)
+    mockRetryCrashed.mockReset().mockResolvedValue(undefined)
+    mockMarkResumeFailed.mockReset()
+    toastErrorSpy.mockReset()
+    sessionRef.current = null
+    indexRef.current = [{ id: 's1' }]
+    openingRef.current = {}
+    restoringRef.current = {}
+    launchingRef.current = {}
+    discoveredContextRef.current = {}
+    messagesRef.current = []
+    promptQueueRef.current = []
+    errorNoticePropsRef.current = null
+    chatInputBarPropsRef.current = []
+    seedLiveSession('s1')
+  })
+
+  /** Publish the store marks a real `openHistorySession` sets while it runs. */
+  function publishOpening(rerender: (ui: React.ReactElement) => void): void {
+    openingRef.current = { s1: true }
+    restoringRef.current = { s1: true }
+    rerender(<AgentChatPanel sessionId="s1" isVisible />)
+  }
+
+  it('hides the stopped bar, keeps the composer enabled and the pickers disabled', () => {
+    render(<AgentChatPanel sessionId="s1" isVisible />)
+    expect(screen.queryByText('This chat stopped.')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Resume chat' })).not.toBeInTheDocument()
+    expect(lastComposerProps()?.disabled).toBe(false)
+    expect(lastComposerProps()?.controlsDisabled).toBe(true)
+    expect(lastComposerProps()?.onDraftStart).toBeTypeOf('function')
+  })
+
+  it('stays resumable with a leftover turn note in lastError', () => {
+    seedLiveSession('s1', 'Interrupted by server restart.')
+    render(<AgentChatPanel sessionId="s1" isVisible />)
+    expect(screen.queryByText('This chat stopped.')).not.toBeInTheDocument()
+    expect(lastComposerProps()?.disabled).toBe(false)
+    // The note itself stays visible.
+    expect(errorNoticePropsRef.current?.message).toBe('Interrupted by server restart.')
+  })
+
+  it('is not resumable after a resume failure', () => {
+    seedLiveSession('s1', 'Resume failed: spawn boom')
+    render(<AgentChatPanel sessionId="s1" isVisible />)
+    expect(screen.getByText('This chat stopped.')).toBeInTheDocument()
+    expect(lastComposerProps()?.disabled).toBe(true)
+    expect(lastComposerProps()?.onDraftStart).toBeUndefined()
+  })
+
+  it('does not resume from viewing alone', () => {
+    const { rerender } = render(<AgentChatPanel sessionId="s1" isVisible={false} />)
+    rerender(<AgentChatPanel sessionId="s1" isVisible />)
+    expect(mockOpen).not.toHaveBeenCalled()
+  })
+
+  it('starts the open before a text send so the prompt queues behind it', () => {
+    render(<AgentChatPanel sessionId="s1" isVisible />)
+    act(() => {
+      lastComposerProps()?.onSend?.('continue')
+    })
+    expect(mockOpen).toHaveBeenCalledWith('s1')
+    expect(mockSendPrompt).toHaveBeenCalledWith('s1', 'continue')
+    expect(mockOpen.mock.invocationCallOrder[0]).toBeLessThan(
+      mockSendPrompt.mock.invocationCallOrder[0]
+    )
+  })
+
+  it('starts the open before a blocks send (attachments / pills)', () => {
+    render(<AgentChatPanel sessionId="s1" isVisible />)
+    const blocks = [{ type: 'text', text: 'see file' }]
+    act(() => {
+      lastComposerProps()?.onSendBlocks?.(blocks)
+    })
+    expect(mockOpen).toHaveBeenCalledWith('s1')
+    expect(mockSendPromptBlocks).toHaveBeenCalledWith('s1', blocks, { displayBlocks: undefined })
+    expect(mockOpen.mock.invocationCallOrder[0]).toBeLessThan(
+      mockSendPromptBlocks.mock.invocationCallOrder[0]
+    )
+  })
+
+  it('resumes once on the first keystroke (one automatic attempt per stop)', () => {
+    mockOpen.mockReturnValue(new Promise(() => {}))
+    render(<AgentChatPanel sessionId="s1" isVisible />)
+    act(() => {
+      lastComposerProps()?.onDraftStart?.()
+      lastComposerProps()?.onDraftStart?.()
+    })
+    act(() => {
+      lastComposerProps()?.onSend?.('continue')
+    })
+    expect(mockOpen).toHaveBeenCalledTimes(1)
+    expect(mockSendPrompt).toHaveBeenCalledTimes(1)
+  })
+
+  it('tracks an open already in flight instead of starting another', () => {
+    openingRef.current = { s1: true }
+    render(<AgentChatPanel sessionId="s1" isVisible />)
+    act(() => {
+      lastComposerProps()?.onSend?.('continue')
+    })
+    expect(mockOpen).not.toHaveBeenCalled()
+    expect(mockSendPrompt).toHaveBeenCalledWith('s1', 'continue')
+  })
+
+  it('keeps the composer mounted through a fast reconnect, then auto-resumes a second stop', () => {
+    mockOpen.mockReturnValue(new Promise(() => {}))
+    const { rerender } = render(<AgentChatPanel sessionId="s1" isVisible />)
+    act(() => {
+      lastComposerProps()?.onDraftStart?.()
+    })
+    publishOpening(rerender)
+    expect(screen.queryByRole('status', { name: 'Restoring chat' })).not.toBeInTheDocument()
+    expect(screen.getByTestId('composer-stub')).toBeInTheDocument()
+    expect(screen.getByText('Resuming chat…')).toBeInTheDocument()
+    expect(lastComposerProps()?.disabled).toBe(false)
+
+    // The agent is back before the store's ≥400 ms restore mark clears.
+    sessionRef.current = mockAcpSession({ id: 's1', cwd: '/w', status: 'active' })
+    openingRef.current = {}
+    rerender(<AgentChatPanel sessionId="s1" isVisible />)
+    expect(screen.queryByRole('status', { name: 'Restoring chat' })).not.toBeInTheDocument()
+    expect(screen.getByTestId('composer-stub')).toBeInTheDocument()
+
+    // The restore mark clears: the attempt resets, so a later restore of this
+    // live chat shows the normal preload again.
+    restoringRef.current = {}
+    rerender(<AgentChatPanel sessionId="s1" isVisible />)
+    restoringRef.current = { s1: true }
+    rerender(<AgentChatPanel sessionId="s1" isVisible />)
+    expect(screen.getByRole('status', { name: 'Restoring chat' })).toBeInTheDocument()
+    restoringRef.current = {}
+
+    // Reaped again: the next keystroke starts a new automatic resume.
+    seedLiveSession('s1')
+    rerender(<AgentChatPanel sessionId="s1" isVisible />)
+    expect(screen.queryByText('This chat stopped.')).not.toBeInTheDocument()
+    act(() => {
+      lastComposerProps()?.onDraftStart?.()
+    })
+    expect(mockOpen).toHaveBeenCalledTimes(2)
+  })
+
+  it('brings the bar back with a toast when the open resolves still closed with a queued prompt', async () => {
+    let resolveOpen!: () => void
+    mockOpen.mockReturnValue(
+      new Promise<void>((resolve) => {
+        resolveOpen = resolve
+      })
+    )
+    const { rerender } = render(<AgentChatPanel sessionId="s1" isVisible />)
+    act(() => {
+      lastComposerProps()?.onSend?.('continue')
+    })
+    publishOpening(rerender)
+    // The send queued behind the open; the open lands read-only (no agent).
+    promptQueueRef.current = [{ id: 'q1' }]
+    openingRef.current = {}
+    restoringRef.current = {}
+    await act(async () => {
+      resolveOpen()
+    })
+    rerender(<AgentChatPanel sessionId="s1" isVisible />)
+    expect(screen.getByText('This chat stopped.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Resume chat' })).toBeInTheDocument()
+    expect(lastComposerProps()?.disabled).toBe(true)
+    expect(toastErrorSpy).toHaveBeenCalledTimes(1)
+    expect(toastErrorSpy).toHaveBeenCalledWith(AUTO_RESUME_FAILED_QUEUED_TOAST)
+  })
+
+  it('keeps the composer through the restore tail of a failed attempt, then a manual resume shows the preload', async () => {
+    let resolveOpen!: () => void
+    mockOpen.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        resolveOpen = resolve
+      })
+    )
+    const { rerender } = render(<AgentChatPanel sessionId="s1" isVisible />)
+    act(() => {
+      lastComposerProps()?.onDraftStart?.()
+    })
+    publishOpening(rerender)
+    // The open settles still closed while the store holds the ≥400 ms restore mark.
+    openingRef.current = {}
+    await act(async () => {
+      resolveOpen()
+    })
+    rerender(<AgentChatPanel sessionId="s1" isVisible />)
+    expect(screen.getByTestId('composer-stub')).toBeInTheDocument()
+    expect(screen.queryByRole('status', { name: 'Restoring chat' })).not.toBeInTheDocument()
+
+    // The restore mark clears; a manual Resume chat restores with the preload.
+    restoringRef.current = {}
+    rerender(<AgentChatPanel sessionId="s1" isVisible />)
+    fireEvent.click(screen.getByRole('button', { name: 'Resume chat' }))
+    expect(mockOpen).toHaveBeenCalledTimes(2)
+    restoringRef.current = { s1: true }
+    rerender(<AgentChatPanel sessionId="s1" isVisible />)
+    expect(screen.getByRole('status', { name: 'Restoring chat' })).toBeInTheDocument()
+  })
+
+  it('falls back to the error and Resume chat when the automatic resume fails', async () => {
+    mockOpen.mockRejectedValueOnce(new Error('spawn boom'))
+    const { rerender } = render(<AgentChatPanel sessionId="s1" isVisible />)
+    await act(async () => {
+      lastComposerProps()?.onSend?.('continue')
+    })
+    // The store records the failure on the record.
+    seedLiveSession('s1', 'Resume failed: spawn boom')
+    rerender(<AgentChatPanel sessionId="s1" isVisible />)
+    expect(errorNoticePropsRef.current?.message).toBe('Resume failed: spawn boom')
+    expect(screen.getByText('This chat stopped.')).toBeInTheDocument()
+    expect(lastComposerProps()?.disabled).toBe(true)
+    expect(lastComposerProps()?.onDraftStart).toBeUndefined()
+    // No queued prompt in this case → no toast.
+    expect(toastErrorSpy).not.toHaveBeenCalled()
+    // No automatic retry loop; the manual Resume chat re-attempts the open.
+    expect(mockOpen).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByRole('button', { name: 'Resume chat' }))
+    expect(mockOpen).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not auto-resume again after a failed attempt even without a lastError', async () => {
+    mockOpen.mockRejectedValueOnce(new Error('no persisted history'))
+    render(<AgentChatPanel sessionId="s1" isVisible />)
+    await act(async () => {
+      lastComposerProps()?.onDraftStart?.()
+    })
+    expect(screen.getByText('This chat stopped.')).toBeInTheDocument()
+    expect(lastComposerProps()?.disabled).toBe(true)
+    expect(lastComposerProps()?.onDraftStart).toBeUndefined()
+    expect(mockOpen).toHaveBeenCalledTimes(1)
+  })
+
+  it('gh-821: hands the agent error code and data to the error notice', () => {
+    indexRef.current = []
+    sessionRef.current = mockAcpSession({
+      id: 's1',
+      cwd: '/w',
+      status: 'error',
+      lastError: 'Internal error',
+      lastErrorCode: -32603,
+      lastErrorData: { reason: 'login' }
+    })
+    render(<AgentChatPanel sessionId="s1" isVisible />)
+    expect(errorNoticePropsRef.current?.message).toBe('Internal error')
+    expect(errorNoticePropsRef.current?.code).toBe(-32603)
+    expect(errorNoticePropsRef.current?.data).toEqual({ reason: 'login' })
+  })
+
+  it('leaves a crashed (error) chat on the unchanged error notice', () => {
+    indexRef.current = []
+    sessionRef.current = mockAcpSession({
+      id: 's1',
+      cwd: '/w',
+      status: 'error',
+      lastError: 'agent crashed'
+    })
+    render(<AgentChatPanel sessionId="s1" isVisible />)
+    expect(errorNoticePropsRef.current?.message).toBe('agent crashed')
+    expect(lastComposerProps()?.onDraftStart).toBeUndefined()
+    expect(mockOpen).not.toHaveBeenCalled()
+  })
+
+  // spec-stopped-chat-status-signals: a failed automatic resume is recorded
+  // as a `Resume failed: …` lastError so Attention, the panel and a remount agree.
+  describe('failed automatic resume is recorded', () => {
+    const RECORDED = `Resume failed: ${AUTO_RESUME_FAILED_REASON}`
+
+    it('records a resume failure when the open resolves still closed with no lastError', async () => {
+      let resolveOpen!: () => void
+      mockOpen.mockReturnValue(
+        new Promise<void>((resolve) => {
+          resolveOpen = resolve
+        })
+      )
+      const { rerender } = render(<AgentChatPanel sessionId="s1" isVisible />)
+      act(() => {
+        lastComposerProps()?.onDraftStart?.()
+      })
+      publishOpening(rerender)
+      openingRef.current = {}
+      restoringRef.current = {}
+      await act(async () => {
+        resolveOpen()
+      })
+      rerender(<AgentChatPanel sessionId="s1" isVisible />)
+      expect(mockMarkResumeFailed).toHaveBeenCalledTimes(1)
+      expect(mockMarkResumeFailed).toHaveBeenCalledWith('s1', AUTO_RESUME_FAILED_REASON)
+      // The store applies the record; the panel derives everything from it.
+      seedLiveSession('s1', RECORDED)
+      rerender(<AgentChatPanel sessionId="s1" isVisible />)
+      expect(errorNoticePropsRef.current?.message).toBe(RECORDED)
+      expect(screen.getByText('This chat stopped.')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Resume chat' })).toBeInTheDocument()
+      expect(lastComposerProps()?.disabled).toBe(true)
+      expect(mockMarkResumeFailed).toHaveBeenCalledTimes(1)
+    })
+
+    it('does not record again when the store already wrote the resume failure (rejection)', async () => {
+      mockOpen.mockImplementationOnce(async () => {
+        // The store writes `Resume failed: …` before the open rejects.
+        seedLiveSession('s1', 'Resume failed: spawn boom')
+        throw new Error('spawn boom')
+      })
+      const { rerender } = render(<AgentChatPanel sessionId="s1" isVisible />)
+      await act(async () => {
+        lastComposerProps()?.onSend?.('continue')
+      })
+      rerender(<AgentChatPanel sessionId="s1" isVisible />)
+      expect(screen.getByText('This chat stopped.')).toBeInTheDocument()
+      expect(errorNoticePropsRef.current?.message).toBe('Resume failed: spawn boom')
+      expect(mockMarkResumeFailed).not.toHaveBeenCalled()
+    })
+
+    it('a remount after the recorded failure does not auto-resume again', () => {
+      seedLiveSession('s1', RECORDED)
+      const first = render(<AgentChatPanel sessionId="s1" isVisible />)
+      first.unmount()
+      render(<AgentChatPanel sessionId="s1" isVisible />)
+      expect(screen.getByText('This chat stopped.')).toBeInTheDocument()
+      expect(lastComposerProps()?.disabled).toBe(true)
+      expect(lastComposerProps()?.onDraftStart).toBeUndefined()
+      act(() => {
+        lastComposerProps()?.onSend?.('continue')
+      })
+      expect(mockOpen).not.toHaveBeenCalled()
+      expect(mockMarkResumeFailed).not.toHaveBeenCalled()
+    })
+
+    it("the notice's Resume chat reopens like the bar, even with no user turn", () => {
+      seedLiveSession('s1', RECORDED)
+      render(<AgentChatPanel sessionId="s1" isVisible />)
+      const props = errorNoticePropsRef.current as { retryLabel?: string; onRetry?: () => void }
+      expect(props.retryLabel).toBe('Resume chat')
+      expect(props.onRetry).toBeDefined()
+      act(() => {
+        props.onRetry?.()
+      })
+      expect(mockOpen).toHaveBeenCalledTimes(1)
+      expect(mockOpen).toHaveBeenCalledWith('s1')
+      expect(mockRetryCrashed).not.toHaveBeenCalled()
+      expect(mockSendPromptBlocks).not.toHaveBeenCalled()
+    })
+
+    it("the notice's Resume chat does not resend a finished last user turn", () => {
+      seedLiveSession('s1', 'Resume failed: spawn boom')
+      messagesRef.current = [{ id: 'm1', role: 'user', blocks: [{ type: 'text', text: 'hello' }] }]
+      render(<AgentChatPanel sessionId="s1" isVisible />)
+      act(() => {
+        errorNoticePropsRef.current?.onRetry?.()
+      })
+      expect(mockOpen).toHaveBeenCalledWith('s1')
+      expect(mockRetryCrashed).not.toHaveBeenCalled()
+      expect(mockSendPromptBlocks).not.toHaveBeenCalled()
+    })
+
+    it("records a failed resume when the notice's Resume chat reopen resolves still closed", async () => {
+      seedLiveSession('s1', RECORDED)
+      mockOpen.mockImplementationOnce(async () => {
+        // The reopen installs history (clearing lastError) but lands read-only.
+        sessionRef.current = mockAcpSession({
+          id: 's1',
+          cwd: '/w',
+          status: 'closed',
+          lastError: null
+        })
+      })
+      render(<AgentChatPanel sessionId="s1" isVisible />)
+      await act(async () => {
+        errorNoticePropsRef.current?.onRetry?.()
+      })
+      expect(mockMarkResumeFailed).toHaveBeenCalledWith('s1', AUTO_RESUME_FAILED_REASON)
+    })
+
+    it("does not record a failure when the notice's Resume chat reconnects", async () => {
+      seedLiveSession('s1', RECORDED)
+      mockOpen.mockImplementationOnce(async () => {
+        sessionRef.current = mockAcpSession({
+          id: 's1',
+          cwd: '/w',
+          status: 'active',
+          lastError: null
+        })
+      })
+      render(<AgentChatPanel sessionId="s1" isVisible />)
+      await act(async () => {
+        errorNoticePropsRef.current?.onRetry?.()
+      })
+      expect(mockMarkResumeFailed).not.toHaveBeenCalled()
+    })
+
+    it("toasts when the notice's Resume chat open rejects with a normal error", async () => {
+      seedLiveSession('s1', RECORDED)
+      mockOpen.mockRejectedValueOnce(new Error('spawn boom'))
+      render(<AgentChatPanel sessionId="s1" isVisible />)
+      await act(async () => {
+        errorNoticePropsRef.current?.onRetry?.()
+      })
+      expect(toastErrorSpy).toHaveBeenCalledWith('Could not resume this chat. Try again.')
+    })
+
+    it("does not toast when the notice's Resume chat open rejects with an agent-dead error", async () => {
+      seedLiveSession('s1', RECORDED)
+      mockOpen.mockRejectedValueOnce(new Error('agent thread is no longer running'))
+      render(<AgentChatPanel sessionId="s1" isVisible />)
+      await act(async () => {
+        errorNoticePropsRef.current?.onRetry?.()
+      })
+      expect(mockOpen).toHaveBeenCalledWith('s1')
+      expect(toastErrorSpy).not.toHaveBeenCalled()
+    })
+
+    it('re-shows the notice after a dismissed, identical repeat failure', async () => {
+      seedLiveSession('s1', RECORDED)
+      render(<AgentChatPanel sessionId="s1" isVisible />)
+      act(() => {
+        errorNoticePropsRef.current?.onDismiss()
+      })
+      expect(errorNoticePropsRef.current?.message).toBeNull()
+      // The reopen settles still failed with the same recorded error.
+      await act(async () => {
+        errorNoticePropsRef.current?.onRetry?.()
+      })
+      expect(errorNoticePropsRef.current?.message).toBe(RECORDED)
+    })
+
+    it('leaves a discovered-reopen session on its own Retry restore path', () => {
+      seedLiveSession('s1', RECORDED)
+      discoveredContextRef.current = { s1: { agentId: 'a1', cwd: '/w', projectId: 'p1' } }
+      render(<AgentChatPanel sessionId="s1" isVisible />)
+      expect(screen.getByRole('button', { name: 'Retry restore' })).toBeInTheDocument()
+      // No user turn: the notice offers no Resume chat of its own.
+      expect(errorNoticePropsRef.current?.onRetry).toBeUndefined()
+    })
+
+    it('a crashed (error) chat Retry still resends as before', () => {
+      indexRef.current = []
+      sessionRef.current = mockAcpSession({
+        id: 's1',
+        cwd: '/w',
+        status: 'error',
+        lastError: 'Resume failed: spawn boom'
+      })
+      messagesRef.current = [{ id: 'm1', role: 'user', blocks: [{ type: 'text', text: 'hello' }] }]
+      render(<AgentChatPanel sessionId="s1" isVisible />)
+      act(() => {
+        errorNoticePropsRef.current?.onRetry?.()
+      })
+      expect(mockRetryCrashed.mock.calls).toEqual([['s1']])
+      expect(mockMarkResumeFailed).not.toHaveBeenCalled()
+    })
+  })
+
+  it('keeps the Codex sign-in bar and a disabled composer', () => {
+    seedLiveSession('s1', CODEX_CLI_SIGNED_OUT_MESSAGE)
+    render(<AgentChatPanel sessionId="s1" isVisible />)
+    expect(screen.getByRole('button', { name: 'Sign in' })).toBeInTheDocument()
+    expect(lastComposerProps()?.disabled).toBe(true)
+    expect(lastComposerProps()?.onDraftStart).toBeUndefined()
   })
 })
 
@@ -531,6 +1176,7 @@ describe('AgentChatPanel OSK + reconnect overlay (Story 5.3)', () => {
     launchingRef.current = {}
     oskRef.current = { isOskOpen: false, keyboardHeight: 0, height: 0, offsetTop: 0 }
     transportReconnectingRef.current = false
+    promptCommandStatesRef.current = {}
     discoveredContextRef.current = {}
   })
 
@@ -549,36 +1195,191 @@ describe('AgentChatPanel OSK + reconnect overlay (Story 5.3)', () => {
     expect(root.style.paddingBottom).toBe('')
   })
 
-  it('renders the transport reconnect overlay when transportReconnecting is true (AC3)', () => {
-    seedLiveSession('s1')
-    transportReconnectingRef.current = true
-    render(<AgentChatPanel sessionId="s1" isVisible />)
-    // The overlay reuses AgentConnectionLamp (warning/pulse) and shows "Reconnecting…"
-    expect(screen.getByText(/Reconnecting/)).toBeInTheDocument()
-    expect(screen.getByRole('status')).toBeInTheDocument()
+  describe('reconnect grace period', () => {
+    beforeEach(() => {
+      vi.useFakeTimers()
+    })
+
+    afterEach(() => {
+      vi.useRealTimers()
+      useConnectionStatusStore.setState({ controlChannel: 'connecting' })
+    })
+
+    it('renders the transport reconnect overlay once reconnecting lasts the grace period, until it ends (AC3, long reconnect)', () => {
+      seedLiveSession('s1')
+      transportReconnectingRef.current = true
+      const { rerender } = render(<AgentChatPanel sessionId="s1" isVisible />)
+      // Inside the grace period: nothing yet.
+      expect(screen.queryByText(/Reconnecting/)).toBeNull()
+      advanceTimers(RECONNECT_GRACE_MS - 1)
+      expect(screen.queryByText(/Reconnecting/)).toBeNull()
+      advanceTimers(1)
+      // The overlay reuses AgentConnectionLamp (warning/pulse) and shows "Reconnecting…"
+      expect(screen.getByText(/Reconnecting/)).toBeInTheDocument()
+      expect(screen.getByRole('status')).toBeInTheDocument()
+      // Stays up for as long as the reconnect lasts…
+      advanceTimers(10_000)
+      expect(screen.getByText(/Reconnecting/)).toBeInTheDocument()
+      // …and goes away at once when it ends.
+      transportReconnectingRef.current = false
+      rerender(<AgentChatPanel sessionId="s1" isVisible />)
+      expect(screen.queryByText(/Reconnecting/)).toBeNull()
+      expect(screen.queryByRole('status')).toBeNull()
+    })
+
+    it('never renders the overlay for a reconnect shorter than the grace period (quick reconnect)', () => {
+      seedLiveSession('s1')
+      transportReconnectingRef.current = true
+      const { rerender } = render(<AgentChatPanel sessionId="s1" isVisible />)
+      advanceTimers(300)
+      expect(screen.queryByText(/Reconnecting/)).toBeNull()
+      transportReconnectingRef.current = false
+      rerender(<AgentChatPanel sessionId="s1" isVisible />)
+      advanceTimers(RECONNECT_GRACE_MS * 2)
+      expect(screen.queryByText(/Reconnecting/)).toBeNull()
+      expect(screen.queryByRole('status')).toBeNull()
+    })
+
+    it('shows "Host offline" immediately, without the grace period', () => {
+      seedLiveSession('s1')
+      useConnectionStatusStore.setState({ controlChannel: 'host-offline' })
+      transportReconnectingRef.current = true
+      render(<AgentChatPanel sessionId="s1" isVisible />)
+      expect(screen.getByRole('status')).toHaveTextContent('Host offline')
+    })
+
+    it('the reconnect overlay container is pointer-events-none (non-blocking, AC3)', () => {
+      seedLiveSession('s1')
+      transportReconnectingRef.current = true
+      render(<AgentChatPanel sessionId="s1" isVisible />)
+      advanceTimers(RECONNECT_GRACE_MS)
+      // The overlay chip lives at top-right; it must not block clicks on
+      // already-rendered messages.
+      const status = screen.getByRole('status')
+      const overlay = status.closest('[class*="pointer-events-none"]')
+      expect(overlay).not.toBeNull()
+    })
+
+    it('does not render the transport reconnect overlay when transportReconnecting is false (AC3)', () => {
+      seedLiveSession('s1')
+      transportReconnectingRef.current = false
+      render(<AgentChatPanel sessionId="s1" isVisible />)
+      advanceTimers(RECONNECT_GRACE_MS * 2)
+      // The transport-level overlay must be absent. (The session-level
+      // "Reconnecting to agent…" banner is also absent because the session
+      // isn't closed + reopening.)
+      expect(screen.queryByText(/Reconnecting/)).toBeNull()
+      expect(screen.queryByRole('status')).toBeNull()
+    })
+  })
+})
+
+describe('AgentChatPanel waiting-to-confirm state (AD-6)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    promptCommandStatesRef.current = {}
+    transportReconnectingRef.current = false
   })
 
-  it('does not render the transport reconnect overlay when transportReconnecting is false (AC3)', () => {
-    seedLiveSession('s1')
-    transportReconnectingRef.current = false
-    render(<AgentChatPanel sessionId="s1" isVisible />)
-    // The transport-level overlay must be absent. (The session-level
-    // "Reconnecting to agent…" banner is also absent because the session
-    // isn't closed + reopening.)
-    expect(screen.queryByText(/^Reconnecting$/)).toBeNull()
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('never renders the pill when the reconcile resolves within the grace period', () => {
+    sessionRef.current = mockAcpSession({
+      id: 's1',
+      cwd: '/w',
+      activeTurn: true,
+      openTurnId: 'turn-1'
+    })
+    promptCommandStatesRef.current = { s1: pendingCommand(false) }
+    const { rerender } = render(<AgentChatPanel sessionId="s1" isVisible />)
+    advanceTimers(300)
+    expect(screen.queryByText(/Waiting to confirm/)).toBeNull()
+    // The same-id resend confirmed the turn (~300 ms on a return reconnect).
+    promptCommandStatesRef.current = {}
+    rerender(<AgentChatPanel sessionId="s1" isVisible />)
+    advanceTimers(RECONNECT_GRACE_MS * 2)
+    expect(screen.queryByText(/Waiting to confirm/)).toBeNull()
     expect(screen.queryByRole('status')).toBeNull()
   })
 
-  it('the reconnect overlay container is pointer-events-none (non-blocking, AC3)', () => {
-    seedLiveSession('s1')
-    transportReconnectingRef.current = true
-    const { container } = render(<AgentChatPanel sessionId="s1" isVisible />)
-    // The overlay chip lives at top-right; it must not block clicks on
-    // already-rendered messages.
-    const status = screen.getByRole('status')
-    const overlay = status.closest('[class*="pointer-events-none"]')
-    expect(overlay).not.toBeNull()
-    void container
+  it('hides the pill at once when the reconcile resolves after it showed', () => {
+    sessionRef.current = mockAcpSession({
+      id: 's1',
+      cwd: '/w',
+      activeTurn: true,
+      openTurnId: 'turn-1'
+    })
+    promptCommandStatesRef.current = { s1: pendingCommand(false) }
+    const { rerender } = render(<AgentChatPanel sessionId="s1" isVisible />)
+    advanceTimers(RECONNECT_GRACE_MS)
+    expect(screen.getByRole('status')).toHaveTextContent('Waiting to confirm')
+    promptCommandStatesRef.current = {}
+    rerender(<AgentChatPanel sessionId="s1" isVisible />)
+    expect(screen.queryByText(/Waiting to confirm/)).toBeNull()
+  })
+
+  it('shows a non-error "Waiting to confirm" status while the prompt is unconfirmed', () => {
+    sessionRef.current = mockAcpSession({
+      id: 's1',
+      cwd: '/w',
+      activeTurn: true,
+      openTurnId: 'turn-1'
+    })
+    promptCommandStatesRef.current = { s1: pendingCommand(false) }
+    render(<AgentChatPanel sessionId="s1" isVisible />)
+    advanceTimers(RECONNECT_GRACE_MS)
+    expect(screen.getByRole('status')).toHaveTextContent('Waiting to confirm')
+    // Not a failure: no error banner / Retry affordance.
+    expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull()
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('labels a host-reported unknown outcome "Outcome unknown — check" and re-checks with the SAME command id', () => {
+    sessionRef.current = mockAcpSession({
+      id: 's1',
+      cwd: '/w',
+      activeTurn: true,
+      openTurnId: 'turn-1'
+    })
+    promptCommandStatesRef.current = { s1: pendingCommand(true) }
+    render(<AgentChatPanel sessionId="s1" isVisible />)
+    advanceTimers(RECONNECT_GRACE_MS)
+    expect(screen.getByRole('status')).toHaveTextContent('Outcome unknown — check')
+    // Still not a failure, and no new-send Retry while the command is unresolved.
+    expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Re-check' }))
+    expect(mockRecheckPromptCommand).toHaveBeenCalledWith('s1')
+  })
+
+  it('shows "Checking…" and disables the re-check while the same-id resend runs', () => {
+    sessionRef.current = mockAcpSession({
+      id: 's1',
+      cwd: '/w',
+      activeTurn: true,
+      openTurnId: 'turn-1'
+    })
+    promptCommandStatesRef.current = {
+      s1: { ...pendingCommand(true), phase: 'pending', checking: true }
+    }
+    render(<AgentChatPanel sessionId="s1" isVisible />)
+    advanceTimers(RECONNECT_GRACE_MS)
+    expect(screen.getByRole('status')).toHaveTextContent('Checking…')
+    expect(screen.getByRole('button', { name: 'Re-check' })).toBeDisabled()
+  })
+
+  it('does not show it for a confirmed prompt or another session', () => {
+    sessionRef.current = mockAcpSession({
+      id: 's1',
+      cwd: '/w',
+      activeTurn: true,
+      openTurnId: 'turn-1'
+    })
+    promptCommandStatesRef.current = { other: pendingCommand(false) }
+    render(<AgentChatPanel sessionId="s1" isVisible />)
+    advanceTimers(RECONNECT_GRACE_MS)
+    expect(screen.queryByText(/Waiting to confirm/)).toBeNull()
   })
 })
 
@@ -621,6 +1422,10 @@ describe('AgentChatPanel failed-launch retry (story 5)', () => {
     transportReconnectingRef.current = false
     discoveredContextRef.current = {}
     messagesRef.current = []
+  })
+
+  afterEach(() => {
+    agentStatusRef.current = {}
   })
 
   function seedFailedLaunchSession(id: string): void {
@@ -688,6 +1493,25 @@ describe('AgentChatPanel failed-launch retry (story 5)', () => {
     expect(mockRetryCrashed).toHaveBeenCalledWith('s1')
     expect(mockRetryFailed).not.toHaveBeenCalled()
   })
+
+  it('restarts a live chat whose agent a turn error left unusable instead of re-sending to it', async () => {
+    mockSendPromptBlocks.mockReset().mockResolvedValue(undefined)
+    agentStatusRef.current = { 'agent-1': 'error' }
+    sessionRef.current = mockAcpSession({
+      id: 's1',
+      agentId: 'agent-1',
+      cwd: '/w',
+      status: 'active',
+      lastError: 'Authentication required'
+    })
+    messagesRef.current = [{ id: 'm1', role: 'user', blocks: [{ type: 'text', text: 'hello' }] }]
+    render(<AgentChatPanel sessionId="s1" isVisible />)
+    const props = errorNoticePropsRef.current
+    expect(props?.retryLabel).toBe('Retry')
+    props?.onRetry?.()
+    await waitFor(() => expect(mockRetryCrashed).toHaveBeenCalledWith('s1'))
+    expect(mockSendPromptBlocks).not.toHaveBeenCalled()
+  })
 })
 
 describe('AgentChatPanel ChatChangedFilesPanel mounting', () => {
@@ -710,6 +1534,41 @@ describe('AgentChatPanel ChatChangedFilesPanel mounting', () => {
   })
 })
 
+// Web/desktop parity: `filePathContext` drives the `termul-file-path`
+// open-in-editor links in agent markdown — the open chain (`/fs/info` →
+// `openFile` → `addEditorTab`) is transport-agnostic, so the context must be
+// built on web too (the ChatChangedFilesPanel file-open path is proof it works).
+describe('AgentChatPanel filePathContext parity', () => {
+  beforeEach(() => {
+    chatMessageListPropsRef.current = null
+  })
+
+  afterEach(() => {
+    runtimeState.tauri = false
+  })
+
+  it('builds filePathContext on web (isTauriContext false)', () => {
+    runtimeState.tauri = false
+    sessionRef.current = mockAcpSession({ id: 's1', cwd: '/w', projectId: 'p-unlisted' })
+    render(<AgentChatPanel sessionId="s1" isVisible />)
+    // No project 'p-unlisted' in the store → projectRoot falls back to cwd.
+    expect(chatMessageListPropsRef.current?.filePathContext).toEqual({
+      cwd: '/w',
+      projectRoot: '/w'
+    })
+  })
+
+  it('builds the same filePathContext on desktop (isTauriContext true)', () => {
+    runtimeState.tauri = true
+    sessionRef.current = mockAcpSession({ id: 's1', cwd: '/w', projectId: 'p-unlisted' })
+    render(<AgentChatPanel sessionId="s1" isVisible />)
+    expect(chatMessageListPropsRef.current?.filePathContext).toEqual({
+      cwd: '/w',
+      projectRoot: '/w'
+    })
+  })
+})
+
 // Story 8 (revised): the "Starting agent…" banner was removed — the chat pane
 // renders no progress banner while a slow `session/new` is in flight (chat
 // opened without a prepared session). The launch state machine is unchanged;
@@ -726,6 +1585,9 @@ describe('AgentChatPanel chat pane stays neutral during slow session/new (story 
     oskRef.current = { isOskOpen: false, keyboardHeight: 0, height: 0, offsetTop: 0 }
     transportReconnectingRef.current = false
     discoveredContextRef.current = {}
+    messagesRef.current = []
+    chatMessageListPropsRef.current = null
+    chatInputBarPropsRef.current = []
   })
 
   it('shows no "Starting agent…" banner while a launch is in flight (initializing, no agent yet)', () => {
@@ -759,6 +1621,28 @@ describe('AgentChatPanel chat pane stays neutral during slow session/new (story 
     launchingRef.current = {}
     rerender(<AgentChatPanel sessionId="s-launch" isVisible />)
     expect(screen.queryByText('Starting agent…')).not.toBeInTheDocument()
+  })
+
+  it('renders the optimistic message and an enabled composer while a launch is in flight', () => {
+    sessionRef.current = mockAcpSession({
+      id: 's-launch',
+      agentId: '',
+      cwd: '/w',
+      status: 'initializing',
+      activeTurn: true
+    })
+    launchingRef.current = { 's-launch': true }
+    messagesRef.current = [
+      { id: 'msg-first', role: 'user', blocks: [{ type: 'text', text: 'first message' }] }
+    ]
+    render(<AgentChatPanel sessionId="s-launch" isVisible />)
+    expect(
+      (chatMessageListPropsRef.current?.items as Array<{ message?: { id: string } }>).map(
+        (item) => item.message?.id
+      )
+    ).toEqual(['msg-first'])
+    expect(screen.getByTestId('composer-stub')).toBeInTheDocument()
+    expect(lastComposerProps()?.disabled).toBe(false)
   })
 
   it('shows no banner for a launch-placeholder handoff still in flight', () => {
@@ -1026,6 +1910,8 @@ describe('AgentChatPanel armed-switch composer scoping', () => {
     mockSetModel.mockReset()
     sessionRef.current = null
     sessionsMapRef.current = {}
+    agentsRef.current = {}
+    commandsRef.current = {}
     preparedSessionsRef.current = {}
     optionsCacheRef.current = {}
     indexRef.current = []
@@ -1077,6 +1963,35 @@ describe('AgentChatPanel armed-switch composer scoping', () => {
     expect(props?.modes).toEqual({ ...targetModes, currentModeId: 'code' })
     expect(props?.configOptions).toEqual([{ ...targetConfigOptions[0], currentValue: 'max' }])
     expect(props?.session?.configOptions?.[0]).not.toMatchObject({ id: 'old_opt' })
+  })
+
+  it('offers the target session commands, prompt capabilities and MCP count while armed', () => {
+    seedArmedSession()
+    sessionsMapRef.current['s-warm'] = { ...sessionsMapRef.current['s-warm'], mcpServerCount: 3 }
+    agentsRef.current = {
+      'agent-old': { capabilities: { promptCapabilities: {} } },
+      'agent-new': { capabilities: { promptCapabilities: { image: true, embeddedContext: true } } }
+    }
+    commandsRef.current = {
+      s1: [{ name: 'old-only', description: 'Old agent command' }],
+      's-warm': [{ name: 'target-only', description: 'Target agent command' }]
+    }
+    render(<AgentChatPanel sessionId="s1" isVisible />)
+
+    const props = chatInputBarPropsRef.current.at(-1)
+    expect(props?.commands).toEqual([{ name: 'target-only', description: 'Target agent command' }])
+    expect(props?.imageCapable).toBe(true)
+    expect(props?.embedCapable).toBe(true)
+    expect(props?.session?.mcpServerCount).toBe(3)
+  })
+
+  it('offers no old-agent commands while the armed target has no prepared session', () => {
+    seedArmedSession()
+    preparedSessionsRef.current = {}
+    commandsRef.current = { s1: [{ name: 'old-only', description: 'Old agent command' }] }
+    render(<AgentChatPanel sessionId="s1" isVisible />)
+
+    expect(chatInputBarPropsRef.current.at(-1)?.commands).toEqual([])
   })
 
   it('routes armed composer picks into setSwitchPendingOption (old session untouched)', async () => {
@@ -1196,11 +2111,22 @@ describe('AgentChatPanel browser consent card mounting (CAP-5)', () => {
 
   afterEach(() => {
     runtimeState.tauri = false
+    resetNativeWebviewOcclusionForTests()
   })
 
   function seedActiveSession(id: string): void {
     sessionRef.current = mockAcpSession({ id, cwd: '/w', status: 'active' })
   }
+
+  it('mounts no card while an overlay covers the chat, leaving it to the root host', () => {
+    seedActiveSession('s1')
+    pendingBrowserConsentsRef.current = {
+      'req-1': { requestId: 'req-1', sessionId: 's1' }
+    }
+    render(<NativeWebviewOccluder />)
+    render(<AgentChatPanel sessionId="s1" isVisible />)
+    expect(browserConsentCardPropsRef.current).toBeNull()
+  })
 
   it('renders the pending consent belonging to this session', () => {
     seedActiveSession('s1')
@@ -1269,5 +2195,413 @@ describe('AgentChatPanel browser consent card mounting (CAP-5)', () => {
     }
     render(<AgentChatPanel sessionId="s1" isVisible={false} />)
     expect(useConsentCardHost.getState().hostedSessionIds.has('s1')).toBe(false)
+  })
+})
+
+// Mobile chat dock: plan bar, changed-files Git action, approval compaction,
+// arrival focus and focus return, all gated on `useMobileWebShell()`.
+describe('AgentChatPanel mobile dock wiring', () => {
+  const OSK_OPEN = { isOskOpen: true, keyboardHeight: 300, height: 500, offsetTop: 300 }
+
+  const seedPermission = (requestId = 'r1'): void => {
+    pendingPermissionsRef.current = {
+      [requestId]: { requestId, sessionId: 's1', agentId: 'agent-1', options: [], toolCall: {} }
+    }
+  }
+  const seedQuestion = (): void => {
+    pendingQuestionsRef.current = {
+      q1: { questionId: 'q1', sessionId: 's1', agentId: 'agent-1', question: 'Which?', options: [] }
+    }
+  }
+  const seedElicitation = (): void => {
+    pendingElicitationsRef.current = {
+      el1: {
+        requestId: 'el1',
+        sessionId: 's1',
+        agentId: 'agent-1',
+        mode: 'form',
+        message: 'Configure',
+        fields: []
+      }
+    }
+  }
+  const lastPlan = () => planPanelPropsRef.current.at(-1)
+  const lastChangedFiles = () => changedFilesPanelPropsRef.current.at(-1)
+
+  beforeEach(() => {
+    mobileRef.current = true
+    sessionRef.current = mockAcpSession({ id: 's1', cwd: '/repo/.worktrees/a' })
+    indexRef.current = []
+    openingRef.current = {}
+    restoringRef.current = {}
+    launchingRef.current = {}
+    discoveredContextRef.current = {}
+    messagesRef.current = []
+    oskRef.current = { isOskOpen: false, keyboardHeight: 0, height: 0, offsetTop: 0 }
+    pendingPermissionsRef.current = {}
+    pendingQuestionsRef.current = {}
+    pendingElicitationsRef.current = {}
+    plansRef.current = {}
+    planPanelPropsRef.current = []
+    changedFilesPanelPropsRef.current = []
+    askQuestionPropsRef.current = []
+    elicitationPropsRef.current = []
+    chatInputBarPropsRef.current = []
+    openGitSheetRef.current = vi.fn()
+  })
+
+  afterEach(() => {
+    mobileRef.current = true
+    pendingPermissionsRef.current = {}
+    pendingQuestionsRef.current = {}
+    pendingElicitationsRef.current = {}
+    oskRef.current = { isOskOpen: false, keyboardHeight: 0, height: 0, offsetTop: 0 }
+  })
+
+  describe('plan bar and Git action', () => {
+    it('starts the plan collapsed and wires the changed-files Git action to the chat cwd', () => {
+      render(<AgentChatPanel sessionId="s1" isVisible />)
+
+      expect(lastPlan()).toMatchObject({ defaultCollapsed: true, forceCollapsed: false })
+      expect(lastChangedFiles()).toMatchObject({ cwd: '/repo/.worktrees/a', forceCollapsed: false })
+      expect(typeof lastChangedFiles()?.onOpenGitChanges).toBe('function')
+
+      // The tapped Git button is forwarded, so the sheet can return focus to it.
+      const gitButton = document.createElement('button')
+      lastChangedFiles()?.onOpenGitChanges?.(gitButton)
+      expect(openGitSheetRef.current).toHaveBeenCalledTimes(1)
+      expect(openGitSheetRef.current).toHaveBeenCalledWith('/repo/.worktrees/a', gitButton)
+    })
+
+    it('keeps the baseline props on the desktop shell', () => {
+      mobileRef.current = false
+      oskRef.current = OSK_OPEN
+      seedPermission()
+      render(<AgentChatPanel sessionId="s1" isVisible />)
+
+      expect(lastPlan()).toMatchObject({ defaultCollapsed: false, forceCollapsed: false })
+      expect(lastChangedFiles()?.forceCollapsed).toBe(false)
+      expect(lastChangedFiles()?.onOpenGitChanges).toBeUndefined()
+    })
+  })
+
+  describe('collapsing the dock bars while the keyboard is up with an approval pending', () => {
+    it.each([
+      ['a permission', seedPermission],
+      ['an elicitation', seedElicitation],
+      ['a question', seedQuestion]
+    ])('forces the plan bar collapsed for %s', (_label, seed) => {
+      oskRef.current = OSK_OPEN
+      seed()
+      render(<AgentChatPanel sessionId="s1" isVisible />)
+      expect(lastPlan()?.forceCollapsed).toBe(true)
+    })
+
+    it('forces the changed-files bar collapsed too', () => {
+      oskRef.current = OSK_OPEN
+      seedPermission()
+      render(<AgentChatPanel sessionId="s1" isVisible />)
+      expect(lastChangedFiles()?.forceCollapsed).toBe(true)
+    })
+
+    it('does not collapse without the keyboard, without an approval, or for a closed session', () => {
+      seedPermission()
+      const { rerender } = render(<AgentChatPanel sessionId="s1" isVisible />)
+      expect(lastPlan()?.forceCollapsed).toBe(false)
+
+      pendingPermissionsRef.current = {}
+      oskRef.current = OSK_OPEN
+      rerender(<AgentChatPanel sessionId="s1" isVisible />)
+      expect(lastPlan()?.forceCollapsed).toBe(false)
+
+      seedPermission()
+      sessionRef.current = mockAcpSession({
+        id: 's1',
+        cwd: '/repo/.worktrees/a',
+        status: 'closed'
+      })
+      rerender(<AgentChatPanel sessionId="s1" isVisible />)
+      expect(lastPlan()?.forceCollapsed).toBe(false)
+    })
+
+    it('does not collapse a hidden pane', () => {
+      oskRef.current = OSK_OPEN
+      seedPermission()
+      render(<AgentChatPanel sessionId="s1" isVisible={false} />)
+      expect(lastPlan()?.forceCollapsed).toBe(false)
+    })
+  })
+
+  describe('arrival focus', () => {
+    it('asks a visible mobile question to focus its first option', () => {
+      seedQuestion()
+      render(<AgentChatPanel sessionId="s1" isVisible />)
+      expect(askQuestionPropsRef.current.at(-1)?.autoFocusFirstOption).toBe(true)
+    })
+
+    it('does not ask a hidden pane, or the desktop shell, to focus a question', () => {
+      seedQuestion()
+      const hidden = render(<AgentChatPanel sessionId="s1" isVisible={false} />)
+      expect(askQuestionPropsRef.current.at(-1)?.autoFocusFirstOption).toBe(false)
+      hidden.unmount()
+
+      mobileRef.current = false
+      render(<AgentChatPanel sessionId="s1" isVisible />)
+      expect(askQuestionPropsRef.current.at(-1)?.autoFocusFirstOption).toBe(false)
+    })
+
+    it('asks a visible mobile elicitation to focus its heading, and nothing else', () => {
+      seedElicitation()
+      const visible = render(<AgentChatPanel sessionId="s1" isVisible />)
+      expect(elicitationPropsRef.current.at(-1)?.autoFocusHeading).toBe(true)
+      visible.unmount()
+
+      render(<AgentChatPanel sessionId="s1" isVisible={false} />)
+      expect(elicitationPropsRef.current.at(-1)?.autoFocusHeading).toBe(false)
+    })
+
+    it('does not ask the desktop shell to focus an elicitation heading', () => {
+      mobileRef.current = false
+      seedElicitation()
+      render(<AgentChatPanel sessionId="s1" isVisible />)
+      expect(elicitationPropsRef.current.at(-1)?.autoFocusHeading).toBe(false)
+    })
+  })
+
+  describe('hidden-pane arrival of a stacked permission', () => {
+    it('forwards isVisible to the PermissionPrompt that stacks with an elicitation or a question', () => {
+      seedPermission()
+      seedElicitation()
+      permissionPromptPropsRef.current = []
+      const { rerender } = render(<AgentChatPanel sessionId="s1" isVisible={false} />)
+      expect(permissionPromptPropsRef.current.at(-1)).toMatchObject({
+        embedded: false,
+        isVisible: false
+      })
+
+      rerender(<AgentChatPanel sessionId="s1" isVisible />)
+      expect(permissionPromptPropsRef.current.at(-1)).toMatchObject({
+        embedded: false,
+        isVisible: true
+      })
+    })
+
+    it('forwards isVisible to the composer, which mounts the embedded prompt', () => {
+      seedPermission()
+      chatInputBarPropsRef.current = []
+      const { rerender } = render(<AgentChatPanel sessionId="s1" isVisible={false} />)
+      expect(chatInputBarPropsRef.current.at(-1)?.isVisible).toBe(false)
+
+      rerender(<AgentChatPanel sessionId="s1" isVisible />)
+      expect(chatInputBarPropsRef.current.at(-1)?.isVisible).toBe(true)
+    })
+  })
+
+  describe('focus return when a permission resolves', () => {
+    it('moves focus from the resolved prompt to the composer card on the mobile shell', () => {
+      seedPermission()
+      const { rerender } = render(<AgentChatPanel sessionId="s1" isVisible />)
+      const allow = screen.getByRole('button', { name: 'Allow once' })
+      act(() => allow.focus())
+      expect(allow).toHaveFocus()
+
+      pendingPermissionsRef.current = {}
+      rerender(<AgentChatPanel sessionId="s1" isVisible />)
+
+      expect(screen.getByTestId('composer-stub')).toHaveFocus()
+      expect(screen.getByLabelText('editor')).not.toHaveFocus()
+    })
+
+    it('leaves focus in the editor when the user was typing there', () => {
+      seedPermission()
+      const { rerender } = render(<AgentChatPanel sessionId="s1" isVisible />)
+      act(() => screen.getByRole('button', { name: 'Allow once' }).focus())
+      act(() => screen.getByLabelText('editor').focus())
+
+      pendingPermissionsRef.current = {}
+      rerender(<AgentChatPanel sessionId="s1" isVisible />)
+
+      expect(screen.getByLabelText('editor')).toHaveFocus()
+    })
+
+    it('leaves focus alone when the user tapped away from the prompt before it resolved', () => {
+      // The panel root's onBlur (from useApprovalDock) forgets the prompt focus;
+      // its frame check runs synchronously here.
+      const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb) => {
+        cb(0)
+        return 1
+      })
+      try {
+        seedPermission()
+        const { rerender } = render(<AgentChatPanel sessionId="s1" isVisible />)
+        const allow = screen.getByRole('button', { name: 'Allow once' })
+        act(() => allow.focus())
+        // Tapping a non-focusable area drops focus to <body> with no new target.
+        act(() => allow.blur())
+        expect(document.body).toHaveFocus()
+
+        pendingPermissionsRef.current = {}
+        rerender(<AgentChatPanel sessionId="s1" isVisible />)
+
+        expect(document.body).toHaveFocus()
+        expect(screen.getByTestId('composer-stub')).not.toHaveFocus()
+      } finally {
+        raf.mockRestore()
+      }
+    })
+
+    it('moves no focus on the desktop shell', () => {
+      mobileRef.current = false
+      seedPermission()
+      const { rerender } = render(<AgentChatPanel sessionId="s1" isVisible />)
+      act(() => screen.getByRole('button', { name: 'Allow once' }).focus())
+
+      pendingPermissionsRef.current = {}
+      rerender(<AgentChatPanel sessionId="s1" isVisible />)
+
+      expect(screen.getByTestId('composer-stub')).not.toHaveFocus()
+      expect(document.body).toHaveFocus()
+    })
+  })
+
+  // The dock wrapper reports its top edge (`--mobile-dock-height`) so the toast
+  // stack clears it. Layout: a plain box on the mobile shell, `display:
+  // contents` on desktop. The rect of the wrapper is stubbed through its
+  // `data-chat-dock` attribute: jsdom lays nothing out.
+  describe('dock clearance', () => {
+    const DOCK_VAR = '--mobile-dock-height'
+    const dockVar = (): string => document.documentElement.style.getPropertyValue(DOCK_VAR)
+    const originalInnerHeight = window.innerHeight
+    let rectSpy: ReturnType<typeof vi.spyOn>
+
+    beforeEach(() => {
+      Object.defineProperty(window, 'innerHeight', {
+        configurable: true,
+        writable: true,
+        value: 844
+      })
+      rectSpy = vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (
+        this: Element
+      ) {
+        const isDock = this.getAttribute('data-chat-dock') === 'true'
+        const top = isDock ? 708 : 0
+        const width = isDock ? 390 : 0
+        const height = isDock ? 136 : 0
+        return {
+          x: 0,
+          y: top,
+          top,
+          left: 0,
+          width,
+          height,
+          right: width,
+          bottom: top + height,
+          toJSON: () => ({})
+        }
+      })
+    })
+
+    afterEach(() => {
+      rectSpy.mockRestore()
+      Object.defineProperty(window, 'innerHeight', {
+        configurable: true,
+        writable: true,
+        value: originalInnerHeight
+      })
+      document.documentElement.style.removeProperty(DOCK_VAR)
+    })
+
+    const dockOf = (container: HTMLElement): HTMLElement | null =>
+      container.querySelector<HTMLElement>('[data-chat-dock="true"]')
+
+    it('writes the distance to the composer dock top for a visible mobile chat', () => {
+      const { container, unmount } = render(<AgentChatPanel sessionId="s1" isVisible />)
+
+      // The composer and the changed-files bar are the wrapper's children.
+      expect(screen.getByTestId('composer-stub').parentElement).toBe(dockOf(container))
+      expect(dockVar()).toBe('136px')
+
+      unmount()
+      expect(dockVar()).toBe('')
+    })
+
+    it.each([
+      ['a question', seedQuestion],
+      ['an elicitation', seedElicitation]
+    ])('reports the prompt dock too while %s replaces the composer', (_label, seed) => {
+      seed()
+      const { container } = render(<AgentChatPanel sessionId="s1" isVisible />)
+
+      expect(screen.queryByTestId('composer-stub')).toBeNull()
+      expect(dockOf(container)).not.toBeNull()
+      expect(dockVar()).toBe('136px')
+    })
+
+    // The wrapper's rect is only worth measuring if everything that sits on the
+    // dock is inside it: a child outside would be uncounted and a toast could
+    // cover it.
+    it('holds the changed-files bar and the composer in the composer branch', () => {
+      const { container } = render(<AgentChatPanel sessionId="s1" isVisible />)
+      const dock = dockOf(container)
+
+      expect(dock).not.toBeNull()
+      expect(screen.getByTestId('changed-files-stub').closest('[data-chat-dock="true"]')).toBe(dock)
+      expect(screen.getByTestId('composer-stub').closest('[data-chat-dock="true"]')).toBe(dock)
+    })
+
+    it('holds the question, the elicitation and the permission in the prompt branch', () => {
+      seedQuestion()
+      seedElicitation()
+      seedPermission()
+      const { container } = render(<AgentChatPanel sessionId="s1" isVisible />)
+      const dock = dockOf(container)
+
+      expect(dock).not.toBeNull()
+      expect(screen.queryByTestId('composer-stub')).toBeNull()
+      for (const id of ['question-stub', 'elicitation-stub', 'permission-stub']) {
+        expect(screen.getByTestId(id).closest('[data-chat-dock="true"]')).toBe(dock)
+      }
+    })
+
+    it('keeps one wrapper element across the composer and prompt branches', () => {
+      const { container, rerender } = render(<AgentChatPanel sessionId="s1" isVisible />)
+      const dock = dockOf(container)
+      expect(dock).not.toBeNull()
+
+      seedQuestion()
+      rerender(<AgentChatPanel sessionId="s1" isVisible />)
+      expect(screen.queryByTestId('composer-stub')).toBeNull()
+      expect(dockOf(container)).toBe(dock)
+      expect(dockVar()).toBe('136px')
+    })
+
+    it('leaves the property absent for a hidden pane, then writes it once visible', () => {
+      const { rerender } = render(<AgentChatPanel sessionId="s1" isVisible={false} />)
+      expect(dockVar()).toBe('')
+
+      rerender(<AgentChatPanel sessionId="s1" isVisible />)
+      expect(dockVar()).toBe('136px')
+
+      rerender(<AgentChatPanel sessionId="s1" isVisible={false} />)
+      expect(dockVar()).toBe('')
+    })
+
+    it('leaves the property absent on the desktop shell', () => {
+      mobileRef.current = false
+      render(<AgentChatPanel sessionId="s1" isVisible />)
+      expect(dockVar()).toBe('')
+    })
+
+    it('lays the wrapper out as a box on mobile and as display: contents on desktop', () => {
+      const mobile = render(<AgentChatPanel sessionId="s1" isVisible />)
+      expect(dockOf(mobile.container)).toHaveClass('flex', 'shrink-0', 'flex-col')
+      expect(dockOf(mobile.container)).not.toHaveClass('contents')
+      mobile.unmount()
+
+      mobileRef.current = false
+      const desktop = render(<AgentChatPanel sessionId="s1" isVisible />)
+      expect(dockOf(desktop.container)).toHaveClass('contents')
+      expect(dockOf(desktop.container)).not.toHaveClass('flex')
+    })
   })
 })

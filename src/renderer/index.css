@@ -2,34 +2,113 @@
 @import "shadcn/tailwind.css";
 @config "../../tailwind.config.ts";
 
+/* App animations. Kept in CSS rather than tailwind.config.ts: JS-config
+   keyframes carry no source file, so Vite warns about a missing `from`.
+   `inline` writes each value into its utility, as the JS config did. After
+   the shadcn import so these accordion keyframes still win over its own. */
+@theme inline {
+  /* Custom ease-out (cubic-bezier(0.23, 1, 0.32, 1)) so these match the
+     tailwindcss-animate Radix overrides further down. */
+  --animate-accordion-down: accordion-down 250ms cubic-bezier(0.22, 1, 0.36, 1);
+  --animate-accordion-up: accordion-up 250ms cubic-bezier(0.22, 1, 0.36, 1);
+  --animate-fade-in: fade-in 200ms cubic-bezier(0.23, 1, 0.32, 1);
+  --animate-slide-in: slide-in 180ms cubic-bezier(0.23, 1, 0.32, 1);
+  /* Tab bar live-turn edge: opacity-only fade-in so the 2px gradient edge
+     appears without a transform. Reduced motion renders it instantly via
+     motion-reduce:animate-none. */
+  --animate-alive-in: alive-in 150ms cubic-bezier(0.23, 1, 0.32, 1);
+  /* Chat "agent is typing" dots: a gentle hop + scale, staggered per dot via
+     animation-delay at the call site. */
+  --animate-typing-bounce: typing-bounce 1s cubic-bezier(0.77, 0, 0.175, 1) infinite;
+  /* Streaming caret: a steady blink while the agent is writing. */
+  --animate-caret-blink: caret-blink 1s step-end infinite;
+
+  @keyframes accordion-down {
+    from {
+      height: 0;
+    }
+    to {
+      height: var(--radix-accordion-content-height);
+    }
+  }
+  @keyframes accordion-up {
+    from {
+      height: var(--radix-accordion-content-height);
+    }
+    to {
+      height: 0;
+    }
+  }
+  @keyframes fade-in {
+    from {
+      opacity: 0;
+      transform: translateY(-10px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+  @keyframes slide-in {
+    from {
+      opacity: 0;
+      transform: translateX(-10px);
+    }
+    to {
+      opacity: 1;
+      transform: translateX(0);
+    }
+  }
+  @keyframes alive-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+  @keyframes typing-bounce {
+    0%,
+    80%,
+    100% {
+      transform: translateY(0) scale(0.8);
+      opacity: 0.5;
+    }
+    40% {
+      transform: translateY(-3px) scale(1);
+      opacity: 1;
+    }
+  }
+  @keyframes caret-blink {
+    0%,
+    45% {
+      opacity: 1;
+    }
+    50%,
+    95% {
+      opacity: 0;
+    }
+    100% {
+      opacity: 1;
+    }
+  }
+}
+
 /* Streamdown ships Tailwind utility classes in its dist bundles; Tailwind v4
    must scan them to generate the matching CSS (chat markdown renderer). */
 @source "../../node_modules/streamdown/dist/*.js";
 @source "../../node_modules/@streamdown/code/dist/*.js";
 @source "../../node_modules/@streamdown/mermaid/dist/*.js";
 
-/* Ioskeley Mono for the code editor. Normal width only: Regular, Italic, Bold.
-   SIL OFL 1.1 — see assets/fonts/ioskeley-mono/LICENSE. */
+/* Paper Mono for every monospace surface. Weight axis 100–800, roman only.
+   SIL OFL 1.1 — see assets/fonts/paper-mono/OFL.txt.
+   Family name matches MONO_FONT_FAMILY in lib/font-stacks.ts. */
 @font-face {
-  font-family: "Ioskeley Mono";
+  font-family: "Paper Mono";
   font-style: normal;
-  font-weight: 400;
+  font-weight: 100 800;
   font-display: swap;
-  src: url("./assets/fonts/ioskeley-mono/IoskeleyMono-Regular.woff2") format("woff2");
-}
-@font-face {
-  font-family: "Ioskeley Mono";
-  font-style: italic;
-  font-weight: 400;
-  font-display: swap;
-  src: url("./assets/fonts/ioskeley-mono/IoskeleyMono-Italic.woff2") format("woff2");
-}
-@font-face {
-  font-family: "Ioskeley Mono";
-  font-style: normal;
-  font-weight: 700;
-  font-display: swap;
-  src: url("./assets/fonts/ioskeley-mono/IoskeleyMono-Bold.woff2") format("woff2");
+  src: url("./assets/fonts/paper-mono/PaperMono[wght].woff2") format("woff2");
 }
 
 @layer base {
@@ -141,7 +220,7 @@
     --think-ease: ease-in-out;
 
     /* Streaming word resolve (Streamdown blurIn). */
-    --stream-gap: 60ms;
+    --stream-gap: 12ms;
     --stream-fade: 350ms;
     --stream-blur: 1px;
     --stream-ease: cubic-bezier(0.22, 1, 0.36, 1);
@@ -179,6 +258,27 @@
     --shimmer-highlight: oklch(var(--foreground));
     --shimmer-band: 400%;
     --shimmer-ease: linear;
+
+    /* Rail row hover surface: the 3% foreground wash of the State table
+       (docs/design/colors.md). One strength feeds both forms: --row-hover is
+       the translucent wash (stacks on a group surface); --row-hover-solid is
+       the same wash flattened over the Rail's sidebar surface, for a fade
+       that must end in the row's own colour. Both follow applyColorTheme
+       through --foreground and --sidebar-background. */
+    --row-hover-strength: 3%;
+    --row-hover: oklch(var(--foreground) / var(--row-hover-strength));
+    --row-hover-solid: color-mix(
+      in oklab,
+      oklch(var(--foreground)) var(--row-hover-strength),
+      oklch(var(--sidebar-background))
+    );
+
+    /* Rail keycap fill: the `.keycap` surface inside the Rail
+       (`[data-rail-surface]`). Computed from existing tokens, not a theme
+       token. Dark themes keep `muted`; light themes darken it a little (see
+       `:root:not(.dark)` below) because there `muted` sits on or near the
+       Rail's sidebar mist and the keycap would vanish. */
+    --rail-keycap: oklch(var(--muted));
 
     /* Project colors */
     --project-blue: 0.625 0.187 259.7;
@@ -229,6 +329,13 @@
   }
 }
 
+/* Light themes: the Rail keycap steps 6% toward the ink (see --rail-keycap). */
+@layer base {
+  :root:not(.dark) {
+    --rail-keycap: color-mix(in oklab, oklch(var(--muted)), oklch(var(--foreground)) 6%);
+  }
+}
+
 @layer base {
   * {
     @apply border-border;
@@ -248,19 +355,21 @@
 
   body {
     @apply bg-background text-foreground font-sans antialiased;
-    /* Inter character variants. Figures stay proportional in prose; changing
-       numbers opt in with `tabular-nums`. */
+    /* Inter character variants have no font-variant property. Figures stay
+       proportional in prose; changing numbers opt in with `tabular-nums`. */
     font-feature-settings: "cv11", "ss01", "ss03", "cv02";
     font-variant-ligatures: contextual;
-    font-synthesis: none;
   }
 
   code,
   pre,
   kbd,
   .font-mono {
-    /* JetBrains Mono ligatures for code-ish UI (excluded inside terminals via xterm settings) */
-    font-feature-settings: "calt", "liga", "zero";
+    /* Drop Inter's cv/ss tags. Paper Mono has no italic, so do not synthesize one. */
+    font-feature-settings: normal;
+    font-variant-ligatures: common-ligatures;
+    font-variant-numeric: slashed-zero;
+    font-synthesis-style: none;
   }
 
   /* Press feedback for ALL pressable elements. Buttons must feel like the
@@ -309,10 +418,12 @@
     background-color: oklch(var(--popover));
     color: oklch(var(--popover-foreground));
   }
+  /* Neutral, solid highlight: native popups may drop alpha, and --accent
+     is maroon in Termul Light. --input is one step above popover in both. */
   select option:checked,
   select option:hover {
-    background-color: oklch(var(--accent));
-    color: oklch(var(--accent-foreground));
+    background-color: oklch(var(--input));
+    color: oklch(var(--popover-foreground));
   }
 
   /* Custom scrollbar, app-wide — replaces the native scrollbar everywhere.
@@ -671,6 +782,37 @@
     @apply text-xs font-semibold uppercase tracking-wider;
     line-height: 1.4;
   }
+  /* 11px panel / list-section / menu-group label (Projects, Explorer,
+     SSH, On this page, picker and menu groups). Unlike the two above it
+     carries its colour, muted; a text-* utility at the call site wins. */
+  .label-panel {
+    @apply text-2xs font-semibold uppercase tracking-wider text-muted-foreground;
+    line-height: 1.4;
+  }
+}
+
+/* ------------------------------------------------------------
+ * Keycap: the raised "you are here" surface.
+ *
+ * One look for the active tab, project, file, outline heading and
+ * rail view on bg-background / bg-card, and on the Rail's bg-sidebar
+ * surface (`[data-rail-surface]`), where it fills with --rail-keycap:
+ * `muted` in dark themes, a slightly darker step in light themes so it
+ * reads on the sidebar mist. Inside a popover use a foreground wash
+ * instead (see components/ui/menu-styles.ts): `muted` sits too close to
+ * `popover` to read there.
+ * Fill and shadow only — radius stays at the call site.
+ * ------------------------------------------------------------ */
+@layer components {
+  .keycap {
+    background-color: oklch(var(--muted));
+    box-shadow:
+      inset 0 1px 0 oklch(var(--ring) / 0.08),
+      0 1px 2px #00000040;
+  }
+  [data-rail-surface] .keycap {
+    background-color: var(--rail-keycap);
+  }
 }
 
 /* Chat composer (Tiptap) editable surface + empty-state placeholder.
@@ -769,7 +911,7 @@
     color: oklch(var(--muted-foreground));
   }
   .chat-prose code {
-    font-family: "JetBrains Mono", "Cascadia Code", ui-monospace, monospace;
+    font-family: "Paper Mono", monospace;
     font-size: 0.85em;
     font-weight: 500;
     padding: 0.1em 0.45em;
@@ -1242,9 +1384,9 @@
 }
 
 .markdown-editor .bn-default-styles {
-  font-family: "Inter Variable", Inter, system-ui, sans-serif;
-  font-size: 16px;
-  line-height: 1.72;
+  font-family: "Inter Variable", sans-serif;
+  font-size: 1rem;
+  line-height: 1.6;
 }
 
 .markdown-editor .bn-block-outer {
@@ -1366,7 +1508,7 @@
   border: 1px solid oklch(var(--border) / 0.55);
   border-radius: 0.3rem;
   background: oklch(var(--muted) / 0.55);
-  font-family: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, monospace;
+  font-family: "Paper Mono", monospace;
   font-size: 0.88em;
 }
 
@@ -1382,7 +1524,7 @@
 .markdown-editor .bn-block-content[data-content-type="codeBlock"] > pre {
   padding: 1.1rem 1.25rem;
   line-height: 1.62;
-  font-family: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, monospace;
+  font-family: "Paper Mono", monospace;
   font-size: 0.88rem;
 }
 
@@ -1521,10 +1663,47 @@
   }
 }
 
+@layer components {
+  /* Mobile drawer rows: an over-long title scrolls to its tail on a slow
+     scroll-pause-return loop (MarqueeText measures the overflow and sets
+     --termul-marquee-distance/-duration inline). Reduced motion never mounts
+     this class; the media query is the belt-and-braces fallback. */
+  .termul-marquee {
+    animation: termul-marquee var(--termul-marquee-duration, 8s) ease-in-out infinite;
+  }
+  /* WCAG 2.2.2 partial mitigation: hovering the label or keyboard-focusing
+     its parent control pauses the loop so the text can be read in place. */
+  .termul-marquee:hover,
+  *:focus-visible .termul-marquee {
+    animation-play-state: paused;
+  }
+  @keyframes termul-marquee {
+    0%,
+    18% {
+      transform: translateX(0);
+    }
+    46%,
+    54% {
+      transform: translateX(calc(-1 * var(--termul-marquee-distance, 0px)));
+    }
+    82%,
+    100% {
+      transform: translateX(0);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .termul-marquee {
+      animation: none;
+    }
+  }
+}
+
 /* Unlayered so this wins over streamdown/styles.css (imported first).
    Streamdown prefixes the animation name: blurIn → sd-blurIn.
    Blur settles from --stream-blur (1px). Duration and easing come from
-   the animated prop (--stream-fade, --stream-ease). */
+   the animated prop (--stream-fade, --stream-ease). The end state is
+   `filter: none` so settled words (kept by fill-mode `both`) do not each
+   hold a blur(0) filter and their own stacking context. */
 @keyframes sd-blurIn {
   from {
     opacity: 0;
@@ -1532,7 +1711,7 @@
   }
   to {
     opacity: 1;
-    filter: blur(0);
+    filter: none;
   }
 }
 

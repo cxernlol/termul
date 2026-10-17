@@ -1,5 +1,5 @@
 import { motion, useReducedMotion } from 'framer-motion'
-import { memo, useEffect, useRef, useState } from 'react'
+import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronRight } from '@/components/icons'
 import { CollapseExpandMotion } from '@/components/ui/collapse-expand-motion'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
@@ -9,12 +9,13 @@ import { cn } from '@/lib/utils'
 import { ChatMessage } from './ChatMessage'
 import { CHAT_ROW_MIN_H } from './chat-layout'
 import { CHEVRON_TRANSITION } from './chat-motion'
-import type { TimelineItem } from './chat-timeline'
+import { activityNeedsAttention, type TimelineItem } from './chat-timeline'
 import { formatTurnDuration } from './format-turn-duration'
 import { RowReveal } from './RowReveal'
 import { ThinkingStatus } from './ThinkingStatus'
 import { ThoughtGroup } from './ThoughtGroup'
-import { ToolCallCard } from './ToolCallCard'
+import { DiffStat, ToolCallGroup, type ToolTimelineItem } from './ToolCallGroup'
+import { summarizeToolActivity, type ToolActivitySummary } from './tool-call-summary'
 import type { EnterTracker } from './use-enter-tracker'
 
 interface TurnActivityProps {
@@ -24,6 +25,8 @@ interface TurnActivityProps {
   attentionRequired: boolean
   hasFinalResponse: boolean
   enter: EnterTracker
+  /** Live OpenCode compaction or retry line. Shown only while the turn is active. */
+  statusLine?: string | null
   /** Filesystem roots used for "Open file" actions on file tool calls. */
   filePathContext?: FilePathResolutionContext
   onOpenSubagent: (toolCall: ToolCall) => void
@@ -37,6 +40,7 @@ function TurnActivityComponent({
   attentionRequired,
   hasFinalResponse,
   enter,
+  statusLine,
   filePathContext,
   onOpenSubagent
 }: TurnActivityProps): React.JSX.Element {
@@ -54,7 +58,54 @@ function TurnActivityComponent({
   }, [active, attentionRequired, hasFinalResponse])
 
   const duration = formatTurnDuration(durationMs)
-  const label = active ? 'Working…' : duration ? `Worked for ${duration}` : 'Worked'
+  const lastItem = items[items.length - 1]
+  // Each contiguous run of tool calls gets its own nested disclosure, so a
+  // reply between two batches keeps its seat: tools, text, tools. `summary`
+  // still covers every call in the turn for the trigger's aggregate diffstat.
+  const { summary, toolRuns } = useMemo(() => {
+    const allCalls: ToolCall[] = []
+    const runs = new Map<
+      string,
+      {
+        items: ToolTimelineItem[]
+        summary: ToolActivitySummary
+        attentionRequired: boolean
+      }
+    >()
+    let run: ToolTimelineItem[] | null = null
+    const flush = (): void => {
+      if (run?.length) {
+        const runSummary = summarizeToolActivity(run.map((item) => item.tool))
+        if (runSummary) {
+          runs.set(run[0].key, {
+            items: run,
+            summary: runSummary,
+            attentionRequired: activityNeedsAttention(run)
+          })
+        }
+      }
+      run = null
+    }
+    for (const item of items) {
+      if (item.kind === 'tool') {
+        allCalls.push(item.tool)
+        if (!run) run = []
+        run.push(item)
+      } else {
+        flush()
+      }
+    }
+    flush()
+    return { summary: summarizeToolActivity(allCalls), toolRuns: runs }
+  }, [items])
+  const label =
+    active && statusLine
+      ? statusLine
+      : active
+        ? 'Working…'
+        : duration
+          ? `Worked for ${duration}`
+          : 'Worked'
 
   return (
     <Collapsible open={open} onOpenChange={setOpen} className="my-1 min-w-0">
@@ -75,6 +126,7 @@ function TurnActivityComponent({
           <ChevronRight size={13} />
         </motion.span>
         <ThinkingStatus text={label} shimmer={active} className="font-medium" />
+        {summary ? <DiffStat added={summary.added} removed={summary.removed} /> : null}
         {attentionRequired && !active ? <span>· needs attention</span> : null}
       </CollapsibleTrigger>
       <CollapsibleContent forceMount>
@@ -82,20 +134,25 @@ function TurnActivityComponent({
           <div className="min-w-0 pb-1 pl-4">
             {items.map((item, index) => {
               if (item.kind === 'tool') {
-                const id = item.tool.toolCallId
+                // Only a run's first call renders — as the group's disclosure;
+                // the rest live inside it.
+                const run = toolRuns.get(item.key)
+                if (!run) return null
                 return (
-                  <RowReveal
+                  <ToolCallGroup
                     key={item.key}
-                    animate={enter.animate(id)}
-                    staggerIndex={enter.staggerIndex(id)}
-                  >
-                    <ToolCallCard
-                      toolCall={item.tool}
-                      filePathContext={filePathContext}
-                      parentTurnActive={active}
-                      onOpenSubagent={onOpenSubagent}
-                    />
-                  </RowReveal>
+                    items={run.items}
+                    summary={run.summary}
+                    active={active}
+                    // The run is the turn's live edge while its last call is
+                    // the timeline's last item; anything arriving after it
+                    // (thought, reply, another run) folds the group.
+                    isLiveTail={active && run.items[run.items.length - 1] === lastItem}
+                    attentionRequired={run.attentionRequired}
+                    enter={enter}
+                    filePathContext={filePathContext}
+                    onOpenSubagent={onOpenSubagent}
+                  />
                 )
               }
               if (item.kind === 'thought-group') {
@@ -115,7 +172,8 @@ function TurnActivityComponent({
               // CAP-2 / worktree progress: switch markers and worktree rows
               // never reach the turn bucket (groupTurnActivity emits them
               // top-level), but guard the render so the type stays exhaustive.
-              if (item.kind === 'switch' || item.kind === 'worktree') return null
+              if (item.kind === 'switch' || item.kind === 'worktree' || item.kind === 'reload')
+                return null
               return (
                 <ChatMessage
                   key={item.key}

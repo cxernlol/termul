@@ -10,6 +10,7 @@ import {
   isUsableConfigOption,
   oppositeFastModeValue,
   partitionConfigOptions,
+  sessionModelSnapshot,
   storedConfigValue,
   wireConfigValue
 } from './chat-input-bar-config'
@@ -201,6 +202,26 @@ describe('fast mode helpers', () => {
     ).toBe(false)
   })
 
+  it('treats a boolean option named Fast as a binary switch', () => {
+    const booleanFast: SessionConfigOption = {
+      id: 'fast_mode',
+      name: 'Fast mode',
+      type: 'boolean',
+      currentValue: false
+    }
+    const custom = opt('custom', 'other')
+    expect(isFastModeOption(booleanFast)).toBe(true)
+    expect(isFastModeOption({ ...booleanFast, id: 'web_search', name: 'Web search' })).toBe(false)
+    expect(isFastModeEnabled(booleanFast)).toBe(false)
+    expect(isFastModeEnabled({ ...booleanFast, currentValue: true })).toBe(true)
+    expect(oppositeFastModeValue(booleanFast)).toBe('true')
+    expect(oppositeFastModeValue({ ...booleanFast, currentValue: true })).toBe('false')
+    expect(extractFastModeOption([custom, booleanFast])).toEqual({
+      fastMode: booleanFast,
+      rest: [custom]
+    })
+  })
+
   it('resolves enabled state and opposite value', () => {
     expect(isFastModeEnabled(fastMode('off'))).toBe(false)
     expect(isFastModeEnabled(fastMode('on'))).toBe(true)
@@ -247,5 +268,81 @@ describe('singleton-category dedupe (#444)', () => {
       'other',
       'model-a'
     ])
+  })
+})
+
+describe('sessionModelSnapshot', () => {
+  const models = {
+    currentModelId: 'haiku',
+    availableModels: [
+      { modelId: 'haiku', name: 'Haiku 5.5' },
+      { modelId: 'sonnet', name: 'Sonnet 5.5' }
+    ]
+  }
+
+  it('uses the model config option ahead of the native model list', () => {
+    expect(
+      sessionModelSnapshot({
+        models,
+        configOptions: [
+          {
+            id: 'model',
+            name: 'Model',
+            category: 'model',
+            type: 'select',
+            currentValue: 'sonnet',
+            options: [
+              { value: 'haiku', name: 'Haiku 5.5' },
+              { value: 'sonnet', name: 'Sonnet 5.5' }
+            ]
+          }
+        ]
+      })
+    ).toEqual({ modelId: 'sonnet', modelName: 'Sonnet 5.5' })
+  })
+
+  it('reads a grouped model name', () => {
+    expect(
+      sessionModelSnapshot({
+        models: null,
+        configOptions: [
+          {
+            id: 'model',
+            name: 'Model',
+            category: 'model',
+            type: 'select',
+            currentValue: 'sonnet',
+            options: [
+              {
+                name: 'Anthropic',
+                group: 'Anthropic',
+                options: [{ value: 'sonnet', name: 'Sonnet 5.5' }]
+              }
+            ]
+          }
+        ]
+      })
+    ).toEqual({ modelId: 'sonnet', modelName: 'Sonnet 5.5' })
+  })
+
+  it('falls back to the native model list, then returns null', () => {
+    expect(sessionModelSnapshot({ models, configOptions: [] })).toEqual({
+      modelId: 'haiku',
+      modelName: 'Haiku 5.5'
+    })
+    expect(sessionModelSnapshot({ models: null, configOptions: [] })).toBeNull()
+    expect(sessionModelSnapshot(null)).toBeNull()
+  })
+
+  it('uses the id when the matching name is blank', () => {
+    expect(
+      sessionModelSnapshot({
+        models: {
+          currentModelId: 'haiku',
+          availableModels: [{ modelId: 'haiku', name: '   ' }]
+        },
+        configOptions: []
+      })
+    ).toEqual({ modelId: 'haiku', modelName: 'haiku' })
   })
 })

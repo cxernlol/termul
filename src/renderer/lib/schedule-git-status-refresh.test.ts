@@ -1,15 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useGitStatusStore } from '@/stores/git-status-store'
-import { useWorkspaceStore } from '@/stores/workspace-store'
-import type { PaneNode } from '@/types/workspace.types'
 import {
-  collectOpenGitTabCwds,
   isPathWithinRepo,
   resetGitStatusRefreshSchedulerForTests,
   scheduleGitStatusRefreshForPath
 } from './schedule-git-status-refresh'
 
-vi.mock('@/stores/git-status-store', () => ({
+vi.mock('@/stores/git-status-store', async (importOriginal) => ({
+  deepestTrackedKey: (await importOriginal<typeof import('@/stores/git-status-store')>())
+    .deepestTrackedKey,
   useGitStatusStore: {
     getState: vi.fn()
   }
@@ -17,24 +16,22 @@ vi.mock('@/stores/git-status-store', () => ({
 
 const REPO = 'C:/project'
 const refreshStatus = vi.fn().mockResolvedValue(undefined)
+const refreshDiffStat = vi.fn().mockResolvedValue(undefined)
 
-function leafWithGitTab(cwd: string): PaneNode {
-  return {
-    type: 'leaf',
-    id: 'leaf-1',
-    tabs: [{ type: 'git', id: 'git-1', cwd }],
-    activeTabId: 'git-1'
-  }
+function track(paths: Record<string, string>) {
+  vi.mocked(useGitStatusStore.getState).mockReturnValue({
+    paths,
+    refreshStatus,
+    refreshDiffStat
+  } as unknown as ReturnType<typeof useGitStatusStore.getState>)
 }
 
 beforeEach(() => {
   vi.useFakeTimers()
   resetGitStatusRefreshSchedulerForTests()
   refreshStatus.mockClear()
-  vi.mocked(useGitStatusStore.getState).mockReturnValue({
-    refreshStatus
-  } as unknown as ReturnType<typeof useGitStatusStore.getState>)
-  useWorkspaceStore.setState({ root: leafWithGitTab(REPO) })
+  refreshDiffStat.mockClear()
+  track({ 'c:/project': REPO })
 })
 
 afterEach(() => {
@@ -56,19 +53,22 @@ describe('isPathWithinRepo', () => {
   })
 })
 
-describe('collectOpenGitTabCwds', () => {
-  it('returns cwd from open git tabs only', () => {
-    expect(collectOpenGitTabCwds()).toEqual([REPO])
-  })
-})
-
 describe('scheduleGitStatusRefreshForPath', () => {
-  it('debounces refreshStatus for matching open git tab', async () => {
+  it('debounces refreshStatus for the matching tracked working copy', async () => {
     scheduleGitStatusRefreshForPath(`${REPO}/src/foo.ts`)
     scheduleGitStatusRefreshForPath(`${REPO}/src/bar.ts`)
 
     expect(refreshStatus).not.toHaveBeenCalled()
 
+    await vi.advanceTimersByTimeAsync(1000)
+
+    expect(refreshStatus).toHaveBeenCalledTimes(1)
+    expect(refreshStatus).toHaveBeenCalledWith(REPO)
+    expect(refreshDiffStat).toHaveBeenCalledWith(REPO)
+  })
+
+  it('matches a different path spelling of the tracked key', async () => {
+    scheduleGitStatusRefreshForPath('c:\\Project\\src\\foo.ts')
     await vi.advanceTimersByTimeAsync(1000)
 
     expect(refreshStatus).toHaveBeenCalledTimes(1)
@@ -89,17 +89,8 @@ describe('scheduleGitStatusRefreshForPath', () => {
     expect(refreshStatus).toHaveBeenCalledWith(REPO)
   })
 
-  it('refreshes only repos that match the changed path', async () => {
-    const otherRepo = 'C:/other-project'
-    useWorkspaceStore.setState({
-      root: {
-        type: 'split',
-        id: 'split-1',
-        direction: 'horizontal',
-        children: [leafWithGitTab(REPO), leafWithGitTab(otherRepo)],
-        sizes: [50, 50]
-      }
-    })
+  it('refreshes only the tracked working copy that contains the changed path', async () => {
+    track({ 'c:/project': REPO, 'c:/other-project': 'C:/other-project' })
 
     scheduleGitStatusRefreshForPath(`${REPO}/src/foo.ts`)
     await vi.advanceTimersByTimeAsync(1000)
@@ -108,19 +99,24 @@ describe('scheduleGitStatusRefreshForPath', () => {
     expect(refreshStatus).toHaveBeenCalledWith(REPO)
   })
 
-  it('no-ops when no git tab is open', async () => {
-    useWorkspaceStore.setState({
-      root: {
-        type: 'leaf',
-        id: 'leaf-1',
-        tabs: [{ type: 'editor', id: 'e-1', filePath: `${REPO}/a.ts` }],
-        activeTabId: 'e-1'
-      }
-    })
+  it('refreshes only the deepest tracked key when worktrees are nested', async () => {
+    const worktree = 'C:/project/.termul/worktrees/feat'
+    track({ 'c:/project': REPO, 'c:/project/.termul/worktrees/feat': worktree })
+
+    scheduleGitStatusRefreshForPath(`${worktree}/src/foo.ts`)
+    await vi.advanceTimersByTimeAsync(1000)
+
+    expect(refreshStatus).toHaveBeenCalledTimes(1)
+    expect(refreshStatus).toHaveBeenCalledWith(worktree)
+  })
+
+  it('no-ops when no tracked working copy contains the path', async () => {
+    track({})
 
     scheduleGitStatusRefreshForPath(`${REPO}/src/foo.ts`)
     await vi.advanceTimersByTimeAsync(1000)
 
     expect(refreshStatus).not.toHaveBeenCalled()
+    expect(refreshDiffStat).not.toHaveBeenCalled()
   })
 })
