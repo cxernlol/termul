@@ -9,7 +9,8 @@ import {
   useState
 } from 'react'
 import { MoreHorizontal, Search } from '@/components/icons'
-import type { SessionConfigOption, SessionUsage } from '@/lib/acp-api'
+import { INNER_FIELD_FOCUS_CLASS } from '@/components/ui/panel-styles'
+import type { AgentCapabilities, SessionConfigOption, SessionUsage } from '@/lib/acp-api'
 import type { SupportedAcpAgentEntry } from '@/lib/agents/supported-acp-agents'
 import { cn } from '@/lib/utils'
 import { shouldShowSessionUsage } from '../context-usage-utils'
@@ -18,6 +19,7 @@ import { SelectorFooter } from './SelectorFooter'
 import {
   AgentRow,
   BusyBlock,
+  CapabilitySummary,
   ContextSummary,
   Hint,
   InstallState,
@@ -31,6 +33,7 @@ import {
   armableConfigId,
   buildAgentTabs,
   type CatalogModel,
+  capabilityRows,
   catalogModels,
   entryDisableReason,
   MORE_AGENTS_VIEW,
@@ -79,6 +82,8 @@ export interface SelectorPanelProps {
   /** Session context usage for the summary row (chat only; launcher omits it). */
   usage?: SessionUsage | null
   messages?: ReadonlyArray<{ role: string }>
+  /** What the chat's agent advertised (chat only; the launcher omits it). */
+  capabilities?: AgentCapabilities | null
   onClose: () => void
   /** Set by the panel: clears its inner state on Escape; true when it did. */
   escapeRef: MutableRefObject<(() => boolean) | null>
@@ -503,8 +508,11 @@ export function SelectorPanel(props: SelectorPanelProps): React.JSX.Element {
       : null
 
   return (
-    <div data-testid="agent-model-selector-panel" className={cn('flex flex-col', !touch && 'w-80')}>
-      <div className={cn('flex items-center gap-2', touch ? 'h-12 px-5' : 'h-10 px-3')}>
+    <div
+      data-testid="agent-model-selector-panel"
+      className={cn('flex min-h-0 flex-col', !touch && 'w-80')}
+    >
+      <div className={cn('peer flex items-center gap-2', touch ? 'h-12 px-5' : 'h-10 px-3')}>
         <Search
           size={touch ? 16 : 14}
           aria-hidden="true"
@@ -523,7 +531,7 @@ export function SelectorPanel(props: SelectorPanelProps): React.JSX.Element {
           placeholder="Search models…"
           aria-label="Search models and agents"
           className={cn(
-            'min-w-0 flex-1 bg-transparent text-foreground outline-none placeholder:text-muted-foreground',
+            `min-w-0 flex-1 bg-transparent text-foreground placeholder:text-muted-foreground ${INNER_FIELD_FOCUS_CLASS}`,
             touch ? 'text-base' : 'text-sm'
           )}
         />
@@ -531,7 +539,7 @@ export function SelectorPanel(props: SelectorPanelProps): React.JSX.Element {
           <span className="shrink-0 text-xs tabular-nums text-muted-foreground">{resultCount}</span>
         ) : null}
       </div>
-      <div className="h-px bg-border" />
+      <div className="h-px bg-border transition-colors duration-150 ease-out peer-focus-within:bg-ring" />
       {showTabs ? (
         <div className={cn(pad, touch ? 'pt-2' : 'pt-1')}>
           <SegmentedTrack
@@ -575,6 +583,15 @@ export function SelectorPanel(props: SelectorPanelProps): React.JSX.Element {
         <>
           <div className="h-px bg-border" />
           {footer}
+        </>
+      ) : null}
+      {!searching &&
+      viewId !== null &&
+      viewId === sw.currentConfigId &&
+      capabilityRows(props.capabilities).length > 0 ? (
+        <>
+          <div className="h-px bg-border" />
+          <CapabilitySummary capabilities={props.capabilities} touch={touch} />
         </>
       ) : null}
       {otherHint ? (

@@ -10,6 +10,7 @@ import {
   fileToken,
   insertFileToken,
   insertSkillToken,
+  isFolderTokenPath,
   parseCommandSegments,
   parseFileSegments,
   parseSkillSegments,
@@ -568,6 +569,15 @@ describe('replaceFileTokensInline', () => {
     const st = skillToken('git-worktree')
     const ft = FT('auth.ts', '/work/src/auth.ts')
     expect(replaceFileTokensInline(`use ${st} on ${ft}`)).toBe(`use ${st} on (auth.ts)`)
+  })
+
+  it('turns a folder token (trailing-slash absPath) into its bare relative path', () => {
+    const t = FT('src/renderer/components/', '/work/src/renderer/components/')
+    expect(replaceFileTokensInline(`look in ${t} and ${FT('a.ts', '/work/a.ts')}`)).toBe(
+      'look in src/renderer/components/ and (a.ts)'
+    )
+    expect(isFolderTokenPath('/work/src/')).toBe(true)
+    expect(isFolderTokenPath('/work/src')).toBe(false)
   })
 
   it('leaves malformed tokens as plain text', () => {

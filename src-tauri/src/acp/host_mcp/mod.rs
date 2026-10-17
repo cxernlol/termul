@@ -58,6 +58,22 @@ pub const ENV_TOKEN: &str = "TERMUL_PLAN_TOKEN";
 pub const ENV_SESSION_ID: &str = "TERMUL_PLAN_SESSION_ID";
 pub const ENV_AGENT_ID: &str = "TERMUL_PLAN_AGENT_ID";
 
+/// Server `instructions` returned in the child's MCP `initialize` result.
+/// Agents that connect the injected `termul` server surface this guidance in
+/// model context, so it doubles as the advertisement for the chat renderer's
+/// markdown affordances: inline images (`![alt](path)`) and file references
+/// that open in Termul's built-in editor (`[label](path)` and bare paths).
+/// Keep it static and surface-honest — where a URL form is unreadable the
+/// renderer's existing fallbacks apply (alt chip / plain text).
+pub const TERMUL_CHAT_INSTRUCTIONS: &str = "Termul renders your markdown replies in a rich chat UI. \
+Embed images inline with `![alt](path)` — https URLs render everywhere; paths relative to the \
+session working directory, absolute paths, and `file://` URLs render in the desktop app and \
+fall back to alt text elsewhere (use this for generated charts, screenshots, diagrams). \
+Reference files as markdown links `[label](path)`: Termul renders them as buttons that open \
+the file in its built-in editor — absolute and cwd-relative paths inside the session workspace \
+roots work, a `:line` suffix (or `#L<line>` on the link target) positions the cursor, and \
+bare multi-segment file paths in prose become open-in-editor links too.";
+
 /// Input the agent sends to `plan` (the `arguments` of `tools/call`).
 /// Also re-used as the parent–child TCP frame body (one todo per plan entry).
 #[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
@@ -72,6 +88,11 @@ pub struct TermulPlanInput {
 pub struct TermulSetTitleInput {
     /// Concise title for the current chat session.
     pub title: String,
+    /// Optional short kebab-case slug naming this chat's git branch (for
+    /// example `fix-login-redirect`): lowercase letters, digits and single
+    /// hyphens, at most 48 characters. Honoured on the first call only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
 }
 
 /// One todo item. `status`/`priority` are optional strings (the agent may omit
@@ -105,6 +126,43 @@ pub enum FrameKind {
     /// `browser` tool call — action + args forwarded to
     /// `browser_automation::dispatch`; the reply carries `result`/`code`.
     Browser,
+    /// `ask_user` tool call (issue #784): the parent shows the question panel
+    /// and holds the reply until the user answers or the call is cancelled.
+    AskUser,
+}
+
+/// One option the agent offers in an `ask_user` question.
+#[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct TermulAskUserOption {
+    /// Text shown on the choice and returned in `answers` when picked.
+    pub label: String,
+    /// Optional context shown under the label.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+/// Input the agent sends to `ask_user`. The answer returns as the tool result
+/// `{"answers": [...], "free_text": "..." | null, "cancelled": bool}`.
+#[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct TermulAskUserInput {
+    /// The question to put to the user.
+    pub question: String,
+    /// Choices the user can pick from. May be empty when only free text fits.
+    #[serde(default)]
+    pub options: Vec<TermulAskUserOption>,
+    /// Allow more than one option to be picked.
+    #[serde(default)]
+    pub multi_select: bool,
+    /// Show a free-text field next to the options. Defaults to true.
+    #[serde(default = "default_allow_free_text")]
+    pub allow_free_text: bool,
+    /// Optional short heading shown above the question.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub header: Option<String>,
+}
+
+fn default_allow_free_text() -> bool {
+    true
 }
 
 /// Input the agent sends to the `browser` tool. `action` selects the verb;
@@ -285,12 +343,19 @@ pub struct FrameRequest {
     pub todos: Vec<TermulPlanTodo>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    /// Branch slug from `set_session_title` (story 16). Only meaningful on a
+    /// `SetTitle` frame; validated and applied host-side.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub browser_action: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub browser_args: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub browser_element: Option<String>,
+    /// The question of an `AskUser` frame.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ask: Option<TermulAskUserInput>,
 }
 
 /// Parent reply frame (one per connection). `result` carries the browser

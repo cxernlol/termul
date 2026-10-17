@@ -7,9 +7,14 @@
  * the user completes the provider login on their own device, then pastes the
  * failed loopback redirect URL their browser lands on back here — the host
  * replays it to the agent's callback listener (`acp_deliver_auth_redirect`,
- * loopback-only + SSRF-guarded server-side). On desktop the same dialog works
- * unchanged: "Open" uses the system browser and the localhost callback can
- * complete natively.
+ * loopback-only + SSRF-guarded server-side). On the desktop app the dialog
+ * auto-opens the system browser for every agent, so the localhost callback
+ * can finish on this machine. Open and Copy stay as a fallback. A headless
+ * web client keeps the paste-back copy: the callback listener is on the
+ * server, not on the user's device. Factory Droid still auto-opens on that
+ * web client, because its name is known before the registry config is saved.
+ * Auto-open applies only to the URL captured while the user's own sign-in is
+ * in flight (`autoOpenBrowserUrl`); any other capture waits for a click.
  */
 
 import { useEffect, useMemo, useState } from 'react'
@@ -28,6 +33,7 @@ import { type AgentId, acpApi } from '@/lib/acp-api'
 import { agentPolicyForConfigId } from '@/lib/agents/acp-registry'
 import { openerApi } from '@/lib/api'
 import { logFrontendError } from '@/lib/log-api'
+import { isTauriContext } from '@/lib/tauri-runtime'
 import { configIdFromReuseKey, useAcpStore } from '@/stores/acp-store'
 
 /**
@@ -227,16 +233,19 @@ export function BrowserAuthDialogHost(): React.JSX.Element {
   const pendingBrowserOpen = useAcpStore((s) => s.pendingBrowserOpen)
   const configToLiveAgent = useAcpStore((s) => s.configToLiveAgent)
   const agentConfigs = useAcpStore((s) => s.agentConfigs)
+  const autoOpenBrowserUrl = useAcpStore((s) => s.autoOpenBrowserUrl)
   const clearPendingBrowserOpen = useAcpStore((s) => s.clearPendingBrowserOpen)
+  // Desktop can finish the localhost callback in the system browser. The
+  // web client cannot: that callback lands on the host, so paste-back stays.
+  const desktopCanOpenBrowser = isTauriContext()
 
   const agentNames = useMemo(() => {
     const names: Record<string, string> = {}
     for (const [reuseKey, agentId] of Object.entries(configToLiveAgent)) {
       const configId = configIdFromReuseKey(reuseKey)
       const name = agentConfigs.find((c) => c.id === configId)?.name
-      // The auth policy contract (not an id literal) identifies the agent
-      // whose launcher offers an inline key form — the only one that needs
-      // the display-name fallback + auto-open below.
+      // Inline-key agents need a display name before the registry config is
+      // saved. The Factory Droid fallback also keeps their web auto-open.
       const isInlineKeyAgent = agentPolicyForConfigId(configId).auth.inlineKeyFormMethodId != null
       if (name || isInlineKeyAgent) {
         names[agentId] = name ?? 'Factory Droid'
@@ -253,7 +262,10 @@ export function BrowserAuthDialogHost(): React.JSX.Element {
           agentId={agentId}
           agentName={agentNames[agentId] ?? 'Agent'}
           url={url}
-          autoOpen={agentNames[agentId] === 'Factory Droid'}
+          autoOpen={
+            autoOpenBrowserUrl[agentId] === url &&
+            (desktopCanOpenBrowser || agentNames[agentId] === 'Factory Droid')
+          }
           onDismiss={() => clearPendingBrowserOpen(agentId)}
         />
       ))}

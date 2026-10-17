@@ -1,70 +1,37 @@
-import type { IpcResult } from '@shared/types/ipc.types'
+import { PersistenceKeys } from '@shared/types/persistence.types'
 import { renderHook, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAppSettingsStore } from '@/stores/app-settings-store'
-import { useFileExplorerStore } from '@/stores/file-explorer-store'
-import { useSidebarStore } from '@/stores/sidebar-store'
-import { APP_SETTINGS_KEY, DEFAULT_APP_SETTINGS } from '@/types/settings'
+import { resetShellLayoutStoreForTests, useShellLayoutStore } from '@/stores/shell-layout-store'
+import { DEFAULT_APP_SETTINGS } from '@/types/settings'
 import {
-  resetAppSettingsPersistenceQueueForTests,
   useAppSettingsLoader,
   useResetAppSettings,
   useUpdateAppSetting,
   useUpdateAppSettings,
-  useUpdatePanelVisibility,
-  waitForPendingAppSettingsPersistence
+  useUpdatePanelVisibility
 } from './use-app-settings'
 
 const {
   mockPersistenceRead,
   mockPersistenceWrite,
   mockPersistenceWriteDebounced,
-  mockUpdateOrphanDetection,
   mockSetTurnTimeout,
   mockSetTurnIdleTimeout,
   mockSetSessionNewTimeout,
-  mockSetSessionReopenTimeout
+  mockSetSessionReopenTimeout,
+  mockSetAgentIdleWindow,
+  mockGetAgentIdleWindow
 } = vi.hoisted(() => ({
   mockPersistenceRead: vi.fn(),
   mockPersistenceWrite: vi.fn(),
   mockPersistenceWriteDebounced: vi.fn(),
-  mockUpdateOrphanDetection: vi.fn(),
   mockSetTurnTimeout: vi.fn(),
   mockSetTurnIdleTimeout: vi.fn(),
   mockSetSessionNewTimeout: vi.fn(),
-  mockSetSessionReopenTimeout: vi.fn()
-}))
-
-// Story 5: the orphan-detection retry watches the terminal store for the
-// first ptyId assignment — mock the store with a controllable subscription.
-const { mockTerminalStoreSubscribe, mockSetTerminals, mockNotifyTerminalSubscribers } = vi.hoisted(
-  () => {
-    const listeners: Array<(state: { terminals: Array<{ ptyId?: string }> }) => void> = []
-    return {
-      mockTerminalStoreSubscribe: vi.fn((listener: () => void) => {
-        listeners.push(listener)
-        return () => {
-          const idx = listeners.indexOf(listener)
-          if (idx > -1) listeners.splice(idx, 1)
-        }
-      }),
-      mockSetTerminals: vi.fn(),
-      mockNotifyTerminalSubscribers: vi.fn(() => {
-        for (const listener of [...listeners]) listener({ terminals: [] })
-      })
-    }
-  }
-)
-
-const mockTerminalStoreState = {
-  terminals: [] as Array<{ ptyId?: string }>
-}
-
-vi.mock('@/stores/terminal-store', () => ({
-  useTerminalStore: {
-    getState: vi.fn(() => mockTerminalStoreState),
-    subscribe: mockTerminalStoreSubscribe
-  }
+  mockSetSessionReopenTimeout: vi.fn(),
+  mockSetAgentIdleWindow: vi.fn(),
+  mockGetAgentIdleWindow: vi.fn()
 }))
 
 vi.mock('@/lib/api', () => ({
@@ -72,59 +39,66 @@ vi.mock('@/lib/api', () => ({
     setTurnTimeout: mockSetTurnTimeout,
     setTurnIdleTimeout: mockSetTurnIdleTimeout,
     setSessionNewTimeout: mockSetSessionNewTimeout,
-    setSessionReopenTimeout: mockSetSessionReopenTimeout
+    setSessionReopenTimeout: mockSetSessionReopenTimeout,
+    setAgentIdleWindow: mockSetAgentIdleWindow,
+    getAgentIdleWindow: mockGetAgentIdleWindow
   },
   persistenceApi: {
     read: mockPersistenceRead,
     write: mockPersistenceWrite,
     writeDebounced: mockPersistenceWriteDebounced
-  },
-  terminalApi: {
-    updateOrphanDetection: mockUpdateOrphanDetection
   }
 }))
 
 describe('use-app-settings', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    resetAppSettingsPersistenceQueueForTests()
 
     useAppSettingsStore.setState({
       settings: { ...DEFAULT_APP_SETTINGS },
       isLoaded: false
     })
-    useSidebarStore.setState({ isVisible: true })
-    useFileExplorerStore.setState({ isVisible: true })
+    resetShellLayoutStoreForTests()
+    useShellLayoutStore.setState({ status: 'ready' })
 
     mockPersistenceRead.mockResolvedValue({ success: true, data: null })
     mockPersistenceWrite.mockResolvedValue({ success: true, data: undefined })
     mockPersistenceWriteDebounced.mockResolvedValue({ success: true, data: undefined })
-    mockUpdateOrphanDetection.mockResolvedValue({ success: true, data: undefined })
-    mockTerminalStoreState.terminals = []
-    mockNotifyTerminalSubscribers.mockClear()
     mockSetTurnTimeout.mockResolvedValue(undefined)
     mockSetTurnIdleTimeout.mockResolvedValue(undefined)
     mockSetSessionNewTimeout.mockResolvedValue(undefined)
     mockSetSessionReopenTimeout.mockResolvedValue(undefined)
+    mockSetAgentIdleWindow.mockResolvedValue(undefined)
+    mockGetAgentIdleWindow.mockResolvedValue({ secs: 1800, source: 'default' })
   })
 
-  it('hydrates sidebar and file explorer visibility from persisted app settings', async () => {
+  it('does not push legacy AppSettings panel visibility into the shell layout on load', async () => {
     mockPersistenceRead.mockResolvedValueOnce({
       success: true,
       data: {
         ...DEFAULT_APP_SETTINGS,
-        sidebarVisible: false,
-        fileExplorerVisible: true
+        sidebarVisible: true,
+        fileExplorerVisible: true,
+        sshPanelVisible: true
       }
+    })
+    // An upgraded user: the shell-layout migration already collapsed the rail.
+    useShellLayoutStore.setState({
+      status: 'ready',
+      railExpanded: false,
+      sidePanelVisible: false,
+      sshSectionVisible: false
     })
 
     renderHook(() => useAppSettingsLoader())
 
     await waitFor(() => {
       expect(useAppSettingsStore.getState().isLoaded).toBe(true)
-      expect(useSidebarStore.getState().isVisible).toBe(false)
-      expect(useFileExplorerStore.getState().isVisible).toBe(true)
     })
+    const layout = useShellLayoutStore.getState()
+    expect(layout.railExpanded).toBe(false)
+    expect(layout.sidePanelVisible).toBe(false)
+    expect(layout.sshSectionVisible).toBe(false)
   })
 
   it('pushes the ACP timeout overrides to the backend on load', async () => {
@@ -136,11 +110,14 @@ describe('use-app-settings', () => {
         acpTurnIdleTimeoutSecs: 1800,
         acpSessionNewTimeoutSecs: 120,
         acpSessionReopenTimeoutSecs: 300,
+        agentIdleWindowSecs: 7200,
         // Stale key from an old settings blob (story 8 removed the warmup
         // machinery): the merge keeps it inert — nothing reads or pushes it.
         acpFirstPromptWarmupSecs: 0
       }
     })
+
+    mockGetAgentIdleWindow.mockResolvedValueOnce({ secs: 3600, source: 'setting' })
 
     renderHook(() => useAppSettingsLoader())
 
@@ -150,6 +127,9 @@ describe('use-app-settings', () => {
       expect(mockSetTurnIdleTimeout).toHaveBeenCalledWith(1800)
       expect(mockSetSessionNewTimeout).toHaveBeenCalledWith(120)
       expect(mockSetSessionReopenTimeout).toHaveBeenCalledWith(300)
+      // The browser reads the server window. It does not POST the saved value.
+      expect(mockSetAgentIdleWindow).not.toHaveBeenCalled()
+      expect(useAppSettingsStore.getState().settings.agentIdleWindowSecs).toBe(3600)
     })
   })
 
@@ -188,6 +168,46 @@ describe('use-app-settings', () => {
     })
   })
 
+  it('loads an old persisted per-project terminal limit and drops the retired key', async () => {
+    mockPersistenceRead.mockResolvedValueOnce({
+      success: true,
+      data: { ...DEFAULT_APP_SETTINGS, maxTerminalsPerProject: 5 }
+    })
+
+    renderHook(() => useAppSettingsLoader())
+
+    await waitFor(() => {
+      expect(useAppSettingsStore.getState().isLoaded).toBe(true)
+    })
+    expect(useAppSettingsStore.getState().settings).toEqual(DEFAULT_APP_SETTINGS)
+    expect(mockPersistenceWriteDebounced).toHaveBeenCalledWith(
+      PersistenceKeys.appSettings,
+      DEFAULT_APP_SETTINGS
+    )
+  })
+
+  it('loads old persisted orphan-detection keys and drops them', async () => {
+    mockPersistenceRead.mockResolvedValueOnce({
+      success: true,
+      data: {
+        ...DEFAULT_APP_SETTINGS,
+        orphanDetectionEnabled: false,
+        orphanDetectionTimeout: 60000
+      }
+    })
+
+    renderHook(() => useAppSettingsLoader())
+
+    await waitFor(() => {
+      expect(useAppSettingsStore.getState().isLoaded).toBe(true)
+    })
+    expect(useAppSettingsStore.getState().settings).toEqual(DEFAULT_APP_SETTINGS)
+    expect(mockPersistenceWriteDebounced).toHaveBeenCalledWith(
+      PersistenceKeys.appSettings,
+      DEFAULT_APP_SETTINGS
+    )
+  })
+
   it('persists normalized legacy light color theme settings', async () => {
     mockPersistenceRead.mockResolvedValueOnce({
       success: true,
@@ -202,7 +222,7 @@ describe('use-app-settings', () => {
 
     await waitFor(() => {
       expect(mockPersistenceWriteDebounced).toHaveBeenCalledWith(
-        APP_SETTINGS_KEY,
+        PersistenceKeys.appSettings,
         expect.objectContaining({ colorTheme: 'termul', appearanceMode: 'light' })
       )
     })
@@ -221,7 +241,7 @@ describe('use-app-settings', () => {
 
     await waitFor(() => {
       expect(mockPersistenceWriteDebounced).toHaveBeenCalledWith(
-        APP_SETTINGS_KEY,
+        PersistenceKeys.appSettings,
         expect.objectContaining({ appearanceMode: 'dark' })
       )
     })
@@ -240,123 +260,58 @@ describe('use-app-settings', () => {
 
     await waitFor(() => {
       expect(mockPersistenceWriteDebounced).toHaveBeenCalledWith(
-        APP_SETTINGS_KEY,
+        PersistenceKeys.appSettings,
         expect.objectContaining({ terminalRenderer: 'dom' })
       )
     })
   })
 
-  it('updates panel visibility with immediate persistence write', async () => {
+  it('dispatches panel visibility to the shell-layout actions without touching AppSettings', async () => {
     const { result } = renderHook(() => useUpdatePanelVisibility())
 
     await result.current('sidebarVisible', false)
+    await result.current('fileExplorerVisible', false)
+    await result.current('sshPanelVisible', false)
 
-    expect(useAppSettingsStore.getState().settings.sidebarVisible).toBe(false)
-    expect(useSidebarStore.getState().isVisible).toBe(false)
-    expect(mockPersistenceWrite).toHaveBeenCalledWith(
-      APP_SETTINGS_KEY,
-      expect.objectContaining({ sidebarVisible: false })
+    const layout = useShellLayoutStore.getState()
+    expect(layout.railExpanded).toBe(false)
+    expect(layout.sidePanelVisible).toBe(false)
+    expect(layout.sshSectionVisible).toBe(false)
+    expect(useAppSettingsStore.getState().settings).toEqual(DEFAULT_APP_SETTINGS)
+    expect(mockPersistenceWrite).not.toHaveBeenCalledWith(
+      PersistenceKeys.appSettings,
+      expect.anything()
     )
+    expect(mockPersistenceWriteDebounced).not.toHaveBeenCalledWith(
+      PersistenceKeys.appSettings,
+      expect.anything()
+    )
+    // The shell-layout store persists through its own key (debounced).
+    expect(mockPersistenceWriteDebounced).toHaveBeenCalledWith(
+      'shell-layout',
+      expect.objectContaining({ railExpanded: false, sidePanelVisible: false })
+    )
+  })
+
+  it('ignores panel visibility changes until the shell layout is hydrated', async () => {
+    resetShellLayoutStoreForTests()
+    const { result } = renderHook(() => useUpdatePanelVisibility())
+
+    await expect(result.current('sidebarVisible', false)).resolves.toBeUndefined()
+
+    expect(useShellLayoutStore.getState().railExpanded).toBe(true)
     expect(mockPersistenceWriteDebounced).not.toHaveBeenCalled()
   })
 
-  it('serializes rapid panel writes and persists each queued request payload', async () => {
-    const deferredResolvers: Array<(result: IpcResult<void>) => void> = []
-    mockPersistenceWrite.mockImplementation(
-      () =>
-        new Promise<IpcResult<void>>((resolve) => {
-          deferredResolvers.push(resolve)
-        })
-    )
-
+  it('applies panel visibility in memory only when the shell layout is unavailable', async () => {
+    useShellLayoutStore.setState({ status: 'unavailable' })
     const { result } = renderHook(() => useUpdatePanelVisibility())
 
-    const first = result.current('sidebarVisible', false)
-    const second = result.current('sidebarVisible', true)
+    await result.current('fileExplorerVisible', false)
 
-    await waitFor(() => {
-      expect(mockPersistenceWrite).toHaveBeenCalledTimes(1)
-    })
-
-    expect(mockPersistenceWrite).toHaveBeenNthCalledWith(
-      1,
-      APP_SETTINGS_KEY,
-      expect.objectContaining({ sidebarVisible: false })
-    )
-
-    deferredResolvers[0]?.({ success: true, data: undefined })
-    await first
-
-    await waitFor(() => {
-      expect(mockPersistenceWrite).toHaveBeenCalledTimes(2)
-    })
-
-    expect(mockPersistenceWrite).toHaveBeenNthCalledWith(
-      2,
-      APP_SETTINGS_KEY,
-      expect.objectContaining({ sidebarVisible: true })
-    )
-
-    deferredResolvers[1]?.({ success: true, data: undefined })
-    await second
-
-    expect(useAppSettingsStore.getState().settings.sidebarVisible).toBe(true)
-    expect(useSidebarStore.getState().isVisible).toBe(true)
-  })
-
-  it('reverts panel visibility in stores when immediate persistence fails', async () => {
-    mockPersistenceWrite.mockResolvedValueOnce({
-      success: false,
-      error: 'write failed',
-      code: 'WRITE_FAILED'
-    })
-
-    const { result } = renderHook(() => useUpdatePanelVisibility())
-
-    let thrown: unknown
-    try {
-      await result.current('sidebarVisible', false)
-    } catch (error) {
-      thrown = error
-    }
-
-    expect(thrown).toBeInstanceOf(Error)
-    expect((thrown as Error).message).toBe('write failed')
-    expect(useAppSettingsStore.getState().settings.sidebarVisible).toBe(true)
-    expect(useSidebarStore.getState().isVisible).toBe(true)
-  })
-
-  it('keeps newer panel value when older queued write fails', async () => {
-    mockPersistenceWrite
-      .mockResolvedValueOnce({ success: false, error: 'first failed', code: 'WRITE_FAILED' })
-      .mockResolvedValueOnce({ success: true, data: undefined })
-
-    const { result } = renderHook(() => useUpdatePanelVisibility())
-
-    let firstError: unknown
-    const first = result.current('fileExplorerVisible', false).catch((error) => {
-      firstError = error
-    })
-    const second = result.current('fileExplorerVisible', true)
-
-    await first
-    await second
-
-    expect(firstError).toBeInstanceOf(Error)
-    expect((firstError as Error).message).toBe('first failed')
-
-    expect(mockPersistenceWrite).toHaveBeenNthCalledWith(
-      1,
-      APP_SETTINGS_KEY,
-      expect.objectContaining({ fileExplorerVisible: false })
-    )
-    expect(mockPersistenceWrite).toHaveBeenNthCalledWith(
-      2,
-      APP_SETTINGS_KEY,
-      expect.objectContaining({ fileExplorerVisible: true })
-    )
-    expect(useAppSettingsStore.getState().settings.fileExplorerVisible).toBe(true)
-    expect(useFileExplorerStore.getState().isVisible).toBe(true)
+    expect(useShellLayoutStore.getState().sidePanelVisible).toBe(false)
+    expect(mockPersistenceWriteDebounced).not.toHaveBeenCalled()
+    expect(mockPersistenceWrite).not.toHaveBeenCalled()
   })
 
   it('keeps debounced writes for non-panel app settings', async () => {
@@ -366,9 +321,104 @@ describe('use-app-settings', () => {
 
     expect(useAppSettingsStore.getState().settings.terminalFontSize).toBe(16)
     expect(mockPersistenceWriteDebounced).toHaveBeenCalledWith(
-      APP_SETTINGS_KEY,
+      PersistenceKeys.appSettings,
       expect.objectContaining({ terminalFontSize: 16 })
     )
+  })
+
+  describe('retired shell layout flag and legacy panel fields', () => {
+    it('ignores a stored shellLayout and keeps legacy panel fields in the persisted record', async () => {
+      const persisted = {
+        ...DEFAULT_APP_SETTINGS,
+        shellLayout: 'classic',
+        sidebarVisible: false,
+        fileExplorerVisible: false,
+        sshPanelVisible: false
+      }
+      mockPersistenceRead.mockResolvedValueOnce({ success: true, data: persisted })
+
+      renderHook(() => useAppSettingsLoader())
+
+      await waitFor(() => {
+        expect(useAppSettingsStore.getState().isLoaded).toBe(true)
+      })
+      // The loader still merges over the defaults, so raw legacy values survive
+      // in memory until the shell-layout migration has read them.
+      expect(useAppSettingsStore.getState().settings).toEqual(persisted)
+      expect('shellLayout' in DEFAULT_APP_SETTINGS).toBe(false)
+      expect('sidebarVisible' in DEFAULT_APP_SETTINGS).toBe(false)
+    })
+
+    it('loads without error when no record exists', async () => {
+      mockPersistenceRead.mockResolvedValueOnce({ success: false, code: 'KEY_NOT_FOUND' })
+
+      renderHook(() => useAppSettingsLoader())
+
+      await waitFor(() => {
+        expect(useAppSettingsStore.getState().isLoaded).toBe(true)
+      })
+      expect(useAppSettingsStore.getState().settings).toEqual(DEFAULT_APP_SETTINGS)
+    })
+  })
+
+  describe('terminal screen reader mode (L-28)', () => {
+    it('loads as false when the persisted blob lacks the key', async () => {
+      const { terminalScreenReaderMode: _screenReader, ...legacySettings } = DEFAULT_APP_SETTINGS
+      mockPersistenceRead.mockResolvedValueOnce({ success: true, data: legacySettings })
+
+      renderHook(() => useAppSettingsLoader())
+
+      await waitFor(() => {
+        expect(useAppSettingsStore.getState().isLoaded).toBe(true)
+      })
+      expect(useAppSettingsStore.getState().settings.terminalScreenReaderMode).toBe(false)
+    })
+
+    it('loads a persisted true as true', async () => {
+      mockPersistenceRead.mockResolvedValueOnce({
+        success: true,
+        data: { ...DEFAULT_APP_SETTINGS, terminalScreenReaderMode: true }
+      })
+
+      renderHook(() => useAppSettingsLoader())
+
+      await waitFor(() => {
+        expect(useAppSettingsStore.getState().isLoaded).toBe(true)
+      })
+      expect(useAppSettingsStore.getState().settings.terminalScreenReaderMode).toBe(true)
+    })
+
+    it('writes the whole blob through the shared persistence facade when turned on', async () => {
+      const { result } = renderHook(() => useUpdateAppSetting())
+
+      await result.current('terminalScreenReaderMode', true)
+
+      expect(useAppSettingsStore.getState().settings.terminalScreenReaderMode).toBe(true)
+      expect(mockPersistenceWriteDebounced).toHaveBeenCalledTimes(1)
+      // The whole settings object, not a patch: every other key rides along.
+      expect(mockPersistenceWriteDebounced).toHaveBeenCalledWith(PersistenceKeys.appSettings, {
+        ...DEFAULT_APP_SETTINGS,
+        terminalScreenReaderMode: true
+      })
+      expect(mockPersistenceWrite).not.toHaveBeenCalled()
+    })
+
+    it('persists false again when Reset Settings runs', async () => {
+      useAppSettingsStore.setState({
+        settings: { ...DEFAULT_APP_SETTINGS, terminalScreenReaderMode: true },
+        isLoaded: true
+      })
+
+      const { result } = renderHook(() => useResetAppSettings())
+
+      await result.current()
+
+      expect(useAppSettingsStore.getState().settings.terminalScreenReaderMode).toBe(false)
+      expect(mockPersistenceWrite).toHaveBeenCalledWith(
+        PersistenceKeys.appSettings,
+        expect.objectContaining({ terminalScreenReaderMode: false })
+      )
+    })
   })
 
   it('writes one snapshot when updating multiple app settings', async () => {
@@ -380,22 +430,30 @@ describe('use-app-settings', () => {
     expect(useAppSettingsStore.getState().settings.appearanceMode).toBe('light')
     expect(mockPersistenceWriteDebounced).toHaveBeenCalledTimes(1)
     expect(mockPersistenceWriteDebounced).toHaveBeenCalledWith(
-      APP_SETTINGS_KEY,
+      PersistenceKeys.appSettings,
       expect.objectContaining({ colorTheme: 'dracula', appearanceMode: 'light' })
     )
   })
 
-  it('resets panel stores when app settings are reset', async () => {
-    useSidebarStore.setState({ isVisible: false })
-    useFileExplorerStore.setState({ isVisible: false })
+  it('reopens all panels through the shell-layout actions when app settings are reset', async () => {
+    useShellLayoutStore.setState({
+      railExpanded: false,
+      sidePanelVisible: false,
+      sshSectionVisible: false
+    })
 
     const { result } = renderHook(() => useResetAppSettings())
 
     await result.current()
 
-    expect(useSidebarStore.getState().isVisible).toBe(DEFAULT_APP_SETTINGS.sidebarVisible)
-    expect(useFileExplorerStore.getState().isVisible).toBe(DEFAULT_APP_SETTINGS.fileExplorerVisible)
-    expect(mockPersistenceWrite).toHaveBeenCalledWith(APP_SETTINGS_KEY, DEFAULT_APP_SETTINGS)
+    const layout = useShellLayoutStore.getState()
+    expect(layout.railExpanded).toBe(true)
+    expect(layout.sidePanelVisible).toBe(true)
+    expect(layout.sshSectionVisible).toBe(true)
+    expect(mockPersistenceWrite).toHaveBeenCalledWith(
+      PersistenceKeys.appSettings,
+      DEFAULT_APP_SETTINGS
+    )
   })
 
   it('clears all ACP timeout overrides in the backend when app settings are reset', async () => {
@@ -405,7 +463,8 @@ describe('use-app-settings', () => {
         acpTurnTimeoutSecs: 7200,
         acpTurnIdleTimeoutSecs: 1800,
         acpSessionNewTimeoutSecs: 120,
-        acpSessionReopenTimeoutSecs: 300
+        acpSessionReopenTimeoutSecs: 300,
+        agentIdleWindowSecs: 7200
       },
       isLoaded: true
     })
@@ -418,151 +477,6 @@ describe('use-app-settings', () => {
     expect(mockSetTurnIdleTimeout).toHaveBeenCalledWith(null)
     expect(mockSetSessionNewTimeout).toHaveBeenCalledWith(null)
     expect(mockSetSessionReopenTimeout).toHaveBeenCalledWith(null)
-  })
-
-  it('waits for queued panel writes before close-flow synchronization', async () => {
-    let resolveWrite: ((result: IpcResult<void>) => void) | undefined
-    mockPersistenceWrite.mockImplementationOnce(
-      () =>
-        new Promise<IpcResult<void>>((resolve) => {
-          resolveWrite = resolve
-        })
-    )
-
-    const { result } = renderHook(() => useUpdatePanelVisibility())
-    const pendingWrite = result.current('sidebarVisible', false)
-
-    const waiter = waitForPendingAppSettingsPersistence()
-
-    let waiterResolved = false
-    void waiter.then(() => {
-      waiterResolved = true
-    })
-
-    await Promise.resolve()
-    expect(waiterResolved).toBe(false)
-
-    resolveWrite?.({ success: true, data: undefined })
-    await pendingWrite
-    await waiter
-
-    expect(waiterResolved).toBe(true)
-  })
-
-  it('does not let an older failed revision roll back a newer successful state', async () => {
-    const deferredResolvers: Array<(result: IpcResult<void>) => void> = []
-    mockPersistenceWrite.mockImplementation(
-      () =>
-        new Promise<IpcResult<void>>((resolve) => {
-          deferredResolvers.push(resolve)
-        })
-    )
-
-    const { result } = renderHook(() => useUpdatePanelVisibility())
-
-    const first = result.current('sidebarVisible', false).catch((error) => error)
-    const second = result.current('sidebarVisible', true)
-
-    await waitFor(() => {
-      expect(mockPersistenceWrite).toHaveBeenCalledTimes(1)
-    })
-
-    deferredResolvers[0]?.({ success: false, error: 'first failed', code: 'WRITE_FAILED' })
-    await first
-
-    await waitFor(() => {
-      expect(mockPersistenceWrite).toHaveBeenCalledTimes(2)
-    })
-
-    deferredResolvers[1]?.({ success: true, data: undefined })
-    await second
-
-    expect(useAppSettingsStore.getState().settings.sidebarVisible).toBe(true)
-    expect(useSidebarStore.getState().isVisible).toBe(true)
-  })
-  // Story 5 (preserved-PTY reattach): the immediate orphan-detection push
-  // now succeeds on authed connections, and an UNAUTHORIZED rejection
-  // (push raced the auth handshake) arms a ONE-SHOT post-attach retry.
-  it('keeps the immediate orphan-detection push on load', async () => {
-    renderHook(() => useAppSettingsLoader())
-
-    await waitFor(() => {
-      expect(mockUpdateOrphanDetection).toHaveBeenCalledTimes(1)
-    })
-    expect(mockUpdateOrphanDetection).toHaveBeenCalledWith(
-      DEFAULT_APP_SETTINGS.orphanDetectionEnabled,
-      DEFAULT_APP_SETTINGS.orphanDetectionTimeout
-    )
-    // Success: no retry subscription armed.
-    expect(mockTerminalStoreSubscribe).not.toHaveBeenCalled()
-  })
-
-  it('does not arm the retry when the push fails with a non-auth error', async () => {
-    mockUpdateOrphanDetection.mockResolvedValueOnce({
-      success: false,
-      error: 'write failed',
-      code: 'WRITE_FAILED'
-    })
-
-    renderHook(() => useAppSettingsLoader())
-
-    await waitFor(() => {
-      expect(mockUpdateOrphanDetection).toHaveBeenCalledTimes(1)
-    })
-    await Promise.resolve()
-    expect(mockTerminalStoreSubscribe).not.toHaveBeenCalled()
-  })
-
-  it('retries the orphan-detection push once after the first terminal attach on UNAUTHORIZED', async () => {
-    mockUpdateOrphanDetection
-      .mockResolvedValueOnce({ success: false, error: 'Unauthorized', code: 'UNAUTHORIZED' })
-      .mockResolvedValue({ success: true, data: undefined })
-
-    renderHook(() => useAppSettingsLoader())
-
-    // The immediate push was refused; the retry is armed (subscribed to the
-    // terminal store) but has NOT fired yet — no terminal attached.
-    await waitFor(() => {
-      expect(mockUpdateOrphanDetection).toHaveBeenCalledTimes(1)
-      expect(mockTerminalStoreSubscribe).toHaveBeenCalledTimes(1)
-    })
-
-    // First terminal attaches (ptyId assigned) — the retry fires once.
-    mockTerminalStoreState.terminals = [{ ptyId: 'pty-1' }]
-    mockNotifyTerminalSubscribers()
-
-    await waitFor(() => {
-      expect(mockUpdateOrphanDetection).toHaveBeenCalledTimes(2)
-    })
-    expect(mockUpdateOrphanDetection).toHaveBeenLastCalledWith(
-      DEFAULT_APP_SETTINGS.orphanDetectionEnabled,
-      DEFAULT_APP_SETTINGS.orphanDetectionTimeout
-    )
-
-    // One-shot: further store updates never re-trigger the push.
-    mockTerminalStoreState.terminals = [{ ptyId: 'pty-1' }, { ptyId: 'pty-2' }]
-    mockNotifyTerminalSubscribers()
-    await Promise.resolve()
-    await Promise.resolve()
-    expect(mockUpdateOrphanDetection).toHaveBeenCalledTimes(2)
-  })
-
-  it('does not fire the armed retry before any terminal attaches', async () => {
-    mockUpdateOrphanDetection
-      .mockResolvedValueOnce({ success: false, error: 'Unauthorized', code: 'UNAUTHORIZED' })
-      .mockResolvedValue({ success: true, data: undefined })
-
-    renderHook(() => useAppSettingsLoader())
-
-    await waitFor(() => {
-      expect(mockTerminalStoreSubscribe).toHaveBeenCalledTimes(1)
-    })
-
-    // Store churn with no ptyId assigned: retry stays dormant.
-    mockTerminalStoreState.terminals = [{}, { name: 'pending' }]
-    mockNotifyTerminalSubscribers()
-    await Promise.resolve()
-    await Promise.resolve()
-    expect(mockUpdateOrphanDetection).toHaveBeenCalledTimes(1)
+    expect(mockSetAgentIdleWindow).toHaveBeenCalledWith(null)
   })
 })

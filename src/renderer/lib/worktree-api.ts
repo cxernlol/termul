@@ -1,86 +1,29 @@
+import type { IpcResult } from '@shared/types/ipc.types'
 import type {
+  BaseBranchInfo,
   BranchInfo,
   DirtyStatus,
   GitignoreDir,
-  IpcResult,
+  IncludeCopyResult,
+  MergePreviewInfo,
   RemoveResult,
   SymlinkResult,
   WorktreeInfo,
   WorktreeProgressEvent
-} from '@shared/types/ipc.types'
+} from '@shared/types/worktree.types'
 import { invoke } from '@tauri-apps/api/core'
 import { useWorktreeProgressStore } from '@/stores/worktree-progress-store'
 import type { Worktree } from '@/types/project'
+import { invokeIpcCommand, mapTauriVerdict } from './acp-transport/tauri-verdicts'
+import { entityKeyOf, runIpcCommand, worktreeCreateKey } from './ipc/http'
 import { isTauriContext } from './tauri-runtime'
 import { webServerWorktree } from './web-server-api'
 
-export interface MergePreviewInfo {
-  direction: string
-  sourceBranch: string
-  targetBranch: string
-  conflictFiles: {
-    path: string
-    severity: string
-    conflictCount: number
-    isLockFile: boolean
-    suggestions: {
-      strategy: string
-      confidence: string
-      reason: string
-      description: string
-    }[]
-  }[]
-  changedFiles: string[]
-  totalChanges: number
-  detectionMode: string
-  hasAutoResolvable: boolean
-}
-
-/**
- * Origin-aware default base branch + detached-HEAD guard (CAP-2). The launcher
- * uses `defaultBase` as the initial base-branch picker value; `isDetached`
- * forces an explicit pick before a worktree launch.
- */
-export interface BaseBranchInfo {
-  defaultBase: string
-  currentBranch?: string
-  isDetached: boolean
-}
-
-/**
- * Result of `.worktree-include` carry-over (CAP-5). `ran` is the number of
- * patterns that matched at least one file; `copied` is files actually copied;
- * `skipped` carries per-file reasons (symlink / path-escape / already-present).
- */
-export interface IncludeSkipReason {
-  path: string
-  reason: string
-}
-
-export interface IncludeCopyResult {
-  ran: number
-  copied: number
-  skipped: IncludeSkipReason[]
-}
-
-/**
- * Invoke a worktree Tauri command, returning the `IpcResult<T>` shape callers
- * expect. On web/remote mode (`!isTauriContext()`), the 7 launch-flow methods
- * (list/create/remove/branches/checkDirty/resolveBaseBranch/copyIncludeFiles)
- * branch to `webServerWorktree` (HTTP routes in `web/worktree_api.rs`) — CAP —
- * Web worktree parity. The 8 advanced ops (symlinks, parseGitignore, merge,
- * archive/restore, removeAllManaged) STAY `WEB_UNSUPPORTED` on web (deferred —
- * see deferred-work.md). Transport/parse failures on the HTTP path map to
- * `{ success: false, code: 'NETWORK_ERROR' }` (handled in `web-server-api.ts`).
- */
 async function worktreeInvoke<T>(
   command: string,
   args?: Record<string, unknown>
 ): Promise<IpcResult<T>> {
   if (!isTauriContext()) {
-    // The 7 launch-flow methods branch to webServerWorktree in their own
-    // facade methods (below). This fallback is only hit by the 8 advanced
-    // ops that stay WEB_UNSUPPORTED on web.
     return {
       success: false,
       error: 'Worktrees are not available in the web client',
@@ -127,7 +70,11 @@ export const worktreeApi = {
         useWorktreeProgressStore.getState().ensureTransportListener()
       }
       const { onProgress: _onProgress, ...invokeArgs } = params
-      return invoke<IpcResult<WorktreeInfo>>('worktree_create', invokeArgs)
+      return invokeIpcCommand<WorktreeInfo>('worktree_create', invokeArgs, {
+        kind: 'worktree_create',
+        entityKey: worktreeCreateKey(params),
+        invokeFailure: 'throw'
+      })
     }
     const { onProgress, ...webParams } = params
     return webServerWorktree.create(webParams, onProgress)
@@ -143,6 +90,39 @@ export const worktreeApi = {
     isTauriContext()
       ? invoke<IpcResult<void>>('worktree_remove', { projectPath, worktreePath, force })
       : webServerWorktree.remove(projectPath, worktreePath, force),
+
+  /**
+   * Rename a worktree's branch by hand (shell revamp story 16, CAP-5): `git
+   * branch -m`, every session on the worktree is rewritten by the host (the
+   * branch source becomes `user`) and `acp:worktree_branch_renamed` reaches
+   * every client. The error code comes from the host (`INVALID_BRANCH_NAME`,
+   * `BRANCH_EXISTS`, `BRANCH_CHANGED`, `FORBIDDEN`, `OUTSIDE_PROJECT_ROOT`).
+   *
+   * **Write gating:** this is a write route. Callers MUST gate any UI with
+   * `useServerAdmitsRemoteWrites` / the S19 `WriteGate` so read-only servers
+   * show the control disabled with the reason (CAP-15). This story ships no UI
+   * consumer; the server refuses the write either way.
+   */
+  renameBranch: (
+    worktreePath: string,
+    oldBranch: string,
+    newBranch: string
+  ): Promise<IpcResult<void>> =>
+    isTauriContext()
+      ? runIpcCommand<void>({
+          kind: 'worktree_rename_branch',
+          entityKey: entityKeyOf(worktreePath, oldBranch, newBranch),
+          send: (commandId) =>
+            invoke<IpcResult<void>>('worktree_rename_branch', {
+              worktreePath,
+              oldBranch,
+              newBranch,
+              commandId
+            }).catch((error) => {
+              throw mapTauriVerdict(error)
+            })
+        })
+      : webServerWorktree.renameBranch(worktreePath, oldBranch, newBranch),
 
   /**
    * List local and remote branches for a git repo.
@@ -166,7 +146,7 @@ export const worktreeApi = {
    * Used during project cascade delete. Reports per-worktree results.
    * Accepts a typed Worktree array; serializes to JSON internally.
    *
-   * **Web:** returns `WEB_UNSUPPORTED` (deferred — see deferred-work.md).
+   * **Web:** returns `WEB_UNSUPPORTED`.
    */
   removeAllManaged: (
     projectPath: string,
@@ -180,51 +160,54 @@ export const worktreeApi = {
   /**
    * Parse .gitignore and return directory entries that could be symlinked.
    * Each entry includes whether the directory exists in the project root.
-   *
-   * **Web:** returns `WEB_UNSUPPORTED` (deferred — see deferred-work.md).
    */
   parseGitignore: (projectPath: string): Promise<IpcResult<GitignoreDir[]>> =>
-    worktreeInvoke<GitignoreDir[]>('worktree_parse_gitignore', { projectPath }),
+    isTauriContext()
+      ? invoke<IpcResult<GitignoreDir[]>>('worktree_parse_gitignore', { projectPath })
+      : webServerWorktree.parseGitignore(projectPath),
 
   /**
    * Create symlinks from project root directories into a worktree.
-   * symlinkDirs is a JSON array of directory names to symlink.
    *
-   * **Web:** returns `WEB_UNSUPPORTED` (deferred — see deferred-work.md).
+   * **Write:** a read-only server refuses it with `FORBIDDEN`.
    */
   createSymlinks: (
     projectPath: string,
     worktreePath: string,
     symlinkDirs: string[]
   ): Promise<IpcResult<SymlinkResult[]>> =>
-    worktreeInvoke<SymlinkResult[]>('worktree_create_symlinks', {
-      projectPath,
-      worktreePath,
-      symlinkDirs: JSON.stringify(symlinkDirs)
-    }),
+    isTauriContext()
+      ? invoke<IpcResult<SymlinkResult[]>>('worktree_create_symlinks', {
+          projectPath,
+          worktreePath,
+          symlinkDirs: JSON.stringify(symlinkDirs)
+        })
+      : webServerWorktree.createSymlinks(projectPath, worktreePath, symlinkDirs),
 
   /**
    * Ensure symlinks exist for all directories in symlinkDirs.
    * Creates any missing symlinks. Does not remove or overwrite existing ones.
    *
-   * **Web:** returns `WEB_UNSUPPORTED` (deferred — see deferred-work.md).
+   * **Write:** a read-only server refuses it with `FORBIDDEN`.
    */
   ensureSymlinks: (
     projectPath: string,
     worktreePath: string,
     symlinkDirs: string[]
   ): Promise<IpcResult<SymlinkResult[]>> =>
-    worktreeInvoke<SymlinkResult[]>('worktree_ensure_symlinks', {
-      projectPath,
-      worktreePath,
-      symlinkDirs: JSON.stringify(symlinkDirs)
-    }),
+    isTauriContext()
+      ? invoke<IpcResult<SymlinkResult[]>>('worktree_ensure_symlinks', {
+          projectPath,
+          worktreePath,
+          symlinkDirs: JSON.stringify(symlinkDirs)
+        })
+      : webServerWorktree.ensureSymlinks(projectPath, worktreePath, symlinkDirs),
 
   /**
    * Archive a worktree by moving it to `.termul/archives/<name>-<timestamp>/`.
    * The worktree is recoverable until the 30-day retention expires.
    *
-   * **Web:** returns `WEB_UNSUPPORTED` (deferred — see deferred-work.md).
+   * **Web:** returns `WEB_UNSUPPORTED`.
    */
   archive: (projectPath: string, worktreePath: string): Promise<IpcResult<void>> =>
     worktreeInvoke<void>('worktree_archive', { projectPath, worktreePath }),
@@ -232,7 +215,7 @@ export const worktreeApi = {
   /**
    * Restore an archived worktree back to its original location.
    *
-   * **Web:** returns `WEB_UNSUPPORTED` (deferred — see deferred-work.md).
+   * **Web:** returns `WEB_UNSUPPORTED`.
    */
   restore: (projectPath: string, archivePath: string): Promise<IpcResult<void>> =>
     worktreeInvoke<void>('worktree_restore', { projectPath, archivePath }),
@@ -240,7 +223,7 @@ export const worktreeApi = {
   /**
    * Generate a merge preview for a worktree against a target branch.
    *
-   * **Web:** returns `WEB_UNSUPPORTED` (deferred — see deferred-work.md).
+   * **Web:** returns `WEB_UNSUPPORTED`.
    */
   mergePreview: (
     worktreePath: string,
@@ -251,7 +234,7 @@ export const worktreeApi = {
   /**
    * Execute a merge from the worktree's current branch to target_branch.
    *
-   * **Web:** returns `WEB_UNSUPPORTED` (deferred — see deferred-work.md).
+   * **Web:** returns `WEB_UNSUPPORTED`.
    */
   mergeExecute: (worktreePath: string, targetBranch: string): Promise<IpcResult<string>> =>
     worktreeInvoke<string>('worktree_merge_execute', { worktreePath, targetBranch }),

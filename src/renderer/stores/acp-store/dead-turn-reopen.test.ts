@@ -16,7 +16,7 @@
  * The suite runs with `isTauriContext() → false` plus a fake web transport
  * (same harness as host-agent-reuse.test.ts) so `adoptHostOwnedAgent`,
  * `ensureLiveAgent`, and `attachLiveTurn` (`subscribeSession`) are all
- * observable end-to-end through `openHistorySession`/`resumeLiveSession`.
+ * observable end-to-end through `openHistorySession`.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -256,7 +256,13 @@ describe('acp-store: dead-turn reopen detach (reopen-liveness)', () => {
     // Degraded to ensureLiveAgent + decideResume: a fresh agent hosted a
     // normal session/load so the chat is usable again.
     expect(transport.spawnAgent).toHaveBeenCalledTimes(1)
-    expect(transport.loadSession).toHaveBeenCalledWith(FRESH_AGENT, 's-crashed', '/w', [])
+    expect(transport.loadSession).toHaveBeenCalledWith(
+      FRESH_AGENT,
+      's-crashed',
+      '/w',
+      [],
+      expect.objectContaining({ commandId: expect.any(String) })
+    )
     expect(session?.status).toBe('active')
     expect(session?.activeTurn).toBe(false)
     expect(session?.openTurnId).toBeNull()
@@ -272,7 +278,9 @@ describe('acp-store: dead-turn reopen detach (reopen-liveness)', () => {
       undefined
     )
     await flushTurnEnd()
-    expect(useAcpStore.getState().sessions['s-crashed']?.activeTurn).toBe(false)
+    // The reply resolved the command only; the turn ends from its durable
+    // `prompt_complete`, so it is still open here.
+    expect(useAcpStore.getState().sessions['s-crashed']?.activeTurn).toBe(true)
   })
 
   it('status:error + turnActive + trailing user + no owner still degrades (owner gate beats the persisted flag)', async () => {
@@ -313,7 +321,13 @@ describe('acp-store: dead-turn reopen detach (reopen-liveness)', () => {
     const session = useAcpStore.getState().sessions['s-stale']
     expect(transport.subscribeSession).not.toHaveBeenCalled()
     expect(transport.spawnAgent).toHaveBeenCalledTimes(1)
-    expect(transport.loadSession).toHaveBeenCalledWith(FRESH_AGENT, 's-stale', '/w', [])
+    expect(transport.loadSession).toHaveBeenCalledWith(
+      FRESH_AGENT,
+      's-stale',
+      '/w',
+      [],
+      expect.objectContaining({ commandId: expect.any(String) })
+    )
     expect(session?.status).toBe('active')
     expect(session?.agentId).toBe(FRESH_AGENT)
     expect(session?.activeTurn).toBe(false)
@@ -375,11 +389,66 @@ describe('acp-store: dead-turn reopen detach (reopen-liveness)', () => {
     // The host's single-owner guard rejection trumps the liveness gate: the
     // turn provably lives, so the catch attaches unconditionally.
     expect(transport.loadSession).toHaveBeenCalled()
-    expect(transport.subscribeSession).toHaveBeenCalledWith('s-bandproof', 10, true)
+    expect(transport.subscribeSession).toHaveBeenCalledWith('s-bandproof', 0, true)
     expect(session?.status).toBe('active')
     expect(session?.activeTurn).toBe(true)
     // The degrade cleared the optimistic id; attachLiveTurn's fallback wins.
     expect(session?.openTurnId).toBe('turn:live')
+  })
+
+  it('ACP_REOPEN_TURN_ACTIVE on the resume path still attaches', async () => {
+    const transport = fakeWebTransport([], {
+      's-rband': trailingUserPayload('s-rband', { status: 'active' })
+    })
+    transport.spawnAgent.mockResolvedValue({
+      agentId: FRESH_AGENT,
+      capabilities: { loadSession: false, sessionCapabilities: { resume: {} } }
+    })
+    transport.resumeSession.mockRejectedValue(
+      new AcpTransportError('not_implemented', 'ACP_REOPEN_TURN_ACTIVE: session s-rband')
+    )
+    _setAcpTransportForTests(transport)
+
+    await useAcpStore.getState().openHistorySession('s-rband')
+
+    const session = useAcpStore.getState().sessions['s-rband']
+    expect(transport.loadSession).not.toHaveBeenCalled()
+    expect(transport.resumeSession).toHaveBeenCalledWith(
+      FRESH_AGENT,
+      's-rband',
+      '/w',
+      [],
+      expect.objectContaining({ commandId: expect.any(String) })
+    )
+    expect(transport.subscribeSession).toHaveBeenCalledWith('s-rband', 0, true)
+    expect(session?.status).toBe('active')
+    expect(session?.activeTurn).toBe(true)
+    expect(session?.openTurnId).toBe('turn:live')
+    expect(session?.lastError).toBeNull()
+  })
+
+  it('resume failure on the resume path surfaces the banner with cleared flags', async () => {
+    const transport = fakeWebTransport([], {
+      's-rfail': trailingUserPayload('s-rfail', { status: 'active' })
+    })
+    transport.spawnAgent.mockResolvedValue({
+      agentId: FRESH_AGENT,
+      capabilities: { loadSession: false, sessionCapabilities: { resume: {} } }
+    })
+    transport.resumeSession.mockRejectedValue(new Error('agent gone'))
+    _setAcpTransportForTests(transport)
+
+    await expect(useAcpStore.getState().openHistorySession('s-rfail')).rejects.toThrow('agent gone')
+
+    const session = useAcpStore.getState().sessions['s-rfail']
+    expect(transport.loadSession).not.toHaveBeenCalled()
+    expect(transport.resumeSession).toHaveBeenCalledTimes(1)
+    expect(transport.subscribeSession).not.toHaveBeenCalled()
+    expect(session?.activeTurn).toBe(false)
+    expect(session?.openTurnId).toBeNull()
+    expect(session?.lastError).toContain('Resume failed')
+    expect(session?.lastError).toContain('agent gone')
+    expect(useAcpStore.getState().messages['s-rfail']).toHaveLength(1)
   })
 
   it('status:active + trailing user + host-registered owner attaches unchanged (#882 regression)', async () => {
@@ -393,7 +462,9 @@ describe('acp-store: dead-turn reopen detach (reopen-liveness)', () => {
     const session = useAcpStore.getState().sessions['s-live']
     expect(transport.spawnAgent).not.toHaveBeenCalled()
     expect(transport.loadSession).not.toHaveBeenCalled()
-    expect(transport.subscribeSession).toHaveBeenCalledWith('s-live', 10, true)
+    // The replay starts just before the open turn's prompt (seq 1), not at
+    // the watermark (10), so the turn's tool cards come back in full.
+    expect(transport.subscribeSession).toHaveBeenCalledWith('s-live', 0, true)
     expect(session?.agentId).toBe('agent-owner')
     expect(session?.status).toBe('active')
     expect(session?.activeTurn).toBe(true)
@@ -427,7 +498,7 @@ describe('acp-store: dead-turn reopen detach (reopen-liveness)', () => {
     const session = useAcpStore.getState().sessions['s-desk']
     expect(transport.spawnAgent).not.toHaveBeenCalled()
     expect(transport.loadSession).not.toHaveBeenCalled()
-    expect(transport.subscribeSession).toHaveBeenCalledWith('s-desk', 10, true)
+    expect(transport.subscribeSession).toHaveBeenCalledWith('s-desk', 0, true)
     expect(session?.agentId).toBe('agent-desktop-owner')
     expect(session?.status).toBe('active')
     expect(session?.activeTurn).toBe(true)
@@ -443,7 +514,13 @@ describe('acp-store: dead-turn reopen detach (reopen-liveness)', () => {
 
     const session = useAcpStore.getState().sessions['s-closed-ok']
     expect(transport.subscribeSession).not.toHaveBeenCalled()
-    expect(transport.loadSession).toHaveBeenCalledWith(FRESH_AGENT, 's-closed-ok', '/w', [])
+    expect(transport.loadSession).toHaveBeenCalledWith(
+      FRESH_AGENT,
+      's-closed-ok',
+      '/w',
+      [],
+      expect.objectContaining({ commandId: expect.any(String) })
+    )
     expect(session?.status).toBe('active')
     expect(session?.activeTurn).toBe(false)
     expect(session?.openTurnId).toBeNull()
@@ -482,141 +559,6 @@ describe('acp-store: dead-turn reopen detach (reopen-liveness)', () => {
     expect(session?.activeTurn).toBe(false)
     expect(session?.openTurnId).toBeNull()
     expect(useAcpStore.getState().messages['s-closed-local']).toHaveLength(1)
-  })
-
-  // --- resumeLiveSession: same matrix through the explicit-agent path -------
-
-  it('resumeLiveSession: status:error + trailing user + not-connected agent resumes normally', async () => {
-    const transport = fakeWebTransport([], {
-      's-rerr': trailingUserPayload('s-rerr', { status: 'error' })
-    })
-    _setAcpTransportForTests(transport)
-
-    await useAcpStore.getState().resumeLiveSession('s-rerr', 'agent-r', '/w')
-
-    const session = useAcpStore.getState().sessions['s-rerr']
-    expect(transport.subscribeSession).not.toHaveBeenCalled()
-    expect(transport.resumeSession).toHaveBeenCalledWith('agent-r', 's-rerr', '/w', [])
-    expect(session?.status).toBe('active')
-    expect(session?.activeTurn).toBe(false)
-    expect(session?.openTurnId).toBeNull()
-  })
-
-  it('resumeLiveSession: status:active + trailing user + not-connected agent clears flags and resumes', async () => {
-    const transport = fakeWebTransport([], {
-      's-rstale': trailingUserPayload('s-rstale', { status: 'active' })
-    })
-    _setAcpTransportForTests(transport)
-    // The caller's agent is dead — no agentStatus entry (e.g. crashed).
-
-    await useAcpStore.getState().resumeLiveSession('s-rstale', 'agent-r', '/w')
-
-    const session = useAcpStore.getState().sessions['s-rstale']
-    // The durable bug: previously this attached and waited on a dead agent's
-    // prompt_complete forever. Now the resume-try runs instead.
-    expect(transport.subscribeSession).not.toHaveBeenCalled()
-    expect(transport.resumeSession).toHaveBeenCalledWith('agent-r', 's-rstale', '/w', [])
-    expect(session?.status).toBe('active')
-    expect(session?.activeTurn).toBe(false)
-    expect(session?.openTurnId).toBeNull()
-    expect(vi.mocked(logFrontendError)).toHaveBeenCalledWith(
-      expect.objectContaining({ level: 'warn', source: 'acp.resumeLiveSession' })
-    )
-  })
-
-  it('resumeLiveSession: status:active + trailing user + connected agent attaches', async () => {
-    const transport = fakeWebTransport([], {
-      's-rlive': trailingUserPayload('s-rlive', { status: 'active' })
-    })
-    _setAcpTransportForTests(transport)
-    useAcpStore.setState((s) => ({
-      agents: {
-        ...s.agents,
-        'agent-r': { id: 'agent-r', capabilities: { loadSession: true } }
-      },
-      agentStatus: { ...s.agentStatus, 'agent-r': 'connected' }
-    }))
-
-    await useAcpStore.getState().resumeLiveSession('s-rlive', 'agent-r', '/w')
-
-    const session = useAcpStore.getState().sessions['s-rlive']
-    expect(transport.resumeSession).not.toHaveBeenCalled()
-    expect(transport.subscribeSession).toHaveBeenCalledWith('s-rlive', 10, true)
-    expect(session?.status).toBe('active')
-    expect(session?.activeTurn).toBe(true)
-  })
-
-  it('resumeLiveSession: turnActive + connected agent attaches', async () => {
-    const transport = fakeWebTransport([], {
-      's-rflag': trailingUserPayload('s-rflag', { status: 'active', turnActive: true })
-    })
-    _setAcpTransportForTests(transport)
-    useAcpStore.setState((s) => ({
-      agents: { ...s.agents, 'agent-r': { id: 'agent-r', capabilities: {} } },
-      agentStatus: { ...s.agentStatus, 'agent-r': 'connected' }
-    }))
-
-    await useAcpStore.getState().resumeLiveSession('s-rflag', 'agent-r', '/w')
-
-    const session = useAcpStore.getState().sessions['s-rflag']
-    expect(transport.subscribeSession).toHaveBeenCalledWith('s-rflag', 10, true)
-    expect(session?.status).toBe('active')
-    expect(session?.activeTurn).toBe(true)
-  })
-
-  it('resumeLiveSession: status:closed + trailing user resumes with cleared flags', async () => {
-    const transport = fakeWebTransport([], {
-      's-rclosed': trailingUserPayload('s-rclosed', { status: 'closed' })
-    })
-    _setAcpTransportForTests(transport)
-
-    await useAcpStore.getState().resumeLiveSession('s-rclosed', 'agent-r', '/w')
-
-    const session = useAcpStore.getState().sessions['s-rclosed']
-    expect(transport.subscribeSession).not.toHaveBeenCalled()
-    expect(transport.resumeSession).toHaveBeenCalledWith('agent-r', 's-rclosed', '/w', [])
-    expect(session?.status).toBe('active')
-    expect(session?.activeTurn).toBe(false)
-    expect(session?.openTurnId).toBeNull()
-  })
-
-  it('resumeLiveSession: dead agent + ACP_REOPEN_TURN_ACTIVE rejection still attaches', async () => {
-    const transport = fakeWebTransport([], {
-      's-rband': trailingUserPayload('s-rband', { status: 'active' })
-    })
-    transport.resumeSession.mockRejectedValue(
-      new AcpTransportError('not_implemented', 'ACP_REOPEN_TURN_ACTIVE: session s-rband')
-    )
-    _setAcpTransportForTests(transport)
-    // Stale agentStatus: the agent is actually alive host-side — the
-    // in-band rejection proves it, so the catch attaches unconditionally.
-
-    await useAcpStore.getState().resumeLiveSession('s-rband', 'agent-r', '/w')
-
-    const session = useAcpStore.getState().sessions['s-rband']
-    expect(transport.resumeSession).toHaveBeenCalled()
-    expect(transport.subscribeSession).toHaveBeenCalledWith('s-rband', 10, true)
-    expect(session?.status).toBe('active')
-    expect(session?.activeTurn).toBe(true)
-  })
-
-  it('resumeLiveSession: dead agent + resume failure surfaces the banner with cleared flags', async () => {
-    const transport = fakeWebTransport([], {
-      's-rfail': trailingUserPayload('s-rfail', { status: 'active' })
-    })
-    transport.resumeSession.mockRejectedValue(new Error('agent gone'))
-    _setAcpTransportForTests(transport)
-
-    await expect(
-      useAcpStore.getState().resumeLiveSession('s-rfail', 'agent-r', '/w')
-    ).rejects.toThrow('agent gone')
-
-    const session = useAcpStore.getState().sessions['s-rfail']
-    expect(transport.subscribeSession).not.toHaveBeenCalled()
-    expect(session?.activeTurn).toBe(false)
-    expect(session?.openTurnId).toBeNull()
-    expect(session?.lastError).toContain('Resume failed')
-    expect(useAcpStore.getState().messages['s-rfail']).toHaveLength(1)
   })
 
   it('a trusted empty listing beats a connected persisted agent — no attach to a non-owner', async () => {
@@ -663,7 +605,7 @@ describe('acp-store: dead-turn reopen detach (reopen-liveness)', () => {
     await useAcpStore.getState().openHistorySession('s-unlist')
 
     const session = useAcpStore.getState().sessions['s-unlist']
-    expect(transport.subscribeSession).toHaveBeenCalledWith('s-unlist', 10, true)
+    expect(transport.subscribeSession).toHaveBeenCalledWith('s-unlist', 0, true)
     expect(session?.agentId).toBe(PERSISTED_AGENT)
     expect(session?.activeTurn).toBe(true)
   })
@@ -691,7 +633,7 @@ describe('acp-store: dead-turn reopen detach (reopen-liveness)', () => {
 
     const session = useAcpStore.getState().sessions['s-owned']
     expect(transport.loadSession).toHaveBeenCalled()
-    expect(transport.subscribeSession).toHaveBeenCalledWith('s-owned', 10, true)
+    expect(transport.subscribeSession).toHaveBeenCalledWith('s-owned', 0, true)
     expect(session?.agentId).toBe('agent-owner')
     expect(session?.status).toBe('active')
     expect(session?.activeTurn).toBe(true)
@@ -803,7 +745,13 @@ describe('acp-store: dead-turn reopen detach (reopen-liveness)', () => {
     // A full reopen ran: a fresh agent resolved through the config, agentId
     // repointed, and a normal session/load replayed the transcript.
     expect(transport.spawnAgent).toHaveBeenCalledTimes(1)
-    expect(transport.loadSession).toHaveBeenCalledWith(FRESH_AGENT, 's-stale-err', '/w', [])
+    expect(transport.loadSession).toHaveBeenCalledWith(
+      FRESH_AGENT,
+      's-stale-err',
+      '/w',
+      [],
+      expect.objectContaining({ commandId: expect.any(String) })
+    )
     expect(session?.agentId).toBe(FRESH_AGENT)
     expect(session?.status).toBe('active')
 

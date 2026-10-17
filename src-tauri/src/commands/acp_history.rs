@@ -42,6 +42,8 @@ pub(crate) fn host_entry_to_desktop(
         discovered: entry.discovered,
         worktree_path: entry.worktree_path,
         worktree_branch: entry.worktree_branch,
+        model_id: entry.model_id,
+        model_name: entry.model_name,
     }
 }
 
@@ -189,7 +191,8 @@ pub async fn acp_history_save(
             if let Some(persistence) = &host.0 {
                 crate::acp::import_chat_history(persistence, store.inner()).await;
             }
-            crate::web::broadcast_chat_history_changed(ws_relay.inner());
+            // `import_chat_history` can add several unknown legacy sessions: bulk.
+            crate::web::watch::publish_chat_history(ws_relay.inner(), &[]);
             log::info!("[acp-history] save success session_id={}", log_session_id);
             Ok(IpcResult::success(()))
         }
@@ -218,7 +221,7 @@ pub async fn acp_history_delete(
     match &host.0 {
         Some(persistence) => match persistence.delete_session(&session_id).await {
             Ok(()) => {
-                crate::web::broadcast_chat_history_changed(ws_relay.inner());
+                crate::web::watch::publish_chat_history(ws_relay.inner(), &[session_id.as_str()]);
                 log::info!("[acp-history] delete success session_id={}", log_session_id);
                 Ok(IpcResult::success(true))
             }
@@ -233,7 +236,7 @@ pub async fn acp_history_delete(
                     "[acp-history] delete not_found session_id={} (already absent)",
                     log_session_id
                 );
-                crate::web::broadcast_chat_history_changed(ws_relay.inner());
+                crate::web::watch::publish_chat_history(ws_relay.inner(), &[session_id.as_str()]);
                 Ok(IpcResult::success(false))
             }
             Err(error) => {
@@ -297,7 +300,7 @@ pub async fn acp_history_mark_legacy_import_complete(
             if let Some(persistence) = &host.0 {
                 let imported = crate::acp::import_chat_history(persistence, store.inner()).await;
                 if imported > 0 {
-                    crate::web::broadcast_chat_history_changed(ws_relay.inner());
+                    crate::web::watch::publish_chat_history(ws_relay.inner(), &[]);
                 }
             }
             log::info!("[acp-history] legacy marker success");

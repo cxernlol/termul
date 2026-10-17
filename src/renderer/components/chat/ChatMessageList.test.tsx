@@ -1,11 +1,50 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { useAcpStore } from '@/stores/acp-store'
+import { seedSession } from '@/stores/acp-store/testkit'
 import { useWorktreeProgressStore } from '@/stores/worktree-progress-store'
 import { ChatMessageList } from './ChatMessageList'
 import type { TimelineItem } from './chat-timeline'
 
+const { mobileShellRef, virtualizerOverride } = vi.hoisted(() => ({
+  mobileShellRef: { current: false as boolean },
+  virtualizerOverride: { current: null as null | ((options: unknown) => unknown) }
+}))
+
+vi.mock('@/hooks/use-mobile-web-shell', () => ({
+  useMobileWebShell: () => mobileShellRef.current
+}))
+
+// Lets one suite force the windowed render path (jsdom has no layout, so the
+// real virtualizer yields no items and the list falls back to normal flow).
+vi.mock('@tanstack/react-virtual', async (importActual) => {
+  const actual = await importActual<typeof import('@tanstack/react-virtual')>()
+  return {
+    ...actual,
+    useVirtualizer: (options: Parameters<typeof actual.useVirtualizer>[0]) => {
+      // Always run the real hook so the hook order never depends on the override.
+      const real = actual.useVirtualizer(options)
+      return virtualizerOverride.current ? virtualizerOverride.current(options) : real
+    }
+  }
+})
+
 vi.mock('./ChatMessage', () => ({
-  AgentProse: ({ text }: { text: string }) => <div data-testid="agent-prose">{text}</div>,
+  AgentProse: ({
+    text,
+    filePathContext
+  }: {
+    text: string
+    filePathContext?: { cwd?: string; projectRoot?: string }
+  }) => (
+    <div
+      data-testid="agent-prose"
+      data-cwd={filePathContext?.cwd}
+      data-project-root={filePathContext?.projectRoot}
+    >
+      {text}
+    </div>
+  ),
   ChatMessage: ({
     message
   }: {
@@ -62,6 +101,8 @@ const toolItem: TimelineItem = {
   tool: {
     toolCallId: 'tool-1',
     title: 'Reading files',
+    kind: 'read',
+    rawInput: { path: 'src/a.ts' },
     status: 'in_progress',
     timestamp: 1_500,
     seq: 2
@@ -79,6 +120,8 @@ const failedToolItem: TimelineItem = {
   tool: {
     toolCallId: 'tool-failed',
     title: 'Run checks',
+    kind: 'execute',
+    rawInput: { command: 'bun run checks' },
     status: 'failed',
     timestamp: 2_000,
     seq: 2
@@ -101,6 +144,11 @@ const thoughtItem: TimelineItem = {
 }
 
 describe('ChatMessageList', () => {
+  beforeEach(() => {
+    mobileShellRef.current = false
+    virtualizerOverride.current = null
+  })
+
   it.each([
     ['before content arrives', [userItem]],
     ['while a thought streams', [userItem, thoughtItem]],
@@ -111,6 +159,50 @@ describe('ChatMessageList', () => {
 
     const trigger = screen.getByRole('button', { name: /Working/ })
     expect(trigger).toHaveAttribute('aria-expanded', 'true')
+  })
+
+  it('shows the OpenCode status line on the active turn and drops it when the notice clears', () => {
+    act(() => {
+      seedSession('session-1', 'agent-1')
+      useAcpStore.setState((s) => ({
+        sessions: {
+          ...s.sessions,
+          'session-1': {
+            ...s.sessions['session-1'],
+            opencodeNotice: { compaction: 'started', retryAttempt: null }
+          }
+        }
+      }))
+    })
+    const { rerender } = render(
+      <ChatMessageList items={[userItem]} sessionId="session-1" showRunningIndicator />
+    )
+    expect(screen.getByRole('button', { name: /Compacting context/ })).toBeInTheDocument()
+
+    act(() => {
+      useAcpStore.setState((s) => ({
+        sessions: {
+          ...s.sessions,
+          'session-1': {
+            ...s.sessions['session-1'],
+            opencodeNotice: { compaction: null, retryAttempt: 2 }
+          }
+        }
+      }))
+    })
+    rerender(<ChatMessageList items={[userItem]} sessionId="session-1" showRunningIndicator />)
+    expect(screen.getByRole('button', { name: /Retrying, attempt 2/ })).toBeInTheDocument()
+
+    act(() => {
+      useAcpStore.setState((s) => ({
+        sessions: {
+          ...s.sessions,
+          'session-1': { ...s.sessions['session-1'], opencodeNotice: undefined }
+        }
+      }))
+    })
+    rerender(<ChatMessageList items={[userItem]} sessionId="session-1" showRunningIndicator />)
+    expect(screen.getByRole('button', { name: /Working/ })).toBeInTheDocument()
   })
 
   it('collapses completed activity while keeping the final response visible', async () => {
@@ -139,6 +231,251 @@ describe('ChatMessageList', () => {
     expect(screen.getByText('Final response')).toBeInTheDocument()
   })
 
+  it("rolls the turn's tool calls into one nested disclosure", () => {
+    render(
+      <ChatMessageList
+        items={[userItem, completedToolItem, finalAgentItem]}
+        sessionId="session-1"
+        showRunningIndicator={false}
+      />
+    )
+
+    // The rollup lives one level deep: it mounts only once the turn row opens.
+    expect(screen.queryByRole('button', { name: 'Read 1 file' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Worked for 3s' }))
+
+    const group = screen.getByRole('button', { name: 'Read 1 file' })
+    expect(group).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByText('a.ts')).not.toBeInTheDocument()
+
+    fireEvent.click(group)
+    expect(group).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByText('a.ts')).toBeInTheDocument()
+  })
+
+  it('keeps the tool-call group expanded while its turn is running', () => {
+    render(
+      <ChatMessageList items={[userItem, toolItem]} sessionId="session-1" showRunningIndicator />
+    )
+
+    expect(screen.getByRole('button', { name: 'Read 1 file' })).toHaveAttribute(
+      'aria-expanded',
+      'true'
+    )
+    expect(screen.getByText('Reading a.ts…')).toBeInTheDocument()
+  })
+
+  it('expands a finished run purely because it owns the live tail', () => {
+    // A completed call needs no attention, so expansion here can only come
+    // from the run being the turn's last item.
+    render(
+      <ChatMessageList
+        items={[userItem, completedToolItem]}
+        sessionId="session-1"
+        showRunningIndicator
+      />
+    )
+
+    expect(screen.getByRole('button', { name: 'Read 1 file' })).toHaveAttribute(
+      'aria-expanded',
+      'true'
+    )
+    expect(screen.getByText('a.ts')).toBeInTheDocument()
+  })
+
+  it('collapses a finished tool run once activity moves past it mid-turn', () => {
+    const { rerender } = render(
+      <ChatMessageList
+        items={[userItem, completedToolItem]}
+        sessionId="session-1"
+        showRunningIndicator
+      />
+    )
+    expect(screen.getByRole('button', { name: 'Read 1 file' })).toHaveAttribute(
+      'aria-expanded',
+      'true'
+    )
+
+    // A thought starts streaming after the settled run — same shape as a
+    // settled turn: the group folds so the live thinking is the focus.
+    rerender(
+      <ChatMessageList
+        items={[userItem, completedToolItem, thoughtItem]}
+        sessionId="session-1"
+        showRunningIndicator
+      />
+    )
+    expect(screen.getByRole('button', { name: 'Read 1 file' })).toHaveAttribute(
+      'aria-expanded',
+      'false'
+    )
+  })
+
+  it('folds an earlier run when a later run takes the live tail', () => {
+    const midReply: TimelineItem = {
+      kind: 'message',
+      key: 'mid-1',
+      message: {
+        id: 'mid-1',
+        role: 'agent',
+        blocks: [{ type: 'text', text: 'Read it, now building' }],
+        streaming: true,
+        timestamp: 1_600,
+        seq: 3
+      }
+    }
+    const buildTool: TimelineItem = {
+      kind: 'tool',
+      key: 'tool-2',
+      tool: {
+        toolCallId: 'tool-2',
+        title: 'Build',
+        kind: 'execute',
+        rawInput: { command: 'bun run build' },
+        status: 'in_progress',
+        timestamp: 1_700,
+        seq: 4
+      }
+    }
+    render(
+      <ChatMessageList
+        items={[userItem, completedToolItem, midReply, buildTool]}
+        sessionId="session-1"
+        showRunningIndicator
+      />
+    )
+
+    expect(screen.getByRole('button', { name: 'Read 1 file' })).toHaveAttribute(
+      'aria-expanded',
+      'false'
+    )
+    expect(screen.getByRole('button', { name: 'Ran 1 command' })).toHaveAttribute(
+      'aria-expanded',
+      'true'
+    )
+  })
+
+  it('keeps a manually collapsed live run closed as more calls join it', () => {
+    const secondRead: TimelineItem = {
+      kind: 'tool',
+      key: 'tool-2',
+      tool: {
+        toolCallId: 'tool-2',
+        title: 'Read b',
+        kind: 'read',
+        rawInput: { path: 'src/b.ts' },
+        status: 'in_progress',
+        timestamp: 1_600,
+        seq: 3
+      }
+    }
+    const { rerender } = render(
+      <ChatMessageList items={[userItem, toolItem]} sessionId="session-1" showRunningIndicator />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Read 1 file' }))
+    expect(screen.getByRole('button', { name: 'Read 1 file' })).toHaveAttribute(
+      'aria-expanded',
+      'false'
+    )
+
+    // A second call joins the same run — the user's close still wins.
+    rerender(
+      <ChatMessageList
+        items={[userItem, toolItem, secondRead]}
+        sessionId="session-1"
+        showRunningIndicator
+      />
+    )
+    expect(screen.getByRole('button', { name: 'Read 2 files' })).toHaveAttribute(
+      'aria-expanded',
+      'false'
+    )
+  })
+
+  it('keeps a failed run expanded when activity moves past it mid-turn', () => {
+    render(
+      <ChatMessageList
+        items={[userItem, failedToolItem, streamingAgentItem]}
+        sessionId="session-1"
+        showRunningIndicator
+      />
+    )
+
+    // A call needing attention keeps its group open one click deep even
+    // though the run is no longer the live edge.
+    expect(screen.getByRole('button', { name: 'Ran 1 command' })).toHaveAttribute(
+      'aria-expanded',
+      'true'
+    )
+  })
+
+  it('splits tool calls into per-run groups around an in-turn reply', () => {
+    const buildTool: TimelineItem = {
+      kind: 'tool',
+      key: 'tool-2',
+      tool: {
+        toolCallId: 'tool-2',
+        title: 'Build',
+        kind: 'execute',
+        rawInput: { command: 'bun run build' },
+        status: 'completed',
+        timestamp: 1_600,
+        seq: 3
+      }
+    }
+    const midReply: TimelineItem = {
+      kind: 'message',
+      key: 'mid-1',
+      message: {
+        id: 'mid-1',
+        role: 'agent',
+        blocks: [{ type: 'text', text: 'Build failed, checking the file' }],
+        streaming: false,
+        timestamp: 1_700,
+        seq: 4
+      }
+    }
+    const searchTool: TimelineItem = {
+      kind: 'tool',
+      key: 'tool-3',
+      tool: {
+        toolCallId: 'tool-3',
+        title: 'Search',
+        kind: 'search',
+        rawInput: { query: 'tsconfig' },
+        status: 'completed',
+        timestamp: 1_800,
+        seq: 5
+      }
+    }
+    render(
+      <ChatMessageList
+        items={[userItem, completedToolItem, buildTool, midReply, searchTool, finalAgentItem]}
+        sessionId="session-1"
+        showRunningIndicator={false}
+      />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Worked for 3s' }))
+
+    const firstRun = screen.getByRole('button', { name: 'Read 1 file, ran 1 command' })
+    const secondRun = screen.getByRole('button', { name: 'Ran 1 search' })
+    const reply = screen.getByText('Build failed, checking the file')
+    // The in-turn reply keeps its seat: run, reply, run.
+    expect(firstRun.compareDocumentPosition(reply) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(reply.compareDocumentPosition(secondRun) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+
+    // Each group expands to only its own calls.
+    fireEvent.click(firstRun)
+    expect(screen.getByText('a.ts')).toBeInTheDocument()
+    expect(screen.getByText('bun run build')).toBeInTheDocument()
+    expect(screen.queryByText('tsconfig')).not.toBeInTheDocument()
+
+    fireEvent.click(secondRun)
+    expect(screen.getByText('tsconfig')).toBeInTheDocument()
+  })
+
   it('keeps delegation details open when the parent turn completes', async () => {
     const delegation: TimelineItem = {
       kind: 'tool',
@@ -164,6 +501,9 @@ describe('ChatMessageList', () => {
       />
     )
 
+    // The finished run folded once the streaming reply took the live tail —
+    // open it to reach the delegation card.
+    fireEvent.click(screen.getByRole('button', { name: 'Ran 1 agent' }))
     fireEvent.click(screen.getByRole('button', { name: /audit branch/i }))
     expect(screen.getByRole('dialog', { name: 'Audit branch' })).toHaveTextContent('Running')
 
@@ -186,16 +526,55 @@ describe('ChatMessageList', () => {
       />
     )
 
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Worked for 3s' })).toHaveAttribute(
-        'aria-expanded',
-        'false'
-      )
-      expect(within(screen.getByRole('log')).queryByText('Audit branch')).not.toBeInTheDocument()
-    })
+    await waitFor(
+      () => {
+        expect(screen.getByRole('button', { name: 'Worked for 3s' })).toHaveAttribute(
+          'aria-expanded',
+          'false'
+        )
+        expect(within(screen.getByRole('log')).queryByText('Audit branch')).not.toBeInTheDocument()
+      },
+      { timeout: 5000 }
+    )
     expect(screen.getByRole('dialog', { name: 'Audit branch' })).toHaveTextContent(
       'No changes needed.'
     )
+  })
+
+  it('passes the chat file-path context to subagent result prose', () => {
+    const delegation: TimelineItem = {
+      kind: 'tool',
+      key: 'task-1',
+      tool: {
+        toolCallId: 'task-1',
+        title: 'Audit branch',
+        kind: 'think',
+        status: 'completed',
+        rawInput: { subagent_type: 'explorer', description: 'Audit branch' },
+        rawOutput: { text: 'Edited src/foo.ts.' },
+        timestamp: 1_500,
+        seq: 2
+      }
+    }
+    render(
+      <ChatMessageList
+        items={[userItem, delegation, finalAgentItem]}
+        sessionId="session-1"
+        showRunningIndicator={false}
+        filePathContext={{ cwd: '/proj/sub', projectRoot: '/proj' }}
+      />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Worked for 3s' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Ran 1 agent' }))
+    fireEvent.click(screen.getByRole('button', { name: /audit branch/i }))
+
+    const prose = within(screen.getByRole('dialog', { name: 'Audit branch' })).getByTestId(
+      'agent-prose'
+    )
+    expect(prose).toHaveTextContent('Edited src/foo.ts.')
+    expect(prose).toHaveAttribute('data-cwd', '/proj/sub')
+    expect(prose).toHaveAttribute('data-project-root', '/proj')
   })
 
   it('allows keyboard-accessible reopening after completion', () => {
@@ -282,7 +661,7 @@ describe('ChatMessageList', () => {
     )
 
     expect(screen.getByTestId('message-agent-1')).toBe(liveNode)
-    expect(screen.getByText('Reading files…')).toBeInTheDocument()
+    expect(screen.getByText('Reading a.ts…')).toBeInTheDocument()
   })
 
   it('collapses a failed tool-only turn but flags it for attention', () => {
@@ -296,6 +675,14 @@ describe('ChatMessageList', () => {
 
     const trigger = screen.getByRole('button', { name: /Worked.*needs attention/ })
     expect(trigger).toHaveAttribute('aria-expanded', 'false')
+
+    // A failed call stays one click deep: the group opens with the turn row.
+    fireEvent.click(trigger)
+    expect(screen.getByRole('button', { name: 'Ran 1 command' })).toHaveAttribute(
+      'aria-expanded',
+      'true'
+    )
+    expect(screen.getByText('bun run checks')).toBeInTheDocument()
   })
 })
 
@@ -322,5 +709,100 @@ describe('ChatMessageList worktree progress row', () => {
     // agent activity (never inside the turn-activity disclosure).
     const userEl = screen.getByTestId('message-user-1')
     expect(userEl.compareDocumentPosition(title) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+})
+
+describe('ChatMessageList log live semantics', () => {
+  beforeEach(() => {
+    mobileShellRef.current = false
+    virtualizerOverride.current = null
+  })
+
+  afterEach(() => {
+    mobileShellRef.current = false
+    virtualizerOverride.current = null
+  })
+
+  const items = [userItem, finalAgentItem]
+
+  function renderList(): void {
+    render(
+      <ChatMessageList
+        items={items}
+        sessionId="session-1"
+        agentId="agent-1"
+        showRunningIndicator={false}
+      />
+    )
+  }
+
+  it('keeps the polite log with additions relevance outside the mobile shell', () => {
+    mobileShellRef.current = false
+    renderList()
+
+    const log = screen.getByRole('log')
+    expect(log).toHaveAttribute('aria-live', 'polite')
+    expect(log).toHaveAttribute('aria-relevant', 'additions')
+  })
+
+  it('turns the log off on the mobile shell: role stays, aria-live is off, no aria-relevant', () => {
+    mobileShellRef.current = true
+    renderList()
+
+    const log = screen.getByRole('log')
+    expect(log).toHaveAttribute('role', 'log')
+    expect(log).toHaveAttribute('aria-live', 'off')
+    expect(log).not.toHaveAttribute('aria-relevant')
+    // The rows are still all there; only the announcements stopped.
+    expect(screen.getByTestId('message-user-1')).toBeInTheDocument()
+    expect(screen.getByTestId('message-agent-final')).toBeInTheDocument()
+  })
+
+  it.each([
+    ['mobile shell', true, 'off', null],
+    ['desktop', false, 'polite', 'additions']
+  ])('applies the same semantics on the windowed path (%s)', (_, mobile, live, relevant) => {
+    mobileShellRef.current = mobile
+    virtualizerOverride.current = () => ({
+      getVirtualItems: () => [
+        { index: 0, key: 'user-1', start: 0, end: 100, size: 100, lane: 0 },
+        { index: 1, key: 'agent-final', start: 100, end: 200, size: 100, lane: 0 }
+      ],
+      getTotalSize: () => 200,
+      measureElement: () => undefined,
+      scrollToIndex: () => undefined,
+      range: { startIndex: 0, endIndex: 1 }
+    })
+    renderList()
+
+    const log = screen.getByRole('log')
+    // The windowed branch positions rows absolutely inside a fixed-height log.
+    expect(log.style.position).toBe('relative')
+    expect(log).toHaveAttribute('aria-live', live)
+    if (relevant === null) expect(log).not.toHaveAttribute('aria-relevant')
+    else expect(log).toHaveAttribute('aria-relevant', relevant)
+  })
+
+  it('still renders the empty state without a log (hook order is stable across the early return)', () => {
+    mobileShellRef.current = true
+    const { rerender } = render(
+      <ChatMessageList
+        items={[]}
+        sessionId="session-1"
+        agentId="agent-1"
+        showRunningIndicator={false}
+      />
+    )
+    expect(screen.queryByRole('log')).not.toBeInTheDocument()
+
+    rerender(
+      <ChatMessageList
+        items={items}
+        sessionId="session-1"
+        agentId="agent-1"
+        showRunningIndicator={false}
+      />
+    )
+    expect(screen.getByRole('log')).toHaveAttribute('aria-live', 'off')
   })
 })

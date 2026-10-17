@@ -36,9 +36,12 @@
 
 use std::collections::HashMap;
 use std::process::Stdio;
+use std::sync::LazyLock;
 use std::time::Duration;
 
-use rmcp::model::ClientInfo;
+use futures::future::{BoxFuture, FutureExt, Shared};
+use parking_lot::Mutex;
+use rmcp::model::ClientConfig;
 use rmcp::service::{serve_client, RunningService};
 use rmcp::transport::child_process::TokioChildProcess;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
@@ -57,7 +60,7 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 /// header values frequently carry secrets). A derived `Debug` would print the
 /// raw value to any tracing/log macro that formats the struct — defense-in-
 /// depth so a future `?`/`%` log call cannot leak credentials.
-#[derive(Clone, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, Deserialize)]
 pub struct McpNameValuePair {
     pub name: String,
     pub value: String,
@@ -84,7 +87,7 @@ impl std::fmt::Debug for McpNameValuePair {
 /// fields carry secrets — see `McpNameValuePair`). Identifying fields the
 /// boundary log already surfaces (`name`/`command`/`url`/`type`/`args`) stay
 /// visible for diagnostics.
-#[derive(Clone, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct McpServerConfig {
     #[serde(default, rename = "type")]
@@ -257,10 +260,69 @@ fn expand_env_with(value: &str, lookup: impl Fn(&str) -> Option<String>) -> Stri
     out
 }
 
+type SharedProbe = Shared<BoxFuture<'static, ProbeResult>>;
+
+/// The config plus its server's OAuth token generation when the probe started,
+/// so a sign-in or sign-out from any client starts a fresh probe instead of
+/// joining one that read the old token.
+type ProbeKey = (McpServerConfig, u64);
+
+static IN_FLIGHT_PROBES: LazyLock<Mutex<HashMap<ProbeKey, SharedProbe>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// One-shot probe that joins an identical probe already in flight under the
+/// same stored OAuth token. A finished probe is never reused. Never panics,
+/// never logs secrets.
+pub async fn probe(server: McpServerConfig) -> ProbeResult {
+    join_or_start_probe(server).await
+}
+
+fn join_or_start_probe(server: McpServerConfig) -> SharedProbe {
+    let token_generation = server
+        .url
+        .as_deref()
+        .map_or(0, crate::acp::mcp_oauth::token_generation);
+    let key = (server, token_generation);
+    let mut in_flight = IN_FLIGHT_PROBES.lock();
+    if let Some(running) = in_flight.get(&key) {
+        tracing::info!(
+            server = %key.0.name,
+            "MCP probe joined an identical in-flight probe"
+        );
+        return running.clone();
+    }
+    let server = key.0.clone();
+    let entry = key.clone();
+    let task = tokio::spawn(async move {
+        let _entry = InFlightEntry(entry);
+        probe_once(server).await
+    });
+    let shared = task
+        .map(|joined| {
+            joined.unwrap_or_else(|error| {
+                ProbeResult::disconnected(format!("probe task failed: {error}"))
+            })
+        })
+        .boxed()
+        .shared();
+    in_flight.insert(key, shared.clone());
+    shared
+}
+
+/// Removes a probe's in-flight entry when its task ends, panics included, so a
+/// failed probe is never served to later callers.
+struct InFlightEntry(ProbeKey);
+
+impl Drop for InFlightEntry {
+    fn drop(&mut self) {
+        IN_FLIGHT_PROBES.lock().remove(&self.0);
+    }
+}
+
 /// One-shot probe: open a fresh rmcp client connection, `initialize`, list
 /// tools, close. Never panics, never logs secrets — only the server name +
 /// transport + outcome.
-pub async fn probe(server: McpServerConfig) -> ProbeResult {
+async fn probe_once(server: McpServerConfig) -> ProbeResult {
     let transport = server.transport();
     let name = server.name.clone();
     let result = tokio::time::timeout(PROBE_TIMEOUT, probe_inner(&server)).await;
@@ -358,7 +420,11 @@ async fn probe_stdio(server: &McpServerConfig) -> ProbeResult {
         Ok((proc, _stderr)) => proc,
         Err(error) => return ProbeResult::disconnected(format!("spawn failed: {error}")),
     };
-    let running = match serve_client(ClientInfo::default(), transport).await {
+    #[cfg(windows)]
+    let _tree = transport.id().and_then(|pid| {
+        crate::process_util::KillOnCloseJob::new_assigned_pid(pid, "MCP probe", true)
+    });
+    let running = match serve_client(ClientConfig::default(), transport).await {
         Ok(service) => service,
         Err(error) => return ProbeResult::disconnected(format!("initialize failed: {error}")),
     };
@@ -431,7 +497,7 @@ async fn probe_http(server: &McpServerConfig, transport: &str) -> ProbeResult {
     }
 
     let client = StreamableHttpClientTransport::from_config(config);
-    let running = match serve_client(ClientInfo::default(), client).await {
+    let running = match serve_client(ClientConfig::default(), client).await {
         Ok(service) => service,
         Err(error) => {
             // Fallback: if the pre-flight didn't catch it but serve_client
@@ -508,7 +574,7 @@ async fn check_oauth_required(url: &str, headers: &[McpNameValuePair]) -> Option
 /// cancel (tear down the connection — the probe is one-shot). Maps the rmcp
 /// `Tool` model to the trimmed `McpToolInfo` the UI surfaces.
 async fn drive_running(
-    running: RunningService<rmcp::service::RoleClient, ClientInfo>,
+    running: RunningService<rmcp::service::RoleClient, ClientConfig>,
 ) -> ProbeResult {
     let tools = match running.list_all_tools().await {
         Ok(tools) => tools,
@@ -531,3 +597,5 @@ async fn drive_running(
 
 #[cfg(test)]
 mod tests;
+#[cfg(all(test, windows))]
+mod windows_tests;

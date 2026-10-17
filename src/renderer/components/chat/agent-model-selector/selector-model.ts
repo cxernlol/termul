@@ -1,7 +1,8 @@
 import type { PersistedModelCatalog } from '@shared/types/persistence.types'
 import type { StoredAgentConfig } from '@/lib/acp-agents-persistence'
-import type { SessionConfigOption, SessionModelState } from '@/lib/acp-api'
+import type { AgentCapabilities, SessionConfigOption, SessionModelState } from '@/lib/acp-api'
 import type { SupportedAcpAgentEntry } from '@/lib/agents/supported-acp-agents'
+import { flattenConfigOptionValues } from '../chat-input-bar-config'
 
 /** Tabs shown in the agent track before the rest go behind "More". */
 export const MAX_VISIBLE_AGENT_TABS = 4
@@ -27,14 +28,56 @@ export interface ModelCatalog {
   currentValue: string | null
 }
 
-/** Catalog entries of a config option: only the ones with a string value
- * (boolean options carry none; groups are not model rows). */
+export interface CapabilityItem {
+  name: string
+}
+
+export interface CapabilityRow {
+  label: string
+  items: CapabilityItem[]
+}
+
+/**
+ * What an agent advertised at `initialize`, as read-only rows. Text and stdio
+ * are the ACP baseline every agent supports, so a row appears only when the
+ * agent sent that capability block.
+ */
+export function capabilityRows(
+  capabilities: AgentCapabilities | null | undefined
+): CapabilityRow[] {
+  const rows: CapabilityRow[] = []
+  const prompt = capabilities?.promptCapabilities
+  if (prompt) {
+    const extras: CapabilityItem[] = []
+    if (prompt.image) extras.push({ name: 'Images' })
+    if (prompt.audio) {
+      extras.push({ name: 'Audio (cannot attach yet)' })
+    }
+    if (prompt.embeddedContext) extras.push({ name: 'Embedded context' })
+    rows.push({
+      label: 'Accepts',
+      items: extras.length > 0 ? [{ name: 'Text' }, ...extras] : [{ name: 'Text only' }]
+    })
+  }
+  const mcp = capabilities?.mcpCapabilities
+  if (mcp) {
+    const extras: CapabilityItem[] = []
+    if (mcp.http) extras.push({ name: 'HTTP' })
+    if (mcp.sse) extras.push({ name: 'SSE' })
+    rows.push({
+      label: 'MCP servers',
+      items: extras.length > 0 ? [{ name: 'stdio' }, ...extras] : [{ name: 'stdio only' }]
+    })
+  }
+  return rows
+}
+
 export function catalogModels(option: SessionConfigOption): CatalogModel[] {
-  return (option.options ?? []).flatMap((entry) =>
-    typeof entry.value === 'string'
-      ? [{ value: entry.value, name: entry.name, description: entry.description ?? null }]
-      : []
-  )
+  return flattenConfigOptionValues(option).map(({ value, name, description }) => ({
+    value,
+    name,
+    description: description ?? null
+  }))
 }
 
 export function catalogFromSessionState(

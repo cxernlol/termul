@@ -6,6 +6,7 @@ import type {
   FileInfo,
   FilesystemApi,
   FsScopeGrantSummary,
+  FsWriteExpected,
   IpcResult,
   SearchFileHit
 } from '@shared/types/ipc.types'
@@ -24,11 +25,26 @@ import {
   watchImmediate,
   writeTextFile
 } from '@tauri-apps/plugin-fs'
-import { getAcpTransport } from './acp-transport'
 import { sortDirectoryEntries } from './filesystem-sort'
-import { logFrontendError } from './log-api'
+import {
+  _resetWatchEventStateForTesting,
+  activeCallbacks,
+  dispatchTypedEvent,
+  globalCallbacks,
+  registerTypedCallback,
+  toFileWatchEventType,
+  unregisterTypedCallback
+} from './filesystem-watch-events'
 import { cleanupTauriListener, isTauriContext } from './tauri-runtime'
-import { webServerFilesystem, webServerSearch } from './web-server-api'
+import {
+  _resetWebFileNameSearchForTesting,
+  cancelledWebFileNameSearches,
+  runWebFileNameSearch,
+  webFileNameBatchCallbacks,
+  webFileNameDoneCallbacks
+} from './web-filename-search'
+import { _resetWebFsWatchForTesting, unwatchWebDirectory, watchWebDirectory } from './web-fs-watch'
+import { webServerFilesystem } from './web-server-api'
 
 // Names that are commonly git-ignored. Entries matching these are still shown in
 // the file tree but rendered dimmed (and skipped during recursive walks for perf).
@@ -95,134 +111,7 @@ async function searchWithRipgrep(
   }
 }
 
-/**
- * Watch event types dispatched by the Tauri watcher (mapped from notify kinds).
- * Type filtering is an internal facade detail — the shared `FilesystemApi`
- * contract keeps one `FileChangeCallback` signature per subscription method.
- */
-type FileWatchEventType = 'change' | 'add' | 'unlink'
-
-/** Registry of callbacks keyed by the event types they subscribed for. */
-type TypedCallbackRegistry = Map<FileChangeCallback, Set<FileWatchEventType>>
-
-function registerTypedCallback(
-  registry: TypedCallbackRegistry,
-  callback: FileChangeCallback,
-  eventType: FileWatchEventType
-): void {
-  const types = registry.get(callback)
-  if (types) {
-    types.add(eventType)
-  } else {
-    registry.set(callback, new Set([eventType]))
-  }
-}
-
-function unregisterTypedCallback(
-  registry: TypedCallbackRegistry,
-  callback: FileChangeCallback,
-  eventType: FileWatchEventType
-): void {
-  const types = registry.get(callback)
-  if (!types) return
-  types.delete(eventType)
-  if (types.size === 0) {
-    registry.delete(callback)
-  }
-}
-
-function dispatchTypedEvent(
-  registry: TypedCallbackRegistry,
-  eventType: FileWatchEventType,
-  event: FileChangeEvent
-): void {
-  registry.forEach((types, callback) => {
-    if (types.has(eventType)) {
-      callback(event)
-    }
-  })
-}
-
 const activeWatchers = new Map<string, () => void>()
-const activeCallbacks = new Map<string, TypedCallbackRegistry>()
-const globalCallbacks: TypedCallbackRegistry = new Map()
-
-// ----- Web filename-search event channel (issue #848) ------------------------
-//
-// The desktop transport streams `search-file-names-batch`/-`done` Tauri
-// events. On web there is no Tauri event bus, so `searchFileNamesStreamStart`
-// runs the one-shot `GET /search/file-names` HTTP request and fans its result
-// out through this in-module emitter to the SAME `onSearchFileNamesBatch`/
-// `onSearchFileNamesDone` callbacks. Consumers (composer mentions hook,
-// file-explorer store) keep one code path: start → batch → done.
-
-type WebFileNameBatchEvent = { searchId: string; files: SearchFileHit[]; truncated?: boolean }
-type WebFileNameDoneEvent = {
-  searchId: string
-  truncated: boolean
-  totalFiles: number
-  code?: string
-  error?: string
-}
-
-const webFileNameBatchCallbacks = new Set<(event: WebFileNameBatchEvent) => void>()
-const webFileNameDoneCallbacks = new Set<(event: WebFileNameDoneEvent) => void>()
-
-function emitWebFileNameBatch(event: WebFileNameBatchEvent): void {
-  for (const cb of webFileNameBatchCallbacks) cb(event)
-}
-
-function emitWebFileNameDone(event: WebFileNameDoneEvent): void {
-  for (const cb of webFileNameDoneCallbacks) cb(event)
-}
-
-/**
- * Run the web one-shot filename search and emit the batch + done events for
- * `searchId`. A superseded search (its `searchId` was cancelled/replaced
- * before the response landed) is dropped silently — the desktop contract
- * does the same by ignoring stale ids at the listener. Failures surface as
- * a done event carrying the transport error, never as a rejected promise.
- */
-async function runWebFileNameSearch(
-  searchId: string,
-  rootPath: string,
-  query: string,
-  includeIgnored: boolean
-): Promise<void> {
-  try {
-    const data = await webServerSearch.fileNames(rootPath, query, includeIgnored)
-    if (cancelledWebFileNameSearches.has(searchId)) return
-    emitWebFileNameBatch({
-      searchId,
-      files: data.files,
-      truncated: data.truncated
-    })
-    emitWebFileNameDone({
-      searchId,
-      truncated: data.truncated,
-      totalFiles: data.files.length
-    })
-  } catch (err) {
-    if (cancelledWebFileNameSearches.has(searchId)) return
-    logFrontendError({
-      level: 'warn',
-      source: 'tauri-filesystem-api.webFileNameSearch',
-      message: `web filename search failed: ${err instanceof Error ? err.message : String(err)}`
-    })
-    emitWebFileNameDone({
-      searchId,
-      truncated: false,
-      totalFiles: 0,
-      code: 'NETWORK_ERROR',
-      error: err instanceof Error ? err.message : String(err)
-    })
-  } finally {
-    cancelledWebFileNameSearches.delete(searchId)
-  }
-}
-
-/** Search ids cancelled via `searchFileNamesStreamCancel` before completion. */
-const cancelledWebFileNameSearches = new Set<string>()
 
 function shouldIgnore(name: string): boolean {
   return ALWAYS_IGNORE.includes(name)
@@ -662,9 +551,9 @@ export function createTauriFilesystemApi(): FilesystemApi {
     ) {
       // Web/remote mode (issue #848): run the one-shot HTTP filename search
       // (`GET /search/file-names`, served by the same ripgrep walk the
-      // desktop command uses) and fan the result out through the in-module
-      // batch/done emitters, so `onSearchFileNamesBatch`/`onSearchFileNamesDone`
-      // consumers work unchanged. Debouncing stays client-side (the composer
+      // desktop command uses) and fan the result out through the batch/done
+      // emitters in `web-filename-search.ts`, so `onSearchFileNamesBatch`/
+      // `onSearchFileNamesDone` consumers work unchanged. Debouncing stays client-side (the composer
       // hook + explorer store already debounce + cancel per keystroke).
       if (!isTauriContext()) {
         cancelledWebFileNameSearches.delete(searchId)
@@ -800,11 +689,18 @@ export function createTauriFilesystemApi(): FilesystemApi {
       return () => cleanupTauriListener(unlisten)
     },
 
-    async writeFile(filePath: string, content: string): Promise<IpcResult<void>> {
+    async writeFile(
+      filePath: string,
+      content: string,
+      options?: { expected?: FsWriteExpected }
+    ): Promise<IpcResult<void>> {
       // Web/remote mode: route through the same-origin server (`POST /fs/write`,
       // which truncates+overwrites — matches desktop `writeTextFile`).
+      // `options.expected` is a web-host precondition; the desktop writes
+      // through `plugin-fs` (a process boundary with no lost-reply window), so
+      // it carries none.
       if (!isTauriContext()) {
-        return webServerFilesystem.writeFile(filePath, content)
+        return webServerFilesystem.writeFile(filePath, content, options)
       }
       try {
         await writeTextFile(filePath, content)
@@ -884,17 +780,16 @@ export function createTauriFilesystemApi(): FilesystemApi {
     },
 
     async watchDirectory(dirPath: string): Promise<IpcResult<void>> {
-      // Web/remote mode (#856): the change events now arrive over the
-      // control WS as `fs_changed` batches (see `wireWebFsChangedBridge`
-      // below — the facade dispatches them through the SAME
-      // onFileChanged/onFileCreated/onFileDeleted chain this desktop
-      // watcher feeds). There is nothing per-directory to set up on the
-      // client: the server watches the active project root and re-arms on
-      // switch. Report success so callers (WorkspaceLayout's project
-      // switch) complete the switch instead of treating the watcher as
-      // unavailable.
+      // Web/remote mode (#856): the change events arrive over the control WS
+      // as `fs` watch deltas (see `startProjectFsWatch` in `web-fs-watch.ts` — the facade
+      // dispatches them through the SAME onFileChanged/onFileCreated/
+      // onFileDeleted chain this desktop watcher feeds). There is nothing
+      // per-directory to set up on the client beyond watching the project that
+      // contains the directory (refcounted per project). A directory inside no
+      // registered project has no host watch (the explorer simply gets no live
+      // refresh) and still reports success.
       if (!isTauriContext()) {
-        return { success: true, data: undefined }
+        return watchWebDirectory(dirPath)
       }
       try {
         const normalizedDirPath = dirPath.replace(/\\/g, '/')
@@ -909,14 +804,11 @@ export function createTauriFilesystemApi(): FilesystemApi {
           (event: WatchEvent) => {
             const callbacks = activeCallbacks.get(normalizedDirPath)
             if (!callbacks) return
-
-            // WatchEventKind is a complex type - check the type property
-            // The kind object has a 'type' property: 'create' | 'modify' | 'remove' | 'access' | 'other' | 'any'
-            const kindType = (event.type as { type?: string })?.type ?? 'other'
-
-            let changeType: FileWatchEventType = 'change'
-            if (kindType === 'create') changeType = 'add'
-            else if (kindType === 'remove') changeType = 'unlink'
+            // Reading a file (our own readTextFile included) fires access
+            // events; reporting them as changes makes an open editor tab
+            // reload, read, and reload again forever.
+            const changeType = toFileWatchEventType(event.type)
+            if (!changeType) return
 
             // paths is an array - use first element
             const changedPath = (event.paths?.[0] ?? normalizedDirPath).replace(/\\/g, '/')
@@ -945,9 +837,10 @@ export function createTauriFilesystemApi(): FilesystemApi {
     },
 
     async unwatchDirectory(dirPath: string): Promise<IpcResult<void>> {
-      // Web/remote mode: nothing to unwatch (watchers are desktop-only).
+      // Web/remote mode: release the project's host watch when no watched
+      // directory needs it any more.
       if (!isTauriContext()) {
-        return { success: true, data: undefined }
+        return unwatchWebDirectory(dirPath)
       }
       try {
         const normalizedDirPath = dirPath.replace(/\\/g, '/')
@@ -964,9 +857,6 @@ export function createTauriFilesystemApi(): FilesystemApi {
     },
 
     onFileChanged(callback: FileChangeCallback): () => void {
-      // #856: on web, a first subscription also (idempotently) connects
-      // the control-WS `fs_changed` bridge to this shared registry.
-      wireWebFsChangedBridge()
       registerTypedCallback(globalCallbacks, callback, 'change')
 
       // Return cleanup function — removes only the 'change' subscription so
@@ -981,8 +871,6 @@ export function createTauriFilesystemApi(): FilesystemApi {
     },
 
     onFileCreated(callback: FileChangeCallback): () => void {
-      // #856: see onFileChanged — the bridge feeds the shared registry.
-      wireWebFsChangedBridge()
       registerTypedCallback(globalCallbacks, callback, 'add')
 
       return () => {
@@ -994,8 +882,6 @@ export function createTauriFilesystemApi(): FilesystemApi {
     },
 
     onFileDeleted(callback: FileChangeCallback): () => void {
-      // #856: see onFileChanged — the bridge feeds the shared registry.
-      wireWebFsChangedBridge()
       registerTypedCallback(globalCallbacks, callback, 'unlink')
 
       return () => {
@@ -1013,85 +899,12 @@ export function createTauriFilesystemApi(): FilesystemApi {
  */
 export const tauriFilesystemApi = createTauriFilesystemApi()
 
-// ---------------------------------------------------------------------------
-// #856: web FS-change bridge — server `fs_changed` events → the shared
-// onFileChanged/onFileCreated/onFileDeleted callback chain.
-// ---------------------------------------------------------------------------
-
-/** Payload of the control-WS `fs_changed` agent-level event (#856). */
-interface FsChangedEventPayload {
-  root: string
-  paths: string[]
-}
-
-/**
- * Map an fs_changed path to the subscription event type. A path that no
- * longer exists was deleted (`unlink`); anything else is reported as a
- * `change` — the explorer refreshes the parent directory either way, and
- * `useFileWatcher` only closes open editor tabs on genuine unlinks.
- * (The server batch carries no per-path kind, and stat-ing every path
- * would add a round trip per event; the consumers are refresh-driven, so
- * a conservative `change` is sufficient and never closes a live tab.)
- */
-function fsChangedPathsToEvents(payload: FsChangedEventPayload): FileChangeEvent[] {
-  // CodeRabbit: the server normalizes each path to forward slashes but the
-  // root may still carry native backslashes (Windows) — normalize BOTH
-  // before the prefix check or every change for that root is dropped.
-  const normalizedRoot = payload.root.replaceAll('\\', '/')
-  return payload.paths
-    .filter((path) => path.replaceAll('\\', '/').startsWith(normalizedRoot))
-    .map((path) => ({ type: 'change' as const, path }))
-}
-
-/** Idempotence guard for the one-time web bridge subscription. */
-let webFsChangedBridgeWired = false
-
-/**
- * #856: subscribe (web only, once) to the control-WS `fs_changed` event
- * and dispatch each batched path through the SAME typed-callback registry
- * the desktop notify watcher feeds. Called lazily by the first
- * `onFileChanged`/`onFileCreated`/`onFileDeleted` subscription on web, so
- * no import-cycle risk and no subscription when nothing listens. Failure
- * to subscribe (transport down at module init) is logged and NOT retried
- * per-subscription — the transport's own reconnect re-delivers later
- * events once `onEvent` is registered.
- */
-function wireWebFsChangedBridge(): void {
-  if (webFsChangedBridgeWired || isTauriContext()) return
-  webFsChangedBridgeWired = true
-  try {
-    const transport = getAcpTransport()
-    transport.onEvent<FsChangedEventPayload>('acp:fs_changed', (payload) => {
-      if (!payload || !Array.isArray(payload.paths)) return
-      for (const event of fsChangedPathsToEvents(payload)) {
-        // 'change' feeds every subscriber that registered for 'change';
-        // the create/delete-typed subscribers are served by the desktop
-        // watcher's precise kinds — on web the tree refresh (the actual
-        // #856 acceptance) is driven by 'change'.
-        dispatchTypedEvent(globalCallbacks, 'change', event)
-      }
-    })
-  } catch (error) {
-    void logFrontendError({
-      level: 'warn',
-      source: 'tauri-filesystem-api.wireWebFsChangedBridge',
-      message: `fs_changed bridge subscription failed: ${
-        error instanceof Error ? error.message : String(error)
-      }`
-    })
-  }
-}
-
 /**
  * @internal Testing only - reset module state
  */
 export function _resetFilesystemStateForTesting() {
   activeWatchers.clear()
-  activeCallbacks.clear()
-  globalCallbacks.clear()
-  webFileNameBatchCallbacks.clear()
-  webFileNameDoneCallbacks.clear()
-  cancelledWebFileNameSearches.clear()
-  // #856: re-arm the web fs_changed bridge so each test can re-wire it.
-  webFsChangedBridgeWired = false
+  _resetWatchEventStateForTesting()
+  _resetWebFsWatchForTesting()
+  _resetWebFileNameSearchForTesting()
 }

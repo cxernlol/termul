@@ -31,7 +31,7 @@ export const useSettingsModalStore = create<SettingsModalState>((set) => ({
 
 /**
  * Reactive selector for the current settings-modal view. Components (e.g.
- * `ActivityRail`) use this to derive `aria-pressed` without prop-threading.
+ * the Rail footer) use this to derive `aria-pressed` without prop-threading.
  */
 export function useSettingsModalView(): SettingsModalView {
   return useSettingsModalStore((state) => state.view)

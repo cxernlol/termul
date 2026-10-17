@@ -13,11 +13,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tower::ServiceExt;
 
 /// Temp dir removed on drop (panic-safe).
-struct TempDir {
+pub(super) struct TempDir {
     path: std::path::PathBuf,
 }
 impl TempDir {
-    fn new(label: &str) -> Self {
+    pub(super) fn new(label: &str) -> Self {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("clock")
@@ -26,7 +26,7 @@ impl TempDir {
         std::fs::create_dir_all(&path).expect("create temp dir");
         Self { path }
     }
-    fn path(&self) -> &std::path::Path {
+    pub(super) fn path(&self) -> &std::path::Path {
         &self.path
     }
 }
@@ -36,7 +36,7 @@ impl Drop for TempDir {
     }
 }
 
-fn test_state(root: &std::path::Path) -> AppState {
+pub(super) fn test_state(root: &std::path::Path) -> AppState {
     let pty = test_pty_manager();
     AppState {
         acp: Arc::new(AcpManager::new(vec![])),
@@ -46,14 +46,10 @@ fn test_state(root: &std::path::Path) -> AppState {
         exit_code_tracker: pty.exit_code_tracker(),
         pty,
         relay: Arc::new(WsRelaySink::new()),
-        registry: Arc::new(ProjectRegistry::new()),
-        registry_persistence: None,
-        projects_file: None,
+        registry: crate::web::project_registry::ProjectRegistry::seeded_for_test(
+            &root.canonicalize().unwrap_or_else(|_| root.to_path_buf()),
+        ),
         history_mode: HistoryMode::LiveOnly,
-        project_root: Arc::new(parking_lot::RwLock::new(
-            root.canonicalize().unwrap_or_else(|_| root.to_path_buf()),
-        )),
-        workspace_manifest: None,
         acp_catalog: None,
         acp_install: None,
         store: None,
@@ -64,6 +60,7 @@ fn test_state(root: &std::path::Path) -> AppState {
             std::collections::HashMap::new(),
         )),
         oauth_base_url: "http://127.0.0.1".to_string(),
+        connections: Default::default(),
     }
 }
 
@@ -79,7 +76,7 @@ fn test_router(state: AppState) -> axum::Router {
         .with_state(state)
 }
 
-async fn body_as<T: serde::de::DeserializeOwned>(body: Body) -> IpcBody<T> {
+pub(super) async fn body_as<T: serde::de::DeserializeOwned>(body: Body) -> IpcBody<T> {
     let bytes = axum::body::to_bytes(body, usize::MAX)
         .await
         .expect("read body");
@@ -109,6 +106,10 @@ async fn post_json_from(
         .oneshot(
             Request::builder()
                 .method("POST")
+                .header(
+                    crate::web::command_ledger::COMMAND_ID_HEADER,
+                    crate::web::command_ledger::test_clock::fresh_command_id(),
+                )
                 .uri(uri)
                 .header("content-type", "application/json")
                 .extension(ConnectInfo(peer))
@@ -531,7 +532,7 @@ async fn copy_include_files_returns_outcome_for_fresh_worktree() {
 // the runtime catch).
 
 /// Build the production `router()` with a test AppState rooted at `root`.
-fn production_router(root: &std::path::Path) -> axum::Router {
+pub(super) fn production_router(root: &std::path::Path) -> axum::Router {
     let pty = crate::web::test_pty_manager();
     let project_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     crate::web::router::router(
@@ -542,12 +543,8 @@ fn production_router(root: &std::path::Path) -> axum::Router {
         pty.git_tracker(),
         pty.exit_code_tracker(),
         Arc::new(WsRelaySink::new()),
-        Arc::new(ProjectRegistry::new()),
-        None,
-        None,
-        std::sync::Arc::new(parking_lot::RwLock::new(project_root)),
+        ProjectRegistry::seeded_for_test(&project_root),
         HistoryMode::LiveOnly,
-        None,
         None,
         None,
         None,
@@ -558,6 +555,7 @@ fn production_router(root: &std::path::Path) -> axum::Router {
         // No canvas pool on this fixture — the /canvas/* routes degrade.
         None,
         crate::web::origin::OriginPolicy::default(),
+        crate::web::connection_runtime::ConnectionRuntime::default(),
     )
 }
 
@@ -579,6 +577,10 @@ async fn production_router_serves_worktree_list_as_ipcbody_not_spa_fallback() {
         .oneshot(
             Request::builder()
                 .method("POST")
+                .header(
+                    crate::web::command_ledger::COMMAND_ID_HEADER,
+                    crate::web::command_ledger::test_clock::fresh_command_id(),
+                )
                 .uri("/worktree/list")
                 .header("content-type", "application/json")
                 .extension(ConnectInfo(loopback()))
@@ -656,6 +658,10 @@ async fn production_router_serves_worktree_resolve_base_branch_as_ipcbody() {
         .oneshot(
             Request::builder()
                 .method("POST")
+                .header(
+                    crate::web::command_ledger::COMMAND_ID_HEADER,
+                    crate::web::command_ledger::test_clock::fresh_command_id(),
+                )
                 .uri("/worktree/resolve-base-branch")
                 .header("content-type", "application/json")
                 .extension(ConnectInfo(loopback()))
@@ -689,6 +695,10 @@ async fn production_router_does_not_swallow_unregistered_path_as_ipcbody() {
         .oneshot(
             Request::builder()
                 .method("POST")
+                .header(
+                    crate::web::command_ledger::COMMAND_ID_HEADER,
+                    crate::web::command_ledger::test_clock::fresh_command_id(),
+                )
                 .uri("/worktree/nonexistent-route")
                 .header("content-type", "application/json")
                 .extension(ConnectInfo(loopback()))
@@ -714,4 +724,269 @@ async fn production_router_does_not_swallow_unregistered_path_as_ipcbody() {
         !text.contains("\"success\""),
         "unregistered /worktree/nonexistent-route must not return an IpcBody JSON, got: {text}"
     );
+}
+
+// ----- Server topologies: launching a chat into an EXISTING worktree is a read -----
+//
+// The renderer write gate (CAP-15 / AD-9) disables "New worktree" on a server
+// that refuses remote writes, but "launch into an existing worktree" must stay
+// available: it only needs `/worktree/list`, which is containment-checked and
+// never loopback-guarded. These tests pin that per host topology.
+
+/// Create a worktree through an admitting (loopback, default) state, then list
+/// it under the topology state `(allow_remote_writes, shared_live_writes_denied)`
+/// from `peer`. Returns the topology state's `/worktree/create` outcome code
+/// (for the write-refusal assertions) after asserting the list succeeded.
+async fn assert_existing_worktree_listed_under(
+    tag: &str,
+    allow_remote_writes: bool,
+    shared_live_writes_denied: bool,
+    peer: SocketAddr,
+) -> Option<String> {
+    let repo = init_repo(tag);
+    let admitting = test_state(
+        repo.path()
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new(".")),
+    );
+    let created = post_json(
+        admitting.clone(),
+        "/worktree/create",
+        &serde_json::json!({
+            "projectPath": repo.path().to_string_lossy(),
+            "name": "wt-existing",
+            "branch": "chat/wt-existing",
+            "isNewBranch": true
+        }),
+    )
+    .await;
+    let created: IpcBody<GitWorktreeEntry> = body_as(created.into_body()).await;
+    assert!(created.success, "setup create failed: {:?}", created.error);
+    let entry = created.data.expect("created entry");
+
+    let topology = AppState {
+        allow_remote_writes,
+        shared_live_writes_denied,
+        ..admitting
+    };
+
+    // Separator/trailing-slash agnostic compare (Windows reports `/`, create `\`).
+    let norm = |p: &str| p.replace('\\', "/").trim_end_matches('/').to_string();
+
+    // Existing-worktree launch needs the list read: admitted, entry returned.
+    let resp = post_json_from(
+        topology.clone(),
+        "/worktree/list",
+        &serde_json::json!({ "projectPath": repo.path().to_string_lossy() }),
+        peer,
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let listed: IpcBody<Vec<GitWorktreeEntry>> = body_as(resp.into_body()).await;
+    assert!(listed.success, "list must be admitted: {:?}", listed.error);
+    let entries = listed.data.expect("entries");
+    assert!(
+        entries
+            .iter()
+            .any(|e| e.branch == "chat/wt-existing" && norm(&e.path) == norm(&entry.path)),
+        "expected the existing worktree {} in {:?}",
+        entry.path,
+        entries
+    );
+
+    // Probe the write route under the same topology.
+    let resp = post_json_from(
+        topology,
+        "/worktree/create",
+        &serde_json::json!({
+            "projectPath": repo.path().to_string_lossy(),
+            "name": "wt-new",
+            "branch": "chat/wt-new",
+            "isNewBranch": true
+        }),
+        peer,
+    )
+    .await;
+    let body: IpcBody<GitWorktreeEntry> = body_as(resp.into_body()).await;
+    if body.success {
+        None
+    } else {
+        Some(body.code.unwrap_or_default())
+    }
+}
+
+#[tokio::test]
+async fn existing_worktree_listed_but_create_refused_on_shared_live() {
+    if git_missing() {
+        return;
+    }
+    // Desktop shared-live: writes denied for every peer, even loopback.
+    let create =
+        assert_existing_worktree_listed_under("topo-shared-live", false, true, loopback()).await;
+    assert_eq!(create.as_deref(), Some("FORBIDDEN"));
+}
+
+#[tokio::test]
+async fn existing_worktree_listed_but_create_refused_on_server_without_opt_in() {
+    if git_missing() {
+        return;
+    }
+    // `termul-server` without `--allow-remote-writes`, LAN peer.
+    let lan = SocketAddr::from(([192, 168, 1, 60], 40010));
+    let create =
+        assert_existing_worktree_listed_under("topo-server-closed", false, false, lan).await;
+    assert_eq!(create.as_deref(), Some("FORBIDDEN"));
+}
+
+#[tokio::test]
+async fn existing_worktree_listed_on_server_with_allow_remote_writes() {
+    if git_missing() {
+        return;
+    }
+    // `termul-server --allow-remote-writes`, LAN peer: the list read is admitted
+    // exactly as in the read-only topologies (writes are admitted here too).
+    let lan = SocketAddr::from(([192, 168, 1, 61], 40011));
+    let create = assert_existing_worktree_listed_under("topo-server-open", true, false, lan).await;
+    assert_ne!(create.as_deref(), Some("FORBIDDEN"));
+}
+
+// ----- Outside-project-folder worktrees (AD-9 / CAP-14) -----
+
+/// Add a worktree for a new branch at `target` (outside the repo).
+fn add_worktree_at(repo: &std::path::Path, target: &std::path::Path, branch: &str) {
+    let out = GitTracker::run_git_command(
+        repo.to_str().unwrap(),
+        &["worktree", "add", "-b", branch, target.to_str().unwrap()],
+    )
+    .expect("git worktree add");
+    assert!(
+        out.status.success(),
+        "git worktree add failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[tokio::test]
+async fn list_flags_outside_project_root_worktree_instead_of_dropping_it() {
+    if git_missing() {
+        return;
+    }
+    let repo = init_repo("list-outside");
+    let outside = TempDir::new("list-outside-wt");
+    let outside_wt = outside.path().join("elsewhere-wt");
+    add_worktree_at(repo.path(), &outside_wt, "outside-branch");
+
+    let state = test_state(repo.path());
+    let resp = post_json(
+        state,
+        "/worktree/list",
+        &serde_json::json!({ "projectPath": repo.path().to_string_lossy() }),
+    )
+    .await;
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .expect("read body");
+    let json: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(json["success"], serde_json::json!(true), "{json}");
+    let rows = json["data"].as_array().expect("data array");
+    let outside_row = rows
+        .iter()
+        .find(|r| r["branch"] == serde_json::json!("outside-branch"))
+        .expect("outside-root worktree must be listed, not filtered");
+    assert_eq!(outside_row["outsideProjectRoot"], serde_json::json!(true));
+    let main_row = rows
+        .iter()
+        .find(|r| r["branch"] != serde_json::json!("outside-branch"))
+        .expect("main worktree");
+    assert!(
+        main_row.get("outsideProjectRoot").is_none(),
+        "in-root rows carry no flag: {main_row}"
+    );
+}
+
+#[tokio::test]
+async fn act_routes_still_refuse_an_outside_root_worktree() {
+    if git_missing() {
+        return;
+    }
+    let repo = init_repo("act-outside");
+    let outside = TempDir::new("act-outside-wt");
+    let outside_wt = outside.path().join("elsewhere-wt");
+    add_worktree_at(repo.path(), &outside_wt, "outside-act");
+    let wt = outside_wt.to_string_lossy().to_string();
+
+    // check-dirty (read) is refused by containment.
+    let uri = format!("/worktree/check-dirty?worktreePath={}", urlencoding(&wt));
+    let resp = get_request(test_state(repo.path()), &uri).await;
+    let body: IpcBody<DirtyStatus> = body_as(resp.into_body()).await;
+    assert!(
+        !body.success,
+        "check-dirty on outside worktree must be refused"
+    );
+
+    // remove (write) is refused too; the worktree stays on disk.
+    let resp = post_json(
+        test_state(repo.path()),
+        "/worktree/remove",
+        &serde_json::json!({
+            "projectPath": repo.path().to_string_lossy(),
+            "worktreePath": wt,
+            "force": true
+        }),
+    )
+    .await;
+    let body: IpcBody<()> = body_as(resp.into_body()).await;
+    assert!(!body.success, "remove of outside worktree must be refused");
+    assert!(outside_wt.exists(), "outside worktree must be untouched");
+}
+
+#[tokio::test]
+async fn remove_is_blocked_while_a_session_in_the_worktree_is_mid_turn() {
+    if git_missing() {
+        return;
+    }
+    let repo = init_repo("rm-guard-active");
+    let parent = repo.path().parent().unwrap_or_else(|| std::path::Path::new("."));
+    let state = test_state(parent);
+    let resp = post_json(
+        state.clone(),
+        "/worktree/create",
+        &serde_json::json!({
+            "projectPath": repo.path().to_string_lossy(),
+            "name": "wt-guard",
+            "branch": "chat/wt-guard",
+            "isNewBranch": true
+        }),
+    )
+    .await;
+    let created: IpcBody<GitWorktreeEntry> = body_as(resp.into_body()).await;
+    let entry = created.data.expect("entry");
+    let worktree = std::path::PathBuf::from(&entry.path);
+    let remove_body = serde_json::json!({
+        "projectPath": repo.path().to_string_lossy(),
+        "worktreePath": entry.path,
+        "force": true
+    });
+
+    // A turn is running in a subdirectory of the worktree.
+    let nested = worktree.join("src");
+    std::fs::create_dir_all(&nested).expect("nested");
+    state.acp.install_test_agent_with_session_roots(
+        crate::acp::AgentId("agent-1".to_string()),
+        vec![("session-1".to_string(), nested, true)],
+    );
+    let resp = post_json(state.clone(), "/worktree/remove", &remove_body).await;
+    let body: IpcBody<()> = body_as(resp.into_body()).await;
+    assert!(!body.success);
+    assert_eq!(body.code.as_deref(), Some("destructive_op_blocked"));
+    assert!(worktree.exists(), "the worktree must survive a refused removal");
+
+    // The same session idle: removal proceeds.
+    state.acp.install_test_agent_with_session_roots(
+        crate::acp::AgentId("agent-1".to_string()),
+        vec![("session-1".to_string(), worktree.join("src"), false)],
+    );
+    let resp = post_json(state, "/worktree/remove", &remove_body).await;
+    let body: IpcBody<()> = body_as(resp.into_body()).await;
+    assert!(body.success, "idle session must not block: {:?}", body.error);
 }

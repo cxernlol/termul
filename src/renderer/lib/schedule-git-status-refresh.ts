@@ -1,5 +1,4 @@
-import { useGitStatusStore } from '@/stores/git-status-store'
-import { getAllLeafPanes, useWorkspaceStore } from '@/stores/workspace-store'
+import { deepestTrackedKey, useGitStatusStore } from '@/stores/git-status-store'
 
 const DEBOUNCE_MS = 1000
 
@@ -26,54 +25,38 @@ export function isPathWithinRepo(filePath: string, repoCwd: string): boolean {
   return comparablePath === comparableRoot || comparablePath.startsWith(`${comparableRoot}/`)
 }
 
-/** Distinct `cwd` values from open Git Changes tabs. */
-export function collectOpenGitTabCwds(): string[] {
-  const root = useWorkspaceStore.getState().root
-  const cwds = new Set<string>()
-  for (const leaf of getAllLeafPanes(root)) {
-    for (const tab of leaf.tabs) {
-      if (tab.type === 'git') {
-        cwds.add(tab.cwd)
-      }
-    }
-  }
-  return [...cwds]
-}
-
-const pendingCwds = new Set<string>()
+const pendingKeys = new Set<string>()
 let flushTimer: ReturnType<typeof setTimeout> | null = null
 
 /**
- * Debounced refresh of git status for every open Git Changes tab whose repo
- * contains `filePath`. No-op when no matching git tab is open.
+ * Debounced refresh of git status (and the diff stat, when watched) for the
+ * deepest tracked working copy whose folder contains `filePath`. No-op when no
+ * tracked working copy contains it. This is the file-change source of the git
+ * status store (AD-17).
  */
 export function scheduleGitStatusRefreshForPath(filePath: string): void {
-  let matched = false
-  for (const cwd of collectOpenGitTabCwds()) {
-    if (isPathWithinRepo(filePath, cwd)) {
-      pendingCwds.add(cwd)
-      matched = true
-    }
-  }
-  if (!matched) return
+  const key = deepestTrackedKey(filePath, Object.keys(useGitStatusStore.getState().paths))
+  if (!key) return
+  pendingKeys.add(key)
 
   if (flushTimer) clearTimeout(flushTimer)
   flushTimer = setTimeout(() => {
-    const refresh = useGitStatusStore.getState().refreshStatus
-    const openCwds = new Set(collectOpenGitTabCwds())
-    for (const cwd of pendingCwds) {
-      if (openCwds.has(cwd)) {
-        void refresh(cwd)
-      }
+    const state = useGitStatusStore.getState()
+    for (const pending of pendingKeys) {
+      const cwd = state.paths[pending]
+      if (!cwd) continue
+      // Failures are stored in `errors` and logged by the store.
+      void state.refreshStatus(cwd).catch(() => {})
+      void state.refreshDiffStat(cwd)
     }
-    pendingCwds.clear()
+    pendingKeys.clear()
     flushTimer = null
   }, DEBOUNCE_MS)
 }
 
 /** Test-only reset of module-level debounce state. */
 export function resetGitStatusRefreshSchedulerForTests(): void {
-  pendingCwds.clear()
+  pendingKeys.clear()
   if (flushTimer) clearTimeout(flushTimer)
   flushTimer = null
 }

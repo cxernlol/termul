@@ -15,6 +15,7 @@
 //! desktop binary and the standalone `termul-server` (no `AppHandle`).
 
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
@@ -28,6 +29,10 @@ use crate::acp::host_mcp::{
 };
 use crate::acp::session_persistence::SessionPersistence;
 use crate::web::EventSink;
+
+mod ask;
+pub use ask::IdleSignal;
+use ask::PendingAsk;
 
 /// Per-session auth + routing context, keyed by the random token.
 #[derive(Clone)]
@@ -65,12 +70,28 @@ pub struct HostPlanServer {
     /// retrying. Cleared on `unregister_session`. In-memory only — a resumed
     /// session in a new process can set the title once again.
     title_set_for_session: Mutex<HashSet<String>>,
+    /// Sessions whose first `set_session_title` call already ran the worktree
+    /// branch auto rename (story 16). Independent of the title outcome: a
+    /// protected/failed title must not skip it, and a second call never
+    /// retries it. Cleared on `unregister_session`; in-memory only (a resumed
+    /// session starts empty, the persisted launch-branch guard blocks a
+    /// second rename).
+    branch_attempted_for_session: Mutex<HashSet<String>>,
     /// Per-session plan cache (emit-and-cache). v1 doesn't persist; this is
     /// the seam a future persistence layer reads from on resume. Updated in
     /// `process_request` (set on emit) + `unregister_*` (drop on close).
     plan_store: PlanStore,
     /// Durable store used by the title tool. Absent in live-only tests/modes.
     persistence: Option<Arc<SessionPersistence>>,
+    /// `ask_user` calls waiting for the user, keyed by their `q-` question id
+    /// (the id the renderer answers with). Removed on answer, cancel or drop.
+    pending_asks: Mutex<HashMap<String, PendingAsk>>,
+    /// Per runtime agent: resets the idle deadline of one of its sessions. A
+    /// pending `ask_user` calls it so a configured idle timeout does not cancel
+    /// the turn while the user is still answering.
+    idle_signals: Mutex<HashMap<String, IdleSignal>>,
+    /// Test seam: replaces the computed `ask_user` heartbeat interval.
+    ask_heartbeat_override: Mutex<Option<std::time::Duration>>,
 }
 
 impl HostPlanServer {
@@ -78,8 +99,8 @@ impl HostPlanServer {
     /// the dedicated accept-loop thread. Blocks until the port is known (so
     /// `register_session` callers see a valid port immediately).
     ///
-    /// The sinks are the AcpManager's event sinks (`TauriEventSink` on desktop,
-    /// `WsRelaySink` on standalone). `fan_out` over zero sinks is a no-op, so a
+    /// The sinks are the AcpManager's event sinks (the `WsRelaySink` on desktop and on
+    /// standalone). `fan_out` over zero sinks is a no-op, so a
     /// unit-test `HostPlanServer` with `vec![]` is legal (just emits nothing).
     #[must_use]
     pub fn start(
@@ -91,7 +112,11 @@ impl HostPlanServer {
             sinks,
             sessions: Mutex::new(HashMap::new()),
             active_turns: Mutex::new(HashMap::new()),
+            pending_asks: Mutex::new(HashMap::new()),
+            idle_signals: Mutex::new(HashMap::new()),
+            ask_heartbeat_override: Mutex::new(None),
             title_set_for_session: Mutex::new(HashSet::new()),
+            branch_attempted_for_session: Mutex::new(HashSet::new()),
             plan_store: PlanStore::new(),
             persistence,
         });
@@ -258,7 +283,11 @@ impl HostPlanServer {
         });
         drop(active_turns);
         self.title_set_for_session.lock().remove(real_session_id);
+        self.branch_attempted_for_session
+            .lock()
+            .remove(real_session_id);
         self.plan_store.drop_session(real_session_id);
+        self.cancel_asks_for_session(real_session_id);
         // Close agent-controlled browser tabs + drop the consent grant. The
         // host no-ops when no browser feature was used by this session.
         crate::browser_automation::session_ended(real_session_id);
@@ -308,7 +337,15 @@ impl HostPlanServer {
         }
 
         let reply: FrameReply = match serde_json::from_str::<FrameRequest>(&line) {
-            Ok(req) => self.process_request(req).await,
+            Ok(req) => {
+                // The child sends one frame per connection, so the next read
+                // returns only when it hangs up.
+                let hung_up = async move {
+                    let mut read_half = reader.into_inner().into_inner();
+                    let _ = read_half.read_u8().await;
+                };
+                self.process_request(req, hung_up).await
+            }
             Err(e) => {
                 log::warn!("[host-mcp] malformed frame: {e}");
                 FrameReply::err("malformed request")
@@ -329,7 +366,12 @@ impl HostPlanServer {
     }
 
     /// Authenticate + dispatch a validated frame. Returns the reply (ok/err).
-    async fn process_request(&self, req: FrameRequest) -> FrameReply {
+    /// `hung_up` resolves when the child closes the connection.
+    async fn process_request(
+        &self,
+        req: FrameRequest,
+        hung_up: impl Future<Output = ()>,
+    ) -> FrameReply {
         // Look up the token. Unknown token = reject (don't disclose which
         // sessions exist — constant-time isn't necessary for localhost-only,
         // but we never echo the token back).
@@ -459,6 +501,13 @@ impl HostPlanServer {
                     }
                 }
             }
+            FrameKind::AskUser => {
+                let Some(input) = req.ask else {
+                    return FrameReply::err("ask_user frame needs a question");
+                };
+                self.ask_user(&auth.agent_id, &real_session_id, input, hung_up)
+                    .await
+            }
             FrameKind::Plan => {
                 if req.title.is_some() {
                     return FrameReply::err("plan frame must not include title");
@@ -483,6 +532,25 @@ impl HostPlanServer {
                 let Some(title) = req.title else {
                     return FrameReply::err("title is required");
                 };
+                // Story 16 (CAP-5): the branch slug is processed on the
+                // session's FIRST call only, before (and independent of) the
+                // title outcome. Refusals are logged inside; the reply stays
+                // the title result.
+                if self
+                    .branch_attempted_for_session
+                    .lock()
+                    .insert(real_session_id.clone())
+                {
+                    if let Some(persistence) = self.persistence.as_ref() {
+                        crate::acp::manager::auto_rename_for_session(
+                            persistence,
+                            &self.sinks,
+                            &real_session_id,
+                            req.branch.as_deref(),
+                        )
+                        .await;
+                    }
+                }
                 // Per-session: the first title call wins; subsequent calls for
                 // the same session are a success no-op (the agent is told it
                 // succeeded so it stops retrying — no churn to the sidebar

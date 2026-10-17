@@ -35,17 +35,12 @@ impl Drop for TempDir {
 }
 
 fn test_router_with_fixture(dir: &Path) -> Router {
-    // PR-S4: `router_with_static` now requires a project root for the
-    // fs_api boundary. The fixture tests under `assets.rs` only exercise
-    // `/health` and `/ws` (no fs routes), so any existing directory works;
-    // we pass the OS temp dir for symmetry with the legacy default.
     router_with_static(
         Arc::new(AcpManager::new(vec![])),
         crate::web::test_pty_manager(),
         Arc::new(WsRelaySink::new()),
         Arc::new(crate::web::project_registry::ProjectRegistry::new()),
         dir,
-        std::env::temp_dir(),
         false,
         false,
         None,
@@ -63,6 +58,7 @@ async fn factory_key_http_requires_active_gate_even_on_loopback() {
                     .method(method)
                     .uri("/acp/factory-key")
                     .header("content-type", "application/json")
+                    .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 54321))))
                     .body(Body::from(r#"{"config":{},"key":"candidate"}"#))
                     .unwrap(),
             )
@@ -85,7 +81,6 @@ async fn factory_key_http_requires_correct_bearer_when_gated() {
         Arc::new(WsRelaySink::new()),
         Arc::new(crate::web::project_registry::ProjectRegistry::new()),
         dir.path(),
-        std::env::temp_dir(),
         false,
         false,
         Some(auth),
@@ -99,6 +94,7 @@ async fn factory_key_http_requires_correct_bearer_when_gated() {
                     .method(method)
                     .uri("/acp/factory-key")
                     .header("content-type", "application/json")
+                    .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 54321))))
                     .body(Body::from("{}"))
                     .unwrap(),
             )
@@ -117,6 +113,128 @@ async fn factory_key_http_requires_correct_bearer_when_gated() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
+}
+
+/// Gated router (active bearer) with the given write posture, for the
+/// factory-key write-guard cases below.
+fn gated_router(dir: &Path, allow_remote_writes: bool, shared_live_denied: bool) -> Router {
+    let auth = Arc::new(WebAuth::new(
+        crate::web::auth::WebAuthToken::new("test-token").unwrap(),
+    ));
+    router_with_static(
+        Arc::new(AcpManager::new(vec![])),
+        crate::web::test_pty_manager(),
+        Arc::new(WsRelaySink::new()),
+        Arc::new(crate::web::project_registry::ProjectRegistry::new()),
+        dir,
+        allow_remote_writes,
+        shared_live_denied,
+        Some(auth),
+        OriginPolicy::default(),
+    )
+}
+
+async fn factory_key_post(
+    app: Router,
+    peer: SocketAddr,
+    body: &str,
+) -> (StatusCode, serde_json::Value) {
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/acp/factory-key")
+                .header("content-type", "application/json")
+                .header("authorization", "Bearer test-token")
+                .extension(ConnectInfo(peer))
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
+    )
+}
+
+/// D8-F2: an authenticated but non-loopback peer without the opt-in must be
+/// refused with `FORBIDDEN` BEFORE the body is parsed (an invalid body would
+/// otherwise be a 400) and before any agent is spawned / credential written.
+#[tokio::test]
+async fn factory_key_save_refuses_remote_peer_without_opt_in() {
+    let dir = TempDir::new("factory-key-remote");
+    let (status, body) = factory_key_post(
+        gated_router(dir.path(), false, false),
+        SocketAddr::from(([203, 0, 113, 9], 40000)),
+        "{}",
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["code"], "FORBIDDEN");
+}
+
+/// D8-F2: shared-live mode denies ALL writes, including from a loopback peer
+/// (cloudflared forwards public traffic from loopback) and even with the
+/// `--allow-remote-writes` opt-in.
+#[tokio::test]
+async fn factory_key_save_refused_in_shared_live_mode() {
+    let dir = TempDir::new("factory-key-shared-live");
+    for allow_remote in [false, true] {
+        let (status, body) = factory_key_post(
+            gated_router(dir.path(), allow_remote, true),
+            SocketAddr::from(([127, 0, 0, 1], 54321)),
+            "{}",
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "allow_remote={allow_remote}");
+        assert_eq!(body["code"], "FORBIDDEN");
+    }
+}
+
+/// Admitted postures (loopback; remote with the opt-in) pass the write guard
+/// and reach body validation (400, nothing spawned for an invalid body).
+#[tokio::test]
+async fn factory_key_save_admitted_postures_reach_body_validation() {
+    let dir = TempDir::new("factory-key-admitted");
+    for (peer, allow_remote) in [
+        (SocketAddr::from(([127, 0, 0, 1], 54321)), false),
+        (SocketAddr::from(([203, 0, 113, 9], 40000)), true),
+    ] {
+        let (status, body) =
+            factory_key_post(gated_router(dir.path(), allow_remote, false), peer, "{}").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "peer={peer}");
+        assert_eq!(body["error"], "Invalid Factory key request");
+    }
+}
+
+/// The write guard runs BEFORE body extraction: a denied peer sending syntactically
+/// invalid JSON must still get `403 FORBIDDEN` (not the extractor's 4xx), while an
+/// admitted peer sending the same body reaches the handler's own parse error.
+#[tokio::test]
+async fn factory_key_save_guard_precedes_invalid_json_body() {
+    let dir = TempDir::new("factory-key-invalid-json");
+    let (status, body) = factory_key_post(
+        gated_router(dir.path(), false, false),
+        SocketAddr::from(([203, 0, 113, 9], 40000)),
+        "{not json",
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["code"], "FORBIDDEN");
+
+    let (status, body) = factory_key_post(
+        gated_router(dir.path(), false, false),
+        SocketAddr::from(([127, 0, 0, 1], 54321)),
+        "{not json",
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"], "Invalid Factory key request");
 }
 
 #[tokio::test]
@@ -146,6 +264,67 @@ async fn health_returns_capability_json_for_loopback_peer() {
         parsed["allowRemoteWrites"], true,
         "loopback peer must be admitted even without the opt-in (mirrors check_local_only)"
     );
+    assert_eq!(
+        parsed["caseInsensitivePaths"],
+        cfg!(any(windows, target_os = "macos")),
+        "the host reports whether its filesystem folds path case (#641)"
+    );
+}
+
+#[tokio::test]
+async fn agent_idle_window_returns_the_ipc_envelope() {
+    let dir = TempDir::new("idle-window");
+    let resp = test_router_with_fixture(dir.path())
+        .oneshot(
+            Request::builder()
+                .uri("/host/agent-idle-window")
+                .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 54321))))
+                .body(Body::empty())
+                .expect("build request"),
+        )
+        .await
+        .expect("router response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .expect("read body");
+    let parsed: serde_json::Value =
+        serde_json::from_slice(&body).expect("idle window body is JSON");
+    assert_eq!(parsed["success"], true);
+    assert!(parsed["data"]["secs"].as_u64().is_some_and(|secs| secs > 0));
+    let source = parsed["data"]["source"].as_str().expect("source");
+    assert!(
+        matches!(source, "default" | "setting" | "env" | "operator"),
+        "{source}"
+    );
+}
+
+#[tokio::test]
+async fn post_agent_idle_window_applies_a_settings_choice() {
+    let _guard = crate::web::agent_reaper::IDLE_WINDOW_TEST_LOCK.lock().await;
+    crate::web::agent_reaper::reset_agent_idle_window_for_tests();
+    crate::web::agent_reaper::install_agent_idle_baseline(1800, None);
+    let dir = TempDir::new("idle-window-set");
+    let resp = test_router_with_fixture(dir.path())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/host/agent-idle-window")
+                .header("content-type", "application/json")
+                .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 54321))))
+                .body(Body::from(r#"{"secs":7200}"#))
+                .expect("build request"),
+        )
+        .await
+        .expect("router response");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .expect("read body");
+    let parsed: serde_json::Value = serde_json::from_slice(&body).expect("json");
+    assert_eq!(parsed["data"]["secs"], 7200);
+    assert_eq!(parsed["data"]["source"], "setting");
+    crate::web::agent_reaper::reset_agent_idle_window_for_tests();
 }
 
 /// Non-loopback peer WITHOUT the opt-in → `allowRemoteWrites:false`. This
@@ -160,7 +339,6 @@ async fn health_reports_denied_for_non_loopback_without_opt_in() {
         Arc::new(WsRelaySink::new()),
         Arc::new(crate::web::project_registry::ProjectRegistry::new()),
         dir.path(),
-        std::env::temp_dir(),
         false, // allow_remote_writes (no opt-in)
         false, // shared_live_writes_denied (standalone)
         None,  // web_auth (ungated)
@@ -199,7 +377,6 @@ async fn health_reports_denied_for_all_peers_when_shared_live() {
         Arc::new(WsRelaySink::new()),
         Arc::new(crate::web::project_registry::ProjectRegistry::new()),
         dir.path(),
-        std::env::temp_dir(),
         true, // allow_remote_writes (would admit non-loopback on standalone)
         true, // shared_live_writes_denied (desktop shared-live overrides)
         None, // web_auth (ungated)
@@ -238,7 +415,6 @@ async fn health_reports_admitted_for_non_loopback_with_opt_in() {
         Arc::new(WsRelaySink::new()),
         Arc::new(crate::web::project_registry::ProjectRegistry::new()),
         dir.path(),
-        std::env::temp_dir(),
         true,  // allow_remote_writes (opt-in)
         false, // shared_live_writes_denied (standalone, not shared-live)
         None,  // web_auth (ungated)
@@ -407,7 +583,6 @@ fn gated_router_with_fixture(dir: &Path) -> Router {
         Arc::new(WsRelaySink::new()),
         Arc::new(crate::web::project_registry::ProjectRegistry::new()),
         dir,
-        std::env::temp_dir(),
         false,
         false,
         Some(Arc::new(WebAuth::new(
@@ -432,6 +607,7 @@ fn requires_token_covers_api_prefixes_and_public_paths() {
         assert!(!requires_token(public), "{public} must stay public");
     }
     for gated in [
+        "/host/agent-idle-window",
         "/projects",
         "/projects/default",
         "/projects/p-1",
@@ -445,7 +621,6 @@ fn requires_token_covers_api_prefixes_and_public_paths() {
         "/skills/x",
         "/log/frontend-error",
         "/shells",
-        "/workspace/p-1",
         "/acp/catalog",
         "/acp/install",
         "/worktree/list",
@@ -725,6 +900,10 @@ async fn canvas_routes_require_auth_when_gated() {
             Request::builder()
                 .method("POST")
                 .uri("/canvas/mcp")
+                .extension(axum::extract::ConnectInfo(SocketAddr::from((
+                    [127, 0, 0, 1],
+                    54321,
+                ))))
                 .header("content-type", "application/json")
                 .body(Body::from("{}"))
                 .expect("build request"),
@@ -796,6 +975,10 @@ async fn canvas_routes_require_auth_when_gated() {
             Request::builder()
                 .method("POST")
                 .uri("/canvas/mcp")
+                .extension(axum::extract::ConnectInfo(SocketAddr::from((
+                    [127, 0, 0, 1],
+                    54321,
+                ))))
                 .header("authorization", "Bearer t0ken")
                 .header("content-type", "application/json")
                 .body(Body::from("{}"))
@@ -850,6 +1033,10 @@ async fn ungated_canvas_open_degrades_to_daemon_down_without_pool() {
             Request::builder()
                 .method("POST")
                 .uri("/canvas/open")
+                .extension(axum::extract::ConnectInfo(SocketAddr::from((
+                    [127, 0, 0, 1],
+                    54321,
+                ))))
                 .header("content-type", "application/json")
                 .body(Body::from(
                     r#"{"docPath":"C:/proj/design.op","projectId":"p-1"}"#,
@@ -874,7 +1061,6 @@ fn router_for_origins(dir: &Path, origins: OriginPolicy) -> Router {
         Arc::new(WsRelaySink::new()),
         Arc::new(crate::web::project_registry::ProjectRegistry::new()),
         dir,
-        std::env::temp_dir(),
         false,
         false,
         None,
@@ -1103,7 +1289,11 @@ async fn serve_origins(origins: OriginPolicy) -> (TempDir, u16, tokio::task::Joi
         .expect("bind");
     let port = listener.local_addr().expect("addr").port();
     let handle = tokio::spawn(async move {
-        let _ = axum::serve(listener, app.into_make_service()).await;
+        let _ = axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await;
     });
     (dir, port, handle)
 }

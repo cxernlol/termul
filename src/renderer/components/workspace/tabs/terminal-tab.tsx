@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { AgentIcon } from '@/components/agents/AgentIcon'
 import { Terminal as TerminalIcon } from '@/components/icons'
+import { FIELD_FOCUS_CLASS } from '@/components/ui/panel-styles'
 import type { Terminal } from '@/types/project'
 import { TabContextMenu } from '../tab-context-menu'
 import { TabChrome } from './tab-chrome'
@@ -117,7 +118,7 @@ export function TerminalTabInline({
               onClick={(e) => e.stopPropagation()}
               onAuxClick={(e) => e.stopPropagation()}
               aria-label="Terminal name"
-              className="min-w-0 flex-1 border-b border-primary bg-transparent text-xs font-medium leading-none outline-none"
+              className={`min-w-0 flex-1 border-b border-border bg-transparent text-xs font-medium leading-none ${FIELD_FOCUS_CLASS}`}
             />
           ) : undefined
         }

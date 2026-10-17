@@ -6,9 +6,13 @@
 //! as JSON files in the app data directory (the Windows Credential Manager
 //! has a 2560-char limit that OAuth JWTs routinely exceed).
 
+use std::collections::HashMap;
+use std::sync::LazyLock;
+
+use parking_lot::Mutex;
 use rmcp::transport::auth::{
-    AuthorizationCallback, AuthorizationManager, AuthorizationSession, CredentialStore, OAuthState,
-    StoredCredentials,
+    AuthorizationCallback, AuthorizationManager, AuthorizationRequest, AuthorizationSession,
+    CredentialStore, InMemoryCredentialStore, OAuthState, OAuthTokenResponse, StoredCredentials,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -73,6 +77,27 @@ fn keychain_key(server_url: &str) -> String {
     format!("mcp:{}", server_url.trim_end_matches('/'))
 }
 
+/// Per-server count of stored-token writes and deletes, keyed like the token
+/// file. The MCP probe dedupe reads it so a probe that read the old token is
+/// never joined after a sign-in or sign-out.
+static TOKEN_GENERATIONS: LazyLock<Mutex<HashMap<String, u64>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+pub fn token_generation(server_url: &str) -> u64 {
+    TOKEN_GENERATIONS
+        .lock()
+        .get(server_url.trim_end_matches('/'))
+        .copied()
+        .unwrap_or(0)
+}
+
+fn bump_token_generation(server_url: &str) {
+    *TOKEN_GENERATIONS
+        .lock()
+        .entry(server_url.trim_end_matches('/').to_string())
+        .or_default() += 1;
+}
+
 pub fn load_stored_token(server_url: &str) -> Result<Option<StoredToken>, McpOAuthError> {
     let path = token_file_path(server_url)?;
     match std::fs::read_to_string(&path) {
@@ -110,21 +135,25 @@ pub fn store_token(server_url: &str, token: &StoredToken) -> Result<(), McpOAuth
             .open(&path)
             .map_err(|e| McpOAuthError::Keychain(format!("open: {e}")))?;
         file.write_all(json.as_bytes())
-            .map_err(|e| McpOAuthError::Keychain(format!("write: {e}")))
+            .map_err(|e| McpOAuthError::Keychain(format!("write: {e}")))?;
     }
     #[cfg(not(unix))]
     {
-        std::fs::write(&path, json).map_err(|e| McpOAuthError::Keychain(format!("write: {e}")))
+        std::fs::write(&path, json).map_err(|e| McpOAuthError::Keychain(format!("write: {e}")))?;
     }
+    bump_token_generation(server_url);
+    Ok(())
 }
 
 pub fn delete_stored_token(server_url: &str) -> Result<(), McpOAuthError> {
     let path = token_file_path(server_url)?;
     match std::fs::remove_file(&path) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(McpOAuthError::Keychain(format!("delete: {e}"))),
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(McpOAuthError::Keychain(format!("delete: {e}"))),
     }
+    bump_token_generation(server_url);
+    Ok(())
 }
 
 /// Resolve the file path for storing an OAuth token. Tokens are stored as
@@ -172,9 +201,11 @@ pub async fn get_valid_token(server_url: &str) -> Result<Option<String>, McpOAut
         Some(t) if t.refresh_token.is_some() => match refresh_token(&t).await {
             Ok(new) => {
                 store_token(server_url, &new)?;
+                log::info!("[mcp-oauth] expired token refreshed (url redacted)");
                 Ok(Some(new.access_token))
             }
             Err(_) => {
+                log::warn!("[mcp-oauth] token refresh failed, stored token removed (url redacted)");
                 let _ = delete_stored_token(server_url);
                 Ok(None)
             }
@@ -187,40 +218,38 @@ pub async fn get_valid_token(server_url: &str) -> Result<Option<String>, McpOAut
     }
 }
 
-/// Blocking variant of `get_valid_token` — loads the token from the file
-/// without async. Used by `inject_oauth_tokens` which is called from a sync
-/// context (session/new injection must not block the runtime).
-pub fn get_valid_token_blocking(server_url: &str) -> Result<Option<String>, McpOAuthError> {
-    let stored = load_stored_token(server_url)?;
-    match stored {
-        Some(token) if !is_token_expired(&token) => Ok(Some(token.access_token)),
-        Some(token) if token.refresh_token.is_some() => {
-            log::info!("[mcp-oauth] token expired for server (url redacted)");
-            let _ = delete_stored_token(server_url);
-            Ok(None)
-        }
-        Some(_) => {
-            let _ = delete_stored_token(server_url);
-            Ok(None)
-        }
-        None => Ok(None),
-    }
-}
-
 async fn refresh_token(stored: &StoredToken) -> Result<StoredToken, McpOAuthError> {
     let mut manager = AuthorizationManager::new(&stored.issuer)
         .await
         .map_err(|e| McpOAuthError::DiscoveryFailed(e.to_string()))?;
-    let metadata = manager
-        .discover_metadata()
+    let resolution = manager
+        .resolve_metadata()
         .await
         .map_err(|e| McpOAuthError::DiscoveryFailed(e.to_string()))?;
-    manager.set_metadata(metadata);
+    manager.set_metadata(resolution.metadata);
     let config = rmcp::transport::auth::OAuthClientConfig::new(
         stored.client_id.clone(),
         "http://127.0.0.1/callback",
     );
     manager.configure_client(config).ok();
+    // The manager refreshes from its credential store, which starts empty.
+    let credentials: OAuthTokenResponse = serde_json::from_value(serde_json::json!({
+        "access_token": stored.access_token,
+        "token_type": "bearer",
+        "refresh_token": stored.refresh_token,
+    }))
+    .map_err(|e| McpOAuthError::TokenExchangeFailed(format!("stored token: {e}")))?;
+    let store = InMemoryCredentialStore::new();
+    store
+        .save(StoredCredentials::new(
+            stored.client_id.clone(),
+            Some(credentials),
+            Vec::new(),
+            None,
+        ))
+        .await
+        .map_err(|e| McpOAuthError::TokenExchangeFailed(e.to_string()))?;
+    manager.set_credential_store(store);
     let tr = manager
         .refresh_token()
         .await
@@ -255,14 +284,15 @@ pub async fn run_full_flow(
     let mut manager = AuthorizationManager::new(server_url)
         .await
         .map_err(|e| McpOAuthError::DiscoveryFailed(e.to_string()))?;
-    let metadata = manager
-        .discover_metadata()
+    let resolution = manager
+        .resolve_metadata()
         .await
         .map_err(|e| McpOAuthError::DiscoveryFailed(e.to_string()))?;
-    manager.set_metadata(metadata);
-    let session = AuthorizationSession::new(manager, &[], redirect_uri, Some("Termul"), None)
+    manager.set_metadata(resolution.metadata);
+    let request = AuthorizationRequest::new(redirect_uri).with_client_name("Termul");
+    let session = AuthorizationSession::new(manager, request)
         .await
-        .map_err(|e| McpOAuthError::RegistrationFailed(e.to_string()))?;
+        .map_err(|(_manager, e)| McpOAuthError::RegistrationFailed(e.to_string()))?;
     let callback = AuthorizationCallback::from_redirect_url(&callback_url)
         .map_err(|e| McpOAuthError::TokenExchangeFailed(format!("callback: {e}")))?;
     let mut state = OAuthState::Session(session);
@@ -424,4 +454,4 @@ pub fn bearer_header(token: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

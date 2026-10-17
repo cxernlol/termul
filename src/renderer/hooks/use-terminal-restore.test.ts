@@ -1,5 +1,6 @@
-import { renderHook, waitFor } from '@testing-library/react'
+import { act, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { useProjectSwitchStatus } from '@/lib/project-switch/status-store'
 import {
   mockAttachResult,
   mockPersistedTerminal,
@@ -13,6 +14,18 @@ import {
   normalizeShellForStartup,
   useTerminalRestore
 } from './use-terminal-restore'
+
+const { mockToastError } = vi.hoisted(() => ({ mockToastError: vi.fn() }))
+
+vi.mock('sonner', () => ({ toast: { error: mockToastError } }))
+
+const { mockHasCachedTerminal } = vi.hoisted(() => ({
+  mockHasCachedTerminal: vi.fn((_ptyId: string) => false)
+}))
+
+vi.mock('@/components/terminal/terminal-cache', () => ({
+  hasCachedTerminal: mockHasCachedTerminal
+}))
 
 const { mockRecordTerminalContinuityEvent, mockBeginProjectContinuityCorrelation } = vi.hoisted(
   () => ({
@@ -134,7 +147,15 @@ vi.mock('../stores/terminal-store', () => ({
   useProjectsWithErrors: () => new Set()
 }))
 
+// Which project's tree the workspace store shows. Null follows the project
+// store (the switch always committed); a value pins it (a switch that failed or
+// was superseded leaves another project visible).
+let committedProjectOverride: string | null = null
+
 const mockWorkspaceStore = {
+  get activeProjectId(): string {
+    return committedProjectOverride ?? mockProjectState.activeProjectId
+  },
   ensureTerminalTab: vi.fn(),
   getActivePaneLeaf: vi.fn(() => ({
     id: 'pane-active',
@@ -168,6 +189,13 @@ vi.mock('../stores/app-settings-store', () => ({
   }
 }))
 
+/** Let the restore's awaited continuation (after the switch settles) run. */
+async function settleMicrotasks(): Promise<void> {
+  await act(async () => {
+    for (let i = 0; i < 20; i++) await Promise.resolve()
+  })
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
   vi.useRealTimers()
@@ -177,7 +205,11 @@ beforeEach(() => {
   mockBeginProjectContinuityCorrelation.mockImplementation(
     (projectId: string) => `corr-${projectId}`
   )
+  mockHasCachedTerminal.mockReset()
+  mockHasCachedTerminal.mockReturnValue(false)
   mockProjectState.activeProjectId = ''
+  committedProjectOverride = null
+  useProjectSwitchStatus.setState({ pending: null, failed: null })
   mockTerminalStoreState.terminals = []
   mockTerminalStoreState.activeTerminalId = ''
   mockAcpState.sessions = {}
@@ -334,6 +366,31 @@ describe('useTerminalRestore', () => {
 
     expect(mockWorkspaceStore.setActiveTab).not.toHaveBeenCalled()
     expect(mockTerminalStoreState.selectTerminal).toHaveBeenCalledWith('a-live')
+  })
+
+  it('does not touch the visible tree when the switch toward the project settles without committing it', async () => {
+    mockTerminalStoreState.terminals = [
+      mockTerminal({ id: 'a-live', projectId: 'project-a', name: 'A', ptyId: 'pty-a' })
+    ]
+    mockLoadPersistedTerminals.mockResolvedValue(null)
+    // A switch to project-a is loading; project-b stays visible.
+    committedProjectOverride = 'project-b'
+    useProjectSwitchStatus.setState({ pending: { projectId: 'project-a' } })
+
+    renderHook(() => {
+      mockProjectState.activeProjectId = 'project-a'
+      useTerminalRestore()
+    })
+    await waitFor(() => expect(mockLoadPersistedTerminals).toHaveBeenCalledWith('project-a'))
+    expect(mockWorkspaceStore.ensureTerminalTab).not.toHaveBeenCalled()
+
+    // The switch fails/is superseded: pending clears, but project-a never committed.
+    useProjectSwitchStatus.setState({ pending: null })
+    await settleMicrotasks()
+
+    expect(mockWorkspaceStore.ensureTerminalTab).not.toHaveBeenCalled()
+    expect(mockWorkspaceStore.setActiveTab).not.toHaveBeenCalled()
+    expect(mockTerminalStoreState.selectTerminal).not.toHaveBeenCalled()
   })
 
   it('prefers currently active live terminal when selecting a live terminal', async () => {
@@ -669,6 +726,71 @@ describe('useTerminalRestore', () => {
     vi.useRealTimers()
   })
 
+  describe('reconciling persisted history into live terminals', () => {
+    async function reconcileLiveTerminal(
+      overrides: Partial<ReturnType<typeof mockTerminal>>
+    ): Promise<Record<string, unknown> | undefined> {
+      mockTerminalStoreState.terminals = [
+        mockTerminal({
+          id: 'a-live',
+          projectId: 'project-a',
+          name: 'A',
+          ptyId: 'pty-a',
+          ...overrides
+        })
+      ]
+      mockLoadPersistedTerminals.mockResolvedValue({
+        activeTerminalId: 'a-live',
+        terminals: [
+          mockPersistedTerminal({
+            id: 'a-live',
+            name: 'A',
+            cwd: '/projects/a',
+            scrollback: [],
+            transcript: 'persisted output\r\n'
+          })
+        ],
+        updatedAt: '2026-03-09T00:00:00.000Z'
+      })
+
+      renderHook(() => {
+        mockProjectState.activeProjectId = 'project-a'
+        useTerminalRestore()
+      })
+
+      await waitFor(() => {
+        expect(mockTerminalStoreState.setTerminals).toHaveBeenCalled()
+      })
+      const setCall = mockTerminalStoreState.setTerminals.mock.calls[0]?.[0] as Array<
+        Record<string, unknown>
+      >
+      return setCall.find((t) => t.id === 'a-live')
+    }
+
+    it('takes the persisted transcript for a live terminal with no xterm', async () => {
+      const reconciled = await reconcileLiveTerminal({ rendererAttachmentCount: 0 })
+      expect(reconciled?.transcript).toBe('persisted output\r\n')
+    })
+
+    it('skips the persisted transcript when the xterm is cached', async () => {
+      mockHasCachedTerminal.mockImplementation((ptyId: string) => ptyId === 'pty-a')
+      const reconciled = await reconcileLiveTerminal({ rendererAttachmentCount: 0 })
+      expect(mockHasCachedTerminal).toHaveBeenCalledWith('pty-a')
+      expect(reconciled?.transcript).toBeUndefined()
+    })
+
+    it('skips the persisted transcript when a renderer is attached', async () => {
+      const reconciled = await reconcileLiveTerminal({ rendererAttachmentCount: 1 })
+      expect(reconciled?.transcript).toBeUndefined()
+    })
+
+    it('keeps the live missed-output transcript of a cached xterm', async () => {
+      mockHasCachedTerminal.mockReturnValue(true)
+      const reconciled = await reconcileLiveTerminal({ transcript: 'missed\r\n' })
+      expect(reconciled?.transcript).toBe('missed\r\n')
+    })
+  })
+
   // Project Switch Terminal Preservation tests
   // These tests verify the behavioral contract that PTYs are NOT killed when switching projects
   it('should NOT call terminalApi.kill when switching projects with live terminals', async () => {
@@ -908,6 +1030,75 @@ describe('useTerminalRestore', () => {
     })
   })
 
+  it('tells the user once when the host refuses restored terminals at its limit', async () => {
+    mockTerminalStoreState.terminals = []
+    mockLoadPersistedTerminals.mockResolvedValue({
+      activeTerminalId: 'persisted-a',
+      terminals: [
+        mockPersistedTerminal({ id: 'persisted-a', name: 'A', cwd: '/projects/a', scrollback: [] }),
+        mockPersistedTerminal({ id: 'persisted-b', name: 'B', cwd: '/projects/a', scrollback: [] }),
+        mockPersistedTerminal({ id: 'persisted-c', name: 'C', cwd: '/projects/a', scrollback: [] })
+      ],
+      updatedAt: '2026-03-09T00:00:00.000Z'
+    })
+    const hostMessage =
+      'Terminal limit reached (10 per project, 30 total): this project is at its limit'
+    mockTerminalSpawn
+      .mockResolvedValueOnce({ success: true, data: mockSpawnedTerminal({ id: 'pty-a' }) })
+      .mockResolvedValue({ success: false, error: hostMessage, code: 'TERMINAL_LIMIT' })
+
+    renderHook(() => {
+      mockProjectState.activeProjectId = 'project-a'
+      useTerminalRestore()
+    })
+
+    await waitFor(() => {
+      expect(mockToastError).toHaveBeenCalledTimes(1)
+    })
+    expect(mockToastError).toHaveBeenCalledWith(`2 terminals not restored. ${hostMessage}`)
+  })
+
+  it('skips the tab remap and terminal selection when the switch settles without committing the project', async () => {
+    mockTerminalStoreState.terminals = []
+    mockLoadPersistedTerminals.mockResolvedValue({
+      activeTerminalId: 'persisted-a',
+      terminals: [
+        mockPersistedTerminal({ id: 'persisted-a', name: 'A', cwd: '/projects/a', scrollback: [] })
+      ],
+      updatedAt: '2026-03-09T00:00:00.000Z'
+    })
+    mockListPreserved.mockResolvedValue({
+      success: true,
+      data: [
+        {
+          id: 'terminal-100-1',
+          shell: '/bin/bash',
+          cwd: '/projects/a',
+          pid: 11,
+          cols: 80,
+          rows: 24,
+          claim: 'fresh-claim-a'
+        }
+      ]
+    })
+    committedProjectOverride = 'project-b'
+    useProjectSwitchStatus.setState({ pending: { projectId: 'project-a' } })
+
+    renderHook(() => {
+      mockProjectState.activeProjectId = 'project-a'
+      useTerminalRestore()
+    })
+    await waitFor(() => expect(mockTerminalStoreState.setTerminals).toHaveBeenCalled())
+    // Held back while the switch is pending.
+    expect(mockWorkspaceStore.remapTerminalTabs).not.toHaveBeenCalled()
+
+    useProjectSwitchStatus.setState({ pending: null })
+    await settleMicrotasks()
+
+    expect(mockWorkspaceStore.remapTerminalTabs).not.toHaveBeenCalled()
+    expect(mockTerminalStoreState.selectTerminal).not.toHaveBeenCalled()
+  })
+
   it('restores leftover preserved PTYs as their own tabs (resolved Q3)', async () => {
     mockTerminalStoreState.terminals = []
     // Persisted layout knows one terminal; the host preserved two.
@@ -961,6 +1152,110 @@ describe('useTerminalRestore', () => {
     expect(newTerminals).toHaveLength(2)
     const ptyIds = newTerminals.map((t) => t.ptyId).sort()
     expect(ptyIds).toEqual(['terminal-100-1', 'terminal-999-9'])
+  })
+
+  describe('cancelled restore with live preserved PTYs', () => {
+    const settleRestore = () => new Promise((resolve) => setTimeout(resolve, 50))
+
+    const renderSwitchableHook = () =>
+      renderHook(
+        ({ projectId }) => {
+          mockProjectState.activeProjectId = projectId
+          useTerminalRestore()
+        },
+        { initialProps: { projectId: 'project-a' } }
+      )
+
+    it('kills only the PTY it spawned when cancelled after reattaching a live PTY', async () => {
+      mockLoadPersistedTerminals.mockImplementation(async (projectId: string) =>
+        projectId === 'project-a'
+          ? {
+              activeTerminalId: 'persisted-a',
+              terminals: [
+                mockPersistedTerminal({ id: 'persisted-a', name: 'A', cwd: '/projects/a' }),
+                mockPersistedTerminal({ id: 'persisted-b', name: 'B', cwd: '/projects/a' })
+              ],
+              updatedAt: '2026-03-09T00:00:00.000Z'
+            }
+          : null
+      )
+      mockListPreserved.mockResolvedValue({
+        success: true,
+        data: [
+          mockPreservedPty({
+            id: 'terminal-live-1',
+            shell: '/bin/bash',
+            cwd: '/projects/a',
+            claim: 'claim-live-1'
+          })
+        ]
+      })
+      let resolveSpawn: (value: unknown) => void = () => {}
+      mockTerminalSpawn.mockImplementation(() => new Promise((resolve) => (resolveSpawn = resolve)))
+
+      const { rerender } = renderSwitchableHook()
+      await waitFor(() => expect(mockTerminalSpawn).toHaveBeenCalledTimes(1))
+      expect(mockTerminalAttach).toHaveBeenCalledWith('terminal-live-1', 'claim-live-1', 0)
+
+      rerender({ projectId: 'project-b' })
+      resolveSpawn({ success: true, data: mockSpawnedTerminal({ id: 'pty-new-b' }) })
+      await waitFor(() => expect(mockTerminalKill).toHaveBeenCalled())
+      await settleRestore()
+
+      expect(mockTerminalKill.mock.calls).toEqual([['pty-new-b']])
+    })
+
+    it('kills only the PTY it spawned when cancelled while attaching a leftover live PTY', async () => {
+      mockLoadPersistedTerminals.mockImplementation(async (projectId: string) =>
+        projectId === 'project-a'
+          ? {
+              activeTerminalId: 'persisted-a',
+              terminals: [
+                mockPersistedTerminal({ id: 'persisted-a', name: 'A', cwd: '/projects/a' })
+              ],
+              updatedAt: '2026-03-09T00:00:00.000Z'
+            }
+          : null
+      )
+      mockListPreserved.mockResolvedValue({
+        success: true,
+        data: [
+          mockPreservedPty({
+            id: 'terminal-leftover-1',
+            shell: '/bin/bash',
+            cwd: '/elsewhere',
+            claim: 'claim-leftover-1'
+          })
+        ]
+      })
+      mockTerminalSpawn.mockResolvedValue({
+        success: true,
+        data: mockSpawnedTerminal({ id: 'pty-new-a' })
+      })
+      let resolveAttach: (value: unknown) => void = () => {}
+      mockTerminalAttach.mockImplementation(
+        () => new Promise((resolve) => (resolveAttach = resolve))
+      )
+
+      const { rerender } = renderSwitchableHook()
+      await waitFor(() =>
+        expect(mockTerminalAttach).toHaveBeenCalledWith(
+          'terminal-leftover-1',
+          'claim-leftover-1',
+          0
+        )
+      )
+
+      rerender({ projectId: 'project-b' })
+      resolveAttach({
+        success: true,
+        data: mockAttachResult({ id: 'terminal-leftover-1', cwd: '/elsewhere', latestSeq: 5 })
+      })
+      await waitFor(() => expect(mockTerminalKill).toHaveBeenCalled())
+      await settleRestore()
+
+      expect(mockTerminalKill.mock.calls).toEqual([['pty-new-a']])
+    })
   })
 
   it('accumulates no leaked PTYs across three reload cycles (preserved count stable)', async () => {

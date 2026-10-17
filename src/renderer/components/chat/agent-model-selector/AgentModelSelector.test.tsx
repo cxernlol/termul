@@ -3,6 +3,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { StoredAgentConfig } from '@/lib/acp-agents-persistence'
 import type { SessionConfigOption } from '@/lib/acp-api'
 import type { SupportedAcpAgentEntry } from '@/lib/agents/supported-acp-agents'
+import {
+  armMobileOverlayBackStack,
+  pressSystemBack,
+  waitForSentinelDepth
+} from '@/lib/test-utils/overlay-back-stack'
+import { useOverlayStackStore } from '@/stores/overlay-stack-store'
 import { AgentModelSelector } from './AgentModelSelector'
 
 // jsdom omits `document.elementFromPoint`; Radix/floating-ui call it while
@@ -244,6 +250,82 @@ beforeEach(() => {
 
 afterEach(() => cleanup())
 
+describe('AgentModelSelector agent capabilities', () => {
+  const advertised = {
+    promptCapabilities: { image: true, embeddedContext: true },
+    mcpCapabilities: { http: true }
+  }
+
+  function seedAgent(capabilities: unknown): void {
+    acpStateRef.current = {
+      ...acpStateRef.current,
+      agents: { 'agent-1': { id: 'agent-1', capabilities } }
+    }
+  }
+
+  it('shows what the chat agent advertises under its options', () => {
+    seedAgent(advertised)
+    renderSelector()
+    open()
+
+    const summary = screen.getByTestId('agent-capabilities')
+    expect(
+      within(summary)
+        .getAllByRole('definition')
+        .map((item) => item.textContent)
+    ).toEqual(['Text · Images · Embedded context', 'stdio · HTTP'])
+  })
+
+  it('shows nothing for an agent that advertised no capabilities', () => {
+    seedAgent(null)
+    renderSelector()
+    open()
+
+    expect(screen.getByTestId('agent-model-selector-panel')).toBeInTheDocument()
+    expect(screen.queryByTestId('agent-capabilities')).toBeNull()
+  })
+
+  it('never shows the chat agent profile under another agent tab', () => {
+    seed([readyEntry(CLAUDE)])
+    seedAgent(advertised)
+    renderSelector()
+    open()
+    expect(screen.getByTestId('agent-capabilities')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Claude Agent' }))
+
+    expect(screen.queryByTestId('agent-capabilities')).toBeNull()
+  })
+
+  it('with a switch armed, shows the profile only on the chat agent tab', () => {
+    seed([readyEntry(CLAUDE)], { switching: { toConfigId: CLAUDE.id } })
+    seedAgent(advertised)
+    renderSelector()
+    open()
+
+    expect(screen.getByRole('tab', { name: 'Claude Agent' })).toHaveAttribute(
+      'aria-selected',
+      'true'
+    )
+    expect(screen.queryByTestId('agent-capabilities')).toBeNull()
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Cursor' }))
+
+    expect(screen.getByTestId('agent-capabilities')).toBeInTheDocument()
+  })
+
+  it('hides the summary while the search results are showing', () => {
+    seedAgent(advertised)
+    renderSelector()
+    open()
+    fireEvent.change(screen.getByLabelText('Search models and agents'), {
+      target: { value: 'opus' }
+    })
+
+    expect(screen.queryByTestId('agent-capabilities')).toBeNull()
+  })
+})
+
 describe('AgentModelSelector panel', () => {
   it('opens to the model list with search focused; a model pick keeps the panel open', () => {
     const onSetConfig = vi.fn()
@@ -314,6 +396,42 @@ describe('AgentModelSelector panel', () => {
     const fast = screen.getByRole('button', { name: 'Fast Mode' })
     expect(fast).not.toHaveClass('text-warning')
     expect(fast.querySelector('svg')).toHaveAttribute('fill', 'none')
+  })
+
+  describe('a boolean Fast mode option', () => {
+    const booleanFast = (currentValue: boolean): SessionConfigOption => ({
+      id: 'fast_mode',
+      name: 'Fast mode',
+      category: 'other',
+      type: 'boolean',
+      currentValue
+    })
+
+    it('turns Fast on with the one bolt toggle and sends a boolean', () => {
+      const onSetConfig = vi.fn()
+      renderSelector({ onSetConfig, fastMode: booleanFast(false) })
+      open()
+
+      const fast = screen.getByTestId('selector-fast')
+      expect(screen.getAllByTestId('selector-fast')).toHaveLength(1)
+      expect(screen.queryByRole('switch')).toBeNull()
+      expect(fast).toBeEnabled()
+      expect(fast).toHaveAttribute('aria-pressed', 'false')
+      fireEvent.click(fast)
+      expect(onSetConfig).toHaveBeenCalledWith('fast_mode', true)
+    })
+
+    it('turns Fast off and shows the filled bolt while it is on', () => {
+      const onSetConfig = vi.fn()
+      renderSelector({ onSetConfig, fastMode: booleanFast(true) })
+      open()
+
+      const fast = screen.getByTestId('selector-fast')
+      expect(fast).toHaveAttribute('aria-pressed', 'true')
+      expect(fast).toHaveClass('text-warning')
+      fireEvent.click(fast)
+      expect(onSetConfig).toHaveBeenCalledWith('fast_mode', false)
+    })
   })
 
   it('keeps the Fast slot (disabled) when the model has no Fast mode', () => {
@@ -498,6 +616,43 @@ describe('AgentModelSelector panel', () => {
     })
   })
 
+  it('lists, finds, and names a model inside a grouped select option', () => {
+    renderSelector({
+      modelOption: {
+        id: 'model',
+        name: 'Model',
+        category: 'model',
+        type: 'select',
+        currentValue: 'gemini-flash',
+        options: [
+          { value: 'gemini-flash', name: 'Gemini Flash' },
+          {
+            group: 'anthropic',
+            name: 'Anthropic',
+            options: [{ value: 'claude-sonnet', name: 'Claude Sonnet' }]
+          }
+        ]
+      }
+    })
+    open()
+
+    const list = screen.getByTestId('selector-list')
+    expect(within(list).getByRole('button', { name: 'Gemini Flash' })).toBeInTheDocument()
+    expect(within(list).getByRole('button', { name: 'Claude Sonnet' })).toBeInTheDocument()
+
+    const pill = screen.getByTestId('agent-model-selector-trigger')
+    expect(pill).toHaveTextContent('Gemini Flash')
+    fireEvent.click(within(list).getByRole('button', { name: 'Claude Sonnet' }))
+    expect(pill).toHaveTextContent('Claude Sonnet')
+
+    fireEvent.change(screen.getByLabelText('Search models and agents'), {
+      target: { value: 'claude' }
+    })
+    const results = screen.getByTestId('selector-list')
+    expect(within(results).getByRole('button', { name: /Claude Sonnet/ })).toBeInTheDocument()
+    expect(within(results).queryByRole('button', { name: /Gemini Flash/ })).not.toBeInTheDocument()
+  })
+
   it('opens with the shared dropdown motion (same as the mode menu)', () => {
     renderSelector()
     open()
@@ -517,6 +672,23 @@ describe('AgentModelSelector panel', () => {
     await waitFor(() => {
       expect(screen.queryByTestId('agent-model-selector-panel')).not.toBeInTheDocument()
     })
+  })
+
+  it('caps the popover to the room the browser leaves above the pill', () => {
+    renderSelector()
+    open()
+
+    const surface = screen.getByTestId('agent-model-selector-panel').parentElement
+    expect(surface).toHaveClass('max-h-[var(--radix-popper-available-height,70vh)]')
+    expect(surface).toHaveClass('overflow-y-auto')
+  })
+
+  it('caps the mobile sheet to the dynamic viewport', () => {
+    mockIsMobile.current = true
+    renderSelector()
+    open()
+
+    expect(screen.getByRole('dialog')).toHaveClass('max-h-[85dvh]')
   })
 
   it('renders in a bottom sheet on mobile web', () => {
@@ -713,5 +885,53 @@ describe('AgentModelSelector agent tabs (switch logic moved from AgentSwitchPick
 
     expect(screen.getByText('Install it from the vendor site')).toBeInTheDocument()
     expect(screen.queryByTestId('agent-install-acp-registry:opencode')).not.toBeInTheDocument()
+  })
+})
+
+describe('AgentModelSelector on the mobile overlay back stack', () => {
+  let detach: () => void
+  const stackIds = (): string[] => useOverlayStackStore.getState().stack.map((entry) => entry.id)
+
+  beforeEach(() => {
+    mockIsMobile.current = true
+    // A route entry below the base entry, so a stray back has somewhere to go.
+    window.history.replaceState(null, '', '#/route-a')
+    window.history.pushState(null, '', '#/base')
+    detach = armMobileOverlayBackStack()
+  })
+
+  afterEach(() => detach())
+
+  it('system back closes the sheet and consumes its history entry', async () => {
+    renderSelector()
+    open()
+    expect(screen.getByRole('dialog')).toHaveTextContent('Model and agent')
+    await waitForSentinelDepth(1)
+    expect(stackIds()).toHaveLength(1)
+
+    await pressSystemBack()
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(stackIds()).toEqual([])
+    expect(location.hash).toBe('#/base')
+  })
+
+  it('Esc closes the sheet and drops it from the stack', async () => {
+    renderSelector()
+    open()
+    await waitForSentinelDepth(1)
+
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(stackIds()).toEqual([])
+  })
+
+  it('the desktop popover registers nothing', async () => {
+    mockIsMobile.current = false
+    renderSelector()
+    open()
+    expect(screen.getByTestId('agent-model-selector-panel')).toBeInTheDocument()
+    expect(stackIds()).toEqual([])
   })
 })

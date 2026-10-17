@@ -13,15 +13,24 @@ impl PtyManager {
         &self,
         options: SpawnOptions,
         on_data: Option<Channel<Response>>,
-    ) -> Result<SpawnedTerminal, String> {
-        // Start orphan detection on first spawn (lazy initialization)
-        self.start_orphan_detection();
-
-        let mut slot_reservation = self
-            .try_reserve_terminal_slot()
-            .ok_or_else(|| "Global terminal limit reached".to_string())?;
+    ) -> Result<SpawnedTerminal, SpawnError> {
+        // Start the exited-PTY sweeper on first spawn (lazy initialization)
+        self.start_exit_sweeper();
 
         let id = self.generate_id();
+
+        // The host is the only cap enforcer: a refused spawn creates nothing
+        // (no claim, no PTY, no event) and holds no slot.
+        let _slot_reservation = self
+            .try_reserve_terminal_slot(&id, options.project_id.as_deref())
+            .map_err(|limit| {
+                log::warn!(
+                    "[PtyManager] spawn refused: {:?} terminal cap reached (project_id={})",
+                    limit.scope,
+                    options.project_id.as_deref().unwrap_or("-")
+                );
+                SpawnError::Limit(limit)
+            })?;
 
         let claim = self.claims.issue(&id, options.project_id.as_deref());
         let mut claim_guard = ClaimRollbackGuard {
@@ -33,19 +42,19 @@ impl PtyManager {
         let info = match self.spawn_pty(id.clone(), options, on_data).await {
             Ok(info) => info,
             Err(e) => {
-                // claim_guard drops here and removes the dangling record.
-                return Err(e);
+                // claim_guard drops here and removes the dangling record; the
+                // reservation drops with it, so the slot is free again.
+                return Err(SpawnError::Failed(e));
             }
         };
 
         claim_guard.commit();
-        slot_reservation.commit();
         Ok(SpawnedTerminal { info, claim })
     }
 
     /// Platform-specific PTY creation (the former `spawn` body). `id` and the
     /// claim lifecycle are owned by [`spawn`](Self::spawn); slot reservation
-    /// commits there too, so a failure on any branch rolls everything back.
+    /// is held there too, so a failure on any branch rolls everything back.
     async fn spawn_pty(
         &self,
         id: String,
@@ -138,6 +147,7 @@ impl PtyManager {
             let instance = Arc::new(TerminalInstance {
                 id: id.clone(),
                 project_id: options.project_id.clone(),
+                command_id: options.command_id.clone(),
                 child: Arc::new(AsyncMutex::new(Some(Box::new(child)))),
                 master: Arc::new(AsyncMutex::new(None)), // No master for ConPTY
                 writer: Arc::new(AsyncMutex::new(Some(writer))),
@@ -146,19 +156,19 @@ impl PtyManager {
                 shell: shell_path.clone(),
                 cwd: cwd.clone(),
                 pid,
-                last_activity: Arc::new(RwLock::new(Instant::now())),
-                orphan_since: Arc::new(RwLock::new(None)),
-                renderer_refs: Arc::new(RwLock::new(HashSet::new())),
-                protected: Arc::new(AtomicBool::new(true)),
                 cols: Arc::new(RwLock::new(cols)),
                 rows: Arc::new(RwLock::new(rows)),
                 broadcast_tx: Arc::new(tokio::sync::broadcast::channel(TERM_BROADCAST_CAPACITY).0),
                 output_log: Arc::new(RwLock::new(std::collections::VecDeque::new())),
                 output_log_bytes: Arc::new(AtomicUsize::new(0)),
                 next_output_seq: Arc::new(AtomicU64::new(0)),
-                web_attachments: Arc::new(AtomicUsize::new(0)),
-                last_web_listed: Arc::new(RwLock::new(None)),
+                log_epoch: uuid::Uuid::new_v4().to_string(),
+                live_attachments: Arc::new(AtomicUsize::new(0)),
                 web_size_owner: Arc::new(RwLock::new(None)),
+                resizer: None,
+                exited: AtomicBool::new(false),
+                exited_at: parking_lot::Mutex::new(None),
+                set_observer: self.set_observer.clone(),
                 conpty_handles: Some(Arc::new(ParkingMutex::new(Some(conpty_handles)))),
             });
 
@@ -217,6 +227,7 @@ impl PtyManager {
 
             // Store the terminal
             self.terminals.write().insert(id.clone(), instance.clone());
+            self.set_observer.notify(instance.project_id.as_deref());
 
             // Initialize tracking
             self.cwd_tracker.start_tracking(&id, pid, &cwd);
@@ -295,6 +306,7 @@ impl PtyManager {
             let instance = Arc::new(TerminalInstance {
                 id: id.clone(),
                 project_id: options.project_id.clone(),
+                command_id: options.command_id.clone(),
                 child: Arc::new(AsyncMutex::new(Some(child))),
                 master: Arc::new(AsyncMutex::new(Some(pty_pair.master))),
                 writer: Arc::new(AsyncMutex::new(Some(writer))),
@@ -303,19 +315,19 @@ impl PtyManager {
                 shell: shell_path.clone(),
                 cwd: cwd.clone(),
                 pid,
-                last_activity: Arc::new(RwLock::new(Instant::now())),
-                orphan_since: Arc::new(RwLock::new(None)),
-                renderer_refs: Arc::new(RwLock::new(HashSet::new())),
-                protected: Arc::new(AtomicBool::new(true)),
                 cols: Arc::new(RwLock::new(cols)),
                 rows: Arc::new(RwLock::new(rows)),
                 broadcast_tx: Arc::new(tokio::sync::broadcast::channel(TERM_BROADCAST_CAPACITY).0),
                 output_log: Arc::new(RwLock::new(std::collections::VecDeque::new())),
                 output_log_bytes: Arc::new(AtomicUsize::new(0)),
                 next_output_seq: Arc::new(AtomicU64::new(0)),
-                web_attachments: Arc::new(AtomicUsize::new(0)),
-                last_web_listed: Arc::new(RwLock::new(None)),
+                log_epoch: uuid::Uuid::new_v4().to_string(),
+                live_attachments: Arc::new(AtomicUsize::new(0)),
                 web_size_owner: Arc::new(RwLock::new(None)),
+                resizer: None,
+                exited: AtomicBool::new(false),
+                exited_at: parking_lot::Mutex::new(None),
+                set_observer: self.set_observer.clone(),
                 #[cfg(target_os = "windows")]
                 conpty_handles: None,
             });
@@ -370,6 +382,7 @@ impl PtyManager {
             *instance.flusher_handle.lock().await = Some(flusher_task);
 
             self.terminals.write().insert(id.clone(), instance.clone());
+            self.set_observer.notify(instance.project_id.as_deref());
 
             self.cwd_tracker.start_tracking(&id, pid, &cwd);
             self.git_tracker.initialize_terminal(&id, &cwd);
@@ -394,7 +407,7 @@ impl PtyManager {
     /// Pushes raw bytes to pending_buf, handles overflow protection.
     /// Sets done_flag to true on EOF or error so flusher can finalize.
     /// ADR-002.5: Intercepts DA queries via DaFilter and responds directly to PTY writer.
-    fn reader_loop(
+    pub(super) fn reader_loop(
         instance: Arc<TerminalInstance>,
         mut reader: Box<dyn Read + Send>,
         terminal_events: TerminalEventHub,
@@ -419,8 +432,6 @@ impl PtyManager {
                     break;
                 }
                 Ok(n) => {
-                    instance.update_activity();
-
                     // Parse exit codes from output
                     let data_str = String::from_utf8_lossy(&buffer[..n]);
                     exit_code_tracker.process_data(&id, &data_str);
@@ -467,6 +478,7 @@ impl PtyManager {
 
         // Signal flusher that reader is done
         done_flag.store(true, Ordering::Release);
+        instance.mark_exited();
 
         // Get real child exit status where possible.
         let exit_code = match instance.child.try_lock() {
@@ -507,7 +519,7 @@ impl PtyManager {
     /// output_log: sequence-aware bounded history. Each batch is appended before
     /// broadcasting, so attach can snapshot and subscribe under the same lock.
     #[allow(clippy::too_many_arguments)]
-    fn flusher_loop(
+    pub(super) fn flusher_loop(
         pending_buf: Arc<Mutex<Vec<u8>>>,
         done_flag: Arc<AtomicBool>,
         broadcast_tx: Arc<tokio::sync::broadcast::Sender<TerminalOutputChunk>>,
@@ -529,11 +541,14 @@ impl PtyManager {
             bytes: &Arc<AtomicUsize>,
             next_seq: &Arc<AtomicU64>,
         ) {
+            // Allocate the seq under the log lock: an attach that holds the lock
+            // then sees a head that is already in the log, never a reserved seq
+            // whose chunk has not landed yet.
+            let mut guard = log.write();
             let chunk = TerminalOutputChunk {
                 seq: next_seq.fetch_add(1, Ordering::Relaxed) + 1,
                 data,
             };
-            let mut guard = log.write();
             let mut total = bytes.load(Ordering::Relaxed) + chunk.data.len();
             guard.push_back(chunk.clone());
             while total > SCROLLBACK_CAP {

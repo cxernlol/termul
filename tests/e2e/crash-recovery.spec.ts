@@ -1,6 +1,6 @@
 import { expect, type Page, test } from 'playwright/test'
 import { armNextAgentCrash } from './helpers'
-import { chatTab, launchChat, openWorkspace, selectProject } from './ui'
+import { chatCard, chatTab, launchChat, openWorkspace, selectColumnTab, selectProject } from './ui'
 
 /**
  * Crash-recovery E2E: a chat whose agent dies mid-turn must not leave a
@@ -13,8 +13,8 @@ import { chatTab, launchChat, openWorkspace, selectProject } from './ui'
  * user bubble, exactly what a real mid-turn crash leaves behind.
  * `[DURATION:n]` bounds the fake's turn length: the host re-sends the
  * persisted open turn to the replacement agent on reopen (resume), and a
- * bounded resumed turn lets the tab close promptly instead of parking in
- * Closing for the default 300s.
+ * bounded resumed turn ends promptly instead of running for the default
+ * 300s.
  *
  * All chats live in proj-x: chats in the same project share one agent
  * process, so crash prompts must never reuse an agent another suite's
@@ -98,13 +98,10 @@ test('reopening a crashed chat from history does not resurrect the dead turn', a
   await waitForCrash(page, 'lima survey')
   await closeChatTab(page, 'lima survey')
 
-  // Reopen from the project's history index. The sidebar lists every seeded
-  // project, so scope the expand/entry lookups to proj-x.
-  const projXEntry = page
-    .locator('li')
-    .filter({ has: page.getByRole('button', { name: /^Project: proj-x/ }) })
-  await projXEntry.getByRole('button', { name: 'Expand chats' }).click()
-  await page.getByRole('complementary').getByText('lima survey').first().click()
+  // Reopen from the project's history index. The Chats list shows the active
+  // project's chats (proj-x, selected in beforeEach), closed ones included.
+  await selectColumnTab(page, 'Chats')
+  await chatCard(page, 'lima survey').click()
   await expect(chatTab(page, 'lima survey')).toBeVisible()
 
   // Transcript restored on a fresh agent: Working… may legitimately appear

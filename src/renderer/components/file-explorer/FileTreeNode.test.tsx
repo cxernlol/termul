@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react'
-import type { SVGProps } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 import { ContextMenuContent } from '@/components/ui/context-menu'
+import { ExplorerInlineInputProvider } from './explorer-inline-input'
 import { FileTreeNode } from './FileTreeNode'
 
 vi.mock('@/hooks/use-pane-dnd', () => ({
@@ -10,58 +10,7 @@ vi.mock('@/hooks/use-pane-dnd', () => ({
   })
 }))
 
-vi.mock('./file-icon-map', () => ({
-  getFileIcon: () => (props: SVGProps<SVGSVGElement>) => <svg data-testid="file-icon" {...props} />
-}))
-
-// Stub the Radix context-menu primitives with the stateful F2 pattern: the
-// trigger opens on `contextmenu` (only if the child's onContextMenu did not
-// call preventDefault — mirrors Radix's checkForDefaultPrevented), content
-// renders only while open, Escape closes.
-vi.mock('@/components/ui/context-menu', async () => {
-  const React = await import('react')
-  const MenuCtx = React.createContext<{ open: boolean; setOpen: (o: boolean) => void }>({
-    open: false,
-    setOpen: () => {}
-  })
-  return {
-    ContextMenu: ({ children }: { children: React.ReactNode }) => {
-      const [open, setOpen] = React.useState(false)
-      return <MenuCtx.Provider value={{ open, setOpen }}>{children}</MenuCtx.Provider>
-    },
-    ContextMenuTrigger: ({
-      children,
-      asChild
-    }: {
-      children: React.ReactNode
-      asChild?: boolean
-    }) => {
-      const { setOpen } = React.useContext(MenuCtx)
-      const merged = (e: React.MouseEvent) => {
-        if (e.defaultPrevented) return
-        e.preventDefault()
-        setOpen(true)
-      }
-      if (asChild && React.isValidElement(children)) {
-        const child = children as React.ReactElement<{
-          onContextMenu?: (e: React.MouseEvent) => void
-        }>
-        return React.cloneElement(child, {
-          onContextMenu: (e: React.MouseEvent) => {
-            child.props.onContextMenu?.(e)
-            merged(e)
-          }
-        })
-      }
-      return <div onContextMenu={merged}>{children}</div>
-    },
-    ContextMenuContent: ({ children }: { children: React.ReactNode }) => {
-      const { open } = React.useContext(MenuCtx)
-      if (!open) return null
-      return <div>{children}</div>
-    }
-  }
-})
+vi.mock('@/components/ui/context-menu', () => import('@/lib/test-utils/context-menu'))
 
 describe('FileTreeNode', () => {
   it('keeps long names on the truncate path without forcing the row wider', () => {
@@ -80,10 +29,9 @@ describe('FileTreeNode', () => {
         }}
         depth={0}
         isExpanded={false}
-        isSelected={false}
+        selection="none"
         isLoading={false}
-        onToggle={vi.fn()}
-        onSelect={vi.fn()}
+        onClick={vi.fn()}
         onContextMenu={vi.fn()}
       />
     )
@@ -106,10 +54,9 @@ describe('FileTreeNode', () => {
         }}
         depth={1}
         isExpanded={false}
-        isSelected={false}
+        selection="none"
         isLoading={false}
-        onToggle={vi.fn()}
-        onSelect={vi.fn()}
+        onClick={vi.fn()}
         onContextMenu={vi.fn()}
       />
     )
@@ -133,10 +80,9 @@ describe('FileTreeNode', () => {
         }}
         depth={0}
         isExpanded={false}
-        isSelected={false}
+        selection="none"
         isLoading={false}
-        onToggle={vi.fn()}
-        onSelect={vi.fn()}
+        onClick={vi.fn()}
         onContextMenu={onContextMenu}
         renderContextMenu={() => (
           <ContextMenuContent>
@@ -177,10 +123,9 @@ describe('FileTreeNode', () => {
         }}
         depth={0}
         isExpanded={false}
-        isSelected={false}
+        selection="none"
         isLoading={false}
-        onToggle={vi.fn()}
-        onSelect={vi.fn()}
+        onClick={vi.fn()}
         onContextMenu={vi.fn()}
         renderContextMenu={renderContextMenu}
       />
@@ -195,5 +140,147 @@ describe('FileTreeNode', () => {
     expect(screen.queryByTestId('wired-content')).not.toBeInTheDocument()
     fireEvent.contextMenu(screen.getByText('src'))
     expect(screen.getByTestId('wired-content')).toBeInTheDocument()
+  })
+})
+
+describe('FileTreeNode redesign states', () => {
+  const file = {
+    path: '/project/src/app.ts',
+    name: 'app.ts',
+    type: 'file' as const,
+    extension: 'ts',
+    size: 10,
+    modifiedAt: 0
+  }
+  const folder = {
+    path: '/project/src',
+    name: 'src',
+    type: 'directory' as const,
+    extension: null,
+    size: 0,
+    modifiedAt: 0
+  }
+  const baseProps = {
+    depth: 0,
+    isExpanded: false,
+    isLoading: false,
+    onClick: vi.fn(),
+    onContextMenu: vi.fn()
+  }
+
+  it('uses the keycap for the primary selection and a wash for other selected rows', () => {
+    const { rerender } = render(<FileTreeNode {...baseProps} entry={file} selection="primary" />)
+    const row = document.querySelector('[data-path="/project/src/app.ts"]')
+    expect(row).toHaveClass('keycap', 'text-foreground')
+    expect(row).not.toHaveClass('bg-accent')
+
+    rerender(<FileTreeNode {...baseProps} entry={file} selection="multi" />)
+    expect(row).toHaveClass('bg-foreground/[0.06]')
+    expect(row).not.toHaveClass('keycap')
+  })
+
+  it('shows the git letter with a tinted name, and a dot on folders with changes', () => {
+    const { rerender } = render(
+      <FileTreeNode {...baseProps} entry={file} selection="none" gitStatus="modified" />
+    )
+    expect(screen.getByText('app.ts')).toHaveClass('text-diff-modified')
+    expect(screen.getByTitle('Modified')).toHaveTextContent('M')
+
+    rerender(<FileTreeNode {...baseProps} entry={file} selection="none" gitStatus="untracked" />)
+    expect(screen.getByText('app.ts')).toHaveClass('text-diff-added')
+    expect(screen.getByTitle('Untracked')).toHaveTextContent('U')
+
+    rerender(<FileTreeNode {...baseProps} entry={folder} selection="none" hasGitChanges />)
+    expect(screen.getByRole('img', { name: 'Contains changes' })).toHaveClass('bg-diff-modified')
+  })
+
+  it('dims git-ignored names without fading the whole row', () => {
+    render(<FileTreeNode {...baseProps} entry={{ ...file, ignored: true }} selection="none" />)
+    expect(screen.getByText('app.ts')).toHaveClass('text-muted-foreground/60')
+    expect(document.querySelector('[data-path="/project/src/app.ts"]')).not.toHaveClass(
+      'opacity-50'
+    )
+  })
+
+  it('renames in place and selects the name without its extension', () => {
+    render(
+      <ExplorerInlineInputProvider
+        value={{
+          inlineInput: {
+            parentPath: '/project/src',
+            type: 'file',
+            mode: 'rename',
+            existingEntry: file
+          },
+          value: 'app.ts',
+          setValue: vi.fn(),
+          onSubmit: vi.fn(),
+          onCancel: vi.fn()
+        }}
+      >
+        <FileTreeNode {...baseProps} entry={file} selection="primary" />
+      </ExplorerInlineInputProvider>
+    )
+    const row = document.querySelector('[data-path="/project/src/app.ts"]')
+    const input = screen.getByPlaceholderText('New name...') as HTMLInputElement
+    expect(row).toContainElement(input)
+    expect(input.selectionStart).toBe(0)
+    expect(input.selectionEnd).toBe(3)
+  })
+
+  it('draws an indent guide for an expanded folder and brightens it when active', () => {
+    const { rerender } = render(
+      <FileTreeNode
+        {...baseProps}
+        entry={folder}
+        selection="none"
+        isExpanded
+        {...{ children: [] }}
+      />
+    )
+    const guide = screen.getByTestId('tree-indent-guide')
+    expect(guide).toHaveClass('bg-border')
+    expect(guide).toHaveStyle({ left: '11px' })
+
+    rerender(
+      <FileTreeNode
+        {...baseProps}
+        entry={folder}
+        selection="none"
+        isExpanded
+        isGuideActive
+        {...{ children: [] }}
+      />
+    )
+    expect(screen.getByTestId('tree-indent-guide')).toHaveClass('bg-muted-foreground/40')
+  })
+
+  it('shows the create row at the top of the folder children', () => {
+    render(
+      <ExplorerInlineInputProvider
+        value={{
+          inlineInput: { parentPath: '/project/src', type: 'file', mode: 'create' },
+          value: '',
+          setValue: vi.fn(),
+          onSubmit: vi.fn(),
+          onCancel: vi.fn()
+        }}
+      >
+        <FileTreeNode
+          {...baseProps}
+          entry={folder}
+          selection="none"
+          isExpanded
+          {...{ children: [file] }}
+        />
+      </ExplorerInlineInputProvider>
+    )
+    const input = screen.getByPlaceholderText('File name...')
+    const childRow = document.querySelector('[data-path="/project/src/app.ts"]')
+    expect(childRow).not.toBeNull()
+    // The create row comes before the first child row.
+    expect(
+      input.compareDocumentPosition(childRow as Node) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy()
   })
 })

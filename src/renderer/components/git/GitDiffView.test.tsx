@@ -2,6 +2,11 @@ import { fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { GitDiffView } from './GitDiffView'
 
+// Write controls are gated on a read-only server; these tests cover the admitted path.
+vi.mock('@/hooks/use-server-admits-remote-writes', () => ({
+  useServerAdmitsRemoteWrites: () => true
+}))
+
 // CAP-6 Row 5: GitDiffView renders a diff via the single consolidated static
 // import on GitDiffView.tsx:3 (getLanguageForFile, tokenizeLine, preloadParser,
 // isParserReady). The redundant dynamic imports that caused

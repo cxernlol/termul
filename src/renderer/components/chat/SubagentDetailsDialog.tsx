@@ -7,6 +7,7 @@ import {
   DialogTitle
 } from '@/components/ui/dialog'
 import type { ContentBlock, ToolCall } from '@/lib/acp-api'
+import type { FilePathResolutionContext } from '@/lib/file-path-links'
 import { AgentProse } from './ChatMessage'
 import { renderContentItem } from './ToolCallCard'
 import {
@@ -25,12 +26,14 @@ export function SubagentDetailsDialog({
   toolCall,
   parentTurnActive = false,
   open,
-  onOpenChange
+  onOpenChange,
+  filePathContext
 }: {
   toolCall: ToolCall
   parentTurnActive?: boolean
   open: boolean
   onOpenChange: (open: boolean) => void
+  filePathContext: FilePathResolutionContext | undefined
 }): React.JSX.Element {
   const { primary } = describeToolCall(toolCall)
   const input =
@@ -54,7 +57,15 @@ export function SubagentDetailsDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex max-h-[min(85vh,48rem)] w-[calc(100vw-2rem)] max-w-2xl flex-col overflow-hidden">
+      <DialogContent
+        className="flex max-h-[min(85vh,48rem)] w-[calc(100vw-2rem)] max-w-2xl flex-col overflow-hidden"
+        onClick={(event) => {
+          const target = event.target as Element
+          if (event.defaultPrevented && target.closest('[data-testid="termul-file-path"]')) {
+            onOpenChange(false)
+          }
+        }}
+      >
         <DialogHeader className="pr-6">
           <DialogTitle className="break-words">{primary}</DialogTitle>
           <DialogDescription>
@@ -94,13 +105,19 @@ export function SubagentDetailsDialog({
                           text={block.text ?? ''}
                           streaming={false}
                           reduced={reduced}
+                          filePathContext={filePathContext}
                         />
                       ) : (
                         rendered
                       )
                     })
                   : resultText && (
-                      <AgentProse text={resultText} streaming={false} reduced={reduced} />
+                      <AgentProse
+                        text={resultText}
+                        streaming={false}
+                        reduced={reduced}
+                        filePathContext={filePathContext}
+                      />
                     )}
               </div>
             </section>

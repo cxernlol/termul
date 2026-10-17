@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
+import { openAgentChatPlaced } from '@/lib/open-agent-chat'
 import { useEditorStore } from '@/stores/editor-store'
 import type { WorkspaceTab } from '@/stores/workspace-store'
 import { editorTabId, findPaneById, useWorkspaceStore } from '@/stores/workspace-store'
@@ -38,6 +39,7 @@ interface PaneDndContextValue {
   clearReorderPreview: () => void
   startTabDrag: (tabId: string, paneId: string, event: React.DragEvent) => void
   startFileDrag: (filePath: string, event: React.DragEvent) => void
+  startChatDrag: (sessionId: string, event: React.DragEvent) => void
   handleDrop: (targetPaneId: string, position: DropPosition, event: React.DragEvent) => void
   handleTabReorder: (
     sourcePaneId: string,
@@ -63,6 +65,7 @@ const fallbackContext: PaneDndContextValue = {
   clearReorderPreview: noop,
   startTabDrag: noop,
   startFileDrag: noop,
+  startChatDrag: noop,
   handleDrop: noop,
   handleTabReorder: noop
 }
@@ -103,6 +106,16 @@ function parseDragPayload(raw: string): DragPayload | null {
       return {
         type: 'file',
         filePath: payload.filePath
+      }
+    }
+
+    if (payload.type === 'chat') {
+      if (typeof payload.sessionId !== 'string' || payload.sessionId === '') {
+        return null
+      }
+      return {
+        type: 'chat',
+        sessionId: payload.sessionId
       }
     }
 
@@ -207,6 +220,22 @@ export function PaneDndProvider({ children }: PaneDndProviderProps): React.JSX.E
     [clearPreviewTarget]
   )
 
+  const startChatDrag = useCallback(
+    (sessionId: string, event: React.DragEvent) => {
+      const payload: DragPayload = {
+        type: 'chat',
+        sessionId
+      }
+      event.dataTransfer.setData('application/json', JSON.stringify(payload))
+      event.dataTransfer.effectAllowed = 'move'
+      setDragPayload(payload)
+      setIsDragging(true)
+      clearPreviewTarget()
+      setLastDropState(null)
+    },
+    [clearPreviewTarget]
+  )
+
   const handleDrop = useCallback(
     (targetPaneId: string, position: DropPosition, event: React.DragEvent) => {
       let payload = dragPayload
@@ -238,6 +267,18 @@ export function PaneDndProvider({ children }: PaneDndProviderProps): React.JSX.E
         } else {
           store.moveTabToNewSplit(payload.tabId, payload.sourcePaneId, targetPaneId, position)
         }
+        if (useWorkspaceStore.getState().root !== prevRoot) {
+          setLastDropState({ targetPaneId, position, at: Date.now() })
+        }
+      }
+
+      if (payload.type === 'chat' && payload.sessionId) {
+        // Same rule as tab drops: stamp only when the tree actually changed.
+        const prevRoot = store.root
+        openAgentChatPlaced(payload.sessionId, 'pane-dnd', {
+          paneId: targetPaneId,
+          zone: position
+        })
         if (useWorkspaceStore.getState().root !== prevRoot) {
           setLastDropState({ targetPaneId, position, at: Date.now() })
         }
@@ -360,6 +401,7 @@ export function PaneDndProvider({ children }: PaneDndProviderProps): React.JSX.E
       clearReorderPreview,
       startTabDrag,
       startFileDrag,
+      startChatDrag,
       handleDrop,
       handleTabReorder
     }),
@@ -375,6 +417,7 @@ export function PaneDndProvider({ children }: PaneDndProviderProps): React.JSX.E
       clearReorderPreview,
       startTabDrag,
       startFileDrag,
+      startChatDrag,
       handleDrop,
       handleTabReorder
     ]

@@ -1,5 +1,12 @@
 use super::*;
 
+/// An unstamped commit (what the desktop and web commit commands do without a
+/// `commandId` / `expectedHead`).
+fn git_commit_file(cwd: &str, summary: &str, description: &str, amend: bool) -> Result<(), String> {
+    git_commit_stamped(cwd, summary, description, amend, &CommitStamp::default())
+        .map_err(|failure| failure.to_string())
+}
+
 #[test]
 fn resolve_executable_returns_unresolved_name_unchanged() {
     // A bare name that does not exist on PATH should come back unchanged so
@@ -1015,7 +1022,7 @@ fn it_git_get_log_empty_repo_is_empty() {
     // A freshly-init'd repo has no commits; git log exits non-zero and we
     // must surface an empty list instead of an error.
     let repo = init_repo("log-empty");
-    let commits = git_get_log(repo.to_str().unwrap(), None).unwrap();
+    let commits = git_get_log(repo.to_str().unwrap(), None, false).unwrap();
     assert!(commits.is_empty());
     std::fs::remove_dir_all(&repo).ok();
 }
@@ -1033,7 +1040,7 @@ fn it_git_get_log_reads_linear_history_newest_first() {
     git(&repo, &["add", "-A"]);
     git(&repo, &["commit", "-qm", "second | commit"]);
 
-    let commits = git_get_log(repo.to_str().unwrap(), None).unwrap();
+    let commits = git_get_log(repo.to_str().unwrap(), None, false).unwrap();
     assert_eq!(commits.len(), 2);
     // Newest first; subject with a pipe survives intact.
     assert_eq!(commits[0].subject, "second | commit");
@@ -1073,7 +1080,7 @@ fn it_git_get_log_captures_merge_parents() {
         &["merge", "--no-ff", "-q", "-m", "Merge feature", "feature"],
     );
 
-    let commits = git_get_log(cwd, None).unwrap();
+    let commits = git_get_log(cwd, None, false).unwrap();
     let merge = commits
         .iter()
         .find(|c| c.subject == "Merge feature")
@@ -1182,8 +1189,51 @@ fn it_git_get_log_respects_limit() {
         git(&repo, &["add", "-A"]);
         git(&repo, &["commit", "-qm", &format!("commit {i}")]);
     }
-    let commits = git_get_log(repo.to_str().unwrap(), Some(3)).unwrap();
+    let commits = git_get_log(repo.to_str().unwrap(), Some(3), false).unwrap();
     assert_eq!(commits.len(), 3);
+    std::fs::remove_dir_all(&repo).ok();
+}
+
+#[test]
+fn it_git_get_log_all_includes_commits_on_other_branches() {
+    if git_missing() {
+        return;
+    }
+    let repo = init_repo("log-all");
+    std::fs::write(repo.join("a.txt"), "base\n").unwrap();
+    git(&repo, &["add", "-A"]);
+    git(&repo, &["commit", "-qm", "base"]);
+    git(&repo, &["checkout", "-qb", "side"]);
+    std::fs::write(repo.join("b.txt"), "side\n").unwrap();
+    git(&repo, &["add", "-A"]);
+    git(&repo, &["commit", "-qm", "side only"]);
+    git(&repo, &["checkout", "-q", "-"]);
+
+    let cwd = repo.to_str().unwrap();
+    let head_only = git_get_log(cwd, None, false).unwrap();
+    assert!(head_only.iter().all(|c| c.subject != "side only"));
+    let all = git_get_log(cwd, None, true).unwrap();
+    assert!(all.iter().any(|c| c.subject == "side only"));
+    std::fs::remove_dir_all(&repo).ok();
+}
+
+#[test]
+fn it_git_get_log_returns_output_larger_than_the_pipe_buffer() {
+    if git_missing() {
+        return;
+    }
+    let repo = init_repo("log-big");
+    std::fs::write(repo.join("a.txt"), "x\n").unwrap();
+    git(&repo, &["add", "-A"]);
+    // One 200 KB subject: the log output is far past the ~64 KB pipe buffer,
+    // which an undrained read would stall on until the timeout.
+    let msg_file = repo.join("msg.tmp");
+    std::fs::write(&msg_file, "s".repeat(200_000)).unwrap();
+    git(&repo, &["commit", "-q", "-F", "msg.tmp"]);
+
+    let commits = git_get_log(repo.to_str().unwrap(), None, true).unwrap();
+    assert_eq!(commits.len(), 1);
+    assert_eq!(commits[0].subject.len(), 200_000);
     std::fs::remove_dir_all(&repo).ok();
 }
 
@@ -1365,4 +1415,24 @@ fn it_commit_context_reports_fields() {
     assert_eq!(ctx.last_subject, "first");
     assert_eq!(ctx.last_body, "body text");
     std::fs::remove_dir_all(&repo).ok();
+}
+
+#[tokio::test]
+async fn a_cwd_snapshot_requested_while_one_runs_gets_that_result() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let cwd = dir.path().to_string_lossy().into_owned();
+    let SnapshotRun::Lead(running) = SnapshotRun::start(&cwd) else {
+        panic!("no snapshot runs for a fresh cwd");
+    };
+    running.publish((None, Some("from-running-snapshot".to_string())));
+
+    let (first, second) = tokio::join!(
+        GitTracker::poll_git_snapshot(cwd.clone()),
+        GitTracker::poll_git_snapshot(cwd.clone())
+    );
+    assert_eq!(first, (None, Some("from-running-snapshot".to_string())));
+    assert_eq!(second, first);
+
+    drop(running);
+    assert_eq!(GitTracker::poll_git_snapshot(cwd).await, (None, None));
 }

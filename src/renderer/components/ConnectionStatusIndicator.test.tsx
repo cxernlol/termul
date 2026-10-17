@@ -1,6 +1,7 @@
-import { render, screen } from '@testing-library/react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { act, fireEvent, render, screen } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { TooltipProvider } from '@/components/ui/tooltip'
+import { RECONNECT_GRACE_MS } from '@/hooks/use-delayed-flag'
 
 /**
  * Story 10 (F1): StatusBar connection-health indicator — worst-of rollup over
@@ -11,8 +12,17 @@ import { TooltipProvider } from '@/components/ui/tooltip'
 const mockIsTauriContext = vi.hoisted(() => vi.fn(() => false))
 vi.mock('@/lib/tauri-runtime', () => ({ isTauriContext: mockIsTauriContext }))
 
-import { useConnectionStatusStore } from '@/stores/connection-status-store'
-import { ConnectionStatusIndicator } from './ConnectionStatusIndicator'
+const mockRetryHostOffline = vi.hoisted(() => vi.fn())
+vi.mock('@/stores/connection-status-store', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/stores/connection-status-store')>()),
+  retryHostOffline: mockRetryHostOffline
+}))
+
+import {
+  type ConnectionChannelState,
+  useConnectionStatusStore
+} from '@/stores/connection-status-store'
+import { ConnectionStatusIndicator, formatConnectedSummary } from './ConnectionStatusIndicator'
 
 function renderIndicator(): ReturnType<typeof render> {
   return render(
@@ -22,16 +32,32 @@ function renderIndicator(): ReturnType<typeof render> {
   )
 }
 
+type ChannelPatch = Partial<Record<'controlChannel' | 'terminalChannel', ConnectionChannelState>>
+
+function setChannels(patch: ChannelPatch): void {
+  act(() => {
+    useConnectionStatusStore.setState(patch)
+  })
+  act(() => {
+    vi.advanceTimersByTime(RECONNECT_GRACE_MS)
+  })
+}
+
 function lampClass(): string {
   return document.querySelector('[role="status"] svg')?.getAttribute('class') ?? ''
 }
 
 beforeEach(() => {
+  vi.useFakeTimers()
   mockIsTauriContext.mockReturnValue(false)
   useConnectionStatusStore.setState({
     controlChannel: 'connected',
     terminalChannel: 'connected'
   })
+})
+
+afterEach(() => {
+  vi.useRealTimers()
 })
 
 describe('ConnectionStatusIndicator', () => {
@@ -47,9 +73,8 @@ describe('ConnectionStatusIndicator', () => {
     const button = screen.getByRole('button', { name: 'Connected' })
     // The element's own box is what layout measurement sees (a ::after slop
     // does not change getBoundingClientRect). A fine pointer, including a
-    // narrow desktop window, stays a 20px slot.
-    expect(button.className).toContain('h-5')
-    expect(button.className).toContain('w-5')
+    // narrow desktop window, stays a 24px slot.
+    expect(button.className).toContain('size-6')
     expect(button.className).not.toContain('max-md:')
     expect(button.className).toContain('pointer-coarse:size-11')
     expect(button.className).toContain('pointer-coarse:-my-2.5')
@@ -62,17 +87,18 @@ describe('ConnectionStatusIndicator', () => {
   it('shows a filled Connected lamp when both channels are connected', () => {
     renderIndicator()
     expect(screen.getByRole('status', { name: 'Connected' })).toBeInTheDocument()
-    expect(lampClass()).toContain('text-primary-foreground')
+    // Quiet bar (card surface): the lamp uses the status tone.
+    expect(lampClass()).toContain('text-connection')
     expect(lampClass()).toContain('fill-current')
   })
 
   it('shows pulse + names the channel when the terminal channel is reconnecting', () => {
-    useConnectionStatusStore.setState({ terminalChannel: 'reconnecting' })
+    setChannels({ terminalChannel: 'reconnecting' })
     renderIndicator()
     expect(
       screen.getByRole('status', { name: 'Terminal channel: reconnecting' })
     ).toBeInTheDocument()
-    expect(lampClass()).toContain('text-primary-foreground')
+    expect(lampClass()).toContain('text-warning')
     expect(lampClass()).toContain('animate-pulse')
   })
 
@@ -84,22 +110,35 @@ describe('ConnectionStatusIndicator', () => {
   })
 
   it('rolls up worst-of channels: disconnected wins over reconnecting', () => {
-    useConnectionStatusStore.setState({
+    setChannels({
       controlChannel: 'reconnecting',
       terminalChannel: 'disconnected'
     })
     renderIndicator()
-    // The tooltip/label names BOTH degraded channels; the lamp is hollow (worst).
+    // The tooltip/label names BOTH degraded channels; the lamp shows the worst.
     expect(
       screen.getByRole('status', {
         name: 'Control channel: reconnecting; Terminal channel: disconnected'
       })
     ).toBeInTheDocument()
-    expect(lampClass()).toContain('fill-none')
+    expect(lampClass()).toContain('text-destructive')
+  })
+
+  it('shows a steady Host offline lamp that wins over worse-looking channels and retries on click', () => {
+    useConnectionStatusStore.setState({
+      controlChannel: 'host-offline',
+      terminalChannel: 'disconnected'
+    })
+    renderIndicator()
+    expect(screen.getByRole('status', { name: 'Host offline' })).toBeInTheDocument()
+    expect(lampClass()).not.toContain('animate-pulse')
+    expect(lampClass()).not.toContain('text-destructive')
+    fireEvent.click(screen.getByRole('button', { name: /select to retry/i }))
+    expect(mockRetryHostOffline).toHaveBeenCalledTimes(1)
   })
 
   it('recovers to a filled lamp when the degraded channel reconnects', () => {
-    useConnectionStatusStore.setState({ controlChannel: 'reconnecting' })
+    setChannels({ controlChannel: 'reconnecting' })
     const { rerender } = render(
       <TooltipProvider>
         <ConnectionStatusIndicator />
@@ -116,5 +155,184 @@ describe('ConnectionStatusIndicator', () => {
     expect(screen.getByRole('status', { name: 'Connected' })).toBeInTheDocument()
     expect(lampClass()).toContain('fill-current')
     expect(lampClass()).not.toContain('animate-pulse')
+  })
+})
+
+describe('ConnectionStatusIndicator reconnect grace', () => {
+  function setChannel(patch: ChannelPatch): void {
+    act(() => {
+      useConnectionStatusStore.setState(patch)
+    })
+  }
+
+  function advance(ms: number): void {
+    act(() => {
+      vi.advanceTimersByTime(ms)
+    })
+  }
+
+  it('keeps the Connected lamp through a 500 ms reconnect', () => {
+    renderIndicator()
+    const connectedLamp = lampClass()
+
+    setChannel({ controlChannel: 'reconnecting' })
+    advance(500)
+    expect(screen.getByRole('status', { name: 'Connected' })).toBeInTheDocument()
+    expect(lampClass()).toBe(connectedLamp)
+
+    setChannel({ controlChannel: 'connected' })
+    advance(RECONNECT_GRACE_MS * 2)
+    expect(screen.getByRole('status', { name: 'Connected' })).toBeInTheDocument()
+    expect(lampClass()).toBe(connectedLamp)
+  })
+
+  it('shows the reconnecting lamp once a 2 s outage passes the grace period', () => {
+    renderIndicator()
+
+    setChannel({ controlChannel: 'reconnecting' })
+    advance(RECONNECT_GRACE_MS - 1)
+    expect(screen.getByRole('status', { name: 'Connected' })).toBeInTheDocument()
+
+    advance(1)
+    expect(
+      screen.getByRole('status', { name: 'Control channel: reconnecting' })
+    ).toBeInTheDocument()
+    expect(lampClass()).toContain('animate-pulse')
+
+    advance(RECONNECT_GRACE_MS)
+    setChannel({ controlChannel: 'connected' })
+    expect(screen.getByRole('status', { name: 'Connected' })).toBeInTheDocument()
+    expect(lampClass()).not.toContain('animate-pulse')
+  })
+
+  it('labels the drawer footer Connected through a 500 ms reconnect', () => {
+    render(
+      <TooltipProvider>
+        <ConnectionStatusIndicator showLabel />
+      </TooltipProvider>
+    )
+
+    setChannel({ controlChannel: 'reconnecting' })
+    advance(500)
+    expect(screen.getByRole('status')).toHaveTextContent(
+      formatConnectedSummary(window.location.host)
+    )
+  })
+})
+
+describe('ConnectionStatusIndicator labelled status mode', () => {
+  function renderLabelled(): ReturnType<typeof render> {
+    return render(
+      <TooltipProvider>
+        <ConnectionStatusIndicator showLabel />
+      </TooltipProvider>
+    )
+  }
+
+  it('keeps the default render unchanged when the new props are omitted', () => {
+    const plain = renderIndicator()
+    const plainHtml = plain.container.innerHTML
+    plain.unmount()
+
+    const explicit = render(
+      <TooltipProvider>
+        <ConnectionStatusIndicator showLabel={false} />
+      </TooltipProvider>
+    )
+    expect(explicit.container.innerHTML).toBe(plainHtml)
+    // Still the tooltip-trigger button with the summary as its aria-label.
+    expect(screen.getByRole('button', { name: 'Connected' })).toBeInTheDocument()
+    expect(lampClass()).toContain('text-connection')
+  })
+
+  it('shows the summary as visible text content of the status region', () => {
+    renderLabelled()
+
+    const status = screen.getByRole('status')
+    expect(status).toHaveTextContent(`Connected · ${window.location.host}`)
+    expect(status).toHaveAttribute('aria-live', 'polite')
+    // The state is the text, not a changing aria-label.
+    expect(status).not.toHaveAttribute('aria-label')
+    const label = screen.getByText(`Connected · ${window.location.host}`)
+    expect(label).toHaveClass('min-w-0', 'break-words')
+    expect(status).toHaveClass('text-2xs', 'text-muted-foreground')
+  })
+
+  it('names the host when both channels are connected, as one text node', () => {
+    renderLabelled()
+
+    const label = screen.getByText(`Connected · ${window.location.host}`)
+    expect(window.location.host).not.toBe('')
+    expect(label.childNodes).toHaveLength(1)
+    expect(label.firstChild?.nodeType).toBe(Node.TEXT_NODE)
+  })
+
+  it('leaves the StatusBar render without the host', () => {
+    renderIndicator()
+
+    expect(screen.getByRole('status', { name: 'Connected' })).toBeInTheDocument()
+    expect(screen.getByRole('status')).not.toHaveTextContent('·')
+    expect(screen.getByRole('button', { name: 'Connected' })).toBeInTheDocument()
+  })
+
+  it('has no tooltip button and a decorative lamp', () => {
+    renderLabelled()
+
+    expect(screen.queryByRole('button')).not.toBeInTheDocument()
+    const lamp = document.querySelector('[role="status"] svg')
+    expect(lamp).toHaveAttribute('aria-hidden', 'true')
+    expect(lamp).not.toHaveAttribute('aria-label')
+    expect(screen.queryByRole('img')).not.toBeInTheDocument()
+  })
+
+  it('uses the connection lamp colour when connected', () => {
+    renderLabelled()
+
+    expect(lampClass()).toContain('text-connection')
+    expect(lampClass()).toContain('fill-current')
+  })
+
+  it('names the degraded channel and warns while it reconnects', () => {
+    setChannels({ controlChannel: 'reconnecting' })
+    renderLabelled()
+
+    const status = screen.getByRole('status')
+    expect(status).toHaveTextContent('Control channel: reconnecting')
+    // Degraded text is unchanged: no host.
+    expect(status).not.toHaveTextContent('Connected')
+    expect(status).not.toHaveTextContent(window.location.host)
+    expect(lampClass()).toContain('text-warning')
+    expect(lampClass()).toContain('animate-pulse')
+    expect(lampClass()).toContain('motion-reduce:animate-none')
+  })
+
+  it('rolls both degraded channels into the text and turns destructive when disconnected', () => {
+    setChannels({
+      controlChannel: 'reconnecting',
+      terminalChannel: 'disconnected'
+    })
+    renderLabelled()
+
+    expect(screen.getByRole('status')).toHaveTextContent(
+      'Control channel: reconnecting; Terminal channel: disconnected'
+    )
+    expect(lampClass()).toContain('text-destructive')
+  })
+
+  it('renders nothing on Tauri desktop', () => {
+    mockIsTauriContext.mockReturnValue(true)
+    const { container } = renderLabelled()
+    expect(container).toBeEmptyDOMElement()
+  })
+})
+
+describe('formatConnectedSummary', () => {
+  it('names the host after the status', () => {
+    expect(formatConnectedSummary('127.0.0.1:8199')).toBe('Connected · 127.0.0.1:8199')
+    expect(formatConnectedSummary('termul.example.com')).toBe('Connected · termul.example.com')
+  })
+
+  it.each(['', '   '])('falls back to a plain Connected for the empty host %j', (host) => {
+    expect(formatConnectedSummary(host)).toBe('Connected')
   })
 })

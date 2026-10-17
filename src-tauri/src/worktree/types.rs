@@ -95,16 +95,6 @@ pub struct ConflictFile {
     pub severity: String,
     pub conflict_count: usize,
     pub is_lock_file: bool,
-    pub suggestions: Vec<ConflictSuggestion>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ConflictSuggestion {
-    pub strategy: String,
-    pub confidence: String,
-    pub reason: String,
-    pub description: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -117,7 +107,6 @@ pub struct MergePreview {
     pub changed_files: Vec<String>,
     pub total_changes: usize,
     pub detection_mode: String,
-    pub has_auto_resolvable: bool,
 }
 
 // ============================================================================
@@ -179,6 +168,13 @@ pub enum WorktreeError {
     ArchiveFailed,
     ArchiveNotFound,
     MergeFailed,
+    /// `git check-ref-format --branch` rejected the requested name.
+    InvalidBranchName,
+    /// The worktree's current branch is not the one the rename expected
+    /// (switched, detached, mid-rebase).
+    BranchChanged,
+    BranchExists,
+    InvalidWorktreeName,
     IoError(String),
     GitError(String),
 }
@@ -198,6 +194,10 @@ impl WorktreeError {
             Self::ArchiveFailed => "ARCHIVE_FAILED",
             Self::MergeFailed => "MERGE_FAILED",
             Self::ArchiveNotFound => "ARCHIVE_NOT_FOUND",
+            Self::InvalidBranchName => "INVALID_BRANCH_NAME",
+            Self::BranchChanged => "BRANCH_CHANGED",
+            Self::BranchExists => "BRANCH_EXISTS",
+            Self::InvalidWorktreeName => "INVALID_WORKTREE_NAME",
         }
     }
 }
@@ -230,6 +230,16 @@ impl std::fmt::Display for WorktreeError {
             Self::ArchiveFailed => write!(f, "Failed to archive worktree."),
             Self::ArchiveNotFound => write!(f, "Archive not found."),
             Self::MergeFailed => write!(f, "Merge operation failed. There may be conflicts."),
+            Self::InvalidBranchName => write!(f, "That is not a valid branch name."),
+            Self::BranchChanged => write!(
+                f,
+                "The worktree is no longer on the expected branch. Nothing was renamed."
+            ),
+            Self::BranchExists => write!(f, "A branch with that name already exists."),
+            Self::InvalidWorktreeName => write!(
+                f,
+                "A worktree name must be a relative folder path without \".\" or \"..\" parts."
+            ),
             Self::IoError(msg) => write!(f, "Filesystem error: {}", msg),
             Self::GitError(msg) => write!(f, "Git error: {}", msg),
         }
@@ -259,6 +269,9 @@ pub(super) fn parse_git_stderr(stderr: &str) -> WorktreeError {
 
     if matches_error_line("already checked out") {
         return WorktreeError::BranchAlreadyHasWorktree;
+    }
+    if matches_error_line("a branch named") {
+        return WorktreeError::BranchExists;
     }
     if matches_error_line("already exists") {
         return WorktreeError::WorktreeExists;

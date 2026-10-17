@@ -1,27 +1,24 @@
+import type { GitDiffStat } from '@shared/types/ipc.types'
 import { type KeyboardEvent, memo, useEffect, useRef } from 'react'
-import { AlertTriangle, ChevronDown, ChevronRight, Settings } from '@/components/icons'
+import { Settings } from '@/components/icons'
 import { ProjectIcon } from '@/components/ProjectIcon'
-import { CollapseExpandMotion } from '@/components/ui/collapse-expand-motion'
+import { RAIL_ICON_BOX_CLASS, RAIL_ROW_INSET_CLASS } from '@/components/shell/rail-layout'
 import { ContextMenu, ContextMenuTrigger } from '@/components/ui/context-menu'
-import { Spinner } from '@/components/ui/spinner'
+import { Kbd } from '@/components/ui/kbd'
+import { FIELD_FOCUS_CLASS } from '@/components/ui/panel-styles'
 import { cn } from '@/lib/utils'
 import type { Project } from '@/types/project'
-import { ProjectChatList } from '../ProjectChatList'
-import { NeedsYouButton, RunningMark } from './indicators'
+import { ProjectDiffStat } from '../shell/ProjectDiffStat'
+import { type ProjectRowStatus, ProjectStatusMarks } from './indicators'
 
 export interface ProjectItemProps {
   project: Project
   isActive: boolean
-  isExpanded: boolean
-  onToggleExpand: () => void
   isEditing: boolean
   editName: string
   shortcut?: string
-  hasActivity: boolean
-  hasError?: boolean
-  attentionCount?: number
-  running?: boolean
-  onOpenNeedsYou?: () => void
+  status: ProjectRowStatus
+  onOpenNeedsYou: () => void
   onClick: () => void
   onContextMenu: (e: React.MouseEvent) => void
   onEditNameChange: (name: string) => void
@@ -29,20 +26,17 @@ export interface ProjectItemProps {
   onCancelRename: () => void
   onSettingsClick: () => void
   renderContextMenu?: (project: Project) => React.ReactNode
+  /** Uncommitted line stat for the row (see `RailProjectItem`); nothing when null. */
+  diffStat?: GitDiffStat | null
 }
 
 export const ProjectItem = memo(function ProjectItem({
   project,
   isActive,
-  isExpanded,
-  onToggleExpand,
   isEditing,
   editName,
   shortcut,
-  hasActivity,
-  hasError,
-  attentionCount = 0,
-  running = false,
+  status,
   onOpenNeedsYou,
   onClick,
   onContextMenu,
@@ -50,9 +44,13 @@ export const ProjectItem = memo(function ProjectItem({
   onSaveRename,
   onCancelRename,
   onSettingsClick,
-  renderContextMenu
+  renderContextMenu,
+  diffStat: watchedDiffStat = null
 }: ProjectItemProps): React.JSX.Element {
   const inputRef = useRef<HTMLInputElement>(null)
+  // At rest the stat holds the right slot; hover or focus swaps it for the
+  // settings gear and shortcut chip. It yields to the rename input.
+  const diffStat = isEditing ? null : watchedDiffStat
 
   // Focus input when editing starts
   useEffect(() => {
@@ -88,31 +86,18 @@ export const ProjectItem = memo(function ProjectItem({
               }
             }}
             className={cn(
-              'w-full flex items-center px-0 py-1 transition-colors group text-left cursor-pointer select-none',
-              isActive ? 'bg-sidebar-accent' : 'hover:bg-sidebar-accent/50'
+              'group flex h-8 w-full cursor-pointer select-none items-center pr-1.5 text-left text-xs',
+              'rounded-lg',
+              RAIL_ROW_INSET_CLASS,
+              'transition-colors duration-150 ease-out focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
+              isActive ? 'keycap text-foreground' : 'hover:bg-row-hover focus-within:bg-row-hover'
             )}
             aria-current={isActive ? 'page' : undefined}
             aria-label={`Project: ${project.name}${isActive ? ' (active)' : ''}`}
           >
-            {/* Expand/collapse chevron — every project can have chats, so the
-            chevron always shows (not only git projects). */}
-            <button
-              onClick={(e) => {
-                e.stopPropagation()
-                onToggleExpand()
-              }}
-              className="h-5 w-5 inline-flex items-center justify-center flex-shrink-0 hover:bg-sidebar-accent rounded transition-colors"
-              aria-label={isExpanded ? 'Collapse chats' : 'Expand chats'}
-              aria-expanded={isExpanded}
-            >
-              {isExpanded ? (
-                <ChevronDown size={12} className="text-muted-foreground" />
-              ) : (
-                <ChevronRight size={12} className="text-muted-foreground" />
-              )}
-            </button>
-
-            <ProjectIcon project={project} size={13} className="mr-1.5" />
+            <span data-rail-icon-column className={RAIL_ICON_BOX_CLASS}>
+              <ProjectIcon project={project} size={16} />
+            </span>
 
             {isEditing ? (
               <input
@@ -122,68 +107,73 @@ export const ProjectItem = memo(function ProjectItem({
                 onChange={(e) => onEditNameChange(e.target.value)}
                 onKeyDown={handleKeyDown}
                 onBlur={onSaveRename}
-                className="flex-1 min-w-0 bg-sidebar-accent border border-border rounded-md px-2 py-0.5 text-sm text-foreground outline-none focus:ring-1 focus:ring-primary mr-2"
+                className={`h-6 min-w-0 flex-1 rounded border border-border bg-card px-1.5 text-xs text-foreground ${FIELD_FOCUS_CLASS}`}
                 onClick={(e) => e.stopPropagation()}
               />
             ) : (
-              <span
-                className={cn(
-                  'text-sm transition-colors flex-1 min-w-0 truncate mr-2',
-                  // flex-1 min-w-0 is required for truncate to clip inside a flex row
-                  isActive ? 'text-foreground' : 'text-muted-foreground group-hover:text-foreground'
+              // Name and diff stat share one box whose width never changes on
+              // hover: the actions sit on top of its end, over a fade, so
+              // nothing reflows and the name is not cut again.
+              <span className="relative flex min-w-0 flex-1 items-center gap-2">
+                <span
+                  className={cn(
+                    // flex-1 min-w-0 is required for truncate to clip inside a flex row
+                    'min-w-0 flex-1 truncate font-medium transition-colors duration-150 ease-out',
+                    isActive
+                      ? 'text-foreground'
+                      : 'text-secondary-foreground group-hover:text-foreground'
+                  )}
+                  title={project.name}
+                >
+                  {project.name}
+                </span>
+                {diffStat && (
+                  <span className="flex shrink-0">
+                    <ProjectDiffStat stat={diffStat} />
+                  </span>
                 )}
-                title={project.name}
-              >
-                {project.name}
+                <span
+                  className={cn(
+                    'absolute inset-y-0 right-0 hidden items-center gap-1 bg-gradient-to-l to-transparent pl-6 group-hover:flex group-focus-within:flex',
+                    // The fade ends in the row's own surface: the Rail keycap
+                    // fill when active, the hover wash otherwise. It shows
+                    // under the same conditions as the wash (hover and
+                    // focus-within).
+                    isActive
+                      ? 'from-[var(--rail-keycap)] from-60%'
+                      : 'from-row-hover-solid from-60%'
+                  )}
+                  data-testid="project-row-actions"
+                >
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      onSettingsClick()
+                    }}
+                    className="inline-flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors duration-150 ease-out hover:bg-foreground/[0.03] hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    title="Project settings"
+                    aria-label={`Settings for ${project.name}`}
+                  >
+                    <Settings size={12} />
+                  </button>
+                  {shortcut && (
+                    <Kbd className="inline-flex h-4.5 shrink-0 items-center px-1">{shortcut}</Kbd>
+                  )}
+                </span>
               </span>
             )}
-            {running ? <RunningMark /> : null}
-            <NeedsYouButton count={attentionCount} onOpen={onOpenNeedsYou} />
-            {hasError && (
-              <span
-                className="flex items-center mr-2 text-warning animate-pulse"
-                title="Terminal crashed"
-              >
-                <AlertTriangle size={12} />
-              </span>
-            )}
-            {!isEditing && shortcut && (
-              <span
-                className={cn(
-                  'text-xs font-mono text-muted-foreground transition-opacity mr-3',
-                  isActive ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
-                )}
-              >
-                {shortcut}
-              </span>
-            )}
-            {!isEditing && (
-              <button
-                onClick={(e) => {
-                  e.stopPropagation()
-                  onSettingsClick()
-                }}
-                className="h-5 w-5 inline-flex items-center justify-center rounded opacity-0 group-hover:opacity-100 hover:bg-sidebar-accent transition-all mr-2 flex-shrink-0 focus:outline-none focus-visible:ring-1 focus-visible:ring-primary"
-                title="Project settings"
-                aria-label={`Settings for ${project.name}`}
-              >
-                <Settings size={12} className="text-muted-foreground" />
-              </button>
-            )}
-            {!isEditing && hasActivity && (
-              <span className="flex items-center mr-3 text-muted-foreground" title="Activity">
-                <Spinner size={12} label="Project activity" />
-              </span>
-            )}
+            {/* Status marks stay outside the name box: always visible, and the
+                needs-you pill stays clickable. The activity spinner yields to
+                the rename input. */}
+            <ProjectStatusMarks
+              status={isEditing && status.live === 'activity' ? { ...status, live: null } : status}
+              onOpenNeedsYou={onOpenNeedsYou}
+            />
           </div>
         </ContextMenuTrigger>
         {renderContextMenu?.(project)}
       </ContextMenu>
-
-      {/* Project chat history sub-items */}
-      <CollapseExpandMotion open={isExpanded} className="ml-5 border-l border-sidebar-border">
-        <ProjectChatList projectId={project.id} />
-      </CollapseExpandMotion>
     </div>
   )
 })

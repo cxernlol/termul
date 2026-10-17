@@ -1,16 +1,26 @@
 import { describe, expect, it } from 'vitest'
 
+import { UNASSIGNED_PROJECT_ID } from './web-projects.types'
+
 import {
+  COMMAND_ID_PATTERN,
   isHumanRelayedCap,
   isOsFulfilledCap,
+  MAX_CLIENT_ID_LEN,
+  MAX_COMMAND_ID_LEN,
   type ReliabilityTier,
+  type RemoveProjectPayload,
+  type UpdateProjectPayload,
+  WS_COMMAND_CLASSES,
   WS_ERROR_CODES,
   WS_EVENT_TIERS,
   WS_EVENT_TYPES,
   WS_HUMAN_RELAYED_CAPS,
   WS_OS_FULFILLED_CAPS,
+  WS_PROTOCOL_VERSION,
   WS_RELAY_TIERS,
   WS_REQUEST_TYPES,
+  WS_WATCH_FRAME_TYPE,
   type WsError,
   type WsEvent,
   type WsEventType,
@@ -19,10 +29,11 @@ import {
   type WsRequestType,
   wsTierOf
 } from './web-protocol.types'
+import { WEB_TERMINAL_ERROR_CODES } from './web-terminal-protocol.types'
 
 describe('web-protocol.types — event/request type registries (AC2)', () => {
-  it('exports exactly 25 event types including durable user prompts + switch markers', () => {
-    expect(WS_EVENT_TYPES).toHaveLength(25)
+  it('exports exactly 22 event types including durable user prompts, host records, switch markers + delivery frames', () => {
+    expect(WS_EVENT_TYPES).toHaveLength(22)
     // The 16 from events.rs (prefix-dropped) + auth_required.
     const expected16FromEvents = [
       'agent_spawned',
@@ -46,26 +57,39 @@ describe('web-protocol.types — event/request type registries (AC2)', () => {
       expect(WS_EVENT_TYPES).toContain(name)
     }
     expect(WS_EVENT_TYPES).toContain('auth_required')
-    // Epic-4 bridge: desktop project-list live push (agent-level, seq 0).
-    expect(WS_EVENT_TYPES).toContain('projects_changed')
-    expect(WS_EVENT_TYPES).toContain('project_switch_completed')
-    expect(WS_EVENT_TYPES).toContain('project_switch_failed')
     expect(WS_EVENT_TYPES).toContain('user_prompt')
-    // Epic-4 bridge: desktop chat-history live push (agent-level, seq 0).
-    expect(WS_EVENT_TYPES).toContain('chat_history_changed')
-    // Headless ACP auth (spec-acp-terminal-auth): shim-captured auth URL.
-    expect(WS_EVENT_TYPES).toContain('browser_open_request')
+    // The nudges retired by the watch hub must not come back as seq-0 events.
+    expect(WS_EVENT_TYPES).not.toContain('projects_changed')
+    expect(WS_EVENT_TYPES).not.toContain('chat_history_changed')
+    // The relay sends no seq-0 event except `auth_required`: the agent-level
+    // events that belong to no session are watch deltas.
+    for (const retired of [
+      'browser_open_request',
+      'fs_changed',
+      'fs_watch_ended',
+      'worktree_branch_renamed'
+    ]) {
+      expect(WS_EVENT_TYPES).not.toContain(retired)
+    }
     // CAP-2 (spec-in-chat-agent-switch): durable agent-switch marker.
     expect(WS_EVENT_TYPES).toContain('agent_switch')
-    // #856: server-side FS watcher change push (agent-level broadcast).
-    expect(WS_EVENT_TYPES).toContain('fs_changed')
+    // Host-authored durable title record (occupies a session-log seq).
+    expect(WS_EVENT_TYPES).toContain('local_title_generated')
+    // Delivery frames (no seq): gap after a LOSSY drop, host heartbeat.
+    expect(WS_EVENT_TYPES).toContain('gap')
+    expect(WS_EVENT_TYPES).toContain('heartbeat')
+    // The watch frame is not an event type: its name is also a request type.
+    expect(WS_EVENT_TYPES).not.toContain('watch')
+    expect(WS_WATCH_FRAME_TYPE).toBe('watch')
+    expect(WS_REQUEST_TYPES).toContain('watch')
+    expect(WS_REQUEST_TYPES).toContain('unwatch')
     expect(WS_REQUEST_TYPES).toContain('list_persisted_sessions')
     expect(WS_REQUEST_TYPES).toContain('open_persisted_session')
     expect(WS_REQUEST_TYPES).toContain('get_session_payload')
   })
 
-  it('exports exactly 44 request types including warm-pool promotion and host-owned session delete', () => {
-    expect(WS_REQUEST_TYPES).toHaveLength(44)
+  it('exports exactly 51 request types including warm-pool promotion and host-owned session delete', () => {
+    expect(WS_REQUEST_TYPES).toHaveLength(52)
     const expected = [
       'send_prompt',
       'cancel_prompt',
@@ -82,7 +106,6 @@ describe('web-protocol.types — event/request type registries (AC2)', () => {
       // Story 8: promote a backend-ephemeral warm-pool session to durable.
       'promote_session',
 
-      'switch_project',
       'subscribe',
       'ping',
       'list_persisted_sessions',
@@ -105,6 +128,7 @@ describe('web-protocol.types — event/request type registries (AC2)', () => {
       'respond_elicitation',
       'list_acp_catalog',
       'set_catalog_opt_in',
+      'fetch_acp_registry_snapshot',
       // CAP-6 / Story 9: host-owned verified-atomic ACP install.
       'install_acp_agent',
       // Issue #613: server-side generic key-value store.
@@ -120,13 +144,28 @@ describe('web-protocol.types — event/request type registries (AC2)', () => {
       // `acp_` prefix — the wire name is fixed by the contract.
       'acp_deliver_auth_redirect',
       // CAP-2 (spec-in-chat-agent-switch): host-authored durable marker.
-      'record_agent_switch'
+      'record_agent_switch',
+      // A surface read a chat: move the shared last-read marker.
+      'mark_chat_read',
+      // Watches (projects, chat history, agents, fs, store, terminals).
+      'watch',
+      'unwatch',
+      // Explicit host-default project change.
+      'set_default_project',
+      // Claude Accounts: view and choose.
+      'list_claude_accounts',
+      'list_claude_usage',
+      'set_default_claude_account',
+      'set_project_claude_account'
     ]
     for (const name of expected) {
       expect(WS_REQUEST_TYPES).toContain(name)
     }
     // create_session maps to acp_new_session, NOT acp_create_session.
     expect(WS_REQUEST_TYPES).toContain('create_session')
+    // `watch` / `unwatch` replaced the per-project fs watch requests.
+    expect(WS_REQUEST_TYPES).not.toContain('watch_project')
+    expect(WS_REQUEST_TYPES).not.toContain('unwatch_project')
   })
 
   it('event and request type namespaces are disjoint', () => {
@@ -137,9 +176,9 @@ describe('web-protocol.types — event/request type registries (AC2)', () => {
 })
 
 describe('web-protocol.types — error codes (AC2)', () => {
-  it('exports exactly 12 stable error codes', () => {
+  it('exports exactly 26 stable error codes', () => {
     const codes = new Set(Object.values(WS_ERROR_CODES))
-    expect(codes.size).toBe(12)
+    expect(codes.size).toBe(26)
     const expected = [
       'not_found',
       'unauthorized',
@@ -150,9 +189,28 @@ describe('web-protocol.types — error codes (AC2)', () => {
       'duplicate',
       'unsupported',
       'not_implemented',
-      'no_agent',
       'agent_auth_required',
-      'session_owned_by_other'
+      'session_owned_by_other',
+      // Versioned handshake refusals.
+      'protocol_version_mismatch',
+      'invalid_client_identity',
+      // Reserved wire names (handlers land in later slices).
+      'terminal_limit',
+      'project_busy',
+      'outcome_unknown',
+      'destructive_op_blocked',
+      'provider_quota_exceeded',
+      'provider_session_limit',
+      'provider_request_rejected',
+      // Capability refusal + ticket tombstone.
+      'forbidden',
+      'already_resolved',
+      // Deterministic spawn rejections (never auto-retried).
+      'agent_unavailable',
+      'invalid_agent_config',
+      // Command ledger refusals.
+      'command_conflict',
+      'invalid_command_id'
     ]
     for (const code of expected) {
       expect(codes).toContain(code)
@@ -163,6 +221,35 @@ describe('web-protocol.types — error codes (AC2)', () => {
     for (const code of Object.values(WS_ERROR_CODES)) {
       expect(code).toMatch(/^[a-z][a-z_]*$/)
     }
+  })
+})
+
+describe('web-protocol.types — versioned handshake contract (AD-15)', () => {
+  it('pins the protocol version and client id length cap shared with the Rust host', () => {
+    expect(WS_PROTOCOL_VERSION).toBe(7)
+    expect(MAX_CLIENT_ID_LEN).toBe(128)
+  })
+
+  it('pins the unassigned-project sentinel shared with the Rust host', () => {
+    expect(UNASSIGNED_PROJECT_ID).toBe('__unassigned__')
+  })
+
+  it('WsRequest/WsReply carry the optional command_id / visible_at envelope fields', () => {
+    // Compile-time + runtime: the snake_case envelope fields are optional,
+    // so every legacy frame shape stays valid.
+    const legacy: WsRequest = { id: '1', type: 'ping', payload: {} }
+    const withCommand: WsRequest = { id: '2', type: 'ping', payload: {}, command_id: 'c-1' }
+    const okReply: WsReply = { id: '2', ok: true, visible_at: 42 }
+    const errReply: WsReply = {
+      id: '3',
+      ok: false,
+      err: { code: WS_ERROR_CODES.OUTCOME_UNKNOWN, message: 'x' },
+      visible_at: 43
+    }
+    expect(legacy.command_id).toBeUndefined()
+    expect(withCommand.command_id).toBe('c-1')
+    expect(okReply.visible_at).toBe(42)
+    expect(errReply.visible_at).toBe(43)
   })
 })
 
@@ -212,9 +299,8 @@ describe('web-protocol.types — reliability tier registry (AC5)', () => {
       'session_info_update',
       'usage_update',
       'auth_required',
-      'projects_changed',
-      'project_switch_completed',
-      'project_switch_failed'
+      'gap',
+      'heartbeat'
     ]
     for (const type of reliable) {
       expect(WS_EVENT_TIERS[type]).toBe('reliable')
@@ -318,10 +404,37 @@ describe('web-protocol.types — envelope shapes (AC2 + AC3)', () => {
     expect(err.err?.message).toContain('authenticate')
   })
 
-  it('WsError shape is { code, message }', () => {
+  it('WsError shape is { code, message } with optional details', () => {
     const e: WsError = { code: 'stale', message: 'cursor gap' }
     expect(e.code).toBe('stale')
     expect(e.message).toBe('cursor gap')
+    expect(e.details).toBeUndefined()
+  })
+
+  it('a project_busy WsError carries the bound entity ids in details', () => {
+    const e: WsError = {
+      code: 'project_busy',
+      message: "project 'p-1' has live sessions or terminals",
+      details: { sessions: ['s-1'], terminals: ['t-1', 't-2'] }
+    }
+    const reply: WsReply = { id: 'r1', ok: false, err: e }
+    expect(reply.ok === false && reply.err.details?.terminals).toEqual(['t-1', 't-2'])
+  })
+
+  it('remove_project / update_project payloads take an optional cascade', () => {
+    const remove: RemoveProjectPayload = { projectId: 'p-1', cascade: true }
+    const archive: UpdateProjectPayload = { projectId: 'p-1', isArchived: true, cascade: true }
+    expect(remove.cascade).toBe(true)
+    expect(archive.cascade).toBe(true)
+    expect(({ projectId: 'p-1' } satisfies RemoveProjectPayload).projectId).toBe('p-1')
+  })
+
+  it('update_project takes an optional path that moves the root, guarded by the same cascade', () => {
+    const move: UpdateProjectPayload = { projectId: 'p-1', path: '/work/new-root', cascade: true }
+    expect(move.path).toBe('/work/new-root')
+    expect(move.cascade).toBe(true)
+    const rename: UpdateProjectPayload = { projectId: 'p-1', name: 'x' }
+    expect(rename.path).toBeUndefined()
   })
 
   it('compile-time: WsEventType / WsRequestType / ReliabilityTier are string unions', () => {
@@ -331,5 +444,78 @@ describe('web-protocol.types — envelope shapes (AC2 + AC3)', () => {
     expect(typeof e).toBe('string')
     expect(typeof r).toBe('string')
     expect(typeof t).toBe('string')
+  })
+})
+
+describe('web-protocol.types — command classes (AD-5)', () => {
+  it('classifies exactly the request types, with a replay policy on create/command only', () => {
+    expect(Object.keys(WS_COMMAND_CLASSES).sort()).toEqual([...WS_REQUEST_TYPES].sort())
+    for (const [kind, replay] of Object.values(WS_COMMAND_CLASSES)) {
+      expect(replay !== null).toBe(kind === 'create' || kind === 'command')
+    }
+  })
+
+  it('keeps the credential-bearing kinds receipt-only and the prompt on its turn id', () => {
+    for (const type of [
+      'authenticate_agent',
+      'respond_elicitation',
+      'acp_deliver_auth_redirect'
+    ] as const) {
+      expect(WS_COMMAND_CLASSES[type]).toEqual(['command', 'receipt-only'])
+    }
+    expect(WS_COMMAND_CLASSES.send_prompt).toEqual(['command', 'entity'])
+    expect(WS_COMMAND_CLASSES.create_session).toEqual(['create', 'entity'])
+  })
+
+  it('accepts 1-128 chars of [A-Za-z0-9_-] as a commandId and nothing else', () => {
+    expect(MAX_COMMAND_ID_LEN).toBe(128)
+    expect(COMMAND_ID_PATTERN.test('3f2b9c0e-1d4a-4b7e-9a10-aabbccddeeff')).toBe(true)
+    expect(COMMAND_ID_PATTERN.test('a'.repeat(128))).toBe(true)
+    expect(COMMAND_ID_PATTERN.test('a'.repeat(129))).toBe(false)
+    expect(COMMAND_ID_PATTERN.test('')).toBe(false)
+    expect(COMMAND_ID_PATTERN.test('has space')).toBe(false)
+    expect(COMMAND_ID_PATTERN.test('new\nline')).toBe(false)
+  })
+})
+
+describe('web-terminal-protocol.types — error codes', () => {
+  it('mirrors the Rust terminal_ws codes, including the view-only refusal and the command verdicts', () => {
+    expect(Object.values(WEB_TERMINAL_ERROR_CODES).sort()).toEqual([
+      'COMMAND_CONFLICT',
+      'FORBIDDEN',
+      'INVALID_CLIENT_IDENTITY',
+      'INVALID_COMMAND_ID',
+      'OUTCOME_UNKNOWN',
+      'PROJECT_BUSY',
+      'PROTOCOL_VERSION_MISMATCH',
+      'TERMINAL_LIMIT',
+      'UNAUTHORIZED'
+    ])
+  })
+
+  it('FORBIDDEN is the SCREAMING form of the /ws `forbidden` code', () => {
+    expect(WEB_TERMINAL_ERROR_CODES.FORBIDDEN.toLowerCase()).toBe(WS_ERROR_CODES.FORBIDDEN)
+  })
+
+  it('PROJECT_BUSY is the SCREAMING form of the /ws `project_busy` code', () => {
+    expect(WEB_TERMINAL_ERROR_CODES.PROJECT_BUSY.toLowerCase()).toBe(WS_ERROR_CODES.PROJECT_BUSY)
+  })
+
+  it('the command verdicts are the SCREAMING form of the /ws codes', () => {
+    expect(WEB_TERMINAL_ERROR_CODES.OUTCOME_UNKNOWN.toLowerCase()).toBe(
+      WS_ERROR_CODES.OUTCOME_UNKNOWN
+    )
+    expect(WEB_TERMINAL_ERROR_CODES.COMMAND_CONFLICT.toLowerCase()).toBe(
+      WS_ERROR_CODES.COMMAND_CONFLICT
+    )
+    expect(WEB_TERMINAL_ERROR_CODES.INVALID_COMMAND_ID.toLowerCase()).toBe(
+      WS_ERROR_CODES.INVALID_COMMAND_ID
+    )
+  })
+
+  it('TERMINAL_LIMIT is the SCREAMING form of the /ws `terminal_limit` code', () => {
+    expect(WEB_TERMINAL_ERROR_CODES.TERMINAL_LIMIT.toLowerCase()).toBe(
+      WS_ERROR_CODES.TERMINAL_LIMIT
+    )
   })
 })

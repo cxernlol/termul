@@ -1,6 +1,6 @@
 import { render } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
-import { AlertCircle, Search, Square } from './index'
+import { AlertCircle, Columns3, Search, Square } from './index'
 
 describe('Termul functional icons', () => {
   it('inherits the UI color and accepts size and stroke overrides', () => {
@@ -31,5 +31,13 @@ describe('Termul functional icons', () => {
     expect(square).toHaveAttribute('fill', 'currentColor')
     expect(square).toHaveAttribute('stroke-width', '0')
     expect(square?.querySelector('rect')).not.toBeNull()
+  })
+
+  it('renders the three-column glyph used by the side-panel toggle', () => {
+    const { container } = render(<Columns3 size={16} />)
+    const icon = container.querySelector('svg')
+
+    expect(icon).toHaveAttribute('data-termul-icon', 'Columns3')
+    expect(icon).toHaveAttribute('width', '16')
   })
 })

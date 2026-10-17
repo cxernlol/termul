@@ -1,0 +1,66 @@
+{
+  "createFile": {
+    "type": { "create": { "kind": "file" } },
+    "paths": ["/test/new.txt"],
+    "attrs": {}
+  },
+  "createAny": { "type": { "create": { "kind": "any" } }, "paths": ["/test/new.txt"], "attrs": {} },
+  "modifyData": {
+    "type": { "modify": { "kind": "data", "mode": "any" } },
+    "paths": ["/test/saved.txt"],
+    "attrs": {}
+  },
+  "modifyMetadata": {
+    "type": { "modify": { "kind": "metadata", "mode": "any" } },
+    "paths": ["/test/saved.txt"],
+    "attrs": {}
+  },
+  "removeFile": {
+    "type": { "remove": { "kind": "file" } },
+    "paths": ["/test/gone.txt"],
+    "attrs": {}
+  },
+  "removeAny": {
+    "type": { "remove": { "kind": "any" } },
+    "paths": ["/test/gone.txt"],
+    "attrs": {}
+  },
+  "renameFrom": {
+    "type": { "modify": { "kind": "rename", "mode": "from" } },
+    "paths": ["/test/old.txt"],
+    "attrs": { "tracker": 7 }
+  },
+  "renameTo": {
+    "type": { "modify": { "kind": "rename", "mode": "to" } },
+    "paths": ["/test/renamed.txt"],
+    "attrs": { "tracker": 7 }
+  },
+  "renameBoth": {
+    "type": { "modify": { "kind": "rename", "mode": "both" } },
+    "paths": ["/test/old.txt", "/test/renamed.txt"],
+    "attrs": { "tracker": 7 }
+  },
+  "renameAny": {
+    "type": { "modify": { "kind": "rename", "mode": "any" } },
+    "paths": ["/test/renamed.txt"],
+    "attrs": {}
+  },
+  "any": { "type": "any", "paths": ["/test/open.md"], "attrs": {} },
+  "other": { "type": "other", "paths": ["/test/open.md"], "attrs": {} },
+  "accessOpenAny": {
+    "type": { "access": { "kind": "open", "mode": "any" } },
+    "paths": ["/test/open.md"],
+    "attrs": {}
+  },
+  "accessCloseWrite": {
+    "type": { "access": { "kind": "close", "mode": "write" } },
+    "paths": ["/test/open.md"],
+    "attrs": {}
+  },
+  "accessCloseRead": {
+    "type": { "access": { "kind": "close", "mode": "read" } },
+    "paths": ["/test/open.md"],
+    "attrs": {}
+  },
+  "accessAny": { "type": { "access": { "kind": "any" } }, "paths": ["/test/open.md"], "attrs": {} }
+}

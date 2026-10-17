@@ -2,14 +2,18 @@
 //! Factory key management endpoints. Mirrors the other `*_api.rs` modules —
 //! `router.rs` only registers routes.
 
+use std::net::SocketAddr;
+
 use axum::{
-    extract::State,
+    body::Bytes,
+    extract::{ConnectInfo, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     Json,
 };
 use serde::{Deserialize, Serialize};
 
+use crate::web::fs_api::check_local_only;
 use crate::web::ws::AppState;
 
 /// `GET /acp/factory-key` response body.
@@ -54,14 +58,39 @@ pub(crate) async fn factory_key_status(State(state): State<AppState>) -> Respons
     .into_response()
 }
 
+/// `POST /acp/factory-key` — validate and persist the Factory key.
+///
+/// The body is taken as raw [`Bytes`] and deserialized only AFTER the auth gate
+/// and the `check_local_only` write guard, so a refused peer always gets
+/// `403 FORBIDDEN` — even with an invalid/non-JSON body (a `Json<_>` extractor
+/// would reject malformed JSON with a 4xx before the guard ever ran).
 pub(crate) async fn factory_key_save(
     State(state): State<AppState>,
-    Json(body): Json<serde_json::Value>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    body: Bytes,
 ) -> Response {
     if let Some(refusal) = require_active_web_auth(&state, "save").await {
         return refusal;
     }
-    let request: FactoryKeySave = match serde_json::from_value(body) {
+    // Replacing the host credential is a host-state write: same guard as every
+    // other mutation route (loopback peer or `--allow-remote-writes`; never in
+    // shared-live mode). Runs BEFORE the body is parsed or any agent is spawned.
+    if let Some(forbidden) = check_local_only::<()>(
+        peer,
+        state.allow_remote_writes,
+        state.shared_live_writes_denied,
+        "/acp/factory-key",
+    ) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({
+                "error": forbidden.error,
+                "code": forbidden.code,
+            })),
+        )
+            .into_response();
+    }
+    let request: FactoryKeySave = match serde_json::from_slice(&body) {
         Ok(request) => request,
         Err(_) => {
             return (

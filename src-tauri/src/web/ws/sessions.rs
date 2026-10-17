@@ -19,8 +19,7 @@ pub(super) struct DeleteSessionPayload {
 /// `{ "deleted": false }` when it was already absent — never a not-found
 /// error), so the renderer can treat delete as idempotent without string
 /// sniffing. On success the relay forgets any in-memory state for the session
-/// and every connected client is told to refetch the index
-/// (`chat_history_changed`).
+/// and every `chat_history` watcher is told the session changed.
 pub(super) async fn handle_delete_session(
     id: String,
     payload: &Value,
@@ -54,7 +53,7 @@ pub(super) async fn handle_delete_session(
     match persistence.delete_session(&parsed.session_id).await {
         Ok(()) => {
             relay.forget_session(&parsed.session_id).await;
-            broadcast_chat_history_changed(relay);
+            crate::web::watch::publish_chat_history(relay, &[parsed.session_id.as_str()]);
             WsReply::ok(id, Some(json!({ "deleted": true })))
         }
         Err(crate::acp::session_persistence::SessionPersistenceError::SessionNotFound) => {
@@ -253,7 +252,8 @@ pub(super) async fn handle_get_session_payload_tail(
 }
 
 /// `record_agent_switch` request payload (CAP-2). Mirrors the Tauri command
-/// args and the durable record's payload shape byte-for-byte.
+/// args; the durable record's payload is the `AgentSwitchEvent` built from it
+/// (these five camelCase fields plus the runtime `agentId`).
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct RecordAgentSwitchPayload {
@@ -266,9 +266,10 @@ pub(super) struct RecordAgentSwitchPayload {
 
 /// `record_agent_switch` — durably record an agent-switch marker (CAP-2).
 /// Desktop parity with the `acp_record_agent_switch` Tauri command: the host
-/// is the sole author of the marker. Persists the `agent_switch` record
-/// through `SessionPersistence` (writer-assigned seq) + flush, then fans the
-/// synthetic `acp:agent_switch` event through the manager's sinks. Unknown
+/// is the sole author of the marker. The relay numbers ONE `agent_switch`
+/// record (single seq authority), appends it durably and delivers the same
+/// event live under that seq (other sinks get it too); the handler then
+/// flushes for the durability boundary. Unknown
 /// session → `not_found`; storage failure → `unsupported` (fail closed — no
 /// partial state). Boundary logging carries ids only, never the summary.
 pub(super) async fn handle_record_agent_switch(
@@ -341,7 +342,7 @@ pub(super) async fn handle_record_agent_switch(
         Err(error) => {
             // A catalog-known session whose writer runtime is gone (a
             // post-restart recovered session: metadata check above passed,
-            // but `append_agent_switch` hits SessionNotFound) surfaces as a
+            // but the relay's host record hits SessionNotFound) surfaces as a
             // typed `not_found` so the client can distinguish "unknown
             // session" from a real storage failure.
             if error.contains("session not found")
@@ -372,8 +373,8 @@ pub(super) async fn handle_recover_session_snapshot(
     id: String,
     payload: &Value,
     relay: &Arc<WsRelaySink>,
-    out_tx: &mpsc::UnboundedSender<Outbound>,
-    subscribed_clients: &mut Vec<(String, ClientId)>,
+    out_tx: &OutboundSender,
+    subscribed_clients: &Subscriptions,
     history_mode: HistoryMode,
 ) -> WsReply {
     if history_mode != HistoryMode::Server {
@@ -401,13 +402,12 @@ pub(super) async fn handle_recover_session_snapshot(
     if parsed.session_id.is_empty() {
         return WsReply::err(id, WsErrorCode::Unsupported, "sessionId is required");
     }
-    let prior_clients: Vec<ClientId> = subscribed_clients
-        .iter()
-        .filter(|(sid, _)| sid == &parsed.session_id)
-        .map(|(_, client_id)| *client_id)
-        .collect();
-    let (client_id, mut rx, events, watermark) =
-        match relay.subscribe_snapshot(&parsed.session_id).await {
+    let prior_clients = subscribed_clients.clients_for(&parsed.session_id);
+    let (client_id, stream, events, head) =
+        match relay
+            .subscribe_snapshot(&parsed.session_id, out_tx.closing())
+            .await
+        {
             Ok(result) => result,
             Err(error) => {
                 if relay.persistence().is_some_and(|persistence| {
@@ -431,41 +431,25 @@ pub(super) async fn handle_recover_session_snapshot(
                 );
             }
         };
-    subscribed_clients.retain(|(sid, client_id)| {
-        if sid == &parsed.session_id && prior_clients.contains(client_id) {
-            relay.unsubscribe(sid, *client_id);
-            false
-        } else {
-            true
-        }
-    });
-    subscribed_clients.push((parsed.session_id.clone(), client_id));
-    if let Some(rendezvous) = relay.rendezvous() {
-        rendezvous.cancel_disconnect_grace(&parsed.session_id);
+    for prior in subscribed_clients.replace(&parsed.session_id, &prior_clients, client_id) {
+        relay.unsubscribe(&parsed.session_id, prior);
     }
-    if let Some(question_rendezvous) = relay.question_rendezvous() {
-        question_rendezvous.cancel_disconnect_grace(&parsed.session_id);
-    }
-    let forward_tx = out_tx.clone();
-    tokio::spawn(async move {
-        while let Some(event) = rx.recv().await {
-            if forward_tx.send(Outbound::Event(event)).is_err() {
-                break;
-            }
-        }
-    });
+    spawn_event_forwarder(stream, out_tx.clone());
     WsReply::ok(
         id,
         Some(json!({
             "sessionId": parsed.session_id,
-            "watermark": watermark,
+            "watermark": head.head_seq,
+            "headSeq": head.head_seq,
+            "logEpoch": head.log_epoch,
             "events": events,
         })),
     )
 }
 
 /// `get_session_cursor` (R2) — returns the server-authoritative replay
-/// watermark `{ sessionId, watermark }` for a session WITHOUT subscribing
+/// watermark `{ sessionId, watermark, logEpoch?, headSeq? }` for a session
+/// WITHOUT subscribing
 /// (contrast `recover_session_snapshot`, which re-registers a subscription
 /// and emits the snapshot payload). A refreshed WS transport seeds its
 /// per-session `lastSeq` from this before the first `subscribeSession`, so
@@ -531,18 +515,22 @@ pub(super) async fn handle_get_session_cursor(
         watermark,
         "get_session_cursor"
     );
-    WsReply::ok(
-        id,
-        Some(json!({ "sessionId": parsed.session_id, "watermark": watermark })),
-    )
+    // The epoch the watermark is valid under, and the allocated frontier. An
+    // unknown session has neither: the client subscribes live-only.
+    let mut reply = json!({ "sessionId": parsed.session_id, "watermark": watermark });
+    if let Some(head) = relay.log_head(&parsed.session_id) {
+        reply["logEpoch"] = json!(head.log_epoch);
+        reply["headSeq"] = json!(head.head_seq);
+    }
+    WsReply::ok(id, Some(reply))
 }
 
 pub(super) async fn handle_open_persisted_session(
     id: String,
     payload: &Value,
     relay: &Arc<WsRelaySink>,
-    out_tx: &mpsc::UnboundedSender<Outbound>,
-    subscribed_clients: &mut Vec<(String, ClientId)>,
+    out_tx: &OutboundSender,
+    subscribed_clients: &Subscriptions,
     history_mode: HistoryMode,
 ) -> WsReply {
     if history_mode != HistoryMode::Server {

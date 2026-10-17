@@ -1,23 +1,19 @@
-import { create } from 'zustand'
+/**
+ * Read-through projection of the shell-layout rail flag (shell revamp AD-4).
+ * `useSidebarVisible()` is `railExpanded`; the imperative setters write through
+ * the shell-layout store so its hydration gate and persistence apply.
+ */
 
-interface SidebarState {
-  isVisible: boolean
-  toggleVisibility: () => void
-  setVisible: (visible: boolean) => void
-}
-
-export const useSidebarStore = create<SidebarState>((set) => ({
-  isVisible: true,
-
-  toggleVisibility: (): void => {
-    set((state) => ({ isVisible: !state.isVisible }))
-  },
-
-  setVisible: (visible: boolean): void => {
-    set({ isVisible: visible })
-  }
-}))
+import { useRailExpanded, useShellLayoutStore } from '@/stores/shell-layout-store'
 
 export function useSidebarVisible(): boolean {
-  return useSidebarStore((state) => state.isVisible)
+  return useRailExpanded()
+}
+
+export function setSidebarVisible(visible: boolean): void {
+  useShellLayoutStore.getState().setRailExpanded(visible)
+}
+
+export function toggleSidebarVisibility(): void {
+  setSidebarVisible(!useShellLayoutStore.getState().railExpanded)
 }

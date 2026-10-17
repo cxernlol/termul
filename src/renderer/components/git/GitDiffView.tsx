@@ -1,5 +1,7 @@
 import type React from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { WriteGate } from '@/components/ui/write-gate'
+import { useServerAdmitsRemoteWrites } from '@/hooks/use-server-admits-remote-writes'
 import { buildHunkPatches, buildLinePatch, type HunkPatch } from '@/lib/build-hunk-patch'
 import {
   getLanguageForFile,
@@ -223,33 +225,40 @@ function HunkActionBar({
   selectedCount?: number
   onSelectedAction?: () => void
 }): React.JSX.Element | null {
+  const admitted = useServerAdmitsRemoteWrites()
   if (!onAction && !onSelectedAction) return null
   const verb = action === 'stage' ? 'Stage' : 'Unstage'
   const buttonClass =
-    'ml-2 inline-flex items-center rounded border border-border/60 bg-background/80 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground hover:bg-accent hover:text-accent-foreground'
+    'inline-flex items-center rounded-md border border-border bg-background px-1.5 py-0.5 text-3xs font-medium uppercase tracking-wide text-muted-foreground transition-colors duration-150 ease-out hover:bg-foreground/[0.06] hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-40 disabled:cursor-not-allowed'
   return (
     <>
       {onAction ? (
-        <button
-          type="button"
-          onClick={onAction}
-          className={buttonClass}
-          title={`${verb} hunk`}
-          aria-label={`${verb} hunk`}
-        >
-          {verb} hunk
-        </button>
+        <WriteGate gated={!admitted} className="ml-2">
+          <button
+            type="button"
+            onClick={onAction}
+            disabled={!admitted}
+            className={cn(buttonClass, admitted && 'ml-2')}
+            title={`${verb} hunk`}
+            aria-label={`${verb} hunk`}
+          >
+            {verb} hunk
+          </button>
+        </WriteGate>
       ) : null}
       {onSelectedAction && selectedCount && selectedCount > 0 ? (
-        <button
-          type="button"
-          onClick={onSelectedAction}
-          className={buttonClass}
-          title={`${verb} selected lines`}
-          aria-label={`${verb} selected lines`}
-        >
-          {verb} selected ({selectedCount})
-        </button>
+        <WriteGate gated={!admitted} className="ml-2">
+          <button
+            type="button"
+            onClick={onSelectedAction}
+            disabled={!admitted}
+            className={cn(buttonClass, admitted && 'ml-2')}
+            title={`${verb} selected lines`}
+            aria-label={`${verb} selected lines`}
+          >
+            {verb} selected ({selectedCount})
+          </button>
+        </WriteGate>
       ) : null}
     </>
   )
@@ -316,10 +325,8 @@ function InlineDiff({
               aria-pressed={selected}
               aria-label={`${selected ? 'Clear' : 'Select'} line for partial staging`}
               className={cn(
-                'w-4 py-0.5 min-h-[1.25rem] flex items-center justify-center text-[9px] leading-none cursor-pointer',
-                selected
-                  ? 'text-primary font-bold'
-                  : 'text-transparent hover:text-muted-foreground/50'
+                'w-4 py-0.5 min-h-[1.25rem] flex items-center justify-center text-4xs leading-none cursor-pointer',
+                selected ? 'text-foreground' : 'text-transparent hover:text-muted-foreground/50'
               )}
             >
               {selected ? '●' : '·'}
@@ -370,7 +377,7 @@ function InlineDiff({
                 lineClass(line.kind),
                 line.kind === 'deletion' && changedRanges.length > 0 && 'bg-destructive/15',
                 line.kind === 'addition' && changedRanges.length > 0 && 'bg-diff-added/15',
-                isSelected && 'bg-primary/15 outline outline-1 outline-primary/40'
+                isSelected && 'bg-foreground/[0.06] outline outline-1 outline-border'
               )}
             >
               {isHunkBody ? (

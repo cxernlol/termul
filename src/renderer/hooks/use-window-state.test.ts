@@ -1,4 +1,4 @@
-import type { WindowState } from '@shared/types/persistence.types'
+import { PersistenceKeys, type WindowState } from '@shared/types/persistence.types'
 import type { Monitor } from '@tauri-apps/api/window'
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -6,7 +6,8 @@ import {
   clampStateToMonitors,
   getLogicalWorkArea,
   isPositionOnScreen,
-  useWindowState
+  useWindowState,
+  WINDOW_RESTORE_TIMEOUT_MS
 } from './use-window-state'
 
 const {
@@ -15,6 +16,9 @@ const {
   runtimeMock,
   monitorsMock,
   primaryMock,
+  waylandMock,
+  logMock,
+  closeOwnerState,
   LogicalPositionStub,
   LogicalSizeStub
 } = vi.hoisted(() => {
@@ -60,6 +64,9 @@ const {
     runtimeMock: { isTauri: true },
     monitorsMock: vi.fn(async (): Promise<Monitor[]> => []),
     primaryMock: vi.fn(async (): Promise<Monitor | null> => null),
+    waylandMock: vi.fn(async (): Promise<boolean> => false),
+    logMock: vi.fn(async (_payload: unknown) => {}),
+    closeOwnerState: { hasOwner: true },
     LogicalPositionStub,
     LogicalSizeStub
   }
@@ -75,6 +82,18 @@ vi.mock('@tauri-apps/api/window', () => ({
 
 vi.mock('@/lib/api', () => ({
   persistenceApi: persistenceMock
+}))
+
+vi.mock('@/lib/tauri-wayland', () => ({
+  isWaylandSession: () => waylandMock()
+}))
+
+vi.mock('@/lib/log-api', () => ({
+  logFrontendError: (payload: unknown) => logMock(payload)
+}))
+
+vi.mock('@/lib/tauri-window-api', () => ({
+  hasAppCloseOwner: () => closeOwnerState.hasOwner
 }))
 
 vi.mock('@/lib/tauri-runtime', () => ({
@@ -153,6 +172,9 @@ describe('useWindowState restoration', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     runtimeMock.isTauri = true
+    closeOwnerState.hasOwner = true
+    waylandMock.mockResolvedValue(false)
+    windowMock.setPosition.mockImplementation(async () => {})
     windowMock.isMaximized.mockResolvedValue(false)
     windowMock.scaleFactor.mockResolvedValue(1)
     windowMock.outerPosition.mockResolvedValue({ x: 0, y: 0 })
@@ -242,10 +264,161 @@ describe('useWindowState restoration', () => {
     expect(saved).toMatchObject({ x: 150, y: 100, width: 1200, height: 800 })
   })
 
+  const runCloseHandler = async (): Promise<ReturnType<typeof vi.fn>> => {
+    const { result } = renderHook(() => useWindowState())
+    await waitFor(() => expect(result.current).toBe(true))
+    await waitFor(() => expect(windowMock.onCloseRequested).toHaveBeenCalledOnce())
+    const closeHandler = (windowMock.onCloseRequested.mock.calls[0] as unknown[])[0] as (event: {
+      preventDefault: () => void
+    }) => void
+    const preventDefault = vi.fn()
+    await act(async () => {
+      closeHandler({ preventDefault })
+      await Promise.resolve()
+    })
+    return preventDefault
+  }
+
+  it('persists on close without overriding the app-close owner (issue #1146)', async () => {
+    // An unprevented close event makes @tauri-apps/api destroy the window,
+    // which quits the app and kills its agents instead of hiding to the tray.
+    const preventDefault = await runCloseHandler()
+
+    expect(preventDefault).toHaveBeenCalledOnce()
+    await waitFor(() =>
+      expect(persistenceMock.write).toHaveBeenCalledWith(
+        PersistenceKeys.windowState,
+        expect.objectContaining({ x: 0, y: 0, width: 1200, height: 800 })
+      )
+    )
+  })
+
+  it('lets the window close on close when no app-close owner is mounted', async () => {
+    closeOwnerState.hasOwner = false
+
+    const preventDefault = await runCloseHandler()
+
+    expect(preventDefault).not.toHaveBeenCalled()
+    await waitFor(() => expect(persistenceMock.write).toHaveBeenCalled())
+  })
+
   it('is immediately ready outside the Tauri context', async () => {
     runtimeMock.isTauri = false
     const { result } = renderHook(() => useWindowState())
     await waitFor(() => expect(result.current).toBe(true))
     expect(windowMock.setPosition).not.toHaveBeenCalled()
+  })
+
+  it('skips setPosition on Wayland but still applies size and maximize', async () => {
+    waylandMock.mockResolvedValue(true)
+    persistenceMock.read.mockResolvedValue({
+      success: true,
+      data: { x: 120, y: 80, width: 1000, height: 700, isMaximized: true }
+    })
+
+    const { result } = renderHook(() => useWindowState())
+    await waitFor(() => expect(result.current).toBe(true))
+
+    expect(windowMock.setPosition).not.toHaveBeenCalled()
+    expect(windowMock.setSize).toHaveBeenCalledTimes(1)
+    expect(windowMock.maximize).toHaveBeenCalledTimes(1)
+  })
+
+  it('flips ready after the restore timeout when setPosition never settles', async () => {
+    vi.useFakeTimers()
+    try {
+      windowMock.setPosition.mockImplementation(() => new Promise<void>(() => {}))
+
+      const { result } = renderHook(() => useWindowState())
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(WINDOW_RESTORE_TIMEOUT_MS - 100)
+      })
+      expect(result.current).toBe(false)
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(200)
+      })
+      expect(result.current).toBe(true)
+      expect(logMock).toHaveBeenCalledWith(expect.objectContaining({ level: 'warn' }))
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('clears the timeout and logs nothing when restore is fast', async () => {
+    const { result } = renderHook(() => useWindowState())
+    await waitFor(() => expect(result.current).toBe(true))
+
+    expect(logMock).not.toHaveBeenCalled()
+    expect(windowMock.onMoved).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not leak listeners when a hung restore is disposed before the timeout', async () => {
+    vi.useFakeTimers()
+    try {
+      windowMock.setPosition.mockImplementation(() => new Promise<void>(() => {}))
+
+      const { result, unmount } = renderHook(() => useWindowState())
+      await act(async () => {
+        unmount()
+        await vi.advanceTimersByTimeAsync(WINDOW_RESTORE_TIMEOUT_MS + 100)
+      })
+
+      expect(result.current).toBe(false)
+      expect(windowMock.onMoved).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not persist move/resize events fired by a late restore after a timeout', async () => {
+    vi.useFakeTimers()
+    try {
+      let releaseSetPosition: () => void = () => {}
+      windowMock.setPosition.mockImplementation(
+        () => new Promise<void>((resolve) => (releaseSetPosition = resolve))
+      )
+
+      const { result } = renderHook(() => useWindowState())
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(WINDOW_RESTORE_TIMEOUT_MS + 10)
+      })
+      expect(result.current).toBe(true)
+
+      const onMoved = windowMock.onMoved.mock.calls[0] as unknown as [() => void]
+      onMoved[0]()
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0)
+      })
+      expect(persistenceMock.writeDebounced).not.toHaveBeenCalled()
+
+      await act(async () => {
+        releaseSetPosition()
+        await vi.advanceTimersByTimeAsync(0)
+      })
+      onMoved[0]()
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0)
+      })
+      expect(persistenceMock.writeDebounced).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('logs no timeout warning when disposed before the timeout elapses', async () => {
+    vi.useFakeTimers()
+    try {
+      windowMock.setPosition.mockImplementation(() => new Promise<void>(() => {}))
+      const { unmount } = renderHook(() => useWindowState())
+      await act(async () => {
+        unmount()
+        await vi.advanceTimersByTimeAsync(WINDOW_RESTORE_TIMEOUT_MS + 100)
+      })
+      expect(logMock).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

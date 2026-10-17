@@ -1,5 +1,6 @@
 import type { Config } from 'tailwindcss'
 import tailwindcssAnimate from 'tailwindcss-animate'
+import { MONO_FONT_FAMILY, SANS_FONT_FAMILY } from './src/renderer/lib/font-stacks'
 
 export default {
   darkMode: 'class',
@@ -45,6 +46,8 @@ export default {
         'diff-modified': 'oklch(var(--diff-modified) / <alpha-value>)',
         'diff-added': 'oklch(var(--diff-added) / <alpha-value>)',
         overlay: 'oklch(var(--overlay) / <alpha-value>)',
+        'row-hover': 'var(--row-hover)',
+        'row-hover-solid': 'var(--row-hover-solid)',
         warning: {
           DEFAULT: 'oklch(var(--warning) / <alpha-value>)',
           foreground: 'oklch(var(--warning-foreground) / <alpha-value>)'
@@ -111,98 +114,25 @@ export default {
         }
       },
       fontSize: {
-        // Sub-xs scale. Tailwind's default fontSize stops at `xs` (12px),
-        // which forced ad-hoc `text-[Npx]` values for captions / badges /
-        // micro-labels across the renderer. These three size-only tokens
-        // fill that gap. Size-only (no [size, lineHeight] tuple) on purpose
-        // so existing `leading-*` and inherited line-heights are preserved.
-        '2xs': '0.6875rem', // 11px
-        '3xs': '0.625rem', // 10px
-        '4xs': '0.5625rem' // 9px
+        // 12px floor for dense chrome (badges, chips, path labels). Three role
+        // names share one size so existing call sites stay put. Size-only
+        // (no [size, lineHeight] tuple) so existing `leading-*` still wins.
+        '2xs': '0.75rem', // 12px
+        '3xs': '0.75rem', // 12px
+        '4xs': '0.75rem' // 12px
       },
       fontFamily: {
-        // Variable Inter (bundled). Fall through to native UI fonts so we still
-        // look right if the bundled font fails to load. Ubuntu/Cantarell are
-        // the actual GNOME UI fonts on Linux.
-        sans: [
-          '"Inter Variable"',
-          'Inter',
-          '"SF Pro Text"',
-          '"Segoe UI"',
-          'Ubuntu',
-          'Cantarell',
-          'system-ui',
-          '-apple-system',
-          'BlinkMacSystemFont',
-          'sans-serif'
-        ],
-        mono: [
-          '"JetBrains Mono Variable"',
-          '"JetBrains Mono"',
-          '"Cascadia Code"',
-          '"SF Mono"',
-          'Menlo',
-          'Consolas',
-          '"Ubuntu Mono"',
-          '"DejaVu Sans Mono"',
-          '"Liberation Mono"',
-          'monospace'
-        ]
+        sans: [...SANS_FONT_FAMILY],
+        mono: [...MONO_FONT_FAMILY]
       },
       borderRadius: {
         lg: 'var(--radius)',
         md: 'calc(var(--radius) - 2px)',
         sm: 'calc(var(--radius) - 4px)'
       },
-      keyframes: {
-        'accordion-down': {
-          from: { height: '0' },
-          to: { height: 'var(--radix-accordion-content-height)' }
-        },
-        'accordion-up': {
-          from: { height: 'var(--radix-accordion-content-height)' },
-          to: { height: '0' }
-        },
-        'fade-in': {
-          from: { opacity: '0', transform: 'translateY(-10px)' },
-          to: { opacity: '1', transform: 'translateY(0)' }
-        },
-        'slide-in': {
-          from: { opacity: '0', transform: 'translateX(-10px)' },
-          to: { opacity: '1', transform: 'translateX(0)' }
-        },
-        // Tab bar live-turn edge: opacity-only fade-in so the 2px gradient
-        // edge appears without a transform. Reduced motion renders it
-        // instantly via motion-reduce:animate-none.
-        'alive-in': {
-          from: { opacity: '0' },
-          to: { opacity: '1' }
-        },
-        // Chat "agent is typing" dots: a gentle hop + scale, staggered per dot
-        // via animation-delay at the call site.
-        'typing-bounce': {
-          '0%, 80%, 100%': { transform: 'translateY(0) scale(0.8)', opacity: '0.5' },
-          '40%': { transform: 'translateY(-3px) scale(1)', opacity: '1' }
-        },
-        // Streaming caret: a steady blink while the agent is writing.
-        'caret-blink': {
-          '0%, 45%': { opacity: '1' },
-          '50%, 95%': { opacity: '0' },
-          '100%': { opacity: '1' }
-        }
-      },
-      animation: {
-        'alive-in': 'alive-in 150ms cubic-bezier(0.23, 1, 0.32, 1)',
-        // Use custom ease-out token (cubic-bezier(0.23, 1, 0.32, 1)) so
-        // these keyframe animations have the same character as the
-        // tailwindcss-animate Radix overrides in index.css.
-        'accordion-down': 'accordion-down 250ms cubic-bezier(0.22, 1, 0.36, 1)',
-        'accordion-up': 'accordion-up 250ms cubic-bezier(0.22, 1, 0.36, 1)',
-        'fade-in': 'fade-in 200ms cubic-bezier(0.23, 1, 0.32, 1)',
-        'slide-in': 'slide-in 180ms cubic-bezier(0.23, 1, 0.32, 1)',
-        'typing-bounce': 'typing-bounce 1s cubic-bezier(0.77, 0, 0.175, 1) infinite',
-        'caret-blink': 'caret-blink 1s step-end infinite'
-      },
+      // Keyframes and `animate-*` live in src/renderer/index.css (@theme inline):
+      // keyframes from this JS config reach PostCSS without a source file, which
+      // makes Vite warn "A PostCSS plugin did not pass the `from` option".
       boxShadow: {
         // Alpha kept inline here (single place); the hue components come from
         // the per-theme --glow-* tokens emitted by applyColorTheme.

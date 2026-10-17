@@ -525,6 +525,7 @@ fn test_worktree_add_args_new_branch_with_start_ref() {
             "add",
             "-b",
             "chat/abc",
+            "--",
             "/p/.termul/worktrees/abc/",
             "main"
         ]
@@ -535,14 +536,14 @@ fn test_worktree_add_args_new_branch_with_start_ref() {
 #[test]
 fn test_worktree_add_args_new_branch_default_ref() {
     let args = worktree_add_args("chat/abc", true, "/t/wt/", None);
-    assert_eq!(args, ["worktree", "add", "-b", "chat/abc", "/t/wt/"]);
+    assert_eq!(args, ["worktree", "add", "-b", "chat/abc", "--", "/t/wt/"]);
     assert!(!args.contains(&"--progress"));
 }
 
 #[test]
 fn test_worktree_add_args_existing_branch() {
     let args = worktree_add_args("feat/x", false, "/t/wt/", None);
-    assert_eq!(args, ["worktree", "add", "/t/wt/", "feat/x"]);
+    assert_eq!(args, ["worktree", "add", "--", "/t/wt/", "feat/x"]);
     assert!(!args.contains(&"--progress"));
 }
 
@@ -756,4 +757,13 @@ fn test_resolve_default_base_branch_detached_head_flag() {
     assert!(info.current_branch.is_none());
     // main exists locally -> default_base should be main (fallback chain).
     assert_eq!(info.default_base, "main");
+}
+
+#[test]
+fn managed_path_requires_a_termul_worktrees_component_pair() {
+    assert!(WorktreeManager::is_managed_path("/p/.termul/worktrees/wt-1"));
+    assert!(WorktreeManager::is_managed_path("/p/.termul/worktrees"));
+    assert!(!WorktreeManager::is_managed_path("/p/worktrees/wt-1"));
+    assert!(!WorktreeManager::is_managed_path("/p/.termul/other/worktrees/wt-1"));
+    assert!(!WorktreeManager::is_managed_path("/p/not.termul/worktrees/wt-1"));
 }

@@ -27,7 +27,12 @@ export const useAppSettingsStore = create<AppSettingsState>((set) => ({
       settings: { ...state.settings, ...updates }
     })),
 
-  resetToDefaults: () => set({ settings: DEFAULT_APP_SETTINGS })
+  // Terminal profiles are the user's own launch entries, not preferences: a
+  // reset keeps them, as it keeps MCP servers and custom agents.
+  resetToDefaults: () =>
+    set((state) => ({
+      settings: { ...DEFAULT_APP_SETTINGS, terminalProfiles: state.settings.terminalProfiles }
+    }))
 }))
 
 // Selectors
@@ -44,20 +49,13 @@ export const useTerminalBufferSize = () =>
   useAppSettingsStore((state) => state.settings.terminalBufferSize)
 export const useTerminalRenderer = () =>
   useAppSettingsStore((state) => state.settings.terminalRenderer)
-export const useMaxTerminalsPerProject = () =>
-  useAppSettingsStore((state) => state.settings.maxTerminalsPerProject)
-export const useOrphanDetectionEnabled = () =>
-  useAppSettingsStore((state) => state.settings.orphanDetectionEnabled)
-export const useOrphanDetectionTimeout = () =>
-  useAppSettingsStore((state) => state.settings.orphanDetectionTimeout)
+// Strict `=== true` guards a corrupt or missing persisted value.
+export const useTerminalScreenReaderMode = () =>
+  useAppSettingsStore((state) => state.settings.terminalScreenReaderMode === true)
 export const useConfirmTerminalClose = () =>
   useAppSettingsStore((state) => state.settings.confirmTerminalClose)
 export const useTerminalUrlOpenMode = () =>
   useAppSettingsStore((state) => state.settings.terminalUrlOpenMode)
-export const useSidebarVisibilitySetting = () =>
-  useAppSettingsStore((state) => state.settings.sidebarVisible)
-export const useFileExplorerVisibilitySetting = () =>
-  useAppSettingsStore((state) => state.settings.fileExplorerVisible)
 export const useColorTheme = () => useAppSettingsStore((state) => state.settings.colorTheme)
 export const useAppearanceMode = () => useAppSettingsStore((state) => state.settings.appearanceMode)
 export const useUiZoomLevel = () => useAppSettingsStore((state) => state.settings.uiZoomLevel)
@@ -72,6 +70,8 @@ export const useAcpSessionNewTimeout = () =>
   useAppSettingsStore((state) => state.settings.acpSessionNewTimeoutSecs)
 export const useAcpSessionReopenTimeout = () =>
   useAppSettingsStore((state) => state.settings.acpSessionReopenTimeoutSecs)
+export const useAgentIdleWindow = () =>
+  useAppSettingsStore((state) => state.settings.agentIdleWindowSecs)
 export const useNotifyOnTerminalIdle = () =>
   useAppSettingsStore((state) => state.settings.notifyOnTerminalIdle)
 export const useNotifyOnAgentChatTurnFinished = () =>

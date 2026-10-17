@@ -1,5 +1,6 @@
 import type { FileUIPart } from 'ai'
 import type { ContentBlock } from '@/lib/acp-api'
+import { basename } from '@/lib/path-basename'
 
 /**
  * A file/image staged in the composer before sending. The variant is keyed on
@@ -8,8 +9,6 @@ import type { ContentBlock } from '@/lib/acp-api'
  * - `image`      — browser File bytes -> ACP `image` block (base64).
  * - `file-ref`   — a real filesystem path (OS picker) -> ACP `resource_link`.
  * - `file-embed` — browser File text (drag/paste, no path) -> embedded `resource`.
- *
- * See docs/adr/0001-agent-chat-file-attachment-transport.md.
  */
 export type PendingAttachment =
   | {
@@ -105,6 +104,7 @@ const EXT_MIME: Record<string, string> = {
   gql: 'application/graphql',
   vue: 'text/plain',
   svelte: 'text/plain',
+  astro: 'text/plain',
   // images (picker -> resource_link)
   png: 'image/png',
   jpg: 'image/jpeg',
@@ -141,12 +141,6 @@ export function fileExtension(name: string): string {
   const dot = base.lastIndexOf('.')
   if (dot <= 0 || dot === base.length - 1) return ''
   return base.slice(dot + 1).toLowerCase()
-}
-
-/** Last path segment, splitting on both `/` and `\`. */
-export function basename(p: string): string {
-  const parts = p.split(/[\\/]/)
-  return parts[parts.length - 1] || p
 }
 
 export function isImageMime(mimeType: string | undefined): boolean {

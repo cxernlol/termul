@@ -1,27 +1,12 @@
+import type { ProjectUpdates } from '@/stores/project-store'
 import type { Project } from '@/types/project'
 
+/** Target of the "Change Color" popover, opened at the last right-click point. */
 export interface ColorPickerState {
-  isOpen: boolean
   x: number
   y: number
   targetId: string
   targetType: 'project' | 'group'
-}
-
-export interface DeleteConfirmState {
-  isOpen: boolean
-  projectId: string
-  projectName: string
-}
-
-export interface SettingsDialogState {
-  isOpen: boolean
-  projectId: string
-}
-
-export interface NewWorktreeModalState {
-  isOpen: boolean
-  projectId: string
 }
 
 export interface ProjectSidebarProps {
@@ -29,7 +14,7 @@ export interface ProjectSidebarProps {
   activeProjectId: string
   onSelectProject: (id: string) => void
   onNewProject: () => void
-  onUpdateProject: (id: string, updates: Partial<Project>) => void
+  onUpdateProject: (id: string, updates: ProjectUpdates) => void
   onDeleteProject: (id: string) => void
   onArchiveProject: (id: string) => void
   onRestoreProject: (id: string) => void

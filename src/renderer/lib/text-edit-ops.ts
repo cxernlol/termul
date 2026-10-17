@@ -86,12 +86,12 @@ function getSelectionText(): string {
  * (`lib/copy-text.ts`), which destroys the original selection. Without
  * restoring it, `execCommand('delete')` in `cutSelection` would delete nothing.
  */
-type SelectionSnapshot =
+export type SelectionSnapshot =
   | { kind: 'input'; start: number; end: number }
   | { kind: 'range'; range: Range }
   | null
 
-function captureSelectionSnapshot(el: HTMLElement): SelectionSnapshot {
+export function captureSelectionSnapshot(el: HTMLElement): SelectionSnapshot {
   if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
     return { kind: 'input', start: el.selectionStart ?? 0, end: el.selectionEnd ?? 0 }
   }
@@ -102,7 +102,7 @@ function captureSelectionSnapshot(el: HTMLElement): SelectionSnapshot {
   return null
 }
 
-function restoreSelectionSnapshot(el: HTMLElement, snapshot: SelectionSnapshot): void {
+export function restoreSelectionSnapshot(el: HTMLElement, snapshot: SelectionSnapshot): void {
   if (!snapshot) return
   if (
     snapshot.kind === 'input' &&

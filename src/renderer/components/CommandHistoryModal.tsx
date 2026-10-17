@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { Clock, History, Terminal, Trash2 } from '@/components/icons'
+import { FIELD_FOCUS_CLASS } from '@/components/ui/panel-styles'
 import {
   Select,
   SelectContent,
@@ -177,7 +178,7 @@ export function CommandHistoryModal({
                 onChange={(e) => setQuery(e.target.value)}
                 onKeyDown={handleKeyDown}
                 placeholder="Search commands..."
-                className="w-full px-3 py-2 text-sm bg-background border border-border rounded focus:outline-none focus:ring-1 focus:ring-primary"
+                className={`w-full px-3 py-2 text-sm pointer-coarse:text-base bg-background border border-border rounded ${FIELD_FOCUS_CLASS}`}
               />
             </div>
 
@@ -203,7 +204,7 @@ export function CommandHistoryModal({
                         onClose()
                       }}
                       className={`px-4 py-3 cursor-pointer transition-colors ${
-                        index === selectedIndex ? 'bg-secondary' : 'hover:bg-secondary/50'
+                        index === selectedIndex ? 'keycap' : 'hover:bg-foreground/[0.03]'
                       }`}
                     >
                       <div className="flex items-start justify-between gap-3">

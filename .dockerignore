@@ -1,0 +1,4 @@
+# The image downloads a released binary. The build reads only the updater
+# public key from the source tree.
+*
+!src-tauri/tauri.conf.json

@@ -11,13 +11,6 @@ const _platform: string = typeof navigator !== 'undefined' ? navigator.platform.
 /** True when running on macOS / Darwin. */
 export const isMac: boolean = _platform.includes('mac')
 
-/**
- * Full-width macOS titlebar clearance strip above workspace chrome.
- * Height matches Windows `TitleBar` (`h-8`) so content starts at the same
- * vertical offset on both platforms.
- */
-export const macOsTitlebarStripClass = 'h-8 shrink-0 bg-background flex items-center relative'
-
 /** True when running on Windows. */
 export const isWindows: boolean = _platform.includes('win')
 

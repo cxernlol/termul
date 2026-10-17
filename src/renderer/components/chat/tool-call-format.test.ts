@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import type { PermissionOption } from '@/lib/acp-api'
+import parity from './diff-line-counts.fixtures.json'
 import {
   diffLineCounts,
   diffLines,
+  firstChange,
   isAllowOption,
   isRejectOption,
   kindIcon,
@@ -153,6 +155,76 @@ describe('diffLines / diffLineCounts', () => {
     const lines = diffLines({ oldText, newText })
     expect(lines.every((l) => l.type === 'removed' || l.type === 'added')).toBe(true)
     expect(diffLineCounts({ oldText, newText })).toEqual({ added: 3_000, removed: 3_000 })
+  })
+})
+
+type FixtureLine =
+  | string
+  | { prefix: string; from: number; to: number }
+  | { line: string; times: number }
+
+interface FixtureSide {
+  eol?: string
+  lines: FixtureLine[]
+}
+
+interface ParityFixture {
+  name: string
+  oldText: FixtureSide | null
+  newText: FixtureSide
+  expected: { added: number; removed: number }
+}
+
+function expandLine(line: FixtureLine): string[] {
+  if (typeof line === 'string') return [line]
+  if ('times' in line) return Array.from({ length: line.times }, () => line.line)
+  const step = line.from <= line.to ? 1 : -1
+  return Array.from(
+    { length: Math.abs(line.to - line.from) + 1 },
+    (_, k) => `${line.prefix}${line.from + k * step}`
+  )
+}
+
+function fixtureText(side: FixtureSide | null): string | null {
+  if (side === null) return null
+  const eol = side.eol ?? '\n'
+  return side.lines
+    .flatMap(expandLine)
+    .map((line) => line + eol)
+    .join('')
+}
+
+const parityFixtures: ParityFixture[] = parity.fixtures
+
+describe('diffLineCounts host parity fixtures', () => {
+  it.each(parityFixtures)('$name', ({ oldText, newText, expected }) => {
+    const newTextValue = fixtureText(newText) ?? ''
+    expect(diffLineCounts({ oldText: fixtureText(oldText), newText: newTextValue })).toEqual(
+      expected
+    )
+  })
+})
+
+describe('firstChange', () => {
+  it('points at the first added line of a new file', () => {
+    expect(firstChange(diffLines({ oldText: null, newText: 'a\nb\n' }))).toEqual({
+      index: 0,
+      line: 1
+    })
+  })
+
+  it('skips leading context to the first change', () => {
+    const lines = diffLines({ oldText: 'a\nb\nc\nd\ne\n', newText: 'a\nb\nc\nd\nE\n' })
+    expect(firstChange(lines)).toEqual({ index: 3, line: 5 })
+  })
+
+  it('places a removal after the last new-file line before it', () => {
+    const lines = diffLines({ oldText: 'a\nb\nc\n', newText: 'a\nc\n' })
+    expect(firstChange(lines)).toEqual({ index: 1, line: 2 })
+  })
+
+  it('returns null when nothing changed', () => {
+    expect(firstChange([{ type: 'context', text: 'a', oldLine: 1, newLine: 1 }])).toBeNull()
   })
 })
 

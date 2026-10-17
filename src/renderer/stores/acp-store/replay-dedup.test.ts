@@ -99,7 +99,9 @@ vi.mock('@/stores/workspace-store', () => {
     getAllLeafPanes,
     findPaneContainingTab,
     agentChatTabId: (sessionId: string) => `chat-${sessionId}`,
+    getAgentChatSessionIdsInAllTrees: () => new Set<string>(),
     useWorkspaceStore: {
+      subscribe: () => () => {},
       getState: () => ({
         addAgentChatTab: addAgentChatTabSpy,
         removeTab: workspaceStateRef.current.removeTab,
@@ -140,6 +142,8 @@ vi.mock('@/lib/api', async (importActual) => {
   }
 })
 
+import { buildTimeline } from '@/components/chat/chat-timeline'
+import { describeToolCall } from '@/components/chat/tool-call-summary'
 import {
   _clearPayloadCacheForTesting,
   setCachedSessionPayload
@@ -150,7 +154,7 @@ import {
   type AcpTransport,
   AcpTransportError
 } from '@/lib/acp-transport'
-import { commandToken, skillToken } from '@/lib/skill-tokens'
+import { commandToken, fileToken, skillToken } from '@/lib/skill-tokens'
 import {
   _flushCoalescedForTesting,
   _installTransportRecoveryForTesting,
@@ -161,6 +165,7 @@ import {
   initAcpEventListeners,
   useAcpStore
 } from '@/stores/acp-store'
+import { useAgentChatUnreadStore } from '@/stores/agent-chat-unread-store'
 import { FRESH, flushTurnEnd, seedSession } from './testkit'
 
 describe('replay render dedup on reconnect (story 11 / CAP-3 client half)', () => {
@@ -177,7 +182,9 @@ describe('replay render dedup on reconnect (story 11 / CAP-3 client half)', () =
   type TestMessage = {
     id: string
     role: 'user' | 'agent' | 'thought'
-    blocks: Array<{ type: 'text'; text: string }>
+    blocks: Array<
+      { type: 'text'; text: string } | { type: 'resource_link'; uri: string; name: string }
+    >
     streaming: boolean
     timestamp: number
     seq: number
@@ -194,7 +201,13 @@ describe('replay render dedup on reconnect (story 11 / CAP-3 client half)', () =
     }
   }
 
-  function seedServerPayload(id: string, messages: TestMessage[], lastSeq: number): void {
+  function seedServerPayload(
+    id: string,
+    messages: TestMessage[],
+    lastSeq: number,
+    commands?: Array<{ name: string; description: string }>,
+    commandsSeq?: number
+  ): void {
     setCachedSessionPayload(id, {
       metadata: {
         id,
@@ -208,7 +221,9 @@ describe('replay render dedup on reconnect (story 11 / CAP-3 client half)', () =
         lastSeq,
         status: 'closed'
       },
-      messages: messages as never
+      messages: messages as never,
+      ...(commands ? { commands } : {}),
+      ...(commandsSeq !== undefined ? { commandsSeq } : {})
     })
   }
 
@@ -226,6 +241,187 @@ describe('replay render dedup on reconnect (story 11 / CAP-3 client half)', () =
       dispose: vi.fn()
     } as unknown as AcpTransport)
   }
+
+  it('restores the slash commands a reopened payload carries', async () => {
+    seedServerPayload('s-cmds', [msg('turn:t1', 'user', 'hi', 3)], 3, [
+      { name: 'review', description: 'Review the diff' }
+    ])
+    seedServerTransport()
+
+    await useAcpStore.getState().openHistorySession('s-cmds')
+
+    expect(useAcpStore.getState().commands['s-cmds']).toEqual([
+      { name: 'review', description: 'Review the diff' }
+    ])
+  })
+
+  it('restores the newest slash commands from a recovery snapshot', async () => {
+    seedSession('s-rec-cmds', 'agent-1', false)
+    await _installTransportRecoveryForTesting({
+      sessionId: 's-rec-cmds',
+      watermark: 4,
+      events: [
+        {
+          sid: 's-rec-cmds',
+          seq: 1,
+          type: 'commands_update',
+          payload: { availableCommands: [{ name: 'init', description: 'Init' }] }
+        },
+        { sid: 's-rec-cmds', seq: 2, type: 'user_prompt', payload: { turnId: 't', content: [] } },
+        {
+          sid: 's-rec-cmds',
+          seq: 3,
+          type: 'commands_update',
+          payload: { availableCommands: [{ name: 'review', description: 'Review' }] }
+        }
+      ]
+    } as never)
+
+    expect(useAcpStore.getState().commands['s-rec-cmds']).toEqual([
+      { name: 'review', description: 'Review' }
+    ])
+  })
+
+  function commandsSnapshot(sessionId: string, logEpoch: string, seq: number, name: string): never {
+    return {
+      sessionId,
+      logEpoch,
+      watermark: seq,
+      events: [
+        {
+          sid: sessionId,
+          seq,
+          type: 'commands_update',
+          payload: { availableCommands: [{ name, description: name }] }
+        }
+      ]
+    } as never
+  }
+
+  it('installs a recovery snapshot list from a new log epoch even when its seq is below the held one', async () => {
+    seedSession('s-epoch-cmds', 'agent-1', false)
+    await _installTransportRecoveryForTesting(
+      commandsSnapshot('s-epoch-cmds', 'epoch-A', 9, 'init')
+    )
+
+    await _installTransportRecoveryForTesting(
+      commandsSnapshot('s-epoch-cmds', 'epoch-A', 2, 'stale')
+    )
+    expect(useAcpStore.getState().commands['s-epoch-cmds']).toEqual([
+      { name: 'init', description: 'init' }
+    ])
+
+    await _installTransportRecoveryForTesting(
+      commandsSnapshot('s-epoch-cmds', 'epoch-B', 1, 'review')
+    )
+    expect(useAcpStore.getState().commands['s-epoch-cmds']).toEqual([
+      { name: 'review', description: 'review' }
+    ])
+  })
+
+  function seedWiredTransport(
+    logEpoch?: () => string | null
+  ): Map<string, (payload: unknown, eventSeq?: number) => void> {
+    const listeners = new Map<string, (payload: unknown, eventSeq?: number) => void>()
+    _setAcpTransportForTests({
+      historyMode: () => 'server',
+      loadSession: vi.fn(async () => ({})),
+      onEvent: vi.fn((name: string, cb: (payload: unknown, eventSeq?: number) => void) => {
+        listeners.set(name, cb)
+        return () => {}
+      }),
+      ...(logEpoch ? { getSessionCursor: () => ({ lastSeq: 0, logEpoch: logEpoch() }) } : {}),
+      setReconnectListener: vi.fn(),
+      setRecoveryHandler: vi.fn(),
+      setReconnectPriorityProvider: vi.fn(),
+      dispose: vi.fn()
+    } as unknown as AcpTransport)
+    useAcpStore.setState((s) => ({
+      agents: { ...s.agents, 'agent-1': { id: 'agent-1', capabilities: { loadSession: true } } },
+      agentStatus: { ...s.agentStatus, 'agent-1': 'connected' }
+    }))
+    return listeners
+  }
+
+  function commandsUpdate(sessionId: string, name: string): unknown {
+    return { agentId: 'agent-1', sessionId, availableCommands: [{ name, description: name }] }
+  }
+
+  it('keeps a newer live slash-command list when a reopen installs an older payload', async () => {
+    const listeners = seedWiredTransport()
+    seedServerPayload(
+      's-cmds-race',
+      [msg('turn:t1', 'user', 'hi', 3)],
+      6,
+      [{ name: 'review', description: 'review' }],
+      5
+    )
+    const teardown = initAcpEventListeners()
+    try {
+      await useAcpStore.getState().openHistorySession('s-cmds-race')
+      listeners.get('acp:commands_update')!(commandsUpdate('s-cmds-race', 'compact'), 7)
+      useAcpStore
+        .getState()
+        ._onAgentCrashed({ agentId: 'agent-1', sessionId: 's-cmds-race', message: 'crashed' })
+      useAcpStore.setState((s) => ({ agentStatus: { ...s.agentStatus, 'agent-1': 'connected' } }))
+
+      await useAcpStore.getState().openHistorySession('s-cmds-race')
+
+      expect(useAcpStore.getState().commands['s-cmds-race']).toEqual([
+        { name: 'compact', description: 'compact' }
+      ])
+    } finally {
+      teardown()
+    }
+  })
+
+  it('installs a live slash-command list after the cursor adopts a new log epoch with restarted seqs', async () => {
+    let epoch = 'epoch-A'
+    const listeners = seedWiredTransport(() => epoch)
+    seedSession('s-cmds-adopt', 'agent-1', false)
+    const teardown = initAcpEventListeners()
+    try {
+      const onCommands = listeners.get('acp:commands_update')!
+      onCommands(commandsUpdate('s-cmds-adopt', 'init'), 9)
+      epoch = 'epoch-B'
+      onCommands(commandsUpdate('s-cmds-adopt', 'review'), 1)
+      expect(useAcpStore.getState().commands['s-cmds-adopt']).toEqual([
+        { name: 'review', description: 'review' }
+      ])
+      onCommands(commandsUpdate('s-cmds-adopt', 'stale'), 0)
+      expect(useAcpStore.getState().commands['s-cmds-adopt']).toEqual([
+        { name: 'review', description: 'review' }
+      ])
+    } finally {
+      teardown()
+    }
+  })
+
+  it('drops a live commands_update older than the installed slash commands', async () => {
+    const listeners = seedWiredTransport()
+    seedServerPayload(
+      's-cmds-live',
+      [msg('turn:t1', 'user', 'hi', 3)],
+      6,
+      [{ name: 'review', description: 'review' }],
+      5
+    )
+    const teardown = initAcpEventListeners()
+    try {
+      await useAcpStore.getState().openHistorySession('s-cmds-live')
+      const onCommands = listeners.get('acp:commands_update')!
+      onCommands(commandsUpdate('s-cmds-live', 'init'), 3)
+      expect(useAcpStore.getState().commands['s-cmds-live']).toEqual([
+        { name: 'review', description: 'review' }
+      ])
+      onCommands(commandsUpdate('s-cmds-live', 'compact'), 7)
+      expect(useAcpStore.getState().commands['s-cmds-live']).toEqual([
+        { name: 'compact', description: 'compact' }
+      ])
+    } finally {
+      teardown()
+    }
+  })
 
   it('renders the leading agent greeting and hides the empty synthetic turn', async () => {
     // Leading agent text is a real session update. An empty user bubble and
@@ -276,6 +472,19 @@ describe('replay render dedup on reconnect (story 11 / CAP-3 client half)', () =
       type: 'text',
       text: `${commandToken('compact')} ${skillToken('git-worktree')} and then`
     })
+  })
+
+  it('normalizes a persisted file mention to a file pill', async () => {
+    const link = { type: 'resource_link' as const, uri: 'file:///w/src/auth.ts', name: 'auth.ts' }
+    const record = msg('turn:t1', 'user', 'check (auth.ts)', 10)
+    record.blocks.push(link)
+    seedServerPayload('s-file', [record], 10)
+    seedServerTransport()
+    await useAcpStore.getState().openHistorySession('s-file')
+    expect(useAcpStore.getState().messages['s-file'][0].blocks).toEqual([
+      { type: 'text', text: `check ${fileToken('auth.ts', '/w/src/auth.ts')}` },
+      link
+    ])
   })
 
   it('passes plain persisted user text through verbatim (no framing)', async () => {
@@ -453,6 +662,73 @@ describe('replay render dedup on reconnect (story 11 / CAP-3 client half)', () =
     _flushCoalescedForTesting()
     expect(useAcpStore.getState().messages['s-dup']).toEqual(before)
     expect(useAcpStore.getState().sessions['s-dup'].lastError).toBeNull()
+  })
+
+  it('clears restoredSummary when a live event merges into a restored summary', async () => {
+    setCachedSessionPayload('s-live-sum', {
+      metadata: {
+        id: 's-live-sum',
+        agentId: 'agent-1',
+        title: 'Chat',
+        cwd: '/w',
+        projectId: 'p1',
+        createdAt: 1,
+        lastActivityAt: 2,
+        messageCount: 2,
+        lastSeq: 12,
+        status: 'closed'
+      },
+      messages: [
+        msg('turn:t1', 'user', 'edit', 5) as never,
+        msg('snapshot:agent:12', 'agent', 'done', 12) as never
+      ],
+      toolCalls: [
+        {
+          toolCallId: 'tc-sum',
+          kind: 'edit',
+          locations: [{ path: 'src/a.ts' }],
+          diffStat: { added: 1, removed: 0 },
+          seq: 7,
+          timestamp: 7,
+          restoredSummary: true
+        },
+        {
+          toolCallId: 'tc-sum-2',
+          kind: 'edit',
+          locations: [{ path: 'src/b.ts' }],
+          seq: 8,
+          timestamp: 8,
+          restoredSummary: true
+        }
+      ] as never
+    })
+    seedServerTransport()
+    await useAcpStore.getState().openHistorySession('s-live-sum')
+    // Live events (seq > watermark) re-using the summaries' ids.
+    useAcpStore.getState()._onToolCall(
+      {
+        agentId: 'agent-1',
+        sessionId: 's-live-sum',
+        toolCall: { toolCallId: 'tc-sum', title: 'Edit', kind: 'edit', status: 'in_progress' }
+      },
+      20
+    )
+    useAcpStore.getState()._onToolCallUpdate(
+      {
+        agentId: 'agent-1',
+        sessionId: 's-live-sum',
+        update: { toolCallId: 'tc-sum-2', status: 'completed' }
+      },
+      21
+    )
+    _flushCoalescedForTesting()
+    const cards = useAcpStore.getState().toolCalls['s-live-sum']
+    expect(cards.map((c) => c.restoredSummary === true)).toEqual([false, false])
+    expect(
+      buildTimeline([], cards)
+        .filter((i) => i.kind === 'tool')
+        .map((i) => i.key)
+    ).toEqual(['tc-sum', 'tc-sum-2'])
   })
 
   it('keeps restored tool cards authoritative against replayed card state', async () => {
@@ -691,6 +967,28 @@ describe('replay render dedup on reconnect (story 11 / CAP-3 client half)', () =
     )
     _flushCoalescedForTesting()
     expect(useAcpStore.getState().messages['s-rec']).toEqual(messages)
+  })
+
+  it('records the seq of a turn end recovered from a snapshot as seen (cross-surface unread)', async () => {
+    seedSession('s-rec-end', 'agent-1', false)
+    await _installTransportRecoveryForTesting({
+      sessionId: 's-rec-end',
+      watermark: 20,
+      logEpoch: 'epoch-rec',
+      events: [
+        {
+          sid: 's-rec-end',
+          seq: 14,
+          type: 'prompt_complete',
+          payload: { sessionId: 's-rec-end', stopReason: 'end_turn', turnId: 't-gone' }
+        }
+      ]
+    })
+
+    expect(useAgentChatUnreadStore.getState().seenTurnEnd['s-rec-end']).toEqual({
+      logEpoch: 'epoch-rec',
+      seq: 14
+    })
   })
 
   it('normalizes wire user_prompt + user-role chunks in the recovery fold (chip parity)', async () => {
@@ -999,6 +1297,216 @@ describe('replay render dedup on reconnect (story 11 / CAP-3 client half)', () =
     expect(cards[1].seq).toBe(11)
   })
 
+  it('carries locations + diffStat on recovered edit cards (latest field wins)', async () => {
+    seedSession('s-rec-fc', 'agent-1', false)
+    await _installTransportRecoveryForTesting({
+      sessionId: 's-rec-fc',
+      watermark: 20,
+      events: [
+        {
+          sid: 's-rec-fc',
+          seq: 10,
+          type: 'user_prompt',
+          payload: { turnId: 't1', content: [{ type: 'text', text: 'edit it' }] }
+        },
+        // Durable records: the tool_call carries the path only; the update
+        // carries the diff-derived counts (UPDATE_DIFF).
+        {
+          sid: 's-rec-fc',
+          seq: 11,
+          type: 'tool_call',
+          payload: {
+            toolCall: {
+              toolCallId: 'tc-edit',
+              kind: 'edit',
+              status: 'in_progress',
+              locations: [{ path: 'src/a.ts' }]
+            }
+          }
+        },
+        {
+          sid: 's-rec-fc',
+          seq: 12,
+          type: 'tool_call_update',
+          payload: {
+            update: {
+              toolCallId: 'tc-edit',
+              status: 'completed',
+              diffStat: { added: 3, removed: 1 }
+            }
+          }
+        },
+        // A second edit whose later update overrides an earlier diffStat, and
+        // a trailing field-less update that must not clear it.
+        {
+          sid: 's-rec-fc',
+          seq: 13,
+          type: 'tool_call',
+          payload: {
+            toolCall: {
+              toolCallId: 'tc-edit-2',
+              kind: 'edit',
+              status: 'in_progress',
+              locations: [{ path: 'src/a.ts' }],
+              diffStat: { added: 1, removed: 0 }
+            }
+          }
+        },
+        {
+          sid: 's-rec-fc',
+          seq: 14,
+          type: 'tool_call_update',
+          payload: { update: { toolCallId: 'tc-edit-2', diffStat: { added: 2, removed: 0 } } }
+        },
+        {
+          sid: 's-rec-fc',
+          seq: 15,
+          type: 'tool_call_update',
+          payload: { update: { toolCallId: 'tc-edit-2', status: 'completed' } }
+        }
+      ]
+    })
+    const cards = useAcpStore.getState().toolCalls['s-rec-fc']
+    expect(cards.map((c) => c.toolCallId)).toEqual(['tc-edit', 'tc-edit-2'])
+    expect(cards[0]).toMatchObject({
+      kind: 'edit',
+      status: 'completed',
+      locations: [{ path: 'src/a.ts' }],
+      diffStat: { added: 3, removed: 1 },
+      seq: 11
+    })
+    expect(cards[1]).toMatchObject({
+      status: 'completed',
+      locations: [{ path: 'src/a.ts' }],
+      diffStat: { added: 2, removed: 0 },
+      seq: 13
+    })
+    // Recovered cards are real timeline cards (not restored summaries) and
+    // render the host counts despite having no diff content.
+    expect(cards.every((c) => c.restoredSummary !== true)).toBe(true)
+    expect(describeToolCall(cards[0]).detail).toBe('+3 \u22121')
+    expect(describeToolCall(cards[1]).detail).toBe('+2')
+  })
+
+  it('installs restored file-change summaries from a full payload without timeline cards', async () => {
+    setCachedSessionPayload('s-sum', {
+      metadata: {
+        id: 's-sum',
+        agentId: 'agent-1',
+        title: 'Chat',
+        cwd: '/w',
+        projectId: 'p1',
+        createdAt: 1,
+        lastActivityAt: 2,
+        messageCount: 2,
+        lastSeq: 12,
+        status: 'closed'
+      },
+      messages: [
+        msg('turn:t1', 'user', 'edit a.ts twice', 5) as never,
+        msg('snapshot:agent:12', 'agent', 'done', 12) as never
+      ],
+      toolCalls: [
+        {
+          toolCallId: 'tc-a1',
+          kind: 'edit',
+          status: 'completed',
+          locations: [{ path: 'src/a.ts' }],
+          diffStat: { added: 3, removed: 1 },
+          seq: 7,
+          timestamp: 7,
+          restoredSummary: true
+        },
+        {
+          toolCallId: 'tc-a2',
+          kind: 'edit',
+          status: 'completed',
+          locations: [{ path: 'src/a.ts' }],
+          diffStat: { added: 2, removed: 0 },
+          seq: 9,
+          timestamp: 9,
+          restoredSummary: true
+        }
+      ] as never
+    })
+    seedServerTransport()
+    await useAcpStore.getState().openHistorySession('s-sum')
+    const state = useAcpStore.getState()
+    const toolCalls = state.toolCalls['s-sum']
+    expect(toolCalls.map((t) => t.toolCallId)).toEqual(['tc-a1', 'tc-a2'])
+    expect(toolCalls[0]).toMatchObject({
+      locations: [{ path: 'src/a.ts' }],
+      diffStat: { added: 3, removed: 1 },
+      restoredSummary: true
+    })
+    // Panel input: the summaries yield the same counts as live diff content.
+    expect(toolCalls.map((t) => describeToolCall(t).diffStat)).toEqual([
+      { added: 3, removed: 1 },
+      { added: 2, removed: 0 }
+    ])
+    // REFRESH: the timeline shows only the restored messages.
+    const items = buildTimeline(state.messages['s-sum'], toolCalls)
+    expect(items.map((i) => i.kind)).toEqual(['message', 'message'])
+  })
+
+  it('keeps whole-session summaries on a windowed tail fetch (summaries predate the window)', async () => {
+    const { HISTORY_TAIL_MESSAGE_LIMIT, loadSessionPayloadTail } = await import(
+      '@/lib/acp-history-persistence'
+    )
+    const tailMessages: TestMessage[] = [msg('snapshot:agent:200', 'agent', 'reply tail', 200)]
+    for (let i = 1; i < HISTORY_TAIL_MESSAGE_LIMIT; i += 2) {
+      const seq = 200 + i
+      tailMessages.push(msg(`turn:t${i}`, 'user', `question ${i}`, seq))
+      if (i + 1 < HISTORY_TAIL_MESSAGE_LIMIT) {
+        tailMessages.push(msg(`snapshot:agent:${seq + 1}`, 'agent', `answer ${i}`, seq + 1))
+      }
+    }
+    ;(loadSessionPayloadTail as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      metadata: {
+        id: 's-sum-tail',
+        agentId: 'agent-1',
+        title: 'Chat',
+        cwd: '/w',
+        projectId: 'p1',
+        createdAt: 1,
+        lastActivityAt: 2,
+        messageCount: tailMessages.length,
+        lastSeq: 200 + HISTORY_TAIL_MESSAGE_LIMIT,
+        status: 'closed'
+      },
+      messages: tailMessages as never,
+      toolCalls: [
+        {
+          toolCallId: 'tc-early',
+          kind: 'edit',
+          status: 'completed',
+          locations: [{ path: 'src/early.ts' }],
+          diffStat: { added: 4, removed: 2 },
+          seq: 3,
+          timestamp: 3,
+          restoredSummary: true
+        },
+        {
+          toolCallId: 'tc-move',
+          kind: 'move',
+          locations: [{ path: 'src/moved.ts' }],
+          seq: 150,
+          timestamp: 150,
+          restoredSummary: true
+        }
+      ] as never
+    })
+    seedServerTransport()
+    await useAcpStore.getState().openHistorySession('s-sum-tail')
+    const state = useAcpStore.getState()
+    const toolCalls = state.toolCalls['s-sum-tail']
+    expect(toolCalls.map((t) => t.toolCallId)).toEqual(['tc-early', 'tc-move'])
+    expect(toolCalls[0].diffStat).toEqual({ added: 4, removed: 2 })
+    expect(
+      buildTimeline(state.messages['s-sum-tail'], toolCalls).some((i) => i.kind === 'tool')
+    ).toBe(false)
+  })
+
   it('keeps a greeting-era tool card now that the leading agent row is visible', async () => {
     setCachedSessionPayload('s-gc', {
       metadata: {
@@ -1194,7 +1702,14 @@ describe('replay render dedup on reconnect (story 11 / CAP-3 client half)', () =
     expect(useAcpStore.getState().sessions['s-load-fails'].lastError).toContain('Resume failed')
   })
 
-  it('resumeLiveSession filters hidden turns and finalizes the resume window', async () => {
+  it('openHistorySession resume filters hidden turns and finalizes the resume window', async () => {
+    useAcpStore.setState((s) => ({
+      agents: {
+        ...s.agents,
+        'agent-1': { id: 'agent-1', capabilities: { sessionCapabilities: { resume: {} } } }
+      },
+      agentStatus: { ...s.agentStatus, 'agent-1': 'connected' }
+    }))
     seedServerPayload(
       's-resume',
       [
@@ -1223,7 +1738,8 @@ describe('replay render dedup on reconnect (story 11 / CAP-3 client half)', () =
       }),
       dispose: vi.fn()
     } as unknown as AcpTransport)
-    await useAcpStore.getState().resumeLiveSession('s-resume', 'agent-1', '/w')
+    await useAcpStore.getState().openHistorySession('s-resume')
+    await flushTurnEnd()
     const state = useAcpStore.getState()
     const messages = state.messages['s-resume']
     expect(messages.map((m) => m.id)).toEqual([

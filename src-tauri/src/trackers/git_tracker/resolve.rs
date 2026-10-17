@@ -1,20 +1,11 @@
 use super::*;
 
-#[cfg(target_os = "windows")]
-const CREATE_NO_WINDOW: u32 = 0x08000000;
-
 /// Build a backend helper command.
 /// On Windows this suppresses stray console windows from helper binaries like git.exe.
-#[cfg(target_os = "windows")]
 pub(super) fn backend_command(program: &str) -> Command {
     let mut command = Command::new(program);
-    command.creation_flags(CREATE_NO_WINDOW);
+    crate::process_util::hide_console(&mut command);
     command
-}
-
-#[cfg(not(target_os = "windows"))]
-pub(super) fn backend_command(program: &str) -> Command {
-    Command::new(program)
 }
 
 #[cfg(target_os = "windows")]

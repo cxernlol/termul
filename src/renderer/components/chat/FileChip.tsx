@@ -1,8 +1,10 @@
-import { File } from '@/components/icons'
+import { File, Folder } from '@/components/icons'
 import { cn } from '@/lib/utils'
 
 interface FileChipProps {
   name: string
+  /** `'dir'` swaps the `File` icon for `Folder` (gh-896 folder mentions). */
+  kind?: 'file' | 'dir'
   className?: string
 }
 
@@ -22,9 +24,9 @@ interface FileChipProps {
  * interactive/removal prop. In the composer, Backspace removes a chip via the
  * token model (`removeFileTokenBeforeCaret`), not an X button; in the timeline
  * the chip is a static pill. Callers (`FilePillNode`, `ChatMessage`) pass only
- * `name` (plus an optional `className`).
+ * `name` (plus an optional `kind` / `className`).
  */
-export function FileChip({ name, className }: FileChipProps): React.JSX.Element {
+export function FileChip({ name, kind = 'file', className }: FileChipProps): React.JSX.Element {
   return (
     <span
       className={cn(
@@ -33,7 +35,11 @@ export function FileChip({ name, className }: FileChipProps): React.JSX.Element 
         className
       )}
     >
-      <File size={12} className="shrink-0" aria-hidden="true" />
+      {kind === 'dir' ? (
+        <Folder size={12} className="shrink-0" aria-hidden="true" />
+      ) : (
+        <File size={12} className="shrink-0" aria-hidden="true" />
+      )}
       <span className="max-w-[40ch] truncate" title={name}>
         {name}
       </span>

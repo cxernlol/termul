@@ -1,10 +1,13 @@
 import { SettingsSection } from '@/components/settings/SettingsLayout'
+import { Label } from '@/components/ui/label'
+import { PANEL_FIELD_CLASS } from '@/components/ui/panel-styles'
+import { Switch } from '@/components/ui/switch'
+import { MONO_STACK } from '@/lib/font-stacks'
 import { isTauriContext } from '@/lib/tauri-runtime'
+import { cn } from '@/lib/utils'
 import {
   type AppSettings,
   BUFFER_SIZE_OPTIONS,
-  FONT_FAMILY_OPTIONS,
-  MAX_TERMINALS_OPTIONS,
   TERMINAL_RENDERER_OPTIONS,
   UI_ZOOM_DEFAULT,
   UI_ZOOM_MAX,
@@ -13,35 +16,31 @@ import {
 } from '@/types/settings'
 
 interface AppearanceSectionProps {
-  fontFamily: string
   fontSize: number
   uiZoomLevel: number
   bufferSize: number
   terminalRenderer: AppSettings['terminalRenderer']
-  maxTerminals: number
-  handleFontFamilyChange: (value: string) => void
+  screenReaderMode: boolean
   handleFontSizeChange: (value: number) => void
   handleUiZoomChange: (value: number) => void
   handleUiZoomReset: () => void
   handleBufferSizeChange: (value: number) => void
   handleRendererChange: (value: string) => void
-  handleMaxTerminalsChange: (value: number) => void
+  handleScreenReaderModeChange: (enabled: boolean) => void
 }
 
 export function AppearanceSection({
-  fontFamily,
   fontSize,
   uiZoomLevel,
   bufferSize,
   terminalRenderer,
-  maxTerminals,
-  handleFontFamilyChange,
+  screenReaderMode,
   handleFontSizeChange,
   handleUiZoomChange,
   handleUiZoomReset,
   handleBufferSizeChange,
   handleRendererChange,
-  handleMaxTerminalsChange
+  handleScreenReaderModeChange
 }: AppearanceSectionProps): React.JSX.Element {
   return (
     <SettingsSection id="appearance">
@@ -91,27 +90,6 @@ export function AppearanceSection({
             </p>
           </div>
 
-          {/* Font Family */}
-          <div>
-            <label className="block text-sm font-medium text-secondary-foreground mb-2">
-              Font Family
-            </label>
-            <select
-              value={fontFamily}
-              onChange={(e) => handleFontFamilyChange(e.target.value)}
-              className="w-full bg-secondary/50 border border-border rounded-lg px-3 py-2 text-sm text-foreground focus:ring-2 focus:ring-primary focus:border-transparent outline-none transition-shadow"
-            >
-              {FONT_FAMILY_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-            <p className="text-xs text-muted-foreground mt-1">
-              Choose a monospace font for terminal text.
-            </p>
-          </div>
-
           {/* Font Size */}
           <div>
             <label className="block text-sm font-medium text-secondary-foreground mb-2">
@@ -141,7 +119,7 @@ export function AppearanceSection({
             <select
               value={bufferSize}
               onChange={(e) => handleBufferSizeChange(parseInt(e.target.value, 10))}
-              className="w-full bg-secondary/50 border border-border rounded-lg px-3 py-2 text-sm text-foreground focus:ring-2 focus:ring-primary focus:border-transparent outline-none transition-shadow"
+              className={cn(PANEL_FIELD_CLASS, 'w-full px-3 py-2 text-sm')}
             >
               {BUFFER_SIZE_OPTIONS.map((option) => (
                 <option key={option.value} value={option.value}>
@@ -155,27 +133,6 @@ export function AppearanceSection({
             </p>
           </div>
 
-          {/* Max Terminals */}
-          <div>
-            <label className="block text-sm font-medium text-secondary-foreground mb-2">
-              Max Terminals Per Project
-            </label>
-            <select
-              value={maxTerminals}
-              onChange={(e) => handleMaxTerminalsChange(parseInt(e.target.value, 10))}
-              className="w-full bg-secondary/50 border border-border rounded-lg px-3 py-2 text-sm text-foreground focus:ring-2 focus:ring-primary focus:border-transparent outline-none transition-shadow"
-            >
-              {MAX_TERMINALS_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-            <p className="text-xs text-muted-foreground mt-1">
-              Maximum number of terminal tabs allowed per project.
-            </p>
-          </div>
-
           {/* Terminal Renderer */}
           <div>
             <label className="block text-sm font-medium text-secondary-foreground mb-2">
@@ -184,7 +141,7 @@ export function AppearanceSection({
             <select
               value={terminalRenderer}
               onChange={(e) => handleRendererChange(e.target.value)}
-              className="w-full bg-secondary/50 border border-border rounded-lg px-3 py-2 text-sm text-foreground focus:ring-2 focus:ring-primary focus:border-transparent outline-none transition-shadow"
+              className={cn(PANEL_FIELD_CLASS, 'w-full px-3 py-2 text-sm')}
             >
               {TERMINAL_RENDERER_OPTIONS.map((option) => (
                 <option key={option.value} value={option.value}>
@@ -198,6 +155,26 @@ export function AppearanceSection({
             </p>
           </div>
 
+          {/* Screen reader mode */}
+          <div className="flex min-h-11 items-center justify-between gap-4 rounded-md border border-border bg-secondary/30 px-4 py-3">
+            <div className="flex-1">
+              <Label htmlFor="terminal-screen-reader-mode">Screen reader mode</Label>
+              <p
+                id="terminal-screen-reader-mode-help"
+                className="mt-0.5 text-xs text-muted-foreground"
+              >
+                Makes terminal output readable by screen readers. Can repeat typed characters in
+                some setups. Changes apply to new terminals.
+              </p>
+            </div>
+            <Switch
+              id="terminal-screen-reader-mode"
+              aria-describedby="terminal-screen-reader-mode-help"
+              checked={screenReaderMode}
+              onCheckedChange={handleScreenReaderModeChange}
+            />
+          </div>
+
           {/* Preview */}
           <div>
             <label className="block text-sm font-medium text-secondary-foreground mb-2">
@@ -206,7 +183,7 @@ export function AppearanceSection({
             <div
               className="bg-terminal-bg border border-border rounded-md p-4 text-terminal-fg"
               style={{
-                fontFamily: fontFamily,
+                fontFamily: MONO_STACK,
                 fontSize: `${fontSize}px`,
                 lineHeight: 1.2
               }}

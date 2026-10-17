@@ -1,21 +1,14 @@
-import { renderHook } from '@testing-library/react'
+import { act, renderHook } from '@testing-library/react'
 import { beforeEach, describe, expect, it } from 'vitest'
+import { MONO_STACK } from '@/lib/font-stacks'
 import { DEFAULT_APP_SETTINGS } from '@/types/settings'
 import {
   useAppearanceMode,
   useAppSettingsStore,
   useColorTheme,
+  useTerminalScreenReaderMode,
   useTerminalUrlOpenMode
 } from './app-settings-store'
-
-function assertUpdateSettingsRejectsPanelVisibility(
-  updateSettings: ReturnType<typeof useAppSettingsStore.getState>['updateSettings']
-): void {
-  // @ts-expect-error Panel visibility changes must go through useUpdatePanelVisibility.
-  updateSettings({ sidebarVisible: false })
-}
-
-void assertUpdateSettingsRejectsPanelVisibility
 
 describe('app-settings-store', () => {
   beforeEach(() => {
@@ -29,11 +22,9 @@ describe('app-settings-store', () => {
   describe('initial state', () => {
     it('should have default font family', () => {
       const { settings } = useAppSettingsStore.getState()
-      // Story 2 (QA F8): default is now the bundled JetBrains Mono Variable
-      // stack — same string as DEFAULT_TERMINAL_OPTIONS.fontFamily.
-      expect(settings.terminalFontFamily).toBe(
-        '"JetBrains Mono Variable", "JetBrains Mono", "Cascadia Code", "SF Mono", Menlo, Monaco, Consolas, "Ubuntu Mono", "DejaVu Sans Mono", "Liberation Mono", "Courier New", monospace'
-      )
+      // Stored default matches the bundled Paper Mono stack. The terminal
+      // renders that stack and does not read a saved family.
+      expect(settings.terminalFontFamily).toBe(MONO_STACK)
     })
 
     it('should have default font size of 14', () => {
@@ -103,9 +94,7 @@ describe('app-settings-store', () => {
 
       const { settings } = useAppSettingsStore.getState()
       expect(settings.terminalFontSize).toBe(20)
-      expect(settings.terminalFontFamily).toBe(
-        '"JetBrains Mono Variable", "JetBrains Mono", "Cascadia Code", "SF Mono", Menlo, Monaco, Consolas, "Ubuntu Mono", "DejaVu Sans Mono", "Liberation Mono", "Courier New", monospace'
-      )
+      expect(settings.terminalFontFamily).toBe(MONO_STACK)
       expect(settings.defaultShell).toBe('')
     })
 
@@ -141,14 +130,8 @@ describe('app-settings-store', () => {
         terminalBufferSize: 10000,
         terminalRenderer: 'auto' as const,
         defaultProjectColor: 'blue',
-        maxTerminalsPerProject: 10,
-        orphanDetectionEnabled: true,
-        orphanDetectionTimeout: 600000,
         confirmTerminalClose: true,
         terminalUrlOpenMode: 'termul' as const,
-        sidebarVisible: false,
-        fileExplorerVisible: true,
-        sshPanelVisible: true,
         remoteBindMode: 'localhost' as const,
         colorTheme: 'dracula',
         appearanceMode: 'dark' as const,
@@ -165,7 +148,15 @@ describe('app-settings-store', () => {
   })
 
   describe('resetToDefaults', () => {
-    it('should reset all settings to defaults', () => {
+    it('resets every preference to its default and keeps terminal profiles', () => {
+      const profile = {
+        id: 'p1',
+        name: 'Zsh login',
+        shell: '/bin/zsh',
+        args: ['-l'],
+        cwd: '',
+        env: {}
+      }
       // First modify settings
       useAppSettingsStore.setState({
         settings: {
@@ -175,18 +166,13 @@ describe('app-settings-store', () => {
           terminalBufferSize: 5000,
           terminalRenderer: 'dom' as const,
           defaultProjectColor: 'red',
-          maxTerminalsPerProject: 5,
-          orphanDetectionEnabled: false,
-          orphanDetectionTimeout: 300000,
           confirmTerminalClose: false,
           terminalUrlOpenMode: 'termul',
-          sidebarVisible: false,
-          fileExplorerVisible: false,
-          sshPanelVisible: false,
           remoteBindMode: 'all' as const,
           colorTheme: 'nord',
           appearanceMode: 'light' as const,
-          uiZoomLevel: 1.2
+          uiZoomLevel: 1.2,
+          terminalProfiles: [profile]
         },
         isLoaded: true
       })
@@ -195,58 +181,53 @@ describe('app-settings-store', () => {
       resetToDefaults()
 
       const { settings } = useAppSettingsStore.getState()
-      expect(settings).toEqual(DEFAULT_APP_SETTINGS)
+      expect(settings).toEqual({ ...DEFAULT_APP_SETTINGS, terminalProfiles: [profile] })
     })
   })
 
-  describe('panel visibility settings', () => {
-    it('should default sidebar and file explorer visibility to true', () => {
-      const { settings } = useAppSettingsStore.getState()
-      expect(settings.sidebarVisible).toBe(true)
-      expect(settings.fileExplorerVisible).toBe(true)
+  describe('terminal screen reader mode (L-28)', () => {
+    it('defaults to off', () => {
+      expect(useAppSettingsStore.getState().settings.terminalScreenReaderMode).toBe(false)
+      expect(DEFAULT_APP_SETTINGS.terminalScreenReaderMode).toBe(false)
+
+      const { result } = renderHook(() => useTerminalScreenReaderMode())
+      expect(result.current).toBe(false)
     })
 
-    it('should update sidebar visibility setting', () => {
-      const { updateSetting } = useAppSettingsStore.getState()
-      updateSetting('sidebarVisible', false)
-      const { settings } = useAppSettingsStore.getState()
-      expect(settings.sidebarVisible).toBe(false)
+    it('selects true only after the setting is turned on', () => {
+      const { result } = renderHook(() => useTerminalScreenReaderMode())
+      expect(result.current).toBe(false)
+
+      act(() => {
+        useAppSettingsStore.getState().updateSetting('terminalScreenReaderMode', true)
+      })
+      expect(result.current).toBe(true)
+
+      act(() => {
+        useAppSettingsStore.getState().updateSetting('terminalScreenReaderMode', false)
+      })
+      expect(result.current).toBe(false)
     })
 
-    it('should update file explorer visibility setting', () => {
-      const { updateSetting } = useAppSettingsStore.getState()
-      updateSetting('fileExplorerVisible', false)
-      const { settings } = useAppSettingsStore.getState()
-      expect(settings.fileExplorerVisible).toBe(false)
-    })
-  })
-
-  describe('orphan detection settings', () => {
-    it('should have correct default values', () => {
-      const { settings } = useAppSettingsStore.getState()
-      expect(settings.orphanDetectionEnabled).toBe(true)
-      expect(settings.orphanDetectionTimeout).toBe(600000)
+    it('treats a corrupt persisted value as off (strict true only)', () => {
+      const { result } = renderHook(() => useTerminalScreenReaderMode())
+      act(() => {
+        useAppSettingsStore.setState((state) => ({
+          settings: {
+            ...state.settings,
+            terminalScreenReaderMode: 'true' as unknown as boolean
+          }
+        }))
+      })
+      expect(result.current).toBe(false)
     })
 
-    it('should update orphanDetectionEnabled', () => {
-      const { updateSetting } = useAppSettingsStore.getState()
-      updateSetting('orphanDetectionEnabled', false)
-      const { settings } = useAppSettingsStore.getState()
-      expect(settings.orphanDetectionEnabled).toBe(false)
-    })
+    it('resetToDefaults returns it to false', () => {
+      useAppSettingsStore.getState().updateSetting('terminalScreenReaderMode', true)
+      expect(useAppSettingsStore.getState().settings.terminalScreenReaderMode).toBe(true)
 
-    it('should update orphanDetectionTimeout', () => {
-      const { updateSetting } = useAppSettingsStore.getState()
-      updateSetting('orphanDetectionTimeout', 300000)
-      const { settings } = useAppSettingsStore.getState()
-      expect(settings.orphanDetectionTimeout).toBe(300000)
-    })
-
-    it('should update orphanDetectionTimeout to null', () => {
-      const { updateSetting } = useAppSettingsStore.getState()
-      updateSetting('orphanDetectionTimeout', null)
-      const { settings } = useAppSettingsStore.getState()
-      expect(settings.orphanDetectionTimeout).toBe(null)
+      useAppSettingsStore.getState().resetToDefaults()
+      expect(useAppSettingsStore.getState().settings.terminalScreenReaderMode).toBe(false)
     })
   })
 

@@ -4,6 +4,7 @@ import * as React from 'react'
 import { Search } from '@/components/icons'
 import { Dialog, DialogContent } from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
+import { BAND_FOCUS_CLASS, INNER_FIELD_FOCUS_CLASS } from './panel-styles'
 
 const Command = React.forwardRef<
   React.ElementRef<typeof CommandPrimitive>,
@@ -38,12 +39,19 @@ const CommandInput = React.forwardRef<
   React.ElementRef<typeof CommandPrimitive.Input>,
   React.ComponentPropsWithoutRef<typeof CommandPrimitive.Input>
 >(({ className, ...props }, ref) => (
-  <div className="flex items-center border-b px-3" cmdk-input-wrapper="">
+  <div
+    className={cn(
+      'flex items-center border-b border-border px-3 transition-colors duration-150 ease-out',
+      BAND_FOCUS_CLASS
+    )}
+    cmdk-input-wrapper=""
+  >
     <Search className="mr-2 h-4 w-4 shrink-0 opacity-50" />
     <CommandPrimitive.Input
       ref={ref}
       className={cn(
-        'flex h-11 w-full rounded-md bg-transparent py-3 text-sm outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50',
+        'flex h-11 w-full rounded-md bg-transparent py-3 text-sm pointer-coarse:text-base placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50',
+        INNER_FIELD_FOCUS_CLASS,
         className
       )}
       {...props}
@@ -110,7 +118,7 @@ const CommandItem = React.forwardRef<
   <CommandPrimitive.Item
     ref={ref}
     className={cn(
-      "relative flex cursor-default select-none items-center rounded-sm px-2 py-1.5 text-sm outline-none data-[disabled=true]:pointer-events-none data-[selected='true']:bg-accent data-[selected=true]:text-accent-foreground data-[disabled=true]:opacity-50",
+      "relative flex cursor-default select-none items-center rounded-sm px-2 py-1.5 text-sm outline-none data-[disabled=true]:pointer-events-none data-[selected='true']:bg-foreground/[0.06] data-[selected=true]:text-foreground data-[disabled=true]:opacity-50",
       className
     )}
     {...props}
@@ -118,16 +126,6 @@ const CommandItem = React.forwardRef<
 ))
 
 CommandItem.displayName = CommandPrimitive.Item.displayName
-
-const CommandShortcut = ({ className, ...props }: React.HTMLAttributes<HTMLSpanElement>) => {
-  return (
-    <span
-      className={cn('ml-auto text-xs tracking-widest text-muted-foreground', className)}
-      {...props}
-    />
-  )
-}
-CommandShortcut.displayName = 'CommandShortcut'
 
 export {
   Command,
@@ -137,6 +135,5 @@ export {
   CommandInput,
   CommandItem,
   CommandList,
-  CommandSeparator,
-  CommandShortcut
+  CommandSeparator
 }

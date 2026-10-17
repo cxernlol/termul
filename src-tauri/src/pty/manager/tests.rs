@@ -34,12 +34,132 @@ async fn spawn_to_attach_snapshot_carries_spawn_time_cwd() {
     // Attach before any cwd-tracking event: the snapshot must already
     // carry the seeded spawn-time cwd.
     let instance = manager.get(&spawned.info.id).expect("spawned instance");
-    let replay = instance.subscribe_from(0);
+    let replay = instance.subscribe_from(0, None);
     let attach = manager.build_attach_result(&instance, &replay);
     assert_eq!(attach.snapshot.cwd.as_deref(), Some(cwd.as_str()));
 
     manager.kill(&spawned.info.id).await.expect("kill pty");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A terminal log cursor is `(logEpoch, lastSeq)` per spawn: a cursor from
+/// another epoch, or ahead of the head, replays from the start with `reset`
+/// instead of silently skipping output.
+#[tokio::test]
+async fn subscribe_from_resets_a_cursor_from_another_epoch_or_ahead_of_the_head() {
+    let manager = crate::web::test_pty_manager();
+    let first = manager
+        .spawn(SpawnOptions::default(), None)
+        .await
+        .expect("spawn first pty");
+    let second = manager
+        .spawn(SpawnOptions::default(), None)
+        .await
+        .expect("spawn second pty");
+    let a = manager.get(&first.info.id).expect("first instance");
+    let b = manager.get(&second.info.id).expect("second instance");
+    assert_ne!(a.log_epoch, b.log_epoch, "every spawn mints its own epoch");
+
+    let fresh = a.subscribe_from(0, None);
+    assert!(!fresh.reset);
+    assert_eq!(fresh.log_epoch, a.log_epoch);
+
+    let same_epoch = a.subscribe_from(0, Some(&a.log_epoch));
+    assert!(
+        !same_epoch.reset,
+        "a cursor under the current epoch resumes"
+    );
+
+    let other_epoch = a.subscribe_from(0, Some(&b.log_epoch));
+    assert!(other_epoch.reset, "another spawn's epoch cannot be resumed");
+
+    let ahead = a.subscribe_from(u64::MAX, Some(&a.log_epoch));
+    assert!(ahead.reset, "a cursor ahead of the head cannot be resumed");
+
+    manager.kill(&first.info.id).await.expect("kill first");
+    manager.kill(&second.info.id).await.expect("kill second");
+}
+
+/// With chunks still retained: a refused cursor replays from the FIRST retained
+/// chunk with `reset`, and a cursor behind the earliest retained chunk after
+/// eviction reports a gap without a reset.
+#[tokio::test]
+async fn subscribe_from_replays_the_retained_log_on_reset_and_reports_eviction_gaps() {
+    let manager = crate::web::test_pty_manager();
+    let spawned = manager
+        .spawn(SpawnOptions::default(), None)
+        .await
+        .expect("spawn pty");
+    let instance = manager.get(&spawned.info.id).expect("instance");
+    // Stop the shell first so no late output races the manipulated log.
+    manager.kill(&spawned.info.id).await.expect("kill pty");
+    {
+        let mut log = instance.output_log.write();
+        log.clear();
+        // Chunks 1..=4 were evicted; 5 and 6 remain.
+        for seq in [5u64, 6] {
+            log.push_back(TerminalOutputChunk {
+                seq,
+                data: vec![b'x'],
+            });
+        }
+    }
+    instance.next_output_seq.store(6, Ordering::Relaxed);
+    let seqs = |replay: &TerminalReplay| replay.chunks.iter().map(|c| c.seq).collect::<Vec<_>>();
+
+    let foreign = instance.subscribe_from(5, Some("epoch-of-another-spawn"));
+    assert!(foreign.reset);
+    assert_eq!(
+        seqs(&foreign),
+        vec![5, 6],
+        "replay starts at the first retained chunk"
+    );
+    assert_eq!(foreign.latest_seq, 6);
+
+    let evicted = instance.subscribe_from(2, Some(&instance.log_epoch));
+    assert!(!evicted.reset);
+    assert!(evicted.gap, "chunks 3 and 4 are gone");
+    assert_eq!(seqs(&evicted), vec![5, 6]);
+
+    let resumed = instance.subscribe_from(5, Some(&instance.log_epoch));
+    assert!(!resumed.reset && !resumed.gap);
+    assert_eq!(seqs(&resumed), vec![6]);
+
+    // A nonzero cursor with no epoch cannot be verified: full replay with reset.
+    let unverified = instance.subscribe_from(5, None);
+    assert!(unverified.reset);
+    assert_eq!(seqs(&unverified), vec![5, 6]);
+    // An initial cursor needs no epoch.
+    assert!(!instance.subscribe_from(0, None).reset);
+}
+
+/// A log emptied by eviction keeps its head: a cursor at the head resumes
+/// (no spurious reset) and `latest_seq` does not rewind to 0.
+#[tokio::test]
+async fn subscribe_from_keeps_the_head_when_eviction_emptied_the_log() {
+    let manager = crate::web::test_pty_manager();
+    let spawned = manager
+        .spawn(SpawnOptions::default(), None)
+        .await
+        .expect("spawn pty");
+    let instance = manager.get(&spawned.info.id).expect("instance");
+    // Stop the shell first so no late output races the manipulated log.
+    manager.kill(&spawned.info.id).await.expect("kill pty");
+    instance.output_log.write().clear();
+    instance.next_output_seq.store(7, Ordering::Relaxed);
+
+    let replay = instance.subscribe_from(7, Some(&instance.log_epoch));
+
+    assert!(!replay.reset, "a cursor at the head is valid");
+    assert_eq!(replay.latest_seq, 7);
+    assert!(replay.chunks.is_empty());
+    assert!(instance.subscribe_from(8, Some(&instance.log_epoch)).reset);
+
+    // A cursor BEHIND the head of an emptied log lost output: a gap, no reset.
+    let behind = instance.subscribe_from(3, Some(&instance.log_epoch));
+    assert!(!behind.reset);
+    assert!(behind.gap, "eviction emptied the log after the cursor");
+    assert!(!replay.gap, "a cursor at the head has lost nothing");
 }
 
 #[cfg(target_os = "windows")]
@@ -180,6 +300,105 @@ fn parse_npm_cmd_shim_rewrites_npm_launcher_with_set_indirection() {
         resolved.prepend_args[0].contains("npm\\bin\\npx-cli.js"),
         "expected npx-cli.js script path, got: {}",
         resolved.prepend_args[0]
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn parse_npm_cmd_shim_resolves_native_binary_shim() {
+    // Anthropic's native Claude Code package ships a .cmd that invokes the
+    // bundled PE image directly — one quoted path, no interpreter/script
+    // pair:
+    //   "%dp0%\node_modules\@anthropic-ai\claude-code\bin\claude.exe"   %*
+    let dir = std::env::temp_dir().join("termul-test-native-bin-shim");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("node_modules\\@anthropic-ai\\claude-code\\bin")).unwrap();
+    std::fs::write(
+        dir.join("node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe"),
+        b"MZ",
+    )
+    .unwrap();
+
+    let shim_path = dir.join("claude.cmd");
+    let shim_content =
+        "@ECHO off\r\nGOTO start\r\n:find_dp0\r\nSET dp0=%~dp0\r\nEXIT /b\r\n:start\r\n\
+            SETLOCAL\r\nCALL :find_dp0\r\n\r\n\
+            \"%dp0%\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe\"   %*\r\n";
+    std::fs::write(&shim_path, shim_content).unwrap();
+
+    let resolved = parse_npm_cmd_shim(shim_path.to_str().unwrap())
+        .expect("native-binary .cmd shim should resolve");
+    assert!(
+        resolved.program.ends_with("claude.exe"),
+        "expected the bundled claude.exe, got: {}",
+        resolved.program
+    );
+    assert!(
+        resolved.prepend_args.is_empty(),
+        "native-binary shim must not prepend args, got: {:?}",
+        resolved.prepend_args
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn resolve_spawn_program_rewrites_native_binary_cmd_shim() {
+    // The same single-quote form through the public resolver entrypoint
+    // (explicit path), the way `claude_cli_command` hands the shim over.
+    let dir = std::env::temp_dir().join("termul-test-resolve-native-bin-shim");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("node_modules\\pkg\\bin")).unwrap();
+    std::fs::write(dir.join("node_modules\\pkg\\bin\\tool.exe"), b"MZ").unwrap();
+
+    let shim_path = dir.join("tool.cmd");
+    let shim_content = "@ECHO off\r\n\"%dp0%\\node_modules\\pkg\\bin\\tool.exe\"   %*\r\n";
+    std::fs::write(&shim_path, shim_content).unwrap();
+
+    let resolved = resolve_spawn_program(shim_path.to_str().unwrap())
+        .expect("native-binary .cmd shim should resolve");
+    assert!(
+        resolved.program.ends_with("tool.exe"),
+        "expected tool.exe, got: {}",
+        resolved.program
+    );
+    assert!(
+        resolved.prepend_args.is_empty(),
+        "native-binary shim must not prepend args, got: {:?}",
+        resolved.prepend_args
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn parse_npm_cmd_shim_rejects_single_quote_non_pe_and_flagged_forms() {
+    let dir = std::env::temp_dir().join("termul-test-native-bin-reject");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("tool.exe"), b"MZ").unwrap();
+    std::fs::write(dir.join("tool.js"), b"").unwrap();
+
+    // A quoted *script* alone is not a spawnable image — must not be
+    // mistaken for the native-binary form.
+    let script_shim = dir.join("script.cmd");
+    std::fs::write(&script_shim, "\"%dp0%\\tool.js\" %*\r\n").unwrap();
+    assert!(
+        parse_npm_cmd_shim(script_shim.to_str().unwrap()).is_none(),
+        "a quoted script with no interpreter must not resolve"
+    );
+
+    // `"%dp0%\tool.exe" --flag %*` carries a literal argv token that a
+    // rewritten spawn would silently drop — refuse rather than misparse.
+    let flagged_shim = dir.join("flagged.cmd");
+    std::fs::write(&flagged_shim, "\"%dp0%\\tool.exe\" --service %*\r\n").unwrap();
+    assert!(
+        parse_npm_cmd_shim(flagged_shim.to_str().unwrap()).is_none(),
+        "a bare-exe line with literal flags must not resolve"
     );
 
     let _ = std::fs::remove_dir_all(&dir);
@@ -401,79 +620,6 @@ fn resolve_spawn_program_passes_through_on_unix() {
 }
 
 #[test]
-fn test_should_reap_orphan_protected_never_reaped() {
-    let long_ago = Duration::from_secs(10_000);
-    let timeout = Duration::from_secs(600);
-    // Protected + orphaned + long past timeout => still not reapable.
-    assert!(!should_reap_orphan(
-        true,
-        true,
-        Some(long_ago),
-        long_ago,
-        timeout
-    ));
-}
-
-#[test]
-fn test_should_reap_orphan_attached_never_reaped() {
-    let long_ago = Duration::from_secs(10_000);
-    let timeout = Duration::from_secs(600);
-    // Not protected but still has a renderer ref (is_orphan == false).
-    assert!(!should_reap_orphan(
-        false,
-        false,
-        Some(long_ago),
-        long_ago,
-        timeout
-    ));
-}
-
-#[test]
-fn test_should_reap_orphan_orphaned_past_timeout_reaped() {
-    let timeout = Duration::from_secs(600);
-    // Unprotected, orphaned, past timeout => reapable.
-    assert!(should_reap_orphan(
-        false,
-        true,
-        Some(Duration::from_secs(601)),
-        Duration::from_secs(0),
-        timeout
-    ));
-}
-
-#[test]
-fn test_should_reap_orphan_orphaned_within_timeout_not_reaped() {
-    let timeout = Duration::from_secs(600);
-    assert!(!should_reap_orphan(
-        false,
-        true,
-        Some(Duration::from_secs(59)),
-        Duration::from_secs(0),
-        timeout
-    ));
-}
-
-#[test]
-fn test_should_reap_orphan_uses_inactivity_when_never_orphaned() {
-    let timeout = Duration::from_secs(600);
-    // Never had a renderer ref (orphaned_for None) => fall back to inactivity.
-    assert!(should_reap_orphan(
-        false,
-        true,
-        None,
-        Duration::from_secs(601),
-        timeout
-    ));
-    assert!(!should_reap_orphan(
-        false,
-        true,
-        None,
-        Duration::from_secs(59),
-        timeout
-    ));
-}
-
-#[test]
 fn test_spawn_options_default() {
     let options = SpawnOptions::default();
     assert!(options.shell.is_none());
@@ -572,6 +718,8 @@ fn test_terminal_attach_result_serializes_camelcase_without_claim() {
         rows: 32,
         latest_seq: 87,
         gap: false,
+        reset: false,
+        log_epoch: "epoch-1".to_string(),
         snapshot: TerminalStateSnapshot {
             cwd: Some("/repo".to_string()),
             git_branch: Some("dev".to_string()),
@@ -638,6 +786,8 @@ fn test_terminal_attach_result_serializes_camelcase_without_claim() {
             "rows",
             "latestSeq",
             "gap",
+            "reset",
+            "logEpoch",
             "snapshot"
         ]
         .into_iter()
@@ -783,129 +933,151 @@ fn test_windows_env_merge_overrides_path_case_insensitively() {
 // Note: Full integration tests for kill() and kill_all() require Tauri runtime.
 // The async spawn_blocking pattern is validated through:
 // 1. Compile-time check: kill() is now async and returns impl Future
-// 2. Existing orphan cleanup code at line 403-406 demonstrates the pattern
-// 3. Manual testing during development
+// 2. Manual testing during development
 
-// ---------------------------------------------------------------------------
-// #851b: the web-listed reap window — web-spawned terminals stay `protected`
-// (they never collect renderer refs, so the ordinary orphan rule never
-// fires); the web-listed rule sweeps them once NO client has listed them
-// for the window and no live web attachment / renderer ref keeps them
-// observable.
-// ---------------------------------------------------------------------------
-
-#[test]
-fn test_should_reap_web_listed_unlisted_past_window_reaped() {
-    let window = Duration::from_secs(300);
-    // Web-listed long ago, no attachment, no renderer refs => swept.
-    assert!(should_reap_web_listed(
-        Some(Duration::from_secs(301)),
-        false,
-        0,
-        window
-    ));
-}
-
-#[test]
-fn test_should_reap_web_listed_within_window_not_reaped() {
-    let window = Duration::from_secs(300);
-    assert!(!should_reap_web_listed(
-        Some(Duration::from_secs(59)),
-        false,
-        0,
-        window
-    ));
-}
-
-#[test]
-fn test_should_reap_web_listed_live_attachment_never_reaped() {
-    let window = Duration::from_secs(300);
-    // A live web forwarder keeps the terminal observable regardless of the
-    // window — this is what keeps an ATTACHED second device's PTY alive.
-    assert!(!should_reap_web_listed(
-        Some(Duration::from_secs(10_000)),
-        true,
-        0,
-        window
-    ));
-}
-
-#[test]
-fn test_should_reap_web_listed_renderer_refs_never_reaped() {
-    let window = Duration::from_secs(300);
-    // A desktop renderer still holds the terminal (e.g. the desktop app
-    // co-hosts the same PTY) — not reapable by the web rule.
-    assert!(!should_reap_web_listed(
-        Some(Duration::from_secs(10_000)),
-        false,
-        1,
-        window
-    ));
-}
-
-#[test]
-fn test_should_reap_web_listed_desktop_only_terminal_never_touched() {
-    let window = Duration::from_secs(300);
-    // Never seen by the web surface (desktop-only spawn): the web-listed
-    // rule never applies — only the ordinary orphan rule governs it.
-    assert!(!should_reap_web_listed(None, false, 0, window));
-}
-
-#[test]
-fn test_should_reap_web_listed_recent_listing_resets_window() {
-    let window = Duration::from_secs(300);
-    // A fresh listing (mark_web_listed) restarts the window even for a
-    // terminal whose previous listing was ancient.
-    assert!(!should_reap_web_listed(
-        Some(Duration::from_secs(1)),
-        false,
-        0,
-        window
-    ));
-}
-
-/// #851b integration: the full reaper decision on a live instance —
-/// `is_web_listed_reapable` consults the instance's own stamps. A spawned
-/// (protected, renderer-ref-less) web terminal flips reapable once its
-/// last-web-listed stamp ages past the window, and back to not-reapable
-/// the moment a client lists it again.
+/// AD-5: a spawn carrying a `commandId` stamps it on the instance, and a
+/// resend resolves to that PTY — never a second one — with a FRESH claim.
+/// With a viewer attached the fresh claim is shared, so the viewer's own
+/// credential keeps verifying; without one the claim is replaced.
 #[tokio::test]
-async fn web_listed_reap_flips_with_listing_age_on_live_instance() {
-    let events = crate::trackers::TerminalEventHub::standalone();
-    let cwd = Arc::new(crate::trackers::CwdTracker::new(events.clone()));
-    let git = Arc::new(crate::trackers::GitTracker::new(None, events.clone()));
-    let exit = Arc::new(crate::trackers::ExitCodeTracker::new(events.clone()));
-    let manager = PtyManager::new(events, cwd, git, exit);
-
+async fn replayed_spawn_finds_the_stamped_pty_and_issues_a_fresh_claim() {
+    let manager = crate::web::test_pty_manager();
     let spawned = manager
         .spawn(
             SpawnOptions {
-                project_id: Some("web-project".to_string()),
+                project_id: Some("p".to_string()),
+                command_id: Some("cmd-spawn-1".to_string()),
                 ..Default::default()
             },
             None,
         )
         .await
         .expect("spawn");
-    let instance = manager.get(&spawned.info.id).expect("instance");
 
-    // Web terminals are protected and collect no renderer refs — the
-    // ordinary orphan rule never fires.
-    assert!(instance.is_protected());
-    assert_eq!(instance.renderer_ref_count(), 0);
-    let ordinary_timeout = Duration::from_secs(600);
-    assert!(!instance.is_orphan_reapable(ordinary_timeout));
+    let found = manager
+        .find_by_command_id("cmd-spawn-1")
+        .expect("stamped instance");
+    assert_eq!(found.id, spawned.info.id);
+    assert!(manager.find_by_command_id("cmd-other").is_none());
 
-    // Backdate the listing stamp past a tiny window: the web rule fires.
-    *instance.last_web_listed.write() =
-        Some(std::time::Instant::now() - Duration::from_secs(120));
-    let tiny_window = Duration::from_secs(60);
-    assert!(instance.is_web_listed_reapable(tiny_window));
+    // A viewer is attached: the replay's claim is shared, the viewer's stays valid.
+    found.add_live_attachment();
+    let replay = manager
+        .replay_spawn("cmd-spawn-1", Some("p"))
+        .expect("replayed spawn");
+    assert_eq!(replay.info.id, spawned.info.id);
+    assert_ne!(replay.claim, spawned.claim, "the resender gets a fresh claim");
+    assert!(manager.verify_claim(&spawned.info.id, &spawned.claim).is_ok());
+    assert!(manager.verify_claim(&spawned.info.id, &replay.claim).is_ok());
+    assert_eq!(manager.get_all().len(), 1, "a replay never spawns again");
 
-    // A fresh listing re-arms the window — not reapable again.
-    instance.mark_web_listed();
-    assert!(!instance.is_web_listed_reapable(tiny_window));
+    // Nobody attached (e.g. a concurrent resend before the first client
+    // attaches): the first reply's claim must keep working too.
+    found.remove_live_attachment();
+    let again = manager
+        .replay_spawn("cmd-spawn-1", Some("p"))
+        .expect("replayed spawn");
+    assert!(manager.verify_claim(&spawned.info.id, &again.claim).is_ok());
+    assert!(manager.verify_claim(&spawned.info.id, &spawned.claim).is_ok());
+    assert!(manager.verify_claim(&spawned.info.id, &replay.claim).is_ok());
 
-    // Cleanup.
     manager.force_kill(&spawned.info.id).await.unwrap();
+}
+
+/// A replay of another project's spawn, or of a PTY that is gone, finds nothing
+/// (the carrier then answers `outcome_unknown` instead of respawning).
+#[tokio::test]
+async fn replayed_spawn_is_none_for_a_foreign_project_and_after_the_pty_is_gone() {
+    let manager = crate::web::test_pty_manager();
+    let spawned = manager
+        .spawn(
+            SpawnOptions {
+                project_id: Some("p".to_string()),
+                command_id: Some("cmd-spawn-2".to_string()),
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .expect("spawn");
+
+    assert!(manager.replay_spawn("cmd-spawn-2", Some("other")).is_none());
+    assert!(manager.replay_spawn("cmd-spawn-2", None).is_none());
+
+    manager.force_kill(&spawned.info.id).await.unwrap();
+    assert!(manager.find_by_command_id("cmd-spawn-2").is_none());
+    assert!(manager.replay_spawn("cmd-spawn-2", Some("p")).is_none());
+}
+
+/// A resend never resurrects a revoked claim record: after the spawn's claim
+/// was revoked the replay issues nothing (the carrier answers
+/// `OUTCOME_UNKNOWN`) and no credential verifies.
+#[tokio::test]
+async fn replayed_spawn_does_not_resurrect_a_revoked_claim() {
+    let manager = crate::web::test_pty_manager();
+    let spawned = manager
+        .spawn(
+            SpawnOptions {
+                project_id: Some("p".to_string()),
+                command_id: Some("cmd-spawn-3".to_string()),
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .expect("spawn");
+    manager
+        .revoke_claim(&spawned.info.id, &spawned.claim)
+        .expect("revoke");
+
+    assert!(manager.replay_spawn("cmd-spawn-3", Some("p")).is_none());
+    assert!(manager.verify_claim(&spawned.info.id, &spawned.claim).is_err());
+
+    manager.force_kill(&spawned.info.id).await.unwrap();
+}
+
+/// The observer hears every change of a project's terminal set, once per change:
+/// spawn, the first attachment, the last detachment, kill. The set it reads has
+/// no credential and includes detached terminals.
+#[tokio::test]
+async fn terminal_set_observer_hears_each_change_of_the_project_once() {
+    let manager = crate::web::test_pty_manager();
+    let heard = Arc::new(parking_lot::Mutex::new(Vec::<String>::new()));
+    let sink = Arc::clone(&heard);
+    manager.set_terminal_set_observer(Arc::new(move |project| sink.lock().push(project.to_string())));
+
+    let spawned = manager
+        .spawn(
+            SpawnOptions {
+                project_id: Some("proj-x".to_string()),
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .expect("spawn");
+    // A terminal without a project belongs to no scope.
+    let loose = manager.spawn(SpawnOptions::default(), None).await.expect("spawn loose");
+    let set = manager.terminal_set("proj-x");
+    assert_eq!(set.len(), 1);
+    assert_eq!(set[0].terminal_id, spawned.info.id);
+    assert!(!set[0].attached);
+    assert!(manager.terminal_set("other").is_empty());
+
+    let instance = manager.get(&spawned.info.id).expect("instance");
+    instance.add_live_attachment();
+    instance.add_live_attachment(); // a second viewer does not change the set
+    assert!(manager.terminal_set("proj-x")[0].attached);
+    instance.remove_live_attachment();
+    instance.remove_live_attachment();
+    assert!(!manager.terminal_set("proj-x")[0].attached);
+    manager.force_kill(&spawned.info.id).await.unwrap();
+    manager.force_kill(&loose.info.id).await.unwrap();
+
+    assert_eq!(
+        *heard.lock(),
+        vec!["proj-x"; 4],
+        "spawn, first attach, last detach, kill; nothing for the loose terminal or the second viewer"
+    );
+    assert!(manager.terminal_set("proj-x").is_empty());
 }

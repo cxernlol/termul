@@ -1,29 +1,39 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Project } from '@/types/project'
 
-const { projectStoreMock } = vi.hoisted(() => ({
-  projectStoreMock: { getState: vi.fn() }
+const { projectStoreMock, ensureSymlinks, admitsWrites } = vi.hoisted(() => ({
+  projectStoreMock: { getState: vi.fn() },
+  ensureSymlinks: vi.fn(),
+  admitsWrites: { value: true }
 }))
 
-// worktree-context.ts imports worktreeApi at module load; the mock prevents
-// the real API from firing during tests. The tested functions don't call it,
-// but the import binding must resolve.
 vi.mock('@/lib/api', () => ({
   worktreeApi: {
     list: vi.fn(),
     create: vi.fn(),
     remove: vi.fn(),
     branches: vi.fn(),
-    ensureSymlinks: vi.fn(),
+    ensureSymlinks,
     copyIncludeFiles: vi.fn()
   }
+}))
+
+vi.mock('@/lib/tauri-runtime', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/tauri-runtime')>()),
+  serverAdmitsRemoteWrites: () => admitsWrites.value
 }))
 
 vi.mock('@/stores/project-store', () => ({
   useProjectStore: projectStoreMock
 }))
 
-import { getDefaultCwdForProject, getProjectRootPath } from './worktree-context'
+import { useShellLayoutStore } from '@/stores/shell-layout-store'
+import {
+  ensureWorktreeSymlinks,
+  getActiveWorktreeForProject,
+  getDefaultCwdForProject,
+  getProjectRootPath
+} from './worktree-context'
 
 function makeProject(overrides: Partial<Project> = {}): Project {
   return {
@@ -35,6 +45,19 @@ function makeProject(overrides: Partial<Project> = {}): Project {
   } as Project
 }
 
+const WT_PATH = '/projects/main/.termul/worktrees/abc'
+const WORKTREE = {
+  id: 'wt-1',
+  name: 'chat/abc',
+  branch: 'chat/abc',
+  path: WT_PATH,
+  createdAt: '2026-01-01'
+}
+
+function setPick(path: string | null): void {
+  useShellLayoutStore.setState({ worktreePickByProject: path === null ? {} : { p1: path } })
+}
+
 function setState(projects: Project[]): void {
   projectStoreMock.getState.mockReturnValue({ projects })
 }
@@ -42,6 +65,29 @@ function setState(projects: Project[]): void {
 describe('worktree-context', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    setPick(null)
+    admitsWrites.value = true
+  })
+
+  describe('ensureWorktreeSymlinks', () => {
+    beforeEach(() => {
+      setState([
+        makeProject({ isGitRepo: true, symlinkDirs: ['node_modules'], worktrees: [WORKTREE] })
+      ])
+      setPick(WT_PATH)
+      ensureSymlinks.mockResolvedValue({ success: true, data: [] })
+    })
+
+    it('ensures the configured dirs in the active worktree', async () => {
+      await ensureWorktreeSymlinks('p1')
+      expect(ensureSymlinks).toHaveBeenCalledWith('/projects/main', WT_PATH, ['node_modules'])
+    })
+
+    it('sends nothing when the server refuses this client writes', async () => {
+      admitsWrites.value = false
+      await ensureWorktreeSymlinks('p1')
+      expect(ensureSymlinks).not.toHaveBeenCalled()
+    })
   })
 
   describe('getDefaultCwdForProject', () => {
@@ -53,23 +99,15 @@ describe('worktree-context', () => {
     it('returns the project root even when an active worktree is set', () => {
       setState([
         makeProject({
-          activeWorktreeId: 'wt-1',
-          worktrees: [
-            {
-              id: 'wt-1',
-              name: 'chat/abc',
-              branch: 'chat/abc',
-              path: '/projects/main/.termul/worktrees/abc',
-              createdAt: '2026-01-01'
-            }
-          ]
+          worktrees: [WORKTREE]
         })
       ])
+      setPick(WT_PATH)
       expect(getDefaultCwdForProject('p1')).toBe('/projects/main')
     })
 
-    it('returns the project root when activeWorktreeId is null', () => {
-      setState([makeProject({ activeWorktreeId: null })])
+    it('returns the project root when there is no pick', () => {
+      setState([makeProject()])
       expect(getDefaultCwdForProject('p1')).toBe('/projects/main')
     })
 
@@ -93,19 +131,49 @@ describe('worktree-context', () => {
     it('returns the main project root path regardless of active worktree', () => {
       setState([
         makeProject({
-          activeWorktreeId: 'wt-1',
-          worktrees: [
-            {
-              id: 'wt-1',
-              name: 'chat/abc',
-              branch: 'chat/abc',
-              path: '/projects/main/.termul/worktrees/abc',
-              createdAt: '2026-01-01'
-            }
-          ]
+          worktrees: [WORKTREE]
         })
       ])
+      setPick(WT_PATH)
       expect(getProjectRootPath('p1')).toBe('/projects/main')
+    })
+  })
+
+  describe('active worktree derived from the shell-layout pick', () => {
+    it('sees the picked worktree in any path form', () => {
+      setState([makeProject({ worktrees: [WORKTREE] })])
+      setPick(`${WT_PATH}/`)
+      expect(getActiveWorktreeForProject('p1')).toEqual(WORKTREE)
+    })
+
+    it('sees the project folder with no pick', () => {
+      setState([makeProject({ worktrees: [WORKTREE] })])
+      expect(getActiveWorktreeForProject('p1')).toBeUndefined()
+    })
+
+    it('sees the project folder when the pick equals the project path', () => {
+      setState([makeProject({ worktrees: [WORKTREE] })])
+      setPick('/projects/main')
+      expect(getActiveWorktreeForProject('p1')).toBeUndefined()
+    })
+
+    it('sees the project folder for a pruned pick', () => {
+      setState([makeProject({ worktrees: [WORKTREE] })])
+      setPick('/projects/main/.termul/worktrees/gone')
+      expect(getActiveWorktreeForProject('p1')).toBeUndefined()
+    })
+
+    it('sees the project folder for a pick naming an outside-root worktree', () => {
+      const project = makeProject({ worktrees: [{ ...WORKTREE, outsideProjectRoot: true }] })
+      setState([project])
+      setPick(WT_PATH)
+      expect(getActiveWorktreeForProject('p1')).toBeUndefined()
+    })
+
+    it('sees nothing for a missing project', () => {
+      setState([])
+      setPick(WT_PATH)
+      expect(getActiveWorktreeForProject('p1')).toBeUndefined()
     })
   })
 })

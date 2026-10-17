@@ -34,6 +34,7 @@ vi.mock('@/hooks/use-agent-skills', () => ({
 vi.mock('@/stores/acp-store', () => ({
   useAcpStore: (selector: (s: Record<string, unknown>) => unknown) =>
     selector({
+      sessions: {} as Record<string, unknown>,
       mcpServers: Array.from({ length: mockMcpCount.current }, (_, i) => ({
         id: `mcp-${i}`,
         type: 'stdio',

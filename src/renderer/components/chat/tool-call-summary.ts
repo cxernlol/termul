@@ -277,6 +277,21 @@ function verbForKind(kind: ToolKind | undefined): string {
   }
 }
 
+/** Count is a finite, non-negative integer (durable payloads are untrusted). */
+function isLineCount(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0
+}
+
+/**
+ * The host-computed `ToolCall.diffStat` of a restored/recovered call, or null
+ * when absent or malformed (a legacy/corrupt record never renders `+NaN`).
+ */
+function persistedDiffStat(value: unknown): { added: number; removed: number } | null {
+  const record = asRecord(value)
+  if (!record || !isLineCount(record.added) || !isLineCount(record.removed)) return null
+  return { added: record.added, removed: record.removed }
+}
+
 /**
  * Derive a compact, human description of a tool call from its kind + input +
  * structured content, falling back to the agent's own title.
@@ -311,8 +326,17 @@ export function describeToolCall(toolCall: ToolCall): ToolCallSummary {
       let detail: string | null = null
       let diffStat: { added: number; removed: number } | null = null
       if (diff.hasDiff) {
-        detail = diff.removed > 0 ? `+${diff.added} \u2212${diff.removed}` : `+${diff.added}`
         diffStat = { added: diff.added, removed: diff.removed }
+      } else {
+        // Restored/recovered calls carry no diff `content` (never persisted);
+        // the host-computed durable summary supplies the counts instead.
+        diffStat = persistedDiffStat(toolCall.diffStat)
+      }
+      if (diffStat) {
+        detail =
+          diffStat.removed > 0
+            ? `+${diffStat.added} \u2212${diffStat.removed}`
+            : `+${diffStat.added}`
       }
       return { verb, primary, detail, diffStat }
     }
@@ -337,4 +361,121 @@ export function describeToolCall(toolCall: ToolCall): ToolCallSummary {
       return { verb, primary: title ?? toolCall.kind ?? 'Tool call', detail: null }
     }
   }
+}
+
+type ActivityCategory =
+  | 'command'
+  | 'file-read'
+  | 'file-created'
+  | 'file-edited'
+  | 'file-deleted'
+  | 'file-moved'
+  | 'search'
+  | 'fetch'
+  | 'agent'
+  | 'background-agent'
+  | 'mode'
+  | 'other'
+
+const BACKGROUND_INPUT_KEYS = ['run_in_background', 'is_background', 'background']
+
+function isBackgroundAgent(call: ToolCall): boolean {
+  const input = asRecord(call.rawInput)
+  if (!input) return false
+  return BACKGROUND_INPUT_KEYS.some((key) => input[key] === true)
+}
+
+/**
+ * Create-only edit: at least one diff item, and every diff created its file
+ * (`oldText == null`). A mixed create+edit call, or a restored call with no
+ * diff content at all, counts as an edit.
+ */
+function isFileCreation(call: ToolCall): boolean {
+  const diffs = (call.content ?? []).filter((item) => item.type === 'diff')
+  return (
+    diffs.length > 0 && diffs.every((item) => (item as { oldText?: string | null }).oldText == null)
+  )
+}
+
+/**
+ * First-match-wins classification. Subagent checks lead because ACP gives
+ * dispatches no dedicated kind — they arrive looking like `think`/`other`.
+ */
+const ACTIVITY_CATEGORY_RULES: ReadonlyArray<{
+  category: ActivityCategory
+  match: (call: ToolCall) => boolean
+}> = [
+  {
+    category: 'background-agent',
+    match: (call) => isSubagentCall(call) && isBackgroundAgent(call)
+  },
+  { category: 'agent', match: (call) => isSubagentCall(call) },
+  { category: 'command', match: (call) => call.kind === 'execute' },
+  { category: 'file-read', match: (call) => call.kind === 'read' },
+  { category: 'file-created', match: (call) => call.kind === 'edit' && isFileCreation(call) },
+  { category: 'file-edited', match: (call) => call.kind === 'edit' },
+  { category: 'file-deleted', match: (call) => call.kind === 'delete' },
+  { category: 'file-moved', match: (call) => call.kind === 'move' },
+  { category: 'search', match: (call) => call.kind === 'search' },
+  { category: 'fetch', match: (call) => call.kind === 'fetch' },
+  { category: 'mode', match: (call) => call.kind === 'switch_mode' }
+]
+
+const ACTIVITY_PHRASES: Record<ActivityCategory, { one: string; many: (n: number) => string }> = {
+  command: { one: 'ran 1 command', many: (n) => `ran ${n} commands` },
+  'file-read': { one: 'read 1 file', many: (n) => `read ${n} files` },
+  'file-created': { one: 'created 1 file', many: (n) => `created ${n} files` },
+  'file-edited': { one: 'edited 1 file', many: (n) => `edited ${n} files` },
+  'file-deleted': { one: 'deleted 1 file', many: (n) => `deleted ${n} files` },
+  'file-moved': { one: 'moved 1 file', many: (n) => `moved ${n} files` },
+  search: { one: 'ran 1 search', many: (n) => `ran ${n} searches` },
+  fetch: { one: 'fetched 1 page', many: (n) => `fetched ${n} pages` },
+  agent: { one: 'ran 1 agent', many: (n) => `ran ${n} agents` },
+  'background-agent': {
+    one: 'ran 1 background agent',
+    many: (n) => `ran ${n} background agents`
+  },
+  mode: { one: 'switched mode', many: (n) => `switched mode ${n} times` },
+  other: { one: 'used 1 tool', many: (n) => `used ${n} tools` }
+}
+
+/** `.t-think-text` is `nowrap`, so the phrase count is the label's length bound. */
+const MAX_ACTIVITY_PHRASES = 4
+
+export interface ToolActivitySummary {
+  label: string
+  added: number
+  removed: number
+}
+
+/**
+ * Roll a turn's tool calls into one categorized line for the collapsed
+ * activity disclosure — "Ran 2 commands, created 1 file" — plus the summed
+ * diff counts. Categories appear in first-occurrence order; past the cap the
+ * label tails off as "and N more", where N counts the unshown CALLS. Null
+ * when the turn ran no tools.
+ */
+export function summarizeToolActivity(calls: ToolCall[]): ToolActivitySummary | null {
+  if (calls.length === 0) return null
+  const counts = new Map<ActivityCategory, number>()
+  let added = 0
+  let removed = 0
+  for (const call of calls) {
+    const category = ACTIVITY_CATEGORY_RULES.find((rule) => rule.match(call))?.category ?? 'other'
+    counts.set(category, (counts.get(category) ?? 0) + 1)
+    const diffStat = describeToolCall(call).diffStat
+    if (diffStat) {
+      added += diffStat.added
+      removed += diffStat.removed
+    }
+  }
+  const entries = [...counts.entries()]
+  const phrases = entries.slice(0, MAX_ACTIVITY_PHRASES).map(([category, count]) => {
+    const phrase = ACTIVITY_PHRASES[category]
+    return count === 1 ? phrase.one : phrase.many(count)
+  })
+  const hiddenCalls = entries.slice(MAX_ACTIVITY_PHRASES).reduce((sum, [, n]) => sum + n, 0)
+  let label = phrases.join(', ')
+  if (hiddenCalls > 0) label += `, and ${hiddenCalls} more`
+  return { label: label.charAt(0).toUpperCase() + label.slice(1), added, removed }
 }

@@ -1,30 +1,62 @@
-import { beforeEach, describe, expect, it } from 'vitest'
-import { useSidebarStore } from './sidebar-store'
+import { act, renderHook } from '@testing-library/react'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { resetShellLayoutStoreForTests, useShellLayoutStore } from './shell-layout-store'
+import { setSidebarVisible, toggleSidebarVisibility, useSidebarVisible } from './sidebar-store'
 
-describe('sidebar-store', () => {
+const { mockWriteDebounced } = vi.hoisted(() => ({ mockWriteDebounced: vi.fn() }))
+
+vi.mock('@/lib/api', () => ({
+  persistenceApi: {
+    read: vi.fn(),
+    write: vi.fn(),
+    delete: vi.fn(),
+    writeDebounced: mockWriteDebounced
+  }
+}))
+vi.mock('@/lib/log-api', () => ({ logFrontendError: vi.fn() }))
+
+describe('sidebar-store (shell-layout projection)', () => {
   beforeEach(() => {
-    useSidebarStore.setState({
-      isVisible: true
+    vi.clearAllMocks()
+    mockWriteDebounced.mockResolvedValue({ success: true, data: undefined })
+    resetShellLayoutStoreForTests()
+    useShellLayoutStore.setState({ status: 'ready' })
+  })
+
+  it('reads railExpanded', () => {
+    const { result } = renderHook(() => useSidebarVisible())
+    expect(result.current).toBe(true)
+
+    act(() => {
+      useShellLayoutStore.setState({ railExpanded: false })
     })
+    expect(result.current).toBe(false)
   })
 
-  it('starts visible by default', () => {
-    expect(useSidebarStore.getState().isVisible).toBe(true)
+  it('writes through the shell-layout action', () => {
+    setSidebarVisible(false)
+    expect(useShellLayoutStore.getState().railExpanded).toBe(false)
+    expect(mockWriteDebounced).toHaveBeenCalledWith(
+      'shell-layout',
+      expect.objectContaining({ railExpanded: false })
+    )
   })
 
-  it('toggles visibility', () => {
-    useSidebarStore.getState().toggleVisibility()
-    expect(useSidebarStore.getState().isVisible).toBe(false)
-
-    useSidebarStore.getState().toggleVisibility()
-    expect(useSidebarStore.getState().isVisible).toBe(true)
+  it('toggles', () => {
+    toggleSidebarVisibility()
+    expect(useShellLayoutStore.getState().railExpanded).toBe(false)
+    toggleSidebarVisibility()
+    expect(useShellLayoutStore.getState().railExpanded).toBe(true)
   })
 
-  it('sets visibility directly', () => {
-    useSidebarStore.getState().setVisible(false)
-    expect(useSidebarStore.getState().isVisible).toBe(false)
+  it('is ignored before hydration and never persists while unavailable', () => {
+    resetShellLayoutStoreForTests()
+    setSidebarVisible(false)
+    expect(useShellLayoutStore.getState().railExpanded).toBe(true)
 
-    useSidebarStore.getState().setVisible(true)
-    expect(useSidebarStore.getState().isVisible).toBe(true)
+    useShellLayoutStore.setState({ status: 'unavailable' })
+    setSidebarVisible(false)
+    expect(useShellLayoutStore.getState().railExpanded).toBe(false)
+    expect(mockWriteDebounced).not.toHaveBeenCalled()
   })
 })

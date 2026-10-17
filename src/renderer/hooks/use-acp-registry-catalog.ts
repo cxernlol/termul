@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { acpApi } from '@/lib/acp-api'
+import { acpApi, type RegistryCheckReason } from '@/lib/acp-api'
 import {
   compareRegistryVersions,
   normalizeRegistrySnapshot,
@@ -13,6 +13,8 @@ export interface RegistryUpdateSummary {
   newAgentIds: string[]
   fetchedAt: string | null
   source: string
+  /** A manual check could not reach the registry and fell back to the host cache. */
+  registryUnreachable: boolean
 }
 
 // Remote registry state is split into two layers so unsigned CDN
@@ -49,7 +51,7 @@ export function useAcpRegistryCatalog(): {
   advisorySummary: RegistryUpdateSummary | null
   checking: boolean
   lastCheckedAt: string | null
-  checkForUpdates: (forceRefresh?: boolean) => Promise<RegistryUpdateSummary | null>
+  checkForUpdates: (reason: RegistryCheckReason) => Promise<RegistryUpdateSummary | null>
   applyRemoteRegistry: () => Promise<void>
   useBundledRegistry: () => Promise<void>
 } {
@@ -64,16 +66,19 @@ export function useAcpRegistryCatalog(): {
     }
   }, [])
 
-  const checkForUpdates = useCallback(async (forceRefresh = true) => {
+  const checkForUpdates = useCallback(async (reason: RegistryCheckReason) => {
     setChecking(true)
     try {
-      const snapshot = await acpApi.fetchRegistrySnapshot(forceRefresh)
+      const snapshot = await acpApi.fetchRegistrySnapshot(reason)
       const normalized = normalizeRegistrySnapshot(snapshot.agents)
       if (normalized.length === 0) return null
       const summary: RegistryUpdateSummary = {
         ...compareRegistryVersions(REGISTRY_AGENTS, normalized),
         fetchedAt: snapshot.fetchedAt ?? null,
-        source: snapshot.source
+        source: snapshot.source,
+        // Every check forces a fetch, so the host only answers from its cache
+        // when the registry was unreachable.
+        registryUnreachable: reason === 'manual' && snapshot.source === 'cache'
       }
       // Advisory only: store the remote snapshot for diff/display, but do NOT
       // promote it to the active registry. Promotion requires an explicit

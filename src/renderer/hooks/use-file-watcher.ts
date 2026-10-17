@@ -40,7 +40,7 @@ export function useFileWatcher(): void {
       }, 300)
     }
 
-    const handleFileChanged = (event: FileChangeEvent): void => {
+    const handleFileWritten = (event: FileChangeEvent): void => {
       const { path } = event
 
       scheduleGitStatusRefreshForPath(path)
@@ -78,12 +78,6 @@ export function useFileWatcher(): void {
       }
     }
 
-    const handleFileCreated = (event: FileChangeEvent): void => {
-      scheduleGitStatusRefreshForPath(event.path)
-      const parentDir = getDirname(event.path)
-      scheduleRefresh(parentDir)
-    }
-
     const handleFileDeleted = (event: FileChangeEvent): void => {
       scheduleGitStatusRefreshForPath(event.path)
       const parentDir = getDirname(event.path)
@@ -95,18 +89,29 @@ export function useFileWatcher(): void {
       // saving→saved transition and drop the user back to the terminal.
       if (event.type !== 'unlink') return
 
-      // Close editor tab immediately if the deleted file is open
-      const editorState = useEditorStore.getState()
-      if (editorState.openFiles.has(event.path)) {
-        const didClose = editorState.closeFileIfIdle(event.path)
-        if (didClose) {
-          useWorkspaceStore.getState().removeTab(editorTabId(event.path))
-        }
+      if (useEditorStore.getState().openFiles.has(event.path)) {
+        void closeTabIfFileIsGone(event.path)
       }
     }
 
-    const unsubChanged = filesystemApi.onFileChanged(handleFileChanged)
-    const unsubCreated = filesystemApi.onFileCreated(handleFileCreated)
+    // git checkout and stash remove a file and recreate it at once.
+    async function closeTabIfFileIsGone(path: string): Promise<void> {
+      const info = await filesystemApi.getFileInfo(path)
+      if (info.success) return
+      if (useEditorStore.getState().openFiles.get(path)?.isDirty) {
+        toast('File deleted on disk', {
+          id: `file-deleted-${path}`,
+          description: `${path.split(/[\\/]/).pop() || path} (unsaved edits kept)`
+        })
+        return
+      }
+      if (useEditorStore.getState().closeFileIfIdle(path)) {
+        useWorkspaceStore.getState().removeTab(editorTabId(path))
+      }
+    }
+
+    const unsubChanged = filesystemApi.onFileChanged(handleFileWritten)
+    const unsubCreated = filesystemApi.onFileCreated(handleFileWritten)
     const unsubDeleted = filesystemApi.onFileDeleted(handleFileDeleted)
 
     return () => {

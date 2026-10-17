@@ -203,61 +203,6 @@ fn env_to_wide_block(env: &std::collections::HashMap<String, String>) -> Vec<u16
     block
 }
 
-/// Create a Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` and assign
-/// `process` to it. When the returned handle is closed, the OS terminates the
-/// process and its entire descendant tree. Returns a null handle (and logs a
-/// warning) if the job could not be created, configured, or assigned, in which
-/// case the caller proceeds with the process running but without tree-kill.
-#[cfg(target_os = "windows")]
-unsafe fn create_kill_on_close_job(process: *mut c_void) -> *mut c_void {
-    use winapi::um::jobapi2::{
-        AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject,
-    };
-    use winapi::um::winnt::{
-        JobObjectExtendedLimitInformation, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-    };
-
-    let job = CreateJobObjectW(std::ptr::null_mut(), std::ptr::null());
-    if job.is_null() {
-        log::warn!(
-            "[ConPTY] CreateJobObject failed, orphan protection disabled: {}",
-            std::io::Error::last_os_error()
-        );
-        return std::ptr::null_mut();
-    }
-
-    let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
-    info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-    if SetInformationJobObject(
-        job,
-        JobObjectExtendedLimitInformation,
-        &mut info as *mut _ as *mut c_void,
-        std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
-    ) == 0
-    {
-        log::warn!(
-            "[ConPTY] SetInformationJobObject failed, orphan protection disabled: {}",
-            std::io::Error::last_os_error()
-        );
-        winapi::um::handleapi::CloseHandle(job);
-        return std::ptr::null_mut();
-    }
-
-    // Nested jobs are supported on Win8+/Win10+ (ConPTY requires Win10+), so
-    // assignment is safe even if the child is already in a job.
-    if AssignProcessToJobObject(job, process) == 0 {
-        log::warn!(
-            "[ConPTY] AssignProcessToJobObject failed, orphan protection disabled: {}",
-            std::io::Error::last_os_error()
-        );
-        winapi::um::handleapi::CloseHandle(job);
-        return std::ptr::null_mut();
-    }
-
-    job
-}
-
 /// Spawn a command using Windows ConPTY with proper flags to hide console window
 ///
 /// This function uses the Windows ConPTY API directly to spawn processes
@@ -451,7 +396,11 @@ pub fn spawn_conpty(
         // owning handle (held by the terminal instance) is closed. It also kills
         // grandchildren that single-PID TerminateProcess misses. On any failure
         // we log and continue with a null job handle — no regression vs. before.
-        let job = create_kill_on_close_job(pi.hProcess);
+        // The raw job handle is owned by the terminal instance from here on
+        // (null when the job could not be set up; the helper already warned).
+        let job: *mut c_void =
+            crate::process_util::KillOnCloseJob::new_assigned(pi.hProcess.cast(), "ConPTY", false)
+                .map_or(std::ptr::null_mut(), |job| job.into_raw().cast());
 
         // Resume the child only after it is in the job so no grandchild can
         // escape assignment (#281 spawn race).

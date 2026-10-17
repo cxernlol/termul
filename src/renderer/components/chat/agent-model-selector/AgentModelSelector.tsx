@@ -1,7 +1,13 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useId, useRef, useState } from 'react'
 import { AgentGlyph } from '@/components/chat/AgentGlyph'
 import { ComposerPill } from '@/components/chat/ComposerPill'
-import { isFastModeEnabled, oppositeFastModeValue } from '@/components/chat/chat-input-bar-config'
+import {
+  flattenConfigOptionValues,
+  isFastModeEnabled,
+  oppositeFastModeValue,
+  storedConfigValue,
+  wireConfigValue
+} from '@/components/chat/chat-input-bar-config'
 import { useOptimisticSelect } from '@/components/chat/use-optimistic-select'
 import { X } from '@/components/icons'
 import { AnimatedMenuContent } from '@/components/ui/animated-menu-content'
@@ -17,6 +23,7 @@ import { useMobileWebShell } from '@/hooks/use-mobile-web-shell'
 import type { SessionConfigOption, SessionUsage } from '@/lib/acp-api'
 import { cn } from '@/lib/utils'
 import { useAcpStore } from '@/stores/acp-store'
+import { useOverlayRegistration } from '@/stores/overlay-stack-store'
 import { shouldShowSessionUsage } from '../context-usage-utils'
 import { SelectorPanel } from './SelectorPanel'
 import { type SelectorSource, useSessionSelectorSource } from './selector-source'
@@ -115,6 +122,9 @@ export function AgentModelSelector({
   const isMobile = useMobileWebShell()
   const sessionAgent = useComposerAgentLabel(sessionId)
   const sessionSource = useSessionSelectorSource(sessionId)
+  const capabilities = useAcpStore((s) =>
+    draft ? null : (s.agents?.[s.sessions?.[sessionId]?.agentId ?? '']?.capabilities ?? null)
+  )
   const source = draft?.source ?? sessionSource
   const agent = draft
     ? {
@@ -149,21 +159,30 @@ export function AgentModelSelector({
   const selectFast = useCallback(
     (valueId: string) => {
       if (!fastMode) return
-      return onSetConfig(fastMode.id, valueId)
+      const wireValue = wireConfigValue(fastMode, valueId)
+      if (wireValue === null) return
+      return onSetConfig(fastMode.id, wireValue)
     },
     [fastMode, onSetConfig]
   )
 
   const modelSelect = useOptimisticSelect(selectValue(modelOption?.currentValue), selectModel)
   const effortSelect = useOptimisticSelect(selectValue(thoughtLevel?.currentValue), selectEffort)
-  const fastSelect = useOptimisticSelect(selectValue(fastMode?.currentValue), selectFast)
+  const fastSelect = useOptimisticSelect(
+    fastMode ? (storedConfigValue(fastMode) ?? undefined) : undefined,
+    selectFast
+  )
 
-  const modelName = (modelOption?.options ?? []).find(
-    (option) => option.value === modelSelect.displayValue
-  )?.name
-  const effortName = (thoughtLevel?.options ?? []).find(
-    (option) => option.value === effortSelect.displayValue
-  )?.name
+  const modelName = modelOption
+    ? flattenConfigOptionValues(modelOption).find(
+        (option) => option.value === modelSelect.displayValue
+      )?.name
+    : undefined
+  const effortName = thoughtLevel
+    ? flattenConfigOptionValues(thoughtLevel).find(
+        (option) => option.value === effortSelect.displayValue
+      )?.name
+    : undefined
   const fastOn = fastMode ? isFastModeEnabled(fastMode, fastSelect.displayValue) : false
   const fastNext = fastMode ? oppositeFastModeValue(fastMode, fastSelect.displayValue) : null
   const visibleUsage = shouldShowSessionUsage(usage, messages)
@@ -181,6 +200,11 @@ export function AgentModelSelector({
     setOpen(next)
   }, [])
   const close = useCallback(() => setOpen(false), [])
+  // The mobile sheet is an overlay like any other: system back closes it (and
+  // its own X / scrim / Esc close consumes the history sentinel). The desktop
+  // popover is inert here.
+  const overlayId = `agent-model-selector:${useId()}`
+  useOverlayRegistration(overlayId, open && isMobile, close, { mobileShellOnly: true })
   const onEscapeKeyDown = (event: KeyboardEvent): void => {
     if (escapeRef.current?.()) event.preventDefault()
   }
@@ -229,6 +253,7 @@ export function AgentModelSelector({
       }
       usage={usage}
       messages={messages}
+      capabilities={capabilities}
       onClose={close}
       escapeRef={escapeRef}
     />
@@ -280,9 +305,12 @@ export function AgentModelSelector({
         onCloseAutoFocus={onCloseAutoFocus}
         // The sheet's built-in close button is the last child; the grabber
         // and a tap on the scrim close this sheet.
-        className="gap-0 border-border bg-popover p-0 pb-[env(safe-area-inset-bottom)] pt-2 [&>button:last-child]:hidden"
+        className="flex max-h-[85dvh] flex-col gap-0 border-border bg-popover p-0 pb-[env(safe-area-inset-bottom)] pt-2 [&>button:last-child]:hidden"
       >
-        <div aria-hidden="true" className="mx-auto mb-1.5 h-1 w-9 rounded-full bg-foreground/20" />
+        <div
+          aria-hidden="true"
+          className="mx-auto mb-1.5 h-1 w-9 shrink-0 rounded-full bg-foreground/20"
+        />
         <SheetTitle className="sr-only">Model and agent</SheetTitle>
         <SheetDescription className="sr-only">
           Choose a model, an agent, and its options.
@@ -304,7 +332,9 @@ export function AgentModelSelector({
         onEscapeKeyDown={onEscapeKeyDown}
         onCloseAutoFocus={onCloseAutoFocus}
         contentClassName="z-[100] max-w-[calc(100vw-1rem)]"
-        className="overflow-hidden rounded-xl border-border p-0"
+        // Radix writes the room above or below the trigger onto the popper. The
+        // panel shrinks its list to fit; the surface scrolls only if that is not enough.
+        className="flex max-h-[var(--radix-popper-available-height,70vh)] flex-col overflow-y-auto overscroll-contain rounded-xl border-border p-0"
       >
         {panel}
       </AnimatedMenuContent>

@@ -1,10 +1,12 @@
+use super::search_dirs::{
+    assemble_final_batch, dir_search_registry_key, root_prefix_for, start_dir_search, DirSearch,
+};
+use super::search_file_hits::{collect_file_hits, FileHitWalk};
 use super::IpcResult;
 use crate::path_validation;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::io::{BufRead, BufReader};
-#[cfg(target_os = "windows")]
-use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -103,12 +105,17 @@ pub struct SearchFileNamesStreamRequest {
 /// One filename-search hit. `ignored` is set when the path runs through a
 /// commonly-ignored directory or a hidden/cruft segment, so the @-mention
 /// picker can dim it. `ignored: false` for every hit when the caller did not
-/// request `include_ignored`.
+/// request `include_ignored`. `kind` is `Some("dir")` for a folder hit and is
+/// omitted from the wire for files (absent = file), so file payloads are
+/// unchanged. Every `path` is root-relative with forward slashes; dir hit
+/// paths have no trailing slash.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SearchFileHit {
     pub path: String,
     pub ignored: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -156,7 +163,7 @@ pub(crate) fn search_processes() -> &'static Mutex<HashMap<String, Arc<Mutex<Chi
     SEARCH_PROCESSES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn filename_search_processes() -> &'static Mutex<HashMap<String, Arc<Mutex<Child>>>> {
+pub(crate) fn filename_search_processes() -> &'static Mutex<HashMap<String, Arc<Mutex<Child>>>> {
     FILENAME_SEARCH_PROCESSES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -298,16 +305,10 @@ pub(crate) fn detect_rg_path() -> String {
     detected
 }
 
-#[cfg(target_os = "windows")]
-const CREATE_NO_WINDOW: u32 = 0x08000000;
-
-#[cfg(target_os = "windows")]
+/// Keep the rg sidecar off-screen (see [`crate::process_util::hide_console`]).
 pub(crate) fn configure_background_command(command: &mut Command) {
-    command.creation_flags(CREATE_NO_WINDOW);
+    crate::process_util::hide_console(command);
 }
-
-#[cfg(not(target_os = "windows"))]
-pub(crate) fn configure_background_command(_command: &mut Command) {}
 
 /// Maximum allowed search query length to prevent resource exhaustion via
 /// oversized input passed to ripgrep or the file-name walker.
@@ -415,7 +416,7 @@ pub(crate) fn path_is_ignored(rel_path: &str) -> bool {
 /// Reap an rg child after stdout reading stops. When the reader breaks early
 /// (cap hit) stdout is no longer drained; kill first so rg cannot block on a
 /// full pipe before `wait()` returns.
-fn reap_rg_child_after_stdout(
+pub(crate) fn reap_rg_child_after_stdout(
     child: &mut Child,
     stdout_stopped_early: bool,
 ) -> Option<std::process::ExitStatus> {
@@ -972,130 +973,107 @@ pub async fn search_file_names_stream(
 
     let include_ignored = request.include_ignored;
 
-    tauri::async_runtime::spawn_blocking(move || {
-        let reader = BufReader::new(stdout);
-        let max_files: usize = 100;
-        let batch_size: usize = 25;
-        let mut truncated = false;
-        let mut stream_error: Option<String> = None;
-
-        // `files` is the default-path bucket (mid-stream batched).
-        // `non_ignored` + `ignored_bucket` are the `include_ignored`-path
-        // buckets, ranked after the walk so node_modules can't crowd out
-        // source files. See ADR 0003.
-        let mut files: Vec<SearchFileHit> = Vec::new();
-        let mut non_ignored: Vec<SearchFileHit> = Vec::new();
-        let mut ignored_bucket: Vec<SearchFileHit> = Vec::new();
-        const IGNORED_CAP: usize = 20;
-        let mut ignored_dropped: usize = 0;
-        let mut broke_at_cap = false;
-        let mut stdout_stopped_early = false;
-        let mut last_batch_count: usize = 0;
-
-        // Collect output until we hit the cap, EOF, or a pipe error. The
-        // iterator-based form `map_while(Result::ok)` would swallow I/O
-        // errors, so we use a manual loop that records the first error.
-        let mut iter = reader.lines();
-        loop {
-            match iter.next() {
-                Some(Ok(line)) => {
-                    // ripgrep on Windows may emit verbatim paths
-                    // (e.g. `\\?\C:\...`) when the root is canonicalized.
-                    // Strip the prefix before the slash-normalization so the
-                    // renderer never sees a `\\?\` blob in click paths.
-                    let normalized =
-                        path_validation::strip_verbatim_prefix(&line).replace('\\', "/");
-                    if include_ignored {
-                        // Stop as soon as the non-ignored bucket is full: later
-                        // ignored hits can no longer survive `rank_search_hits`,
-                        // so walking further just wastes time in large repos.
-                        if non_ignored.len() >= max_files {
-                            broke_at_cap = true;
-                            stdout_stopped_early = true;
-                            break;
-                        }
-                        if path_is_ignored(&normalized) {
-                            if ignored_bucket.len() < IGNORED_CAP {
-                                ignored_bucket.push(SearchFileHit {
-                                    path: normalized,
-                                    ignored: true,
-                                });
-                            } else {
-                                ignored_dropped += 1;
-                            }
-                        } else {
-                            non_ignored.push(SearchFileHit {
-                                path: normalized,
-                                ignored: false,
-                            });
-                        }
-                    } else {
-                        if files.len() >= max_files {
-                            truncated = true;
-                            stdout_stopped_early = true;
-                            break;
-                        }
-                        files.push(SearchFileHit {
-                            path: normalized,
-                            ignored: false,
-                        });
-                        // Emit a mid-stream batch when we cross a batch
-                        // boundary, but skip the trailing batch below if we
-                        // already published this exact count.
-                        if files.len().is_multiple_of(batch_size) {
-                            // Mid-stream batch — final truncation state is
-                            // not known yet, so the field is `None` (serde
-                            // omits it from the wire). The trailing batch
-                            // below carries the authoritative value.
-                            let _ = app_handle.emit(
-                                "search-file-names-batch",
-                                SearchFileNamesBatchEvent {
-                                    search_id: search_id.clone(),
-                                    files: files.clone(),
-                                    truncated: None,
-                                },
-                            );
-                            last_batch_count = files.len();
-                        }
+    // Directory-name pass (gh-896): a second concurrent rg walk whose dirs are
+    // merged into the final batch. Registered under its own key so
+    // `search_file_names_cancel` stops both passes. A spawn failure is logged
+    // and the file hits are still returned.
+    let dir_search: Option<DirSearch> =
+        match start_dir_search(&rg_path, &trimmed_query, &validated_root, include_ignored) {
+            Ok(Some(dir_search)) => {
+                if let Ok(mut guard) = filename_search_processes().lock() {
+                    // A cancel that landed after the file child was registered
+                    // but before this insert already removed the file key and
+                    // would miss the dir child: kill it now.
+                    let cancelled = !guard.contains_key(&search_id);
+                    guard.insert(
+                        dir_search_registry_key(&search_id),
+                        Arc::clone(&dir_search.child),
+                    );
+                    if cancelled {
+                        dir_search.kill();
                     }
                 }
-                Some(Err(e)) => {
-                    stream_error = Some(format!("stdout read error: {}", e));
-                    break;
-                }
-                None => break,
+                Some(dir_search)
             }
-        }
+            Ok(None) => None,
+            Err(e) => {
+                log::warn!("[Search] folder name pass not started: {}", e);
+                None
+            }
+        };
 
-        // Publish the authoritative final batch. For `include_ignored`, emit
-        // a single ranked batch (non-ignored first) so the picker never
-        // flickers between mid-stream order and the ranked order. For the
-        // default path, skip if the count matches the last mid-stream batch.
-        let final_files: Vec<SearchFileHit> = if include_ignored {
-            truncated = broke_at_cap || ignored_dropped > 0;
-            let ranked = rank_search_hits(non_ignored, ignored_bucket, max_files);
-            let _ = app_handle.emit(
-                "search-file-names-batch",
-                SearchFileNamesBatchEvent {
-                    search_id: search_id.clone(),
-                    files: ranked.clone(),
-                    truncated: Some(truncated),
-                },
-            );
-            ranked
-        } else {
-            if files.len() != last_batch_count {
+    let root_prefix = root_prefix_for(&validated_root);
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let FileHitWalk {
+            result: walk,
+            mut stream_error,
+            stopped_early: stdout_stopped_early,
+            skipped_lines,
+        } = collect_file_hits(
+            BufReader::new(stdout),
+            &root_prefix,
+            include_ignored,
+            |files| {
+                // Mid-stream batch: final truncation is not known yet, so the
+                // field is `None` (serde omits it). The final batch carries it.
                 let _ = app_handle.emit(
                     "search-file-names-batch",
                     SearchFileNamesBatchEvent {
                         search_id: search_id.clone(),
-                        files: files.clone(),
-                        truncated: Some(truncated),
+                        files: files.to_vec(),
+                        truncated: None,
                     },
                 );
+            },
+        );
+        if skipped_lines > 0 {
+            log::warn!(
+                "[Search] file name pass skipped {} line(s) outside the search root",
+                skipped_lines
+            );
+        }
+
+        // Join the folder pass (it runs concurrently with the file walk) and
+        // drop its registry entry. Its failures never fail the file search.
+        if stream_error.is_some() {
+            if let Some(d) = dir_search.as_ref() {
+                d.kill();
             }
-            files
-        };
+        }
+        let dir_outcome = dir_search.map(DirSearch::finish).unwrap_or_default();
+        if let Ok(mut guard) = filename_search_processes().lock() {
+            guard.remove(&dir_search_registry_key(&search_id));
+        }
+        if let Some(e) = dir_outcome.error.as_deref() {
+            log::warn!("[Search] folder name pass failed: {}", e);
+        }
+        if dir_outcome.skipped_lines > 0 {
+            log::warn!(
+                "[Search] folder name pass skipped {} line(s) outside the search root",
+                dir_outcome.skipped_lines
+            );
+        }
+
+        // Publish the authoritative final batch (pure assembly in
+        // `search_dirs`). For `include_ignored`, a single ranked batch
+        // (non-ignored first) so the picker never flickers between mid-stream
+        // order and the ranked order. For the default path, skip if the count
+        // matches the last mid-stream batch and there are no folder hits to
+        // append. Batches are cumulative snapshots: files first, then folders.
+        let batch = assemble_final_batch(walk, dir_outcome.hits, dir_outcome.truncated);
+        let truncated = batch.truncated;
+        if batch.emit {
+            let _ = app_handle.emit(
+                "search-file-names-batch",
+                SearchFileNamesBatchEvent {
+                    search_id: search_id.clone(),
+                    files: batch.files.clone(),
+                    truncated: Some(truncated),
+                },
+            );
+        }
+        let final_files = batch.files;
 
         // Reap the child and propagate a non-zero exit status (other than 1,
         // which rg uses for "no matches") as a surfaced error. The previous
@@ -1157,10 +1135,16 @@ pub async fn search_file_names_cancel(
     let mut guard = filename_search_processes()
         .lock()
         .map_err(|e| e.to_string())?;
-    if let Some(child_handle) = guard.remove(&request.search_id) {
-        if let Ok(mut child) = child_handle.lock() {
-            let _ = child.kill();
-            let _ = child.wait();
+    // Stop both the file pass and the folder-name pass for this search id.
+    for key in [
+        request.search_id.clone(),
+        dir_search_registry_key(&request.search_id),
+    ] {
+        if let Some(child_handle) = guard.remove(&key) {
+            if let Ok(mut child) = child_handle.lock() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
         }
     }
     Ok(IpcResult::success(()))

@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { useProjectStore } from '@/stores/project-store'
 
 const { toastError, toastWarning } = vi.hoisted(() => ({
   toastError: vi.fn(),
@@ -103,9 +104,12 @@ vi.mock('@/stores/workspace-store', () => {
   }
   return {
     getAllLeafPanes,
+    getAllTreeRoots: (state: { root: PaneNodeLike }) => [state.root],
     findPaneContainingTab,
     agentChatTabId: (sessionId: string) => `chat-${sessionId}`,
+    getAgentChatSessionIdsInAllTrees: () => new Set<string>(),
     useWorkspaceStore: {
+      subscribe: () => () => {},
       getState: () => ({
         addAgentChatTab: addAgentChatTabSpy,
         removeTab: workspaceStateRef.current.removeTab,
@@ -191,6 +195,12 @@ describe('acp-store', () => {
     _resetHistorySeqWatermarksForTesting()
     _resetLiveSwitchSourcesForTesting()
     useAcpStore.setState(FRESH)
+  })
+
+  afterEach(async () => {
+    await vi.waitFor(() => {
+      expect(Object.values(useAcpStore.getState().mcpProbing).some(Boolean)).toBe(false)
+    })
   })
 
   it('spawnAgent populates capabilities + authMethods synchronously from the response', async () => {
@@ -350,7 +360,8 @@ describe('acp-store', () => {
     expect(invoke).toHaveBeenCalledWith('acp_load_session', {
       agentId: 'spawned-1',
       sessionId: 's-spawn',
-      cwd: '/w'
+      cwd: '/w',
+      commandId: expect.any(String)
     })
     expect(useAcpStore.getState().sessions['s-spawn'].agentId).toBe('spawned-1')
     expect(useAcpStore.getState().sessions['s-spawn'].status).toBe('active')
@@ -1191,6 +1202,31 @@ describe('acp-store', () => {
     expect(useAcpStore.getState().sessionIndex).toHaveLength(0)
   })
 
+  it('deleteHistorySession clears the chat Done flag, leaving other chats flagged', async () => {
+    const { useAgentChatUnreadStore } = await import('@/stores/agent-chat-unread-store')
+    useAgentChatUnreadStore.setState({ unread: { 's-done': true, 's-other': true } })
+    useAcpStore.setState({
+      sessionIndex: [
+        {
+          id: 's-done',
+          agentId: 'a',
+          title: 'T',
+          cwd: '',
+          projectId: 'p1',
+          createdAt: 0,
+          lastActivityAt: 0,
+          messageCount: 0,
+          status: 'closed'
+        }
+      ]
+    })
+
+    await useAcpStore.getState().deleteHistorySession('s-done')
+
+    expect(useAgentChatUnreadStore.getState().unread).toEqual({ 's-other': true })
+    useAgentChatUnreadStore.setState({ unread: {} })
+  })
+
   it('preserves a concurrent index update while durable history deletion is pending', async () => {
     const deleteGate = deferred<void>()
     const { queueSessionPayloadDelete } = await import('@/lib/acp-history-persistence')
@@ -1485,7 +1521,8 @@ describe('acp-store', () => {
       expect.arrayContaining([
         expect.objectContaining({ id: 'm2' }),
         expect.objectContaining({ id: 'm3' })
-      ])
+      ]),
+      expect.any(String)
     )
   })
 
@@ -1499,14 +1536,89 @@ describe('acp-store', () => {
       ],
       mcpServersLoaded: true
     })
-    await useAcpStore.getState().syncMcpRegistryToProjectFile()
+    await useAcpStore.getState().syncMcpRegistryToProjectFile('proj-sync')
     expect(vi.mocked(persistence.syncMcpRegistryToProjectBestEffort)).toHaveBeenCalledTimes(1)
     expect(vi.mocked(persistence.syncMcpRegistryToProjectBestEffort)).toHaveBeenCalledWith(
+      'proj-sync',
       expect.arrayContaining([
         expect.objectContaining({ id: 'm1' }),
         expect.objectContaining({ id: 'm2' })
       ])
     )
+  })
+
+  it('syncMcpRegistryToProjectFile requested before the registry loaded mirrors once it loads', async () => {
+    const persistence = await import('@/lib/acp-mcp-persistence')
+    vi.mocked(persistence.syncMcpRegistryToProjectBestEffort).mockClear()
+    vi.mocked(persistence.loadMcpServers).mockResolvedValueOnce([
+      { id: 'm9', type: 'stdio', name: 'late', command: 'node', enabled: true }
+    ])
+    useAcpStore.setState({ mcpServers: [], mcpServersLoaded: false })
+
+    await useAcpStore.getState().syncMcpRegistryToProjectFile('proj-late')
+    // Not loaded yet: nothing is mirrored (an empty list would clobber the file).
+    expect(vi.mocked(persistence.syncMcpRegistryToProjectBestEffort)).not.toHaveBeenCalled()
+
+    await useAcpStore.getState().loadMcpServers()
+    expect(vi.mocked(persistence.syncMcpRegistryToProjectBestEffort)).toHaveBeenCalledTimes(1)
+    // The pending mirror keeps the project it named, not the active one.
+    expect(vi.mocked(persistence.syncMcpRegistryToProjectBestEffort)).toHaveBeenCalledWith(
+      'proj-late',
+      [expect.objectContaining({ id: 'm9' })]
+    )
+  })
+
+  it('registry load and save address the host file through the active project id', async () => {
+    const persistence = await import('@/lib/acp-mcp-persistence')
+    vi.mocked(persistence.loadMcpServers).mockClear()
+    vi.mocked(persistence.saveMcpServers).mockClear()
+    const previousProjectId = useProjectStore.getState().activeProjectId
+    useProjectStore.setState({ activeProjectId: 'proj-active' })
+    try {
+      await useAcpStore.getState().loadMcpServers()
+      expect(vi.mocked(persistence.loadMcpServers)).toHaveBeenCalledWith('proj-active')
+      await useAcpStore
+        .getState()
+        .saveMcpServer({ id: 'm1', type: 'stdio', name: 'fs', command: 'npx' })
+      expect(vi.mocked(persistence.saveMcpServers)).toHaveBeenCalledWith(
+        [expect.objectContaining({ id: 'm1' })],
+        'proj-active'
+      )
+    } finally {
+      useProjectStore.setState({ activeProjectId: previousProjectId })
+    }
+  })
+
+  it('OAuth connect/status/disconnect pass the named project and the server URL to the facade', async () => {
+    const { acpApi } = await import('@/lib/acp-api')
+    const startMcpOAuth = vi.spyOn(acpApi, 'startMcpOAuth').mockResolvedValue(undefined)
+    const hasMcpOAuthToken = vi.spyOn(acpApi, 'hasMcpOAuthToken').mockResolvedValue(true)
+    const disconnectMcpOAuth = vi.spyOn(acpApi, 'disconnectMcpOAuth').mockResolvedValue(undefined)
+    const probeMcpServer = vi.spyOn(acpApi, 'probeMcpServer').mockResolvedValue({
+      status: 'connected',
+      tools: []
+    } as never)
+    useAcpStore.setState({
+      mcpServers: [
+        { id: 'h1', type: 'http', name: 'api', url: 'https://x.test/mcp', enabled: true }
+      ]
+    })
+    try {
+      await useAcpStore.getState().checkMcpOAuthStatus('proj-oauth', 'h1')
+      expect(hasMcpOAuthToken).toHaveBeenCalledWith('proj-oauth', 'https://x.test/mcp')
+      expect(useAcpStore.getState().mcpOAuthConnected.h1).toBe(true)
+
+      await useAcpStore.getState().connectMcpOAuth('proj-oauth', 'h1')
+      expect(startMcpOAuth).toHaveBeenCalledWith('proj-oauth', 'https://x.test/mcp')
+
+      await useAcpStore.getState().disconnectMcpOAuth('proj-oauth', 'h1')
+      expect(disconnectMcpOAuth).toHaveBeenCalledWith('proj-oauth', 'https://x.test/mcp')
+      expect(useAcpStore.getState().mcpOAuthConnected.h1).toBe(false)
+    } finally {
+      for (const spy of [startMcpOAuth, hasMcpOAuthToken, disconnectMcpOAuth, probeMcpServer]) {
+        spy.mockRestore()
+      }
+    }
   })
 
   it('rolls back an import batch when registry persistence fails', async () => {
@@ -1594,7 +1706,8 @@ describe('acp-store', () => {
       agentId: 'agent-1',
       cwd: '/work',
       mcpServers: [{ type: 'stdio', name: 'Files', command: 'node', args: [], env: [] }],
-      projectId: 'p1'
+      projectId: 'p1',
+      commandId: expect.any(String)
     })
     expect(useAcpStore.getState().sessions.derived.mcpServerCount).toBe(1)
     expect(toastWarning).toHaveBeenCalledWith(
@@ -1615,7 +1728,8 @@ describe('acp-store', () => {
       agentId: 'agent-1',
       cwd: '/work',
       mcpServers: [],
-      projectId: 'p1'
+      projectId: 'p1',
+      commandId: expect.any(String)
     })
     expect(toastWarning).not.toHaveBeenCalled()
   })
@@ -1648,7 +1762,8 @@ describe('acp-store', () => {
       agentId: 'agent-9',
       cwd: '/work',
       mcpServers: servers,
-      projectId: 'p1'
+      projectId: 'p1',
+      commandId: expect.any(String)
     })
   })
 

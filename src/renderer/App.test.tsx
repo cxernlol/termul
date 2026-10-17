@@ -1,7 +1,7 @@
+import { PersistenceKeys } from '@shared/types/persistence.types'
 import { act, render, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useUpdaterStore } from '@/stores/updater-store'
-import { CONTEXT_BAR_SETTINGS_KEY } from '@/types/settings'
 import App from './App'
 
 const { mockContextBarSettingsRead } = vi.hoisted(() => ({
@@ -10,7 +10,7 @@ const { mockContextBarSettingsRead } = vi.hoisted(() => ({
 
 vi.mock('./hooks/use-context-bar-settings', () => ({
   useContextBarSettings: () => {
-    void mockContextBarSettingsRead(CONTEXT_BAR_SETTINGS_KEY)
+    void mockContextBarSettingsRead(PersistenceKeys.contextBarSettings)
   }
 }))
 
@@ -36,14 +36,18 @@ vi.mock('./hooks/use-visibility-state', () => ({
 
 // CAP-3: resilience hooks + ErrorBoundary/WhatsNewModal wiring assertions.
 const {
+  mockUseAcpUpdateChecks,
   mockUseCrashRecovery,
   mockUseTerminalExitNotification,
   mockUseTerminalIdleNotification,
   mockUseAgentChatNotification,
   mockUseRemoteProjects,
   mockUseWhatsNew,
+  mockUsePersistenceErrorToasts,
   mockInitNotificationPermissions
 } = vi.hoisted(() => ({
+  mockUseAcpUpdateChecks: vi.fn(() => undefined),
+  mockUsePersistenceErrorToasts: vi.fn(() => undefined),
   mockUseCrashRecovery: vi.fn(() => undefined),
   mockUseTerminalExitNotification: vi.fn(() => undefined),
   mockUseTerminalIdleNotification: vi.fn(() => undefined),
@@ -59,8 +63,16 @@ const {
   mockInitNotificationPermissions: vi.fn(() => Promise.resolve())
 }))
 
+vi.mock('./hooks/use-acp-update-checks', () => ({
+  useAcpUpdateChecks: mockUseAcpUpdateChecks
+}))
+
 vi.mock('./hooks/use-crash-recovery', () => ({
   useCrashRecovery: mockUseCrashRecovery
+}))
+
+vi.mock('./hooks/use-persistence-error-toasts', () => ({
+  usePersistenceErrorToasts: mockUsePersistenceErrorToasts
 }))
 
 vi.mock('./hooks/use-terminal-exit-notification', () => ({
@@ -220,7 +232,7 @@ describe('App Routes', () => {
     render(<App />)
 
     await waitFor(() => {
-      expect(mockContextBarSettingsRead).toHaveBeenCalledWith(CONTEXT_BAR_SETTINGS_KEY)
+      expect(mockContextBarSettingsRead).toHaveBeenCalledWith(PersistenceKeys.contextBarSettings)
     })
   })
 
@@ -320,10 +332,22 @@ describe('App CAP-3 resilience wiring (web entry)', () => {
     expect(mockUseWhatsNew).toHaveBeenCalledTimes(1)
   })
 
+  it('mounts useAcpUpdateChecks in AppEffects', () => {
+    render(<App />)
+
+    expect(mockUseAcpUpdateChecks).toHaveBeenCalledTimes(1)
+  })
+
   it('mounts useCrashRecovery in AppEffects', () => {
     render(<App />)
 
     expect(mockUseCrashRecovery).toHaveBeenCalledTimes(1)
+  })
+
+  it('mounts the store write error toasts in AppEffects (parity with TauriApp.tsx)', () => {
+    render(<App />)
+
+    expect(mockUsePersistenceErrorToasts).toHaveBeenCalledTimes(1)
   })
 
   it('mounts useTerminalExitNotification in AppEffects', () => {

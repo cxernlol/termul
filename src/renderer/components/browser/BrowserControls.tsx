@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { ArrowLeft, ArrowRight, Bug, Globe, PenTool, RotateCcw } from '@/components/icons'
+import { INNER_FIELD_FOCUS_CLASS } from '@/components/ui/panel-styles'
 import { Spinner } from '@/components/ui/spinner'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import {
@@ -95,7 +96,7 @@ export function BrowserControls({ browserTabId }: BrowserControlsProps): React.J
         >
           <RotateCcw size={14} />
         </button>
-        <div className="flex-1 flex items-center gap-2 min-w-0">
+        <div className="flex h-7 min-w-0 flex-1 items-center gap-2 rounded-md px-2 transition-shadow duration-150 ease-out focus-within:ring-1 focus-within:ring-ring">
           {tabLoading ? (
             <Spinner size={14} decorative className="text-primary" />
           ) : (
@@ -107,7 +108,7 @@ export function BrowserControls({ browserTabId }: BrowserControlsProps): React.J
             onChange={(e) => setInputUrl(e.target.value)}
             onKeyDown={handleKeyDown}
             onBlur={handleNavigate}
-            className="flex-1 bg-transparent text-sm text-foreground outline-none min-w-0"
+            className={`flex-1 bg-transparent text-sm text-foreground min-w-0 ${INNER_FIELD_FOCUS_CLASS}`}
             placeholder="Enter URL..."
           />
         </div>

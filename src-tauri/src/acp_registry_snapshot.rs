@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 const REGISTRY_URL: &str = "https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json";
 const FETCH_TIMEOUT_SECS: u64 = 15;
+const MAX_REGISTRY_BODY_BYTES: usize = 4 * 1024 * 1024;
 /// Snapshot cache TTL — 24h. Within the TTL the cache is served with zero
 /// network; past it the CDN is refetched and a failure falls back to the
 /// stale cache. Registry metadata only (npx pins), never binaries, so 24h of
@@ -50,7 +51,7 @@ pub enum SnapshotFetchOutcome {
 /// and whether on-disk cache persistence is confirmed. `persisted` is `true`
 /// for cache-served outcomes (the cache demonstrably exists — it was just
 /// read); for `NetworkFresh` it is the result of the cache write.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ResolvedSnapshot {
     pub snapshot: AcpRegistrySnapshot,
     pub outcome: SnapshotFetchOutcome,
@@ -109,9 +110,9 @@ pub fn sanitize_distribution(value: &serde_json::Value) -> Option<serde_json::Va
     value.as_object().cloned().map(serde_json::Value::Object)
 }
 
-fn parse_snapshot(body: &str) -> Result<Vec<AcpRegistrySnapshotAgent>, String> {
+fn parse_snapshot(body: &[u8]) -> Result<Vec<AcpRegistrySnapshotAgent>, String> {
     let raw: RawRegistry =
-        serde_json::from_str(body).map_err(|e| format!("Failed to parse ACP registry: {}", e))?;
+        serde_json::from_slice(body).map_err(|e| format!("Failed to parse ACP registry: {}", e))?;
 
     let mut agents = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -189,27 +190,52 @@ fn cache_is_fresh(fetched_at: &str, now: chrono::DateTime<chrono::Utc>) -> bool 
         && skewed <= chrono::Duration::from_std(MAX_CLOCK_SKEW).unwrap_or(chrono::Duration::MAX)
 }
 
-/// Network fetch of the live CDN registry (no cache interaction). The URL is
-/// a fixed https-only constant — no caller-supplied or persisted input.
-async fn fetch_registry_agents() -> Result<Vec<AcpRegistrySnapshotAgent>, String> {
+/// Fetches the registry document with the https-only redirect policy and the
+/// [`MAX_REGISTRY_BODY_BYTES`] cap. Shared by the snapshot fetch and the
+/// desktop identity fetch in `agent_registry`, so both refuse the same things.
+pub(crate) async fn fetch_capped_registry_body(url: &str) -> Result<Vec<u8>, String> {
+    use futures_util::StreamExt;
+
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(FETCH_TIMEOUT_SECS))
+        .redirect(crate::acp::https_only::redirect_policy())
         .build()
         .map_err(|e| format!("Failed to build HTTP client: {}", e))?;
 
-    let response = client
-        .get(REGISTRY_URL)
-        .send()
-        .await
-        .map_err(|e| format!("ACP registry request failed: {}", e))?;
+    let response =
+        client
+            .get(url)
+            .send()
+            .await
+            .map_err(|e| match std::error::Error::source(&e) {
+                Some(cause) if e.is_redirect() => {
+                    let message = format!("ACP registry redirect refused: {cause}");
+                    log::warn!("[acp-registry] {message}");
+                    message
+                }
+                _ => format!("ACP registry request failed: {}", e),
+            })?;
     if !response.status().is_success() {
         return Err(format!("ACP registry returned HTTP {}", response.status()));
     }
-    let body = response
-        .text()
-        .await
-        .map_err(|e| format!("Failed to read ACP registry body: {}", e))?;
-    parse_snapshot(&body)
+    let mut body = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| format!("Failed to read ACP registry body: {}", e))?;
+        if body.len() + chunk.len() > MAX_REGISTRY_BODY_BYTES {
+            let message = format!(
+                "ACP registry body exceeded the {MAX_REGISTRY_BODY_BYTES}-byte cap; refused"
+            );
+            log::warn!("[acp-registry] {message}");
+            return Err(message);
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
+async fn fetch_registry_agents(url: &str) -> Result<Vec<AcpRegistrySnapshotAgent>, String> {
+    parse_snapshot(&fetch_capped_registry_body(url).await?)
 }
 
 /// Cache-policy core, parameterized by the network fetch so the I/O matrix
@@ -305,7 +331,10 @@ pub async fn fetch_acp_registry_snapshot_with_cache_path(
     cache_path: &std::path::Path,
     force_refresh: bool,
 ) -> Result<ResolvedSnapshot, String> {
-    resolve_snapshot(cache_path, force_refresh, fetch_registry_agents).await
+    resolve_snapshot(cache_path, force_refresh, || {
+        fetch_registry_agents(REGISTRY_URL)
+    })
+    .await
 }
 
 /// Desktop "Check for updates" / "Apply remote registry" entry point. Uses
@@ -327,5 +356,7 @@ pub async fn acp_fetch_registry_snapshot(
         .await
 }
 
+#[cfg(test)]
+pub(crate) mod test_server;
 #[cfg(test)]
 mod tests;

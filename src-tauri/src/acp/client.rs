@@ -1,12 +1,12 @@
 //! ACP `Client`-role behavior: capability advertisement, inbound request
-//! handling (permission, filesystem), session-update fan-out, and terminal
-//! stubs.
+//! handling (permission, filesystem), and session-update fan-out. Terminal
+//! handlers are registered in `manager/driver.rs` and backed by `terminal.rs`.
 //!
-//! In `agent-client-protocol` 0.12 there is no `Client` *trait* to implement;
-//! instead the client role is expressed by registering handler closures on a
+//! `agent-client-protocol` has no `Client` *trait* to implement; instead the
+//! client role is expressed by registering handler closures on a
 //! `Client.builder()` and driving it via `connect_with`. The functions here are
 //! the reusable bodies those closures call, kept separate from the connection
-//! wiring in `manager.rs` so they can be unit-tested in isolation.
+//! wiring in `manager/` so they can be unit-tested in isolation.
 
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
@@ -367,36 +367,29 @@ pub fn emit_session_update(
             );
         }
         SessionUpdate::SessionInfoUpdate(update) => {
-            // `title` is `MaybeUndefined<String>`: Undefined = not sent (skip),
-            // Null = explicitly cleared (emit None), Value = set (emit Some).
-            match update.title.as_opt_ref() {
-                None => {} // Undefined — no title field sent, skip
-                Some(None) => {
-                    let event = SessionInfoUpdateEvent {
-                        agent_id: agent_id.clone(),
-                        session_id,
-                        title: None,
-                    };
-                    events::fan_out(
-                        sinks,
-                        Some(event.session_id.0.as_str()),
-                        events::EVENT_SESSION_INFO_UPDATE,
-                        &event,
-                    );
-                }
-                Some(Some(t)) => {
-                    let event = SessionInfoUpdateEvent {
-                        agent_id: agent_id.clone(),
-                        session_id,
-                        title: Some(t.clone()),
-                    };
-                    events::fan_out(
-                        sinks,
-                        Some(event.session_id.0.as_str()),
-                        events::EVENT_SESSION_INFO_UPDATE,
-                        &event,
-                    );
-                }
+            // `title` is `MaybeUndefined<String>`: Undefined = omit the field,
+            // Null = explicitly cleared, Value = set. OpenCode 2 compaction
+            // and retry markers arrive on `_meta` with no title.
+            let title = match update.title.as_opt_ref() {
+                None => None,
+                Some(None) => Some(None),
+                Some(Some(title)) => Some(Some(title.clone())),
+            };
+            let notices = events::opencode_notices(update.meta.as_ref());
+            if title.is_some() || notices.compaction.is_some() || notices.retry.is_some() {
+                let event = SessionInfoUpdateEvent {
+                    agent_id: agent_id.clone(),
+                    session_id,
+                    title,
+                    compaction: notices.compaction,
+                    retry: notices.retry,
+                };
+                events::fan_out(
+                    sinks,
+                    Some(event.session_id.0.as_str()),
+                    events::EVENT_SESSION_INFO_UPDATE,
+                    &event,
+                );
             }
         }
         SessionUpdate::UsageUpdate(update) => {
@@ -404,12 +397,15 @@ pub fn emit_session_update(
                 amount: c.amount,
                 currency: c.currency,
             });
+            let rate_limit =
+                crate::acp::claude_accounts::usage::claude_rate_limit(update.meta.as_ref());
             let event = UsageUpdateEvent {
                 agent_id: agent_id.clone(),
                 session_id,
                 used: update.used,
                 size: update.size,
                 cost,
+                rate_limit,
             };
             events::fan_out(
                 sinks,

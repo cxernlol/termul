@@ -7,6 +7,7 @@ import { Camera, Clock, Cpu, Edit2, Grid3X3, Pencil, RotateCcw, Trash2 } from '@
 import { NewProjectModal } from '@/components/NewProjectModal'
 import { RestoreSnapshotModal } from '@/components/RestoreSnapshotModal'
 import { Button } from '@/components/ui/button'
+import { FIELD_FOCUS_CLASS } from '@/components/ui/panel-styles'
 import { useMobileWebShell } from '@/hooks/use-mobile-web-shell'
 import {
   useCreateSnapshot,
@@ -506,7 +507,7 @@ function MobileSnapshotCard({
                   if (e.key === 'Escape') onCancelRename()
                 }}
                 aria-label="Rename snapshot"
-                className="h-11 min-w-0 flex-1 rounded border border-border bg-background px-2 text-sm"
+                className={`h-11 min-w-0 flex-1 rounded border border-border bg-background px-2 text-sm pointer-coarse:text-base ${FIELD_FOCUS_CLASS}`}
                 autoFocus
               />
             ) : (

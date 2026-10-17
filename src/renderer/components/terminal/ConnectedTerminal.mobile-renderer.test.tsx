@@ -8,9 +8,9 @@
  * | Mobile + explicit webgl   | WebGL attempted (explicit intent honored)           |
  * | Desktop default (auto)    | WebGL loads exactly as before (no behavior change)  |
  * | Canvas migration          | persisted 'canvas' → 'dom' (existing behavior)      |
- * | Font default              | JetBrains Mono Variable stack (bundled, CAP-9)      |
+ * | Font default              | Paper Mono stack (bundled)                          |
  * | Mobile padding            | px-1.5 (not px-4) on the mobile web shell          |
- * | Existing stored font      | untouched (custom fontFamily passed through)       |
+ * | Existing stored font      | ignored; terminal always uses Paper Mono           |
  *
  * Renderer plumbing notes:
  * - DEFAULT terminalRenderer is now 'auto' (settings.ts). The mobile web
@@ -21,13 +21,15 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { MONO_STACK } from '@/lib/font-stacks'
 
 // Hoisted mutable refs — read by module mocks, set per test.
-const { mobileRef, rendererRef, tauriRef, fontRef } = vi.hoisted(() => ({
+const { mobileRef, rendererRef, tauriRef, fontRef, screenReaderRef } = vi.hoisted(() => ({
   mobileRef: { current: false as boolean },
   rendererRef: { current: 'auto' as 'auto' | 'webgl' | 'dom' | 'canvas' },
   tauriRef: { current: false as boolean },
-  fontRef: { current: 'monospace' as string }
+  fontRef: { current: 'monospace' as string },
+  screenReaderRef: { current: false as boolean }
 }))
 
 vi.mock('@/hooks/use-mobile-web-shell', () => ({
@@ -40,7 +42,8 @@ vi.mock('@/stores/app-settings-store', () => ({
   useTerminalFontFamily: () => fontRef.current,
   useTerminalFontSize: () => 14,
   useTerminalBufferSize: () => 10000,
-  useTerminalRenderer: () => rendererRef.current
+  useTerminalRenderer: () => rendererRef.current,
+  useTerminalScreenReaderMode: () => screenReaderRef.current
 }))
 
 // --- xterm + addon mocks (construction counters drive assertions) ---
@@ -158,14 +161,6 @@ vi.mock('@/lib/tauri-runtime', async () => {
   return { ...actual, isTauriContext: () => tauriRef.current }
 })
 
-vi.mock('@/lib/tauri-terminal-api', async () => {
-  const { vi: v } = await import('vitest')
-  return {
-    addRendererRef: v.fn().mockResolvedValue({ success: true }),
-    removeRendererRef: v.fn().mockResolvedValue({ success: true })
-  }
-})
-
 vi.mock('@/lib/terminal-continuity-instrumentation', async () => {
   const { vi: v } = await import('vitest')
   return {
@@ -226,7 +221,14 @@ vi.mock('@/stores/terminal-store', async () => {
   ;(storeHook as unknown as { getState: () => typeof state }).getState = () => state
   return { useTerminalStore: storeHook }
 })
-vi.mock('@/stores/project-store', () => ({ useActiveProject: () => ({ path: '/project' }) }))
+vi.mock('@/stores/project-store', () => ({
+  useProjectStore: (
+    selector: (state: {
+      projects: Array<{ id: string; path: string }>
+      activeProjectId: string
+    }) => unknown
+  ) => selector({ projects: [{ id: 'project-a', path: '/project' }], activeProjectId: 'project-a' })
+}))
 vi.mock('@/stores/keyboard-shortcuts-store', async () => {
   const { vi: v } = await import('vitest')
   return {
@@ -248,20 +250,7 @@ vi.mock('@/lib/web-terminal-api', () => ({
   setWebTerminalConnectionStateListener: vi.fn(),
   onWebTerminalSessionLost: vi.fn(() => () => {})
 }))
-vi.mock('@/components/ui/context-menu', async () => {
-  const React = await import('react')
-  const wrap = (props: { children?: React.ReactNode }) =>
-    React.createElement('div', null, props.children)
-  return {
-    ContextMenu: wrap,
-    ContextMenuTrigger: wrap,
-    ContextMenuContent: wrap,
-    ContextMenuItem: wrap,
-    ContextMenuSeparator: () => null,
-    ContextMenuShortcut: (props: { children?: React.ReactNode }) =>
-      React.createElement('span', null, props.children)
-  }
-})
+vi.mock('@/components/ui/context-menu', () => import('@/lib/test-utils/context-menu'))
 
 vi.mock('../../utils/terminal-registry', () => ({
   buildRehydrateSequences: vi.fn(() => ''),
@@ -300,6 +289,7 @@ beforeEach(() => {
   rendererRef.current = 'auto'
   tauriRef.current = false
   fontRef.current = 'monospace'
+  screenReaderRef.current = false
 })
 
 afterEach(() => {
@@ -451,16 +441,15 @@ describe('ConnectedTerminal container padding (story 2)', () => {
 })
 
 // ---------------------------------------------------------------------------
-// Matrix row 5: font default = bundled JetBrains Mono Variable stack
-// Matrix row 7: existing stored font preserved
+// Matrix row 5: font default = bundled Paper Mono stack
+// Matrix row 7: a stored family is ignored
 // ---------------------------------------------------------------------------
 
 describe('terminal font defaults (story 2 typography)', () => {
-  it('DEFAULT_APP_SETTINGS.terminalFontFamily is the bundled JetBrains Mono stack', () => {
+  it('DEFAULT_APP_SETTINGS.terminalFontFamily is the bundled Paper Mono stack', () => {
     // The settings default must match the canonical stack in
-    // terminal-config.ts (terminal-config.ts:17-18), so a fresh profile
-    // resolves to the bundled webfont that exists on mobile (CAP-9).
-    expect(DEFAULT_APP_SETTINGS.terminalFontFamily).toContain('JetBrains Mono Variable')
+    // terminal-config.ts, so a fresh profile stores the bundled webfont.
+    expect(DEFAULT_APP_SETTINGS.terminalFontFamily).toBe(MONO_STACK)
     expect(DEFAULT_APP_SETTINGS.terminalFontFamily).toBe(DEFAULT_TERMINAL_OPTIONS.fontFamily)
   })
 
@@ -476,14 +465,13 @@ describe('terminal font defaults (story 2 typography)', () => {
     )
   })
 
-  it('existing stored font preference is passed through to the Terminal options', () => {
+  it('a stored font preference does not reach the Terminal options', () => {
     fontRef.current = 'Fira Code, monospace'
 
     render(React.createElement(ConnectedTerminal))
 
-    // The user's persisted font reaches the xterm constructor verbatim.
     expect(terminalConstructorOptions).toMatchObject({
-      fontFamily: 'Fira Code, monospace'
+      fontFamily: MONO_STACK
     })
   })
 
@@ -514,5 +502,38 @@ describe('canvas renderer migration contract (row 4, unchanged)', () => {
     await vi.waitFor(() => {
       expect(webglAddonCreateCount).toBe(0)
     })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// L-28: screen reader mode reaches the xterm constructor on every surface
+// ---------------------------------------------------------------------------
+
+describe('terminal screen reader mode (L-28, no surface gating)', () => {
+  it.each([
+    ['mobile web shell', true, false],
+    ['desktop browser', false, false],
+    ['Tauri desktop', false, true]
+  ])('setting on: xterm is constructed with screenReaderMode true on the %s', (_surface, isMobile, isTauri) => {
+    mobileRef.current = isMobile
+    tauriRef.current = isTauri
+    screenReaderRef.current = true
+
+    render(React.createElement(ConnectedTerminal))
+
+    expect(terminalConstructorOptions).toMatchObject({ screenReaderMode: true })
+  })
+
+  it.each([
+    ['mobile web shell', true, false],
+    ['Tauri desktop', false, true]
+  ])('setting off: xterm is constructed with screenReaderMode false on the %s', (_surface, isMobile, isTauri) => {
+    mobileRef.current = isMobile
+    tauriRef.current = isTauri
+    screenReaderRef.current = false
+
+    render(React.createElement(ConnectedTerminal))
+
+    expect(terminalConstructorOptions).toMatchObject({ screenReaderMode: false })
   })
 })

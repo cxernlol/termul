@@ -31,7 +31,7 @@ test('launcher shows the worktree isolation picker for a git-repo project (web p
 }) => {
   await selectProject(page, 'proj-w')
 
-  await page.locator('[aria-label="New agent chat"]').first().click()
+  await page.getByRole('button', { name: 'New chat', exact: true }).first().click()
   const composer = page.locator('[data-composer-editor="true"][aria-label="Agent prompt"]').first()
   await composer.waitFor({ state: 'visible', timeout: 10_000 })
   // The context strip mounts once `canUseWorktree` flips true — the git-branch
@@ -41,23 +41,24 @@ test('launcher shows the worktree isolation picker for a git-repo project (web p
     .first()
     .waitFor({ state: 'visible', timeout: 10_000 })
 
-  await expect(page.locator('[aria-label="Isolation mode"]')).toBeVisible()
+  await expect(page.getByRole('combobox', { name: 'Workspace' })).toBeVisible()
   // Radix Select renders options only while open — assert via the trigger's
-  // selected value instead (defaults to Local).
-  await expect(page.locator('[aria-label="Isolation mode"]')).toContainText('Local')
+  // selected value instead (defaults to Current checkout).
+  await expect(page.getByRole('combobox', { name: 'Workspace' })).toContainText('Current checkout')
 })
 
-test('launcher hides the isolation picker for a non-git project', async ({ page }) => {
+test('launcher shows only the read-only strip for a non-git project', async ({ page }) => {
   await selectProject(page, 'proj-b')
 
-  await page.locator('[aria-label="New agent chat"]').first().click()
+  await page.getByRole('button', { name: 'New chat', exact: true }).first().click()
   const composer = page.locator('[data-composer-editor="true"][aria-label="Agent prompt"]').first()
   await composer.waitFor({ state: 'visible', timeout: 10_000 })
   // Give the (absent) git probe a beat to settle before asserting absence.
   await page.waitForTimeout(1_500)
 
-  await expect(page.locator('[aria-label="Isolation mode"]')).toHaveCount(0)
-  await expect(page.locator('[data-agent-launcher-context-strip="true"]')).toHaveCount(0)
+  // A non-git project gets the read-only strip: plain "Local" text, no picker.
+  await expect(page.getByRole('combobox', { name: 'Workspace' })).toHaveCount(0)
+  await expect(page.locator('[data-agent-launcher-context-strip="true"]')).toContainText('Local')
 })
 
 test('launching a chat in New worktree mode creates the worktree and opens the chat in it', async ({
@@ -65,7 +66,7 @@ test('launching a chat in New worktree mode creates the worktree and opens the c
 }) => {
   await selectProject(page, 'proj-w')
 
-  await page.locator('[aria-label="New agent chat"]').first().click()
+  await page.getByRole('button', { name: 'New chat', exact: true }).first().click()
   const composer = page.locator('[data-composer-editor="true"][aria-label="Agent prompt"]').first()
   await composer.waitFor({ state: 'visible', timeout: 10_000 })
   await page
@@ -77,7 +78,7 @@ test('launching a chat in New worktree mode creates the worktree and opens the c
   // the "New worktree" option, then dismiss the dropdown (focus lands back
   // on the trigger; a left-open dropdown would swallow the Enter below as
   // an option pick).
-  await page.locator('[aria-label="Isolation mode"]').first().click()
+  await page.getByRole('combobox', { name: 'Workspace' }).click()
   await page.getByRole('option', { name: 'New worktree' }).click()
   await page.keyboard.press('Escape')
   await page.waitForTimeout(300)

@@ -12,10 +12,16 @@ vi.mock('@tauri-apps/api/event', () => ({
   listen: vi.fn().mockResolvedValue(() => {})
 }))
 
-// Desktop test: pin isTauriContext() to true so worktreeInvoke reaches invoke.
-vi.mock('./tauri-runtime', () => ({
-  isTauriContext: () => true
+// Desktop by default: pin isTauriContext() to true so worktreeInvoke reaches
+// invoke. The web pair below flips it to false and stubs `fetch`.
+const { mockIsTauriContext, mockFetch } = vi.hoisted(() => ({
+  mockIsTauriContext: vi.fn(() => true),
+  mockFetch: vi.fn()
 }))
+vi.mock('./tauri-runtime', () => ({
+  isTauriContext: mockIsTauriContext
+}))
+vi.stubGlobal('fetch', mockFetch)
 
 // Import after mocking
 import { worktreeApi } from './worktree-api'
@@ -23,6 +29,7 @@ import { worktreeApi } from './worktree-api'
 describe('worktreeApi', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mockIsTauriContext.mockReturnValue(true)
   })
 
   describe('list', () => {
@@ -89,7 +96,8 @@ describe('worktreeApi', () => {
         name: 'feat-1',
         branch: 'feat-1',
         isNewBranch: true,
-        startRef: 'main'
+        startRef: 'main',
+        commandId: expect.stringMatching(/^[A-Za-z0-9_-]{1,128}$/)
       })
       expect(result.success).toBe(true)
       expect(result.success === true && result.data?.name).toBe('feat-1')
@@ -212,6 +220,87 @@ describe('worktreeApi', () => {
         expect(result.data).toHaveLength(1)
         expect(result.data[0].success).toBe(true)
       }
+    })
+  })
+
+  describe('renameBranch (shell revamp story 16)', () => {
+    it('desktop: invokes worktree_rename_branch with the three args', async () => {
+      mockInvoke.mockResolvedValue({ success: true, data: null })
+
+      const result = await worktreeApi.renameBranch(
+        '/project/.termul/worktrees/ab12cd34',
+        'chat/ab12cd34',
+        'chat/fix-login'
+      )
+
+      expect(mockInvoke).toHaveBeenCalledWith('worktree_rename_branch', {
+        worktreePath: '/project/.termul/worktrees/ab12cd34',
+        oldBranch: 'chat/ab12cd34',
+        newBranch: 'chat/fix-login',
+        commandId: expect.stringMatching(/^[A-Za-z0-9_-]{1,128}$/)
+      })
+      expect(mockFetch).not.toHaveBeenCalled()
+      expect(result.success).toBe(true)
+    })
+
+    it('desktop: passes host error codes through', async () => {
+      const mockError = {
+        success: false,
+        error: 'A branch with that name already exists.',
+        code: 'BRANCH_EXISTS'
+      }
+      mockInvoke.mockResolvedValue(mockError)
+
+      const result = await worktreeApi.renameBranch('/wt', 'chat/a', 'chat/b')
+
+      expect(result).toEqual(mockError)
+    })
+
+    it('web: POSTs /worktree/rename-branch (not invoke) and returns the IpcBody', async () => {
+      mockIsTauriContext.mockReturnValue(false)
+      mockFetch.mockResolvedValue({
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'content-type': 'application/json' }),
+        json: async () => ({ success: true, data: null })
+      } as Response)
+
+      const result = await worktreeApi.renameBranch(
+        '/project/.termul/worktrees/ab12cd34',
+        'chat/ab12cd34',
+        'chat/fix-login'
+      )
+
+      expect(mockInvoke).not.toHaveBeenCalled()
+      expect(mockFetch).toHaveBeenCalledTimes(1)
+      const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit]
+      expect(url).toMatch(/\/worktree\/rename-branch$/)
+      expect(init.method).toBe('POST')
+      expect(JSON.parse(String(init.body))).toEqual({
+        worktreePath: '/project/.termul/worktrees/ab12cd34',
+        oldBranch: 'chat/ab12cd34',
+        newBranch: 'chat/fix-login'
+      })
+      expect(result.success).toBe(true)
+    })
+
+    it('web: surfaces FORBIDDEN from a read-only server', async () => {
+      mockIsTauriContext.mockReturnValue(false)
+      mockFetch.mockResolvedValue({
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'content-type': 'application/json' }),
+        json: async () => ({
+          success: false,
+          error: 'This server is read-only for remote clients.',
+          code: 'FORBIDDEN'
+        })
+      } as Response)
+
+      const result = await worktreeApi.renameBranch('/wt', 'chat/a', 'chat/b')
+
+      expect(result.success).toBe(false)
+      if (!result.success) expect(result.code).toBe('FORBIDDEN')
     })
   })
 })

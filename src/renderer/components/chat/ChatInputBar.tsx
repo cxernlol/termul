@@ -1,15 +1,15 @@
 import type { Editor } from '@tiptap/core'
-import { BorderBeam } from 'border-beam'
-import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useReducedMotion } from 'framer-motion'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { ArrowUp, Folder, FolderGit2, GitBranch, Paperclip, Square } from '@/components/icons'
-import { buttonVariants } from '@/components/ui/button'
+import { ClaudeAccountChip } from '@/components/chat/claude-account/ClaudeAccountChip'
+import { Paperclip } from '@/components/icons'
 import { useAgentSkills } from '@/hooks/use-agent-skills'
 import { useAttachmentDropZone } from '@/hooks/use-attachment-drop-zone'
 import { useMentionRecents } from '@/hooks/use-mention-recents'
 import { useMobileWebShell } from '@/hooks/use-mobile-web-shell'
 import { useOskViewport } from '@/hooks/use-osk-viewport'
+import { useReloadChat } from '@/hooks/use-reload-chat'
 import { useVisibleSnapshot } from '@/hooks/use-visible-snapshot'
 import type {
   AvailableCommand,
@@ -17,7 +17,6 @@ import type {
   SessionConfigOption,
   SessionModeState
 } from '@/lib/acp-api'
-import { persistenceApi } from '@/lib/api'
 import { registerSessionTempFiles } from '@/lib/attachment-temp-cleanup'
 import { cn } from '@/lib/utils'
 import type { AcpSession, PendingPermission, QueuedPrompt } from '@/stores/acp-store'
@@ -28,12 +27,13 @@ import {
   useAgentTemplateId,
   useSessionUsage
 } from '@/stores/acp-store'
-import { useProjectStore } from '@/stores/project-store'
 import { ModeChip } from './AgentHeader'
 import { AttachFilesButton } from './AttachFilesButton'
 import { AttachmentPreviewGroup } from './AttachmentPreviewGroup'
 import { AgentModelSelector } from './agent-model-selector/AgentModelSelector'
 import { useCurrentAgentConfigId } from './agent-model-selector/use-agent-switch'
+import { ChatContextStrip } from './ChatContextStrip'
+import { ComposerBeamShell } from './ComposerBeamShell'
 import { ContextUsageIndicator } from './ContextUsageIndicator'
 import { attachmentToBlock, dedupeAttachmentBlocks } from './chat-attachments'
 import {
@@ -42,10 +42,12 @@ import {
   partitionConfigOptions,
   resolveModelOption
 } from './chat-input-bar-config'
-import { CHAT_GUTTER_X, useComposerToolbarMode } from './chat-layout'
-import { iconPop } from './chat-motion'
+import { CHAT_COMPACT_LABEL, CHAT_GUTTER_X, useComposerToolbarMode } from './chat-layout'
 import { ChatComposerEditor } from './composer/ChatComposerEditor'
-import { FileMentionMenu } from './FileMentionMenu'
+import { ComposerAddSheet } from './composer/ComposerAddSheet'
+import { ComposerSendButton } from './composer/ComposerSendButton'
+import { blurComposerEditor, insertComposerTrigger } from './composer/insert-composer-trigger'
+import { FileMentionMenu, MENTION_EMPTY_LABEL, MENTION_SEARCHING_LABEL } from './FileMentionMenu'
 import { McpBadge } from './McpBadge'
 import { PermissionPrompt } from './PermissionPrompt'
 import { PromptQueuePanel } from './PromptQueuePanel'
@@ -53,6 +55,8 @@ import { SlashCommandMenu, type SlashMenuHandle } from './SlashCommandMenu'
 import { useChatComposer } from './use-chat-composer'
 import { useComposerAttachments } from './use-composer-attachments'
 import { useComposerCaretRestore, useComposerMentionSelect } from './use-composer-caret-restore'
+import { useComposerDraft } from './use-composer-draft'
+import { useComposerDraftStart } from './use-composer-draft-start'
 import { useComposerMentions } from './use-composer-mentions'
 
 interface ChatInputBarProps {
@@ -64,6 +68,13 @@ interface ChatInputBarProps {
   busy: boolean
   /** Whether the session is closed/disconnected (fully disables input). */
   disabled: boolean
+  /**
+   * Whether the agent-backed controls (model / mode / config pickers, agent
+   * switch, slash-menu config and mode rows) are disabled. Defaults to
+   * `disabled`. A stopped chat that resumes on input keeps the editor enabled
+   * but these controls off: they would hit the stopped agent.
+   */
+  controlsDisabled?: boolean
   /** Whether the agent accepts inline image content blocks (drag/paste images). */
   imageCapable?: boolean
   /** Whether the agent accepts embedded `resource` blocks (drag/paste text files). */
@@ -109,13 +120,22 @@ interface ChatInputBarProps {
    * work. Defaults to true (visible) for other hosts.
    */
   isVisible?: boolean
+  /**
+   * Fired when the user starts a draft: the first edit or paste into an empty
+   * composer (no text, no attachments). A restored draft or a seed never
+   * fires it. The chat panel uses it to resume a stopped chat early.
+   */
+  onDraftStart?: () => void
 }
+
+const NO_CONFIG_OPTIONS: SessionConfigOption[] = []
 
 export function ChatInputBar({
   session,
   projectRoot,
   busy,
   disabled,
+  controlsDisabled = disabled,
   imageCapable = false,
   embedCapable = false,
   onSend,
@@ -134,28 +154,12 @@ export function ChatInputBar({
   onRemoveQueued,
   onSendQueuedNow,
   compactTop = false,
-  isVisible = true
+  isVisible = true,
+  onDraftStart
 }: ChatInputBarProps): React.JSX.Element {
   const usableConfigOptions = configOptions.filter(
     (option) => option.type === 'boolean' || (option.options?.length ?? 0) > 0
   )
-  // CAP-6: worktree/branch indicator. Worktree chats show their `chat/*`
-  // branch (the long worktree path stays on the mode tooltip). Local chats fall
-  // back to the project's reactive `gitBranch`. Switching chats re-renders via
-  // `session`.
-  const projectGitBranch = useProjectStore(
-    (s) => s.projects.find((p) => p.id === session.projectId)?.gitBranch ?? null
-  )
-  const projectIsGitRepo = useProjectStore(
-    (s) => s.projects.find((p) => p.id === session.projectId)?.isGitRepo ?? false
-  )
-  const isWorktree = Boolean(session.worktreePath)
-  const isolationModeLabel = isWorktree ? 'Worktree' : 'Local'
-  const isolationModeTitle = isWorktree
-    ? `Agent works in a separate git worktree: ${session.worktreePath}`
-    : 'Agent edits files in your project folder directly'
-  const isolationBranch = session.worktreeBranch ?? projectGitBranch
-  const isDetachedHead = !isolationBranch && !isWorktree && projectIsGitRepo
   const {
     model,
     thoughtLevel,
@@ -196,90 +200,18 @@ export function ChatInputBar({
   // list). The badge degrades to the read-only count pill when the registry is
   // empty. Reuses `setMcpServerEnabled` (optimistic + rollback) — no new
   // persistence path. The probe reflects Termul's own client connection.
+  const chatReload = useReloadChat(session.id)
   const mcpServers = useAcpStore((s) => s.mcpServers)
   const setMcpServerEnabled = useAcpStore((s) => s.setMcpServerEnabled)
   const mcpProbeStatus = useAcpStore((s) => s.mcpProbeStatus)
   const mcpProbeError = useAcpStore((s) => s.mcpProbeError)
   const mcpTools = useAcpStore((s) => s.mcpTools)
   const loadMcpTools = useAcpStore((s) => s.loadMcpTools)
-  const [value, setValue] = useState('')
-  // Persist the in-progress composer draft per session (project + session id)
-  // so an unsent message survives a web reload. useState stays the source of
-  // truth; the persisted copy is a recovery fallback only — hydrate on mount,
-  // debounce writes on change, and clear (delete) when the composer empties
-  // (covers both manual clear and clear-on-send). External seeding (editing a
-  // message) takes precedence over a stale draft.
-  const draftKey = `chat-draft/${session.projectId}/${session.id}`
-  // Guard against undefined/null ids collapsing the key to
-  // `chat-draft/undefined/undefined` and cross-session drafts colliding.
-  const canPersistDraft = session.projectId != null && session.id != null
-  const hydratedRef = useRef(false)
-  useEffect(() => {
-    if (seedNonce !== undefined) {
-      // Editing/seeding a message — don't restore a stale draft over the seed.
-      hydratedRef.current = true
-      return
-    }
-    if (!canPersistDraft) {
-      // projectId/sessionId missing — can't key a draft; treat as hydrated so
-      // the write effect's hydration gate doesn't block (it also guards).
-      hydratedRef.current = true
-      return
-    }
-    let cancelled = false
-    hydratedRef.current = false
-    void persistenceApi
-      .read<string>(draftKey)
-      .then((result) => {
-        if (cancelled) return
-        if (result.success && typeof result.data === 'string' && result.data) {
-          setValue(result.data)
-        }
-      })
-      .catch(() => {
-        // Storage unavailable/corrupt — degrade to empty (no UI crash).
-      })
-      .finally(() => {
-        if (!cancelled) hydratedRef.current = true
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [draftKey, seedNonce, canPersistDraft])
-
-  // Debounced draft write on change — only after hydration so the just-loaded
-  // draft isn't clobbered with '' before the read resolves. Empty value
-  // clears the persisted draft so a reload after send/empty stays clean.
-  // While editing/seeding a message (seedNonce set), skip persistence so the
-  // seeded text isn't leaked back as the session's draft (reload would restore
-  // the edited message into the composer).
-  useEffect(() => {
-    if (seedNonce !== undefined) return
-    if (!canPersistDraft) return
-    if (!hydratedRef.current) return
-    if (!value) {
-      void persistenceApi.delete(draftKey).catch(() => {})
-      return
-    }
-    const handle = setTimeout(() => {
-      void persistenceApi.writeDebounced(draftKey, value).catch(() => {})
-    }, 400)
-    return () => clearTimeout(handle)
-  }, [value, draftKey, seedNonce, canPersistDraft])
-
-  // Flush the latest draft on unmount only (AskUserQuestion replaces the
-  // composer). Keep a ref so we do not defeat the debounce on every keystroke.
-  const draftValueRef = useRef(value)
-  draftValueRef.current = value
-  useEffect(() => {
-    return () => {
-      if (seedNonce !== undefined) return
-      if (!canPersistDraft) return
-      const latest = draftValueRef.current
-      if (!latest) return
-      void persistenceApi.write(draftKey, latest).catch(() => {})
-    }
-  }, [draftKey, seedNonce, canPersistDraft])
+  const [value, setValue] = useComposerDraft({
+    projectId: session.projectId,
+    sessionId: session.id,
+    seedNonce
+  })
   const [sending, setSending] = useState(false)
   const reduced = useReducedMotion() ?? false
   // Story 5.3: OSK awareness on mobile web. On Tauri desktop, the hook returns
@@ -340,7 +272,7 @@ export function ChatInputBar({
   }, [])
   const mentionSections = mentions.sections
   const mentionMenuRef = mentions.menuRef
-  const emptyLabel = mentions.loading ? 'Searching files…' : 'No files match. Try another name.'
+  const emptyLabel = mentions.loading ? MENTION_SEARCHING_LABEL : MENTION_EMPTY_LABEL
   const resetMentions = mentions.reset
   const onMentionSelect = useComposerMentionSelect({
     value,
@@ -364,8 +296,10 @@ export function ChatInputBar({
     editorRef,
     slashMenuRef,
     commands,
-    configOptions,
-    modes,
+    // Slash-menu config / mode rows set options on the live agent — hidden
+    // while the agent-backed controls are off.
+    configOptions: controlsDisabled ? NO_CONFIG_OPTIONS : configOptions,
+    modes: controlsDisabled ? null : modes,
     skills: availableSkills,
     disabled,
     onSetConfig,
@@ -377,9 +311,15 @@ export function ChatInputBar({
   const slashOpen = composerSlashOpen
   const mentionMenuOpen = mentions.menuOpen && !disabled && !slashOpen
 
+  const { handleValueChange, handleComposerPaste } = useComposerDraftStart({
+    draftEmpty: value.length === 0 && attachments.length === 0,
+    onDraftStart,
+    setValue,
+    handlePaste
+  })
+
   const canSend = !disabled && !sending && (value.trim().length > 0 || attachments.length > 0)
   const showStop = busy && !canSend
-  const iconMotion = iconPop(reduced)
 
   const submit = useCallback(async () => {
     const hasAttachments = attachments.length > 0
@@ -453,9 +393,8 @@ export function ChatInputBar({
         )
       } else if (hasCommand) {
         // Command pill present (no skills, files, or attachments): the wire
-        // carries the `/<name> ` prefix; the display keeps the raw token text
-        // so the timeline renders the command chip. Wire stays byte-identical
-        // to the pre-token plain-text path (`wireTrimmed`).
+        // keeps `/<name>` where the user typed it. The display keeps the raw
+        // token in that same place so the timeline renders the command chip.
         onSendBlocks(
           wireTrimmed ? [{ type: 'text', text: wireTrimmed }] : [],
           displayTrimmed ? [{ type: 'text', text: displayTrimmed }] : []
@@ -491,7 +430,8 @@ export function ChatInputBar({
     resetMentions,
     session.id,
     buildPromptParts,
-    skillPathsRef
+    skillPathsRef,
+    setValue
   ])
 
   const handleKeyDown = useCallback(
@@ -587,7 +527,7 @@ export function ChatInputBar({
     <AgentModelSelector
       sessionId={session.id}
       busy={busy}
-      disabled={disabled}
+      disabled={controlsDisabled}
       modelOption={modelOption}
       modelSource={modelSource}
       thoughtLevel={thoughtLevel}
@@ -602,30 +542,56 @@ export function ChatInputBar({
     />
   ) : null
 
+  // Mobile one-row toolbar: the mode label goes icon-only on a narrow pane.
   const agentModeChip = (
     <ModeChip
       session={session}
-      disabled={disabled}
+      disabled={controlsDisabled}
       onSelect={onSetMode}
       label="Agent"
       agentName={modeAgentName}
+      className={isMobileShell ? 'shrink-0' : undefined}
+      labelClassName={isMobileShell ? CHAT_COMPACT_LABEL : undefined}
     />
   )
-  const mcpBadge = (
-    <McpBadge
-      count={mcpCount}
-      servers={mcpServers}
-      onToggle={(id, enabled) => {
-        void setMcpServerEnabled(id, enabled).catch(() => {
-          toast.error('Could not update the MCP server. Your previous setting was restored.')
-        })
-      }}
-      probeStatus={mcpProbeStatus}
-      probeError={mcpProbeError}
-      tools={mcpTools}
-      onLoadTools={(id) => {
-        void loadMcpTools(id)
-      }}
+  // One set of MCP props for the desktop badge popover and the mobile + sheet.
+  const mcpListProps = {
+    count: mcpCount,
+    servers: mcpServers,
+    onToggle: (id: string, enabled: boolean) => {
+      void setMcpServerEnabled(id, enabled).catch(() => {
+        toast.error('Could not update the MCP server. Your previous setting was restored.')
+      })
+    },
+    probeStatus: mcpProbeStatus,
+    probeError: mcpProbeError,
+    tools: mcpTools,
+    onLoadTools: (id: string) => {
+      void loadMcpTools(id)
+    },
+    onReloadChat: chatReload.reload,
+    reloadDisabled: chatReload.disabled,
+    reloadDisabledReason: chatReload.reason,
+    reloading: chatReload.reloading
+  }
+  const mcpBadge = <McpBadge {...mcpListProps} />
+  const composerAddHandle = useMemo(
+    () => ({
+      canPick,
+      pickFiles,
+      insertTrigger: (trigger: '@' | '/') => insertComposerTrigger(editorRef.current, trigger),
+      blurEditor: () => blurComposerEditor(editorRef.current)
+    }),
+    [canPick, pickFiles]
+  )
+  const sendButton = (
+    <ComposerSendButton
+      showStop={showStop}
+      canSend={canSend}
+      busy={busy}
+      reduced={reduced}
+      onCancel={onCancel}
+      onSubmit={submit}
     />
   )
   return (
@@ -649,7 +615,12 @@ export function ChatInputBar({
           </div>
         )}
         {queue.length > 0 && onRemoveQueued && onSendQueuedNow && (
-          <PromptQueuePanel items={queue} onRemove={onRemoveQueued} onSendNow={onSendQueuedNow} />
+          <PromptQueuePanel
+            items={queue}
+            onRemove={onRemoveQueued}
+            onSendNow={onSendQueuedNow}
+            defaultOpen={!isMobileShell}
+          />
         )}
         {slashOpen && (
           <SlashCommandMenu
@@ -672,10 +643,14 @@ export function ChatInputBar({
           {/* biome-ignore lint/a11y/noStaticElementInteractions: drop zone for attachments; the file picker button is the accessible path */}
           <div
             data-chat-composer="true"
+            // Mobile: a programmatic focus target so focus returns here, not to
+            // the editor (and the OSK), after an approval prompt resolves.
+            tabIndex={isMobileShell ? -1 : undefined}
             className={cn(
               'relative rounded-2xl border border-border/60 bg-card transition-[border-color,box-shadow]',
               'focus-within:border-border focus-within:ring-1 focus-within:ring-inset focus-within:ring-foreground/20',
-              dragActive && 'border-primary/70'
+              dragActive && 'border-primary/70',
+              isMobileShell && 'outline-none'
             )}
             onDragEnter={dropProps.onDragEnter}
             onDragLeave={dropProps.onDragLeave}
@@ -689,7 +664,7 @@ export function ChatInputBar({
                 </span>
               </div>
             )}
-            {permission && <PermissionPrompt permission={permission} />}
+            {permission && <PermissionPrompt permission={permission} isVisible={isVisible} />}
             <AttachmentPreviewGroup attachments={attachments} onRemove={removeAttachment} />
             <div className="flex items-start gap-1 px-4 pb-1.5 pt-3.5">
               {/* Tiptap rich-text editor — the skill "pill" is a real inline
@@ -702,10 +677,10 @@ export function ChatInputBar({
               <ChatComposerEditor
                 className="min-w-0 flex-1"
                 value={value}
-                onValueChange={setValue}
+                onValueChange={handleValueChange}
                 onCaretChange={mentions.update}
                 onBeforeEditorKeyDown={handleKeyDown}
-                onPasteAttachments={handlePaste}
+                onPasteAttachments={handleComposerPaste}
                 getSkillPaths={() => skillPathsRef.current}
                 editorRef={editorRef}
                 inputRef={composerInputRef}
@@ -720,182 +695,106 @@ export function ChatInputBar({
                       : 'Ask anything… (/ for commands, @ for files)'
                 }
               />
-              {/* Context usage ring: top right, centered on the first line. */}
-              <ContextUsageIndicator
-                usage={sessionUsage}
-                messages={messages}
-                className="-mr-2 -my-[3px]"
-              />
+              {/* Context usage ring: top right, centered on the first line.
+                  The mobile row carries the ring in its toolbar instead. */}
+              {!isMobileShell && (
+                <ContextUsageIndicator
+                  usage={sessionUsage}
+                  messages={messages}
+                  className="-mr-2 -my-[3px]"
+                />
+              )}
             </div>
             <div
               className="flex items-center justify-between gap-3 px-2 pb-2"
               data-composer-toolbar={toolbarMode}
             >
-              <div className="flex min-w-0 items-center gap-3">
-                {/* Disabled (not hidden) while the composer is inert — the
+              {isMobileShell ? (
+                <div
+                  className="flex min-w-0 flex-1 items-center gap-2"
+                  data-composer-toolbar-row="mobile"
+                >
+                  <ComposerAddSheet
+                    handle={composerAddHandle}
+                    disabled={disabled}
+                    {...mcpListProps}
+                  />
+                  {modelSelector}
+                  {agentModeChip}
+                  <div className="flex-1" />
+                  <ClaudeAccountChip sessionId={session.id} compact />
+                  <ContextUsageIndicator usage={sessionUsage} messages={messages} />
+                  {sendButton}
+                </div>
+              ) : (
+                <>
+                  <div className="flex min-w-0 items-center gap-3">
+                    {/* Disabled (not hidden) while the composer is inert — the
                     toolbar row stays put and the status banner explains why.
                     Same treatment as the launcher toolbar. */}
-                <AttachFilesButton onClick={() => void pickFiles()} disabled={!canPick} />
-                {mcpBadge}
-              </div>
-              <div
-                className={cn(
-                  // #859: no wrap in narrow mode — the chip rows scroll
-                  // horizontally instead of stacking to 3 lines.
-                  'flex min-w-0 items-center justify-end gap-2.5',
-                  toolbarMode === 'narrow' && 'flex-1'
-                )}
-              >
-                {(() => {
-                  // Underlying availability conditions, not JSX-element
-                  // truthiness — a chip element is always truthy even when it
-                  // renders null internally (shared by both row layouts).
-                  const agentModesAvailable =
-                    session.modes != null && session.modes.availableModes.length > 0
-                  return toolbarMode === 'narrow' ? (
-                    (() => {
-                      // The agent control gates row 1 on the session's live
-                      // agent id (cheap, non-circular): the picker renders null
-                      // itself when the agent resolves to nothing, so row 1
-                      // never renders an empty container for it.
-                      const hasRow1 = agentModesAvailable || selectorMounted
-                      if (!hasRow1) return null
-                      return (
-                        <div className="flex min-w-0 flex-1 flex-col items-end gap-2">
-                          {/* #859: rows scroll horizontally instead of wrapping
+                    <AttachFilesButton onClick={() => void pickFiles()} disabled={!canPick} />
+                    {mcpBadge}
+                    <ClaudeAccountChip sessionId={session.id} />
+                  </div>
+                  <div
+                    className={cn(
+                      // #859: no wrap in narrow mode — the chip rows scroll
+                      // horizontally instead of stacking to 3 lines.
+                      'flex min-w-0 items-center justify-end gap-2.5',
+                      toolbarMode === 'narrow' && 'flex-1'
+                    )}
+                  >
+                    {(() => {
+                      // Underlying availability conditions, not JSX-element
+                      // truthiness — a chip element is always truthy even when it
+                      // renders null internally (shared by both row layouts).
+                      const agentModesAvailable =
+                        session.modes != null && session.modes.availableModes.length > 0
+                      return toolbarMode === 'narrow' ? (
+                        (() => {
+                          // The agent control gates row 1 on the session's live
+                          // agent id (cheap, non-circular): the picker renders null
+                          // itself when the agent resolves to nothing, so row 1
+                          // never renders an empty container for it.
+                          const hasRow1 = agentModesAvailable || selectorMounted
+                          if (!hasRow1) return null
+                          return (
+                            <div className="flex min-w-0 flex-1 flex-col items-end gap-2">
+                              {/* #859: rows scroll horizontally instead of wrapping
                               to 2–3 lines on phones (the composer grew to
                               ~220px when every picker wrapped). Chips keep
                               their own height; no wrap → one row each. */}
-                          {hasRow1 && (
-                            <div
-                              className="flex min-w-0 max-w-full items-center justify-end gap-2 overflow-x-auto scrollbar-hide"
-                              data-composer-toolbar-row="1"
-                            >
-                              {modelSelector}
-                              {agentModeChip}
+                              {hasRow1 && (
+                                <div
+                                  className="flex min-w-0 max-w-full items-center justify-end gap-2 overflow-x-auto scrollbar-hide"
+                                  data-composer-toolbar-row="1"
+                                >
+                                  {modelSelector}
+                                  {agentModeChip}
+                                </div>
+                              )}
                             </div>
-                          )}
+                          )
+                        })()
+                      ) : agentModesAvailable || selectorMounted ? (
+                        <div
+                          className="flex min-w-0 flex-wrap items-center justify-end gap-2.5"
+                          data-composer-toolbar-row="single"
+                        >
+                          {modelSelector}
+                          {agentModeChip}
                         </div>
-                      )
-                    })()
-                  ) : agentModesAvailable || selectorMounted ? (
-                    <div
-                      className="flex min-w-0 flex-wrap items-center justify-end gap-2.5"
-                      data-composer-toolbar-row="single"
-                    >
-                      {modelSelector}
-                      {agentModeChip}
-                    </div>
-                  ) : null
-                })()}
-                <div className="relative size-8 shrink-0 overflow-visible">
-                  <AnimatePresence initial={false} mode="popLayout">
-                    {showStop ? (
-                      <motion.button
-                        key="stop"
-                        type="button"
-                        data-press-feedback="off"
-                        onClick={onCancel}
-                        title="Cancel turn"
-                        aria-label="Cancel turn"
-                        initial={iconMotion.initial}
-                        animate={iconMotion.animate}
-                        exit={iconMotion.exit}
-                        transition={iconMotion.transition}
-                        className={cn(
-                          buttonVariants({ variant: 'composer', size: 'icon-sm' }),
-                          'absolute inset-0 [&_svg]:size-3.5',
-                          "after:absolute after:-inset-1.5 after:content-[''] @[400px]:after:-inset-1"
-                        )}
-                      >
-                        <Square fill="currentColor" strokeWidth={0} />
-                      </motion.button>
-                    ) : (
-                      <motion.button
-                        key="send"
-                        type="button"
-                        data-press-feedback="off"
-                        onClick={() => void submit()}
-                        disabled={!canSend}
-                        title={busy ? 'Queue message' : 'Send'}
-                        aria-label={busy ? 'Queue message' : 'Send message'}
-                        initial={iconMotion.initial}
-                        animate={iconMotion.animate}
-                        exit={iconMotion.exit}
-                        transition={iconMotion.transition}
-                        className={cn(
-                          buttonVariants({ variant: 'composer', size: 'icon-sm' }),
-                          'absolute inset-0 [&_svg]:size-[18px]',
-                          "after:absolute after:-inset-1.5 after:content-[''] @[400px]:after:-inset-1"
-                        )}
-                      >
-                        <ArrowUp />
-                      </motion.button>
-                    )}
-                  </AnimatePresence>
-                </div>
-              </div>
+                      ) : null
+                    })()}
+                    {sendButton}
+                  </div>
+                </>
+              )}
             </div>
           </div>
         </ComposerBeamShell>
-        <div
-          data-chat-composer-context-strip="true"
-          className="relative z-0 mx-auto -mt-4 flex w-[calc(100%-2.75rem)] min-w-0 items-center gap-2 rounded-2xl border border-t-0 border-border/60 bg-card/60 px-2 pb-1 pt-5 text-xs text-muted-foreground"
-        >
-          <span
-            className="inline-flex shrink-0 items-center gap-1.5 px-2.5"
-            title={isolationModeTitle}
-          >
-            {isWorktree ? (
-              <FolderGit2 size={13} className="shrink-0" aria-hidden="true" />
-            ) : (
-              <Folder size={13} className="shrink-0" aria-hidden="true" />
-            )}
-            <span className="sr-only">Workspace: </span>
-            {isolationModeLabel}
-          </span>
-          {(isolationBranch || isDetachedHead) && (
-            <span
-              className="ml-auto inline-flex min-w-0 items-center justify-end gap-1.5 px-2.5"
-              title={isolationBranch ?? 'HEAD is not on a branch'}
-            >
-              <GitBranch size={13} className="shrink-0" aria-hidden="true" />
-              <span className="sr-only">Branch: </span>
-              <span className="truncate">{isolationBranch ?? 'Detached HEAD'}</span>
-            </span>
-          )}
-        </div>
+        {!isMobileShell && <ChatContextStrip session={session} />}
       </div>
     </div>
-  )
-}
-
-/**
- * BorderBeam only when motion is allowed. Under prefers-reduced-motion the beam
- * wrapper is omitted entirely (no keyframes / data-active), not merely paused.
- */
-function ComposerBeamShell({
-  busy,
-  reduced,
-  children
-}: {
-  busy: boolean
-  reduced: boolean
-  children: React.ReactNode
-}): React.JSX.Element {
-  if (reduced) {
-    return <div className="relative z-10 w-full">{children}</div>
-  }
-  return (
-    <BorderBeam
-      size="md"
-      colorVariant="mono"
-      theme="auto"
-      borderRadius={16}
-      active={busy}
-      className="relative z-10 w-full"
-    >
-      {children}
-    </BorderBeam>
   )
 }

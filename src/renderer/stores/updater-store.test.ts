@@ -1,15 +1,10 @@
 import type { DownloadProgress, UpdateInfo, UpdateState } from '@shared/types/updater.types'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import * as tauriRuntime from '@/lib/tauri-runtime'
 import * as tauriSafeUpdate from '@/lib/tauri-safe-update'
 import * as tauriUpdateChannel from '@/lib/tauri-update-channel'
 import * as tauriUpdaterApi from '@/lib/tauri-updater-api'
 import * as tauriVersionSkip from '@/lib/tauri-version-skip'
 import { _resetUpdaterLifecycleForTesting, useUpdaterStore } from './updater-store'
-
-vi.mock('@/lib/tauri-runtime', () => ({
-  isTauriContext: vi.fn(() => true)
-}))
 
 vi.mock('@/lib/tauri-updater-api', async () => {
   const actual =
@@ -63,6 +58,19 @@ vi.mock('@/lib/tauri-update-channel', async () => {
   }
 })
 
+// #843: `initializeUpdater` no-ops off-desktop, so the init-flow suite pins the
+// desktop context (jsdom's default is web) and the web-gating test flips it.
+// ONE top-level mock answers from this hoisted flag. The file used to register
+// three conflicting hoisted `vi.mock('@/lib/tauri-runtime')` calls (desktop,
+// web, desktop) and rely on source order for the winner, but vitest resolves
+// consecutive mocks in parallel, so the last one to finish resolving wins. Under
+// CI load the web variant could win and turn every `initializeUpdater` call
+// into the no-op, failing the init and channel-hydration tests at random.
+const runtime = vi.hoisted(() => ({ isTauri: true }))
+vi.mock('@/lib/tauri-runtime', () => ({
+  isTauriContext: () => runtime.isTauri
+}))
+
 const INITIAL_UPDATER_STATE: UpdateState = {
   updateAvailable: false,
   downloaded: false,
@@ -75,9 +83,9 @@ const INITIAL_UPDATER_STATE: UpdateState = {
 }
 
 beforeEach(() => {
-  // #843: initializeUpdater no-ops off-desktop; pin desktop context for the
-  // init-flow suite (jsdom defaults to web) and reset lifecycle flags.
-  vi.mocked(tauriRuntime.isTauriContext).mockReturnValue(true)
+  // Back to the desktop context and reset the module lifecycle flags so each
+  // test re-initializes.
+  runtime.isTauri = true
   _resetUpdaterLifecycleForTesting()
   useUpdaterStore.getState().stopPeriodicChecks()
   vi.clearAllMocks()
@@ -509,8 +517,9 @@ describe('updater-store', () => {
 
   describe('web gating (#843)', () => {
     it('initializeUpdater is a no-op off-desktop', async () => {
-      vi.mocked(tauriRuntime.isTauriContext).mockReturnValue(false)
-      _resetUpdaterLifecycleForTesting()
+      // The gate is read at call time, so flipping the hoisted flag is enough;
+      // beforeEach restores the desktop context for the next test.
+      runtime.isTauri = false
 
       await useUpdaterStore.getState().initializeUpdater({ autoCheck: true })
 
@@ -518,8 +527,9 @@ describe('updater-store', () => {
       expect(state.error).toBeNull()
       expect(state.updateAvailable).toBe(false)
       expect(state.version).toBeNull()
-
-      vi.mocked(tauriRuntime.isTauriContext).mockReturnValue(true)
+      expect(tauriUpdaterApi.registerUpdateEventHandlers).not.toHaveBeenCalled()
+      expect(tauriUpdaterApi.getUpdaterState).not.toHaveBeenCalled()
+      expect(tauriUpdaterApi.checkForUpdates).not.toHaveBeenCalled()
     })
   })
 })

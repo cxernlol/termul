@@ -1,14 +1,18 @@
 import { useEffect, useMemo, useRef } from 'react'
 import { useLocation } from 'react-router-dom'
+import { logFrontendError } from '@/lib/log-api'
+import { openAgentChatInOwnProject } from '@/lib/open-agent-chat'
+import { isChatRouteCurrent } from '@/lib/router-navigate'
 import { clearChatClosedOnRoute, isChatClosedOnRoute } from '@/lib/web-tab-session'
-import { useAcpStore } from '@/stores/acp-store'
+import { sessionProjectId, useAcpStore } from '@/stores/acp-store'
+import { useProjectStore } from '@/stores/project-store'
 import { agentChatTabId, findPaneContainingTab, useWorkspaceStore } from '@/stores/workspace-store'
 
 /**
  * Null-rendering component that triggers `openHistorySession` when the URL
  * contains `#/c/<sessionId>`. This is the refresh-survival mechanism for the
  * active chat — on reload the session restores from the URL before the
- * workspace manifest or session index loads, avoiding the "no active chat"
+ * workspace record or session index loads, avoiding the "no active chat"
  * race.
  *
  * Retries up to 5 times with a 500ms delay because the server's history
@@ -50,18 +54,50 @@ import { agentChatTabId, findPaneContainingTab, useWorkspaceStore } from '@/stor
  * - Never re-open a session whose chat the user closed while this route
  *   stayed current: closing only releases the chat (lifetime store +
  *   session close) without clearing the route. The signal is the
- *   synchronous closed-on-route mark set by `requestCloseAgentChat`
+ *   synchronous closed-on-route mark set by `closeAgentChat`
  *   (`web-tab-session.ts`) — it survives a close that races the mount-time
  *   open, unlike a store-record heuristic. The first effect run (mount /
  *   route change) is exempt — that is the reload path itself. A route
  *   target change clears the mark so navigating to a different chat (even
  *   a previously-closed one) re-opens it.
  *
+ * - A chat whose session names another project than the active one (a
+ *   `#/c/<sid>` link, Back/bookmark) opens IN ITS OWN project: the owner is
+ *   selected and the switch coordinator activates the tab once the owner's
+ *   tree is committed (`openAgentChatInOwnProject`). Each project has its
+ *   own pane tree, so the tab is never inserted into the active project's.
+ *   Unknown ownership opens in place.
+ *
+ * - A run on a route the URL already left does nothing. The router commits
+ *   its location in a transition (`v7_startTransition`), so a project pick
+ *   that leaves the chat route (`#/`) can commit the picked project's tree
+ *   first: the re-run still sees the old route and must not re-select the
+ *   chat's project. The run for the new location follows.
+ *
  * Loop-safe: a gated re-activation runs the store's idempotent
  * addAgentChatTab (no-op when the tab is already active+focused), so the
  * follow-up run sees the same state and stops delegating (swap →
  * activate → settle).
  */
+/**
+ * When the routed chat names a project other than the active one, open it in
+ * that project through the switch coordinator instead of inserting the tab
+ * here. Returns whether the route was handed to the owner project.
+ */
+function openRouteInOwnerProject(sessionId: string): boolean {
+  const acp = useAcpStore.getState()
+  const owner = sessionProjectId(acp, sessionId)
+  const activeProjectId = useProjectStore.getState().activeProjectId
+  if (!owner || !activeProjectId || owner === activeProjectId) return false
+  void logFrontendError({
+    level: 'info',
+    source: 'ChatRoute',
+    message: `Chat route (session ${sessionId}) names project ${owner}; opening it there from project ${activeProjectId}`
+  })
+  openAgentChatInOwnProject(sessionId, 'ChatRoute')
+  return true
+}
+
 export function ChatRoute(): null {
   const location = useLocation()
   const openHistorySession = useAcpStore((s) => s.openHistorySession)
@@ -90,7 +126,7 @@ export function ChatRoute(): null {
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: root intentionally retriggers the effect; the gate below is about WHEN to re-delegate, not a duplicate of the store's activation no-op predicate
   useEffect(() => {
-    if (!sessionId) return
+    if (!sessionId || !isChatRouteCurrent(sessionId)) return
     const firstRun = isFirstRunRef.current
     isFirstRunRef.current = false
     const tabId = agentChatTabId(sessionId)
@@ -125,11 +161,25 @@ export function ChatRoute(): null {
       // The user closed this chat while its route stayed current: closing
       // releases the chat and removes the tab without clearing the route,
       // so the route must not resurrect it. The signal is the synchronous
-      // closed-on-route mark set by requestCloseAgentChat — independent of
+      // closed-on-route mark set by closeAgentChat — independent of
       // acp-store timing, so a close that races the mount-time
       // openHistorySession (still in flight, record still 'closed' mid-open)
       // is still caught. The first run (mount / route change) is exempt —
       // that is the reload path itself.
+      return
+    }
+    if (openRouteInOwnerProject(sessionId)) {
+      // A closed chat still needs its session loaded; the owner project's
+      // commit only puts the tab on screen.
+      if (!existing || existing.status === 'closed') {
+        void openHistorySession(sessionId).catch((error: unknown) => {
+          void logFrontendError({
+            level: 'warn',
+            source: 'ChatRoute',
+            message: `Open chat ${sessionId} in its project failed: ${error instanceof Error ? error.message : 'unknown error'}`
+          })
+        })
+      }
       return
     }
     if (existing && existing.status !== 'closed') {
@@ -153,7 +203,9 @@ export function ChatRoute(): null {
       attempt++
       try {
         await openHistorySession(sessionId)
-        if (!cancelled) {
+        // The opened record may only now reveal the owner (index not loaded
+        // before the open). The URL may have left the route while it loaded.
+        if (!cancelled && isChatRouteCurrent(sessionId) && !openRouteInOwnerProject(sessionId)) {
           useWorkspaceStore.getState().addAgentChatTab(sessionId)
           // Same as the live branch: the (re-)opened chat clears any stale
           // closed-on-route mark from a previous visit.

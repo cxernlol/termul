@@ -21,26 +21,20 @@
 //!   (template: `git_api.rs`).
 //! - logs at route boundaries via `tracing` (the standalone server's logger;
 //!   a no-op when no subscriber is installed on the desktop shared-live path).
-//!
-//! The 7 launch-flow routes ship here. The 8 advanced ops (symlinks,
-//! `parseGitignore`, `mergePreview/Execute`, `archive`/`restore`,
-//! `removeAllManaged`) are deferred — see `deferred-work.md`.
 
 use std::net::SocketAddr;
 use std::path::Path;
 
 use axum::{
-    body::Body,
     extract::{ConnectInfo, Query, State},
-    http::{header, StatusCode},
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     Json,
 };
-use futures::StreamExt;
 use serde::Deserialize;
-use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::{error, info, warn};
 
+use self::scope::WebWorktreeEntry;
 use crate::web::fs_api::{check_local_only, resolve_request_path, IpcBody};
 use crate::web::git_api::ensure_within_project_boundary;
 use crate::web::ws::AppState;
@@ -48,6 +42,12 @@ use crate::worktree::{
     BaseBranchInfo, BranchEntry, DirtyStatus, GitWorktreeEntry, IncludeCopyResult, WorktreeError,
     WorktreeManager,
 };
+
+mod ledgered;
+pub(crate) use ledgered::create_fingerprint;
+mod scope;
+mod symlinks;
+pub use symlinks::{create_symlinks, ensure_symlinks, parse_gitignore};
 
 /// `POST /worktree/list { projectPath }` body.
 #[derive(Debug, Deserialize)]
@@ -118,7 +118,7 @@ type RouteErr<T> = (StatusCode, Json<IpcBody<T>>);
 /// (`Some` on write routes, `None` on read routes). Mirrors
 /// `git_api::resolve_cwd` — kept self-contained so the worktree module does not
 /// depend on git_api's private helpers.
-fn resolve_project_path<T>(
+pub(super) fn resolve_project_path<T>(
     req_path: &str,
     state: &AppState,
     peer: Option<SocketAddr>,
@@ -147,15 +147,9 @@ fn resolve_project_path<T>(
             return Err((StatusCode::OK, Json(IpcBody::<T>::err(msg, code))));
         }
     };
-    // 3) project_root containment (web-server security boundary). Lock-read the
-    //    RwLock for the duration of the `starts_with` check (sync — no `.await`
-    //    under the guard). The boundary may have been rebound by a project
-    //    switch since the last request.
-    let outside_err = {
-        let project_root = state.project_root.read();
-        ensure_within_project_boundary::<T>(&resolved, &project_root, &state.registry)
-    };
-    if let Some(err) = outside_err {
+    // 3) Registry boundary (web-server security boundary): inside ANY
+    //    registered, non-archived project.
+    if let Some(err) = ensure_within_project_boundary::<T>(&resolved, &state.registry) {
         return Err((StatusCode::OK, Json(err)));
     }
     Ok(resolved)
@@ -165,7 +159,7 @@ fn resolve_project_path<T>(
 /// `validate_project_path` behavior of stripping the Windows verbatim (`\\?\`)
 /// prefix so `git.exe` receives a path it understands. Returns an `IpcBody::err`
 /// (`INVALID_PATH_ENCODING`) when the path resolves to empty.
-fn path_string<T>(resolved: &std::path::Path) -> Result<String, RouteErr<T>> {
+pub(super) fn path_string<T>(resolved: &std::path::Path) -> Result<String, RouteErr<T>> {
     let lossy = resolved.to_string_lossy();
     let simplified = crate::path_validation::strip_verbatim_prefix(&lossy).into_owned();
     if simplified.is_empty() {
@@ -189,58 +183,42 @@ fn worktree_err<T>(e: WorktreeError) -> IpcBody<T> {
 // ============================ Route handlers ============================
 
 /// `POST /worktree/list` — list all worktrees for a git repo (read-only).
-/// Mirrors `worktree_list` → `WorktreeManager::list`.
+/// Mirrors `worktree_list` → `WorktreeManager::list`. Worktrees outside the
+/// project folder are returned flagged `outsideProjectRoot` (AD-9), not dropped;
+/// act routes still enforce containment (see `scope`).
 pub async fn list(
     State(state): State<AppState>,
     Json(req): Json<WorktreeProjectPathRequest>,
 ) -> impl IntoResponse {
     let resolved =
-        match resolve_project_path::<Vec<GitWorktreeEntry>>(&req.project_path, &state, None, false)
+        match resolve_project_path::<Vec<WebWorktreeEntry>>(&req.project_path, &state, None, false)
         {
             Ok(p) => p,
             Err(resp) => return resp,
         };
-    let project_path = match path_string::<Vec<GitWorktreeEntry>>(&resolved) {
+    let project_path = match path_string::<Vec<WebWorktreeEntry>>(&resolved) {
         Ok(s) => s,
         Err(resp) => return resp,
     };
     let path_for_log = project_path.clone();
-    // Normalize the project root for the info-leak filter: strip the Windows
-    // verbatim (`\\?\`) prefix so `starts_with` matches git's output (which
-    // carries no verbatim prefix). Both sides must share the same non-verbatim
-    // representation or a logically-matching path would be rejected on Windows.
-    let project_root_for_filter =
-        crate::path_validation::strip_verbatim_prefix(&resolved.to_string_lossy()).into_owned();
+    let project_root = project_path.clone();
     let result = tokio::task::spawn_blocking(move || WorktreeManager::list(&project_path))
         .await
         .map_err(|e| format!("worktree list task failed: {e}"));
     let body = match result {
         Ok(Ok(entries)) => {
-            // Info-leak guard: filter out any worktree whose path is outside the
-            // resolved project root. A worktree checked out to an arbitrary
-            // outside path would otherwise disclose that path to the web client.
-            // The `WorktreeManager::list` call runs git on the project root;
-            // the returned entries should all be within the boundary, but a
-            // pre-existing worktree created outside (e.g. via the desktop
-            // client's custom targetPath) would slip through. Filter defensively.
-            let filtered: Vec<GitWorktreeEntry> = entries
-                .into_iter()
-                .filter(|e| {
-                    let entry = crate::path_validation::strip_verbatim_prefix(&e.path);
-                    std::path::Path::new(entry.as_ref()).starts_with(&project_root_for_filter)
-                })
-                .collect();
-            let kept = filtered.len();
-            info!(path = %path_for_log, count = kept, "worktree list ok");
-            IpcBody::ok(filtered)
+            let scoped = scope::scope_entries(entries, &project_root);
+            let outside = scoped.iter().filter(|e| e.outside_project_root).count();
+            info!(path = %path_for_log, count = scoped.len(), outside, "worktree list ok");
+            IpcBody::ok(scoped)
         }
         Ok(Err(e)) => {
             warn!(path = %path_for_log, error = %e, "worktree list failed");
-            worktree_err::<Vec<GitWorktreeEntry>>(e)
+            worktree_err::<Vec<WebWorktreeEntry>>(e)
         }
         Err(e) => {
             error!(path = %path_for_log, error = %e, "worktree list task panicked");
-            IpcBody::<Vec<GitWorktreeEntry>>::err(
+            IpcBody::<Vec<WebWorktreeEntry>>::err(
                 format!("worktree list task failed: {e}"),
                 "WORKTREE_LIST_ERROR",
             )
@@ -258,6 +236,7 @@ pub async fn list(
 pub async fn create(
     State(state): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(req): Json<WorktreeCreateRequest>,
 ) -> Response {
     let resolved =
@@ -282,157 +261,19 @@ pub async fn create(
         },
         None => None,
     };
-    let path_for_log = project_path.clone();
-    let name = req.name;
-    let branch = req.branch;
-    let is_new_branch = req.is_new_branch;
-    let start_ref = req.start_ref;
-
-    if req.stream_progress == Some(true) {
-        return create_streaming(
-            path_for_log,
-            project_path,
-            name,
-            branch,
-            is_new_branch,
-            start_ref,
-            target_path,
-            req.progress_id,
-        );
-    }
-
-    // `name`/`branch`/`start_ref`/`target_path` move into the blocking task
-    // below; keep copies for the boundary logs.
-    let name_for_log = name.clone();
-    let branch_for_log = branch.clone();
-    let start_ref_for_log = start_ref.clone();
-    let target_path_for_log = target_path.clone();
-
-    info!(
-        path = %path_for_log,
-        name = %name_for_log,
-        branch = %branch_for_log,
-        is_new_branch = %is_new_branch,
-        start_ref = ?start_ref_for_log,
-        target_path = ?target_path_for_log,
-        "worktree create start"
-    );
-
-    let result = tokio::task::spawn_blocking(move || {
-        WorktreeManager::create(
-            &project_path,
-            &name,
-            &branch,
-            is_new_branch,
-            start_ref.as_deref(),
-            target_path.as_deref(),
-            None,
-        )
-    })
-    .await
-    .map_err(|e| format!("worktree create task failed: {e}"));
-    let body = match result {
-        Ok(Ok(entry)) => {
-            info!(path = %path_for_log, name = %name_for_log, branch = %entry.branch, "worktree create ok");
-            IpcBody::ok(entry)
-        }
-        Ok(Err(e)) => {
-            warn!(path = %path_for_log, name = %name_for_log, branch = %branch_for_log, is_new_branch = %is_new_branch, start_ref = ?start_ref_for_log, target_path = ?target_path_for_log, error = %e, "worktree create failed");
-            worktree_err::<GitWorktreeEntry>(e)
-        }
-        Err(e) => {
-            error!(path = %path_for_log, name = %name_for_log, branch = %branch_for_log, is_new_branch = %is_new_branch, start_ref = ?start_ref_for_log, target_path = ?target_path_for_log, error = %e, "worktree create task panicked");
-            IpcBody::<GitWorktreeEntry>::err(
-                format!("worktree create task failed: {e}"),
-                "WORKTREE_CREATE_ERROR",
-            )
-        }
+    let args = ledgered::CreateArgs {
+        raw_project_path: req.project_path,
+        project_path,
+        name: req.name,
+        branch: req.branch,
+        is_new_branch: req.is_new_branch,
+        start_ref: req.start_ref,
+        raw_target_path: req.target_path,
+        target_path,
+        progress_id: req.progress_id,
+        stream_progress: req.stream_progress == Some(true),
     };
-    (StatusCode::OK, Json(body)).into_response()
-}
-
-/// Streaming variant of `create`: runs `git worktree add` on a blocking
-/// thread, forwarding each stderr line as an NDJSON frame followed by
-/// the final `IpcBody` result frame. A watcher task awaits the blocking join
-/// handle so a panic still produces a terminal `result` error frame instead of
-/// silently ending the stream.
-#[allow(clippy::too_many_arguments)]
-fn create_streaming(
-    path_for_log: String,
-    project_path: String,
-    name: String,
-    branch: String,
-    is_new_branch: bool,
-    start_ref: Option<String>,
-    target_path: Option<String>,
-    progress_id: Option<String>,
-) -> Response {
-    info!(path = %path_for_log, name = %name, branch = %branch, is_new_branch = %is_new_branch, start_ref = ?start_ref, target_path = ?target_path, progress_id = ?progress_id, "worktree create (streaming) start");
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-    let panic_tx = tx.clone();
-    let panic_path = path_for_log.clone();
-    let panic_name = name.clone();
-    let panic_branch = branch.clone();
-    let panic_start_ref = start_ref.clone();
-    let panic_target_path = target_path.clone();
-    let handle = tokio::task::spawn_blocking(move || {
-        let pid = progress_id.as_deref();
-        let send = |frame: serde_json::Value| {
-            let _ = tx.send(frame.to_string());
-        };
-        send(serde_json::json!({"type": "preparing", "progressId": pid}));
-        let result = {
-            let mut on_line = |line: &str| {
-                send(serde_json::json!({"type": "progress", "progressId": pid, "line": line}));
-            };
-            WorktreeManager::create(
-                &project_path,
-                &name,
-                &branch,
-                is_new_branch,
-                start_ref.as_deref(),
-                target_path.as_deref(),
-                Some(&mut on_line),
-            )
-        };
-        let body = match result {
-            Ok(entry) => {
-                info!(path = %path_for_log, name = %name, branch = %entry.branch, "worktree create ok");
-                IpcBody::ok(entry)
-            }
-            Err(e) => {
-                warn!(path = %path_for_log, name = %name, branch = %branch, is_new_branch = %is_new_branch, start_ref = ?start_ref, target_path = ?target_path, error = %e, "worktree create failed");
-                worktree_err::<GitWorktreeEntry>(e)
-            }
-        };
-        send(serde_json::json!({"type": "result", "result": body}));
-        // `tx` drops here → the stream ends once `panic_tx` is dropped below.
-    });
-    // A panicked blocking task drops its `tx` without a result frame; the
-    // watcher reports it as a terminal error frame so the client does not have
-    // to infer failure from a truncated stream.
-    tokio::spawn(async move {
-        if let Err(e) = handle.await {
-            error!(path = %panic_path, name = %panic_name, branch = %panic_branch, is_new_branch = %is_new_branch, start_ref = ?panic_start_ref, target_path = ?panic_target_path, error = %e, "worktree create task panicked");
-            let body =
-                worktree_err::<GitWorktreeEntry>(WorktreeError::IoError(e.to_string()));
-            let _ = panic_tx
-                .send(serde_json::json!({"type": "result", "result": body}).to_string());
-        }
-    });
-    let stream = UnboundedReceiverStream::new(rx).map(|line| {
-        Ok::<axum::body::Bytes, std::convert::Infallible>(axum::body::Bytes::from(format!(
-            "{line}\n"
-        )))
-    });
-    (
-        [
-            (header::CONTENT_TYPE, "application/x-ndjson"),
-            (header::CACHE_CONTROL, "no-cache"),
-        ],
-        Body::from_stream(stream),
-    )
-        .into_response()
+    ledgered::create(&state, &headers, args).await
 }
 
 /// `POST /worktree/remove` — remove a worktree (write, loopback-guarded).
@@ -460,9 +301,21 @@ pub async fn remove(
         Ok(s) => s,
         Err(resp) => return resp,
     };
+    if let Some(blocked) =
+        crate::web::git_api::destructive_op_refusal(&state, &worktree_resolved).await
+    {
+        return blocked;
+    }
     let path_for_log = worktree_path.clone();
     let force = req.force;
     let result = tokio::task::spawn_blocking(move || {
+        // Already removed (a resend after a lost reply): git lists no worktree
+        // there AND nothing is left on disk. A path git does not list but that
+        // still exists (e.g. a detached worktree `list` filters out) is NOT
+        // removed, so it keeps the original behavior and error.
+        if ledgered::is_gone(&project_path, &worktree_path) {
+            return Ok(());
+        }
         WorktreeManager::remove(&project_path, &worktree_path, force)
     })
     .await

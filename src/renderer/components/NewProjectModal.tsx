@@ -1,20 +1,27 @@
 import type { DetectedShells } from '@shared/types/ipc.types'
 import type { ProjectTemplate } from '@shared/types/project-template.types'
 import { AnimatePresence, motion } from 'framer-motion'
-import { type KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { type KeyboardEvent, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { basename } from '@/components/chat/chat-attachments'
 import { ChevronDown, ChevronRight, X } from '@/components/icons'
 import { Button } from '@/components/ui/button'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
+import { FIELD_FOCUS_CLASS, FOCUS_RING_CLASS } from '@/components/ui/panel-styles'
 import { Skeleton } from '@/components/ui/skeleton'
-import { reconcileProjectWorktreesNow } from '@/hooks/use-projects-persistence'
+import { NativeWebviewOccluder } from '@/hooks/use-native-webview-occlusion'
 import { dialogApi, filesystemApi, gitApi, shellApi } from '@/lib/api'
 import { availableColors, getColorClasses } from '@/lib/colors'
+import { claimEscape, isEscapeClaimed } from '@/lib/escape-claim'
+import { basename } from '@/lib/path-basename'
 import { BUILT_IN_TEMPLATES, scaffoldProject } from '@/lib/project-templates'
 import { isTauriContext } from '@/lib/tauri-runtime'
 import { cn } from '@/lib/utils'
+import { reconcileProjectWorktrees } from '@/lib/worktree-reconciler'
 import { useDefaultProjectColor } from '@/stores/app-settings-store'
+import {
+  NEW_PROJECT_MODAL_OVERLAY_PREFIX,
+  useOverlayRegistration
+} from '@/stores/overlay-stack-store'
 import { useProjectStore, useProjects } from '@/stores/project-store'
 import type { EnvVariable, Project, ProjectColor } from '@/types/project'
 
@@ -27,7 +34,7 @@ interface NewProjectModalProps {
     path?: string,
     defaultShell?: string,
     envVars?: EnvVariable[]
-  ) => Project | undefined
+  ) => Promise<Project | undefined>
 }
 
 /**
@@ -43,6 +50,9 @@ interface NewProjectModalProps {
 const DOUBLED_NAME_RE = /^(.{2,}?)\1$/
 
 export function NewProjectModal({ isOpen, onClose, onCreateProject }: NewProjectModalProps) {
+  // Mobile web shell: system back closes this modal (inert on desktop).
+  const overlayId = `${NEW_PROJECT_MODAL_OVERLAY_PREFIX}${useId()}`
+  useOverlayRegistration(overlayId, isOpen, onClose, { mobileShellOnly: true })
   const defaultColor = useDefaultProjectColor() as ProjectColor
   // Simple defaults (empty template, app default color, detected default shell,
   // no git init) with the full set of controls back under an Advanced section.
@@ -213,8 +223,12 @@ export function NewProjectModal({ isOpen, onClose, onCreateProject }: NewProject
     if (!isOpen) return
 
     const handleEscape = (e: globalThis.KeyboardEvent): void => {
-      if (e.key === 'Escape') {
+      // A layer above this modal (the DirectoryPicker) already claimed this Esc.
+      // Not `defaultPrevented`: the project sheet this modal was swapped in from
+      // prevents the Esc it still receives while it animates out.
+      if (e.key === 'Escape' && !isEscapeClaimed(e)) {
         e.preventDefault()
+        claimEscape(e)
         onClose()
       }
     }
@@ -290,7 +304,7 @@ export function NewProjectModal({ isOpen, onClose, onCreateProject }: NewProject
           }
         }
 
-        const created = onCreateProject(
+        const created = await onCreateProject(
           trimmedName,
           selectedColor,
           trimmedPath,
@@ -309,11 +323,9 @@ export function NewProjectModal({ isOpen, onClose, onCreateProject }: NewProject
             isGitRepo: gitInitSucceeded
           })
           // Then detect existing .git for the non-init path. On desktop, the
-          // worktree reconciler (`reconcileProjectWorktreesNow`) does this via
-          // `worktreeApi.list` (Tauri command). On web, the reconciler is
-          // desktop-only (AGENTS.md: gate platform-only capabilities with
-          // isTauriContext()), so probe `.git` via the fs read route instead,
-          // which works for non-loopback web clients.
+          // worktree reconciler (`reconcileProjectWorktrees`) does this via
+          // `worktreeApi.list` (Tauri command). On web, probe `.git` via the
+          // fs read route instead, which works for non-loopback web clients.
           if (!gitInitSucceeded && trimmedPath) {
             // `.git` can be a directory (standard repo) or a file (worktree
             // / submodule pointer containing `gitdir:`). Probe both: list the
@@ -335,10 +347,10 @@ export function NewProjectModal({ isOpen, onClose, onCreateProject }: NewProject
             }
           }
           // Restore worktree state for projects created from existing
-          // worktrees (desktop-only reconciler; the `.git` probe covered
-          // web parity for the isGitRepo flag above).
-          if (isTauriContext() && created.id) {
-            void reconcileProjectWorktreesNow(created.id).catch(() => {})
+          // worktrees (the shared reconciler never rejects; the `.git` probe
+          // above covers the isGitRepo flag on web).
+          if (created.id) {
+            void reconcileProjectWorktrees(created.id)
           }
         }
 
@@ -389,8 +401,11 @@ export function NewProjectModal({ isOpen, onClose, onCreateProject }: NewProject
       if (e.key === 'Enter' && name.trim() && path.trim()) {
         e.preventDefault()
         handleCreate()
-      } else if (e.key === 'Escape') {
+      } else if (e.key === 'Escape' && !isEscapeClaimed(e.nativeEvent)) {
+        // Focus can stay on Browse while the picker is open above this panel. Claiming
+        // the Esc here also keeps the window handler from closing the modal a second time.
         e.preventDefault()
+        claimEscape(e.nativeEvent)
         onClose()
       }
     },
@@ -407,6 +422,7 @@ export function NewProjectModal({ isOpen, onClose, onCreateProject }: NewProject
           className="fixed inset-0 bg-overlay/60 backdrop-blur-sm z-50 flex items-center justify-center"
           onClick={onClose}
         >
+          <NativeWebviewOccluder />
           <motion.div
             initial={{ opacity: 0, scale: 0.95, y: 10 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
@@ -439,7 +455,7 @@ export function NewProjectModal({ isOpen, onClose, onCreateProject }: NewProject
                     value={path}
                     onChange={(e) => handlePathChange(e.target.value)}
                     placeholder="No directory selected"
-                    className="flex-1 bg-secondary border border-border rounded px-3 py-1.5 text-sm text-foreground focus:ring-1 focus:ring-primary outline-none placeholder-muted-foreground"
+                    className={`flex-1 bg-secondary border border-border rounded px-3 py-1.5 text-sm pointer-coarse:text-base text-foreground placeholder-muted-foreground ${FIELD_FOCUS_CLASS}`}
                   />
                   <button
                     onClick={handleBrowse}
@@ -459,7 +475,7 @@ export function NewProjectModal({ isOpen, onClose, onCreateProject }: NewProject
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   placeholder="My Project"
-                  className="w-full bg-secondary border border-border rounded px-3 py-1.5 text-sm text-foreground focus:ring-1 focus:ring-primary focus:border-primary outline-none placeholder-muted-foreground"
+                  className={`w-full bg-secondary border border-border rounded px-3 py-1.5 text-sm pointer-coarse:text-base text-foreground placeholder-muted-foreground ${FIELD_FOCUS_CLASS}`}
                 />
                 {nameWarning && (
                   <p
@@ -492,7 +508,7 @@ export function NewProjectModal({ isOpen, onClose, onCreateProject }: NewProject
                           const tpl = BUILT_IN_TEMPLATES.find((t) => t.id === e.target.value)
                           if (tpl) handleSelectTemplate(tpl)
                         }}
-                        className="w-full appearance-none bg-secondary border border-border rounded px-3 py-1.5 pr-8 text-sm text-foreground focus:ring-1 focus:ring-primary focus:border-primary outline-none cursor-pointer"
+                        className={`w-full appearance-none bg-secondary border border-border rounded px-3 py-1.5 pr-8 text-sm pointer-coarse:text-base text-foreground cursor-pointer ${FIELD_FOCUS_CLASS}`}
                       >
                         {BUILT_IN_TEMPLATES.map((tpl) => (
                           <option key={tpl.id} value={tpl.id}>
@@ -561,7 +577,7 @@ export function NewProjectModal({ isOpen, onClose, onCreateProject }: NewProject
                         <select
                           value={selectedShell}
                           onChange={(e) => setSelectedShell(e.target.value)}
-                          className="w-full appearance-none bg-secondary border border-border rounded px-3 py-1.5 pr-8 text-sm text-foreground focus:ring-1 focus:ring-primary focus:border-primary outline-none cursor-pointer"
+                          className={`w-full appearance-none bg-secondary border border-border rounded px-3 py-1.5 pr-8 text-sm pointer-coarse:text-base text-foreground cursor-pointer ${FIELD_FOCUS_CLASS}`}
                         >
                           {shells?.available && shells.available.length > 0 ? (
                             shells.available.map((shell) => (
@@ -587,7 +603,7 @@ export function NewProjectModal({ isOpen, onClose, onCreateProject }: NewProject
                         id="init-git"
                         checked={initGit}
                         onChange={(e) => setInitGit(e.target.checked)}
-                        className="rounded border-border text-primary bg-secondary focus:ring-primary h-3.5 w-3.5"
+                        className={`rounded border-border text-primary bg-secondary h-3.5 w-3.5 ${FOCUS_RING_CLASS}`}
                       />
                       <label
                         htmlFor="init-git"

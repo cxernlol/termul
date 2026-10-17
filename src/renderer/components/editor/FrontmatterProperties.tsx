@@ -201,7 +201,7 @@ export function FrontmatterProperties({
                   ) : (
                     <Input
                       id={fieldId}
-                      className="h-8 border-transparent bg-transparent px-2 shadow-none hover:border-input focus-visible:border-input"
+                      className="h-8 border-transparent bg-transparent px-2 shadow-none hover:border-input"
                       value={
                         draftScalars[key] !== undefined
                           ? draftScalars[key]

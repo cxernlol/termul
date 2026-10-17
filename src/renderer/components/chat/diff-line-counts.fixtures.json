@@ -1,0 +1,143 @@
+{
+  "about": "Shared +N/-N parity fixtures: tool-call-format.test.ts runs them through the renderer's diffLineCounts and src-tauri/src/acp/session_persistence/diff_stat_tests.rs through the host's diff_line_counts. A side is null (oldText null) or { eol?, lines }; its text is every line followed by eol (default \"\\n\"). A line is a literal string, { prefix, from, to } for prefix+n with n stepping from..to inclusive (descending when from > to), or { line, times } for one line repeated.",
+  "fixtures": [
+    {
+      "name": "reversed 1500 lines",
+      "oldText": { "lines": [{ "prefix": "l", "from": 0, "to": 1499 }] },
+      "newText": { "lines": [{ "prefix": "l", "from": 1499, "to": 0 }] },
+      "expected": { "added": 1499, "removed": 1499 }
+    },
+    {
+      "name": "reversed 1500 lines with the first one replaced",
+      "oldText": { "lines": [{ "prefix": "l", "from": 0, "to": 1499 }] },
+      "newText": { "lines": ["changed", { "prefix": "l", "from": 1498, "to": 0 }] },
+      "expected": { "added": 1499, "removed": 1499 }
+    },
+    {
+      "name": "shuffled 500-line blocks ABCD to BDAC",
+      "oldText": {
+        "lines": [
+          { "prefix": "a", "from": 0, "to": 499 },
+          { "prefix": "b", "from": 0, "to": 499 },
+          { "prefix": "c", "from": 0, "to": 499 },
+          { "prefix": "d", "from": 0, "to": 499 }
+        ]
+      },
+      "newText": {
+        "lines": [
+          { "prefix": "b", "from": 0, "to": 499 },
+          { "prefix": "d", "from": 0, "to": 499 },
+          { "prefix": "a", "from": 0, "to": 499 },
+          { "prefix": "c", "from": 0, "to": 499 }
+        ]
+      },
+      "expected": { "added": 1000, "removed": 1000 }
+    },
+    {
+      "name": "a reversed block on both sides of a unique anchor recurses a second level",
+      "oldText": {
+        "lines": [
+          { "prefix": "q", "from": 0, "to": 1499 },
+          "anchor",
+          { "prefix": "q", "from": 1499, "to": 0 }
+        ]
+      },
+      "newText": {
+        "lines": [
+          { "prefix": "q", "from": 1499, "to": 0 },
+          "anchor",
+          { "prefix": "q", "from": 0, "to": 1499 }
+        ]
+      },
+      "expected": { "added": 2998, "removed": 2998 }
+    },
+    {
+      "name": "large insert in the middle with the first and last lines edited",
+      "oldText": { "lines": ["old head", { "prefix": "l", "from": 0, "to": 1499 }, "old tail"] },
+      "newText": {
+        "lines": [
+          "new head",
+          { "prefix": "l", "from": 0, "to": 749 },
+          { "prefix": "inserted ", "from": 0, "to": 2999 },
+          { "prefix": "l", "from": 750, "to": 1499 },
+          "new tail"
+        ]
+      },
+      "expected": { "added": 3002, "removed": 2 }
+    },
+    {
+      "name": "large delete from the middle with the first and last lines edited",
+      "oldText": {
+        "lines": [
+          "old head",
+          { "prefix": "l", "from": 0, "to": 749 },
+          { "prefix": "deleted ", "from": 0, "to": 2999 },
+          { "prefix": "l", "from": 750, "to": 1499 },
+          "old tail"
+        ]
+      },
+      "newText": { "lines": ["new head", { "prefix": "l", "from": 0, "to": 1499 }, "new tail"] },
+      "expected": { "added": 2, "removed": 3002 }
+    },
+    {
+      "name": "whitespace-only reindent of a large block counts every touched line",
+      "oldText": { "lines": [{ "prefix": "l", "from": 0, "to": 2999 }] },
+      "newText": {
+        "lines": [
+          { "prefix": "\tl", "from": 0, "to": 1499 },
+          { "prefix": "l", "from": 1500, "to": 2998 },
+          "l2999 "
+        ]
+      },
+      "expected": { "added": 1501, "removed": 1501 }
+    },
+    {
+      "name": "whitespace-only change in a small file",
+      "oldText": { "lines": ["if (x) {", "  return 1", "}"] },
+      "newText": { "lines": ["if (x) {", "    return 1", "}"] },
+      "expected": { "added": 1, "removed": 1 }
+    },
+    {
+      "name": "CRLF vs LF of the same 2000 lines is no change",
+      "oldText": { "eol": "\r\n", "lines": [{ "prefix": "l", "from": 0, "to": 1999 }] },
+      "newText": { "lines": [{ "prefix": "l", "from": 0, "to": 1999 }] },
+      "expected": { "added": 0, "removed": 0 }
+    },
+    {
+      "name": "CRLF old vs reversed LF new matches lines after the CR trim",
+      "oldText": { "eol": "\r\n", "lines": [{ "prefix": "l", "from": 0, "to": 1499 }] },
+      "newText": { "lines": [{ "prefix": "l", "from": 1499, "to": 0 }] },
+      "expected": { "added": 1499, "removed": 1499 }
+    },
+    {
+      "name": "repeated lines with no unique anchor dump both sides",
+      "oldText": { "lines": [{ "line": "x", "times": 1500 }, "a"] },
+      "newText": { "lines": ["b", { "line": "x", "times": 1500 }] },
+      "expected": { "added": 1501, "removed": 1501 }
+    },
+    {
+      "name": "null oldText is a new file",
+      "oldText": null,
+      "newText": { "lines": ["a", "b", "c"] },
+      "expected": { "added": 3, "removed": 0 }
+    },
+    {
+      "name": "empty oldText is a new file",
+      "oldText": { "lines": [] },
+      "newText": { "lines": ["a", "b"] },
+      "expected": { "added": 2, "removed": 0 }
+    },
+    {
+      "name": "empty newText is a deleted file",
+      "oldText": { "lines": ["a", "b", "c"] },
+      "newText": { "lines": [] },
+      "expected": { "added": 0, "removed": 3 }
+    },
+    {
+      "name": "both sides empty",
+      "oldText": { "lines": [] },
+      "newText": { "lines": [] },
+      "expected": { "added": 0, "removed": 0 }
+    }
+  ]
+}

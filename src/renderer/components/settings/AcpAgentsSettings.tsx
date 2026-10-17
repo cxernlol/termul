@@ -27,6 +27,16 @@ import { logFrontendError } from '@/lib/log-api'
 import { cn } from '@/lib/utils'
 import { useAcpStore, useConfigWarmState } from '@/stores/acp-store'
 
+function agentUpdatesLabel(count: number): string {
+  return `${count} agent update${count === 1 ? '' : 's'}`
+}
+
+function formatCheckedAt(iso: string): string {
+  return new Intl.DateTimeFormat('en-US', { dateStyle: 'medium', timeStyle: 'short' }).format(
+    new Date(iso)
+  )
+}
+
 /** Render a sanitized SVG icon string inline (theme-aware via currentColor). */
 function InlineIcon({ svg }: { svg: string }): React.JSX.Element {
   const sanitized = useMemo(() => sanitizeInlineAgentSvg(svg), [svg])
@@ -336,7 +346,9 @@ export function AcpAgentsSettings({ header }: { header?: ReactNode }): React.JSX
   const {
     usingRemoteRegistry,
     remoteAvailable,
+    advisorySummary,
     checking,
+    lastCheckedAt,
     checkForUpdates,
     applyRemoteRegistry,
     activeRegistry,
@@ -395,18 +407,25 @@ export function AcpAgentsSettings({ header }: { header?: ReactNode }): React.JSX
   const handleCheckUpdates = (): void => {
     void (async () => {
       try {
-        const summary = await checkForUpdates(true)
+        const summary = await checkForUpdates('manual')
         if (!summary) {
           toast.error('Could not check for agent updates.')
+          return
+        }
+        if (summary.registryUnreachable) {
+          const cachedAt = summary.fetchedAt ? ` from ${formatCheckedAt(summary.fetchedAt)}` : ''
+          const found =
+            summary.updatedCount === 0 ? 'no updates' : agentUpdatesLabel(summary.updatedCount)
+          toast.warning("Couldn't reach the agent registry.", {
+            description: `Cached results${cachedAt} show ${found}.`
+          })
           return
         }
         if (summary.updatedCount === 0) {
           toast.success('All agents are up to date.')
           return
         }
-        toast.success(
-          `${summary.updatedCount} agent update${summary.updatedCount === 1 ? '' : 's'} available.`
-        )
+        toast.success(`${agentUpdatesLabel(summary.updatedCount)} available.`)
       } catch (err) {
         toast.error(String(err))
       }
@@ -418,6 +437,14 @@ export function AcpAgentsSettings({ header }: { header?: ReactNode }): React.JSX
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         {header}
         <div className="flex flex-wrap items-center justify-end gap-2">
+          {lastCheckedAt && (
+            <span className="text-2xs text-muted-foreground">
+              {remoteAvailable && (advisorySummary?.updatedCount ?? 0) > 0
+                ? `${advisorySummary?.updatedCount} agent update${(advisorySummary?.updatedCount ?? 0) === 1 ? '' : 's'} available`
+                : 'All agents up to date'}{' '}
+              · Checked {lastCheckedAt}
+            </span>
+          )}
           <Button
             type="button"
             size="sm"

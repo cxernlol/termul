@@ -1,21 +1,23 @@
-﻿// Context bar visibility settings
+﻿import { MONO_STACK } from '@/lib/font-stacks'
+
+// Context bar visibility settings
 export interface ContextBarSettings {
+  showProjectName: boolean
   showGitBranch: boolean
   showGitStatus: boolean
   showWorkingDirectory: boolean
   showExitCode: boolean
 }
 
-// Default settings with all elements visible
+// Default settings for users with no saved blob: project name and file counts
+// (`showGitStatus`) are hidden; branch, directory and exit code are shown.
 export const DEFAULT_CONTEXT_BAR_SETTINGS: ContextBarSettings = {
+  showProjectName: false,
   showGitBranch: true,
-  showGitStatus: true,
+  showGitStatus: false,
   showWorkingDirectory: true,
   showExitCode: true
 }
-
-// Persistence key for context bar settings
-export const CONTEXT_BAR_SETTINGS_KEY = 'settings/context-bar'
 
 // Table of contents panel settings
 export interface TocSettings {
@@ -24,38 +26,50 @@ export interface TocSettings {
   width: number
 }
 
-export const TOC_MIN_WIDTH = 150
-export const TOC_MAX_WIDTH = 350
+export const TOC_MIN_WIDTH = 180
+export const TOC_MAX_WIDTH = 360
+/** Below this editor-pane width the outline folds into a tick strip. */
+export const TOC_NARROW_PANE_WIDTH = 720
 
 export const DEFAULT_TOC_SETTINGS: TocSettings = {
   isVisible: true,
   maxHeadingLevel: 3,
-  width: 220
+  width: 240
 }
-
-export const TOC_SETTINGS_KEY = 'settings/toc'
 
 export type TerminalUrlOpenMode = 'system' | 'termul'
 
 /** Which interface the remote terminal HTTP server binds to when started. */
 export type RemoteBindMode = 'localhost' | 'all'
 
+/**
+ * A saved way to open a terminal. `shell` is a path or a PATH name; empty
+ * means the project or app default shell. `args` go to `shell` as separate
+ * argv entries, so a profile with args always names a shell. An empty `cwd`
+ * opens in the active project or worktree folder. Parse stored or typed
+ * profiles with `lib/terminal-profiles.ts`, which rejects bad env keys.
+ */
+export interface TerminalProfile {
+  id: string
+  name: string
+  shell: string
+  args: string[]
+  cwd: string
+  env: Record<string, string>
+}
+
 // Application-wide settings
 export interface AppSettings {
+  /** Persisted for old profiles. The terminal ignores this and uses Paper Mono. */
   terminalFontFamily: string
   terminalFontSize: number
   terminalBufferSize: number // Scrollback buffer size in lines
   terminalRenderer: 'auto' | 'webgl' | 'dom'
+  terminalScreenReaderMode: boolean // xterm screenReaderMode for new terminals (off by default)
   defaultShell: string
   defaultProjectColor: string // Default color for new projects (from PROJECT_COLORS)
-  maxTerminalsPerProject: number // Maximum terminals allowed per project
-  orphanDetectionEnabled: boolean // Enable automatic cleanup of inactive terminals
-  orphanDetectionTimeout: number | null // Timeout in ms, null = disabled
   confirmTerminalClose: boolean // Show a confirmation dialog before closing a terminal
   terminalUrlOpenMode: TerminalUrlOpenMode // Controls how Ctrl/Cmd+Click terminal URLs are opened
-  sidebarVisible: boolean
-  fileExplorerVisible: boolean
-  sshPanelVisible: boolean
   /** Remote server bind: localhost (127.0.0.1) or all interfaces (0.0.0.0). */
   remoteBindMode: RemoteBindMode
   /** App-wide color theme family id (without `-light` suffix). */
@@ -83,6 +97,10 @@ export interface AppSettings {
    * env var / Rust default (60s). Set via App Preferences; pushed to the
    * Rust core. */
   acpSessionReopenTimeoutSecs: number | null
+  /** How long an idle agent chat stays open, in seconds. `null` follows
+   * `$TERMUL_AGENT_IDLE_REAP_SECS` or the 30-minute default. The env var
+   * wins over this value. */
+  agentIdleWindowSecs: number | null
   /**
    * OS/web notification when a terminal tab that was producing output for a
    * long stretch (typically an in-terminal AI harness) goes idle (GH-645).
@@ -92,6 +110,8 @@ export interface AppSettings {
   notifyOnAgentChatTurnFinished: boolean
   /** OS/web notification when an Agent Chat waits for approval or a question. */
   notifyOnAgentChatNeedsYou: boolean
+  /** Saved shell + args + folder + env combinations, opened from the command palette. */
+  terminalProfiles: TerminalProfile[]
 }
 
 /** Whole-UI zoom bounds â€” match the native View menu semantics (0.5xâ€“3.0x, 10% steps). */
@@ -100,12 +120,7 @@ export const UI_ZOOM_MIN = 0.5
 export const UI_ZOOM_MAX = 3.0
 export const UI_ZOOM_STEP = 0.1
 
-export type AppPanelVisibilitySettingKey =
-  | 'sidebarVisible'
-  | 'fileExplorerVisible'
-  | 'sshPanelVisible'
-
-export type AppSettingsUpdate = Partial<Omit<AppSettings, AppPanelVisibilitySettingKey>>
+export type AppSettingsUpdate = Partial<AppSettings>
 
 // Terminal buffer size options
 export const BUFFER_SIZE_OPTIONS = [
@@ -114,35 +129,6 @@ export const BUFFER_SIZE_OPTIONS = [
   { value: 10000, label: '10,000 lines' },
   { value: 25000, label: '25,000 lines' },
   { value: 50000, label: '50,000 lines' }
-]
-
-// Font family options for terminal
-export const FONT_FAMILY_OPTIONS = [
-  { value: 'Menlo, Monaco, "Courier New", monospace', label: 'Menlo' },
-  { value: 'Monaco, Menlo, "Courier New", monospace', label: 'Monaco' },
-  { value: 'Consolas, "Courier New", monospace', label: 'Consolas' },
-  { value: '"Courier New", Courier, monospace', label: 'Courier New' },
-  { value: '"Source Code Pro", Menlo, monospace', label: 'Source Code Pro' },
-  { value: '"JetBrains Mono", Menlo, monospace', label: 'JetBrains Mono' },
-  { value: '"Fira Code", Menlo, monospace', label: 'Fira Code' }
-]
-
-// Max terminals per project options
-export const MAX_TERMINALS_OPTIONS = [
-  { value: 5, label: '5 terminals' },
-  { value: 10, label: '10 terminals' },
-  { value: 15, label: '15 terminals' },
-  { value: 20, label: '20 terminals' },
-  { value: 50, label: '50 terminals' }
-]
-
-// Orphan detection timeout options
-export const ORPHAN_TIMEOUT_OPTIONS = [
-  { value: 60000, label: '1 minute' },
-  { value: 300000, label: '5 minutes' },
-  { value: 600000, label: '10 minutes' },
-  { value: 1800000, label: '30 minutes' },
-  { value: 3600000, label: '1 hour' }
 ]
 
 // Editor auto-save delay options (GH-539)
@@ -193,7 +179,7 @@ export const ACP_TURN_TIMEOUT_OPTIONS: Array<{
   value: number | null
   label: string
 }> = [
-  { value: null, label: 'Environment/default (unlimited)' },
+  { value: null, label: 'No limit' },
   { value: 3600, label: '1 hour' },
   { value: 7200, label: '2 hours' },
   { value: 21600, label: '6 hours' },
@@ -207,7 +193,7 @@ export const ACP_TURN_IDLE_TIMEOUT_OPTIONS: Array<{
   value: number | null
   label: string
 }> = [
-  { value: null, label: 'Environment/default (unlimited)' },
+  { value: null, label: 'No limit' },
   { value: 300, label: '5 minutes' },
   { value: 600, label: '10 minutes' },
   { value: 900, label: '15 minutes' },
@@ -221,9 +207,8 @@ export const ACP_SESSION_NEW_TIMEOUT_OPTIONS: Array<{
   value: number | null
   label: string
 }> = [
-  { value: null, label: 'Environment/default (60 seconds)' },
+  { value: null, label: '1 minute' },
   { value: 30, label: '30 seconds' },
-  { value: 60, label: '1 minute' },
   { value: 120, label: '2 minutes' },
   { value: 300, label: '5 minutes' }
 ]
@@ -234,35 +219,53 @@ export const ACP_SESSION_REOPEN_TIMEOUT_OPTIONS: Array<{
   value: number | null
   label: string
 }> = [
-  { value: null, label: 'Environment/default (60 seconds)' },
+  { value: null, label: '1 minute' },
   { value: 30, label: '30 seconds' },
-  { value: 60, label: '1 minute' },
   { value: 120, label: '2 minutes' },
   { value: 300, label: '5 minutes' }
 ]
 
+/** How long an idle agent chat stays open. `null` = env var or 30 minutes. */
+export const AGENT_IDLE_WINDOW_OPTIONS: Array<{
+  value: number | null
+  label: string
+}> = [
+  { value: 900, label: '15 minutes' },
+  { value: null, label: '30 minutes' },
+  { value: 3600, label: '1 hour' },
+  { value: 7200, label: '2 hours' },
+  { value: 21600, label: '6 hours' },
+  { value: 86400, label: '24 hours' }
+]
+
+/** Plain label for a live idle-window reading (seconds). */
+export function formatAgentIdleWindow(secs: number): string {
+  const known = AGENT_IDLE_WINDOW_OPTIONS.find((option) => option.value === secs)
+  if (known?.label) return known.label
+  if (secs > 0 && secs % 3600 === 0) {
+    const hours = secs / 3600
+    return hours === 1 ? '1 hour' : `${hours} hours`
+  }
+  if (secs > 0 && secs % 60 === 0) {
+    const minutes = secs / 60
+    return minutes === 1 ? '1 minute' : `${minutes} minutes`
+  }
+  return secs === 1 ? '1 second' : `${secs} seconds`
+}
+
 // Default application settings
 export const DEFAULT_APP_SETTINGS: AppSettings = {
-  // Terminal font default — the same JetBrains Mono Variable stack as
-  // DEFAULT_TERMINAL_OPTIONS.fontFamily in terminal-config.ts (the canonical
-  // stack). The bundled webfont exists on mobile browsers (CAP-9), unlike the
-  // old Menlo/Monaco/Courier stack which silently fell back to a generic
-  // system monospace there.
-  terminalFontFamily:
-    '"JetBrains Mono Variable", "JetBrains Mono", "Cascadia Code", "SF Mono", Menlo, Monaco, Consolas, "Ubuntu Mono", "DejaVu Sans Mono", "Liberation Mono", "Courier New", monospace',
+  // Kept so old profiles still parse. The terminal always renders MONO_STACK
+  // and does not read this value.
+  terminalFontFamily: MONO_STACK,
   terminalFontSize: 14,
   terminalBufferSize: 10000,
   terminalRenderer: 'auto',
+  terminalScreenReaderMode: false,
   defaultShell: '',
   defaultProjectColor: 'blue',
-  maxTerminalsPerProject: 10,
-  orphanDetectionEnabled: true,
-  orphanDetectionTimeout: 600000, // 10 minutes
   confirmTerminalClose: true,
   terminalUrlOpenMode: 'system',
-  sidebarVisible: true,
-  fileExplorerVisible: true,
-  sshPanelVisible: true,
   remoteBindMode: 'localhost',
   colorTheme: 'termul',
   appearanceMode: 'dark',
@@ -273,13 +276,12 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   acpTurnIdleTimeoutSecs: null,
   acpSessionNewTimeoutSecs: null,
   acpSessionReopenTimeoutSecs: null,
+  agentIdleWindowSecs: null,
   notifyOnTerminalIdle: true,
   notifyOnAgentChatTurnFinished: true,
-  notifyOnAgentChatNeedsYou: true
+  notifyOnAgentChatNeedsYou: true,
+  terminalProfiles: []
 }
-
-// Persistence key for app settings
-export const APP_SETTINGS_KEY = 'settings/app'
 
 // Keyboard shortcut definition
 export interface KeyboardShortcut {
@@ -369,8 +371,8 @@ export const DEFAULT_KEYBOARD_SHORTCUTS: KeyboardShortcutsConfig = {
   },
   sidebarToggle: {
     id: 'sidebarToggle',
-    label: 'Toggle Sidebar',
-    description: 'Show or hide the project sidebar',
+    label: 'Toggle Projects',
+    description: 'Expand or collapse projects',
     defaultKey: 'ctrl+shift+b'
   },
   closeTab: {
@@ -387,8 +389,8 @@ export const DEFAULT_KEYBOARD_SHORTCUTS: KeyboardShortcutsConfig = {
   },
   toggleFileExplorer: {
     id: 'toggleFileExplorer',
-    label: 'Toggle File Explorer',
-    description: 'Show or hide the file explorer panel',
+    label: 'Toggle Side Panel',
+    description: 'Show or hide side panel',
     defaultKey: 'ctrl+b'
   },
   fileExplorerRename: {
@@ -415,37 +417,19 @@ export const DEFAULT_KEYBOARD_SHORTCUTS: KeyboardShortcutsConfig = {
     id: 'worktreeSwitchNext',
     label: 'Switch to Next Worktree',
     description: 'Cycle to the next worktree in the sidebar',
-    defaultKey: 'ctrl+shift+downarrow'
+    defaultKey: 'ctrl+shift+arrowdown'
   },
   worktreeSwitchPrev: {
     id: 'worktreeSwitchPrev',
     label: 'Switch to Previous Worktree',
     description: 'Cycle to the previous worktree in the sidebar',
-    defaultKey: 'ctrl+shift+uparrow'
+    defaultKey: 'ctrl+shift+arrowup'
   },
   worktreeOpenTerminal: {
     id: 'worktreeOpenTerminal',
     label: 'Open Terminal in Worktree',
     description: 'Spawn a new terminal in the active worktree',
     defaultKey: 'ctrl+shift+alt+t'
-  },
-  worktreeMergeToMain: {
-    id: 'worktreeMergeToMain',
-    label: 'Merge Worktree to Main',
-    description: 'Start merge workflow: worktree branch to main',
-    defaultKey: 'ctrl+shift+m'
-  },
-  worktreeSyncMain: {
-    id: 'worktreeSyncMain',
-    label: 'Sync Main into Worktree',
-    description: 'Start merge workflow: main into worktree branch',
-    defaultKey: 'ctrl+shift+alt+s'
-  },
-  worktreeArchive: {
-    id: 'worktreeArchive',
-    label: 'Archive Active Worktree',
-    description: 'Archive the current active worktree',
-    defaultKey: 'ctrl+shift+a'
   },
   worktreeSwitchRoot: {
     id: 'worktreeSwitchRoot',
@@ -458,6 +442,12 @@ export const DEFAULT_KEYBOARD_SHORTCUTS: KeyboardShortcutsConfig = {
     label: 'Change Color Theme',
     description: 'Open the color theme picker with live preview',
     defaultKey: 'ctrl+alt+t'
+  },
+  settings: {
+    id: 'settings',
+    label: 'Settings',
+    description: 'Open app settings',
+    defaultKey: 'ctrl+,'
   }
 }
 
@@ -483,7 +473,8 @@ const WEB_DEFAULT_KEY_OVERRIDES: Record<string, string> = {
   commandHistory: '',
   zoomIn: 'alt+=',
   zoomOut: 'alt+-',
-  zoomReset: 'alt+0'
+  zoomReset: 'alt+0',
+  settings: 'alt+,'
 }
 
 /** Platform-aware default bindings. See `WEB_DEFAULT_KEY_OVERRIDES`. */
@@ -501,6 +492,3 @@ export function getDefaultKeyboardShortcuts(): KeyboardShortcutsConfig {
   }
   return webDefaults
 }
-
-// Persistence key for keyboard shortcuts
-export const KEYBOARD_SHORTCUTS_KEY = 'settings/keyboard-shortcuts'

@@ -34,7 +34,9 @@ vi.mock('@/hooks/use-mobile-web-shell', () => ({
 }))
 
 vi.mock('./TocPanel', () => ({
-  TocPanel: () => <div data-toc-panel="toc" />
+  TocPanel: ({ variant }: { variant?: 'panel' | 'strip' }) => (
+    <div data-toc-panel={variant ?? 'panel'} />
+  )
 }))
 
 vi.mock('@/stores/toc-settings-store', () => ({
@@ -106,6 +108,11 @@ describe('CodeEditor', () => {
       />
     )
 
+    ;(global as { __termulPendingRevealLine?: unknown }).__termulPendingRevealLine = {
+      filePath: '/project/src/example.ts',
+      lineNumber: 7,
+      searchTerm: 'needle'
+    }
     window.dispatchEvent(
       new CustomEvent('termul:reveal-line', {
         detail: {
@@ -172,6 +179,8 @@ describe('CodeEditor mobile TOC hide', () => {
     mobileRef.current = true
     const { container } = render(<CodeEditor {...defaultProps} language="markdown" />)
 
-    expect(container.querySelector('[data-toc-panel]')).toBeNull()
+    expect(container.querySelector('[data-toc-panel="panel"]')).toBeNull()
+    // The outline folds into the narrow tick strip instead.
+    expect(container.querySelector('[data-toc-panel="strip"]')).not.toBeNull()
   })
 })

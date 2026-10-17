@@ -1,6 +1,11 @@
 import { mergeAttributes, Node } from '@tiptap/core'
 import { NodeViewWrapper, type ReactNodeViewProps, ReactNodeViewRenderer } from '@tiptap/react'
-import { FILE_TOKEN_END, FILE_TOKEN_SEP, FILE_TOKEN_START } from '@/lib/skill-tokens'
+import {
+  FILE_TOKEN_END,
+  FILE_TOKEN_SEP,
+  FILE_TOKEN_START,
+  isFolderTokenPath
+} from '@/lib/skill-tokens'
 import { cn } from '@/lib/utils'
 import { FileChip } from '../FileChip'
 
@@ -100,7 +105,10 @@ function FilePillNodeView({ node, selected }: ReactNodeViewProps): React.JSX.Ele
       data-file-display={display}
       data-file-abspath={String(attrs.absPath ?? '')}
     >
-      <FileChip name={display} />
+      <FileChip
+        name={display}
+        kind={isFolderTokenPath(String(attrs.absPath ?? '')) ? 'dir' : 'file'}
+      />
     </NodeViewWrapper>
   )
 }

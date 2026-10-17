@@ -11,6 +11,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use crate::acp::{AcpCatalogService, AcpInstallService, ClaudeAgentService, ClaudeAuthMode};
+use crate::data_lock::DataLocks;
 use crate::web::ServerConfig;
 
 /// Dispatch `termul-server claude <args...>`. Handled by the binary before any
@@ -70,7 +71,11 @@ pub fn run(args: &[String]) -> ExitCode {
                     );
                     println!(
                         "API key stored in OS keychain: {}",
-                        yes_no(status.api_key_configured)
+                        if status.keychain_available {
+                            yes_no(status.api_key_configured)
+                        } else {
+                            "unavailable (OS keychain not reachable)"
+                        }
                     );
                     ExitCode::SUCCESS
                 }
@@ -149,7 +154,14 @@ pub fn run(args: &[String]) -> ExitCode {
                 }
             }
         }
+        [area, rest @ ..] if area == "account" => run_account(&service, rest),
         [action] if action == "install" => {
+            // `install` opens the live state dir's catalog + install stores.
+            // AD-14: refuse (instead of racing a running host) when another
+            // Termul host holds the data-dir lock; hold it until we exit.
+            let Some(_data_lock) = lock_state_dir(&state_dir) else {
+                return ExitCode::from(1);
+            };
             let runtime = match tokio::runtime::Runtime::new() {
                 Ok(runtime) => runtime,
                 Err(error) => {
@@ -183,6 +195,94 @@ pub fn run(args: &[String]) -> ExitCode {
     }
 }
 
+/// `termul-server claude account <list|add|login|rename|remove|default|project>`.
+/// Prints account names and ids only — never login details.
+fn run_account(service: &ClaudeAgentService, args: &[String]) -> ExitCode {
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let result = match args.as_slice() {
+        ["list"] => {
+            let runtime = match tokio::runtime::Runtime::new() {
+                Ok(runtime) => runtime,
+                Err(error) => {
+                    eprintln!("termul-server claude: could not start runtime: {error}");
+                    return ExitCode::from(1);
+                }
+            };
+            runtime
+                .block_on(service.profile_list())
+                .map(|snapshot| {
+                    for row in &snapshot.profiles {
+                        let default = if row.id == snapshot.default_account_id {
+                            " (default)"
+                        } else {
+                            ""
+                        };
+                        let signed_in = row.signed_in.map(yes_no).unwrap_or("unknown");
+                        println!("{}  {}{default}  signed in: {signed_in}", row.id, row.name);
+                    }
+                    for (project, choice) in &snapshot.project_profiles {
+                        println!("project {project} uses {choice}");
+                    }
+                })
+        }
+        ["add", name] => service.insert_profile(name).map(|created| {
+            println!("Added account {} ({}).", created.name, created.id);
+            println!(
+                "Sign in with: termul-server claude account login {}",
+                created.id
+            );
+        }),
+        ["login", id] => service.run_account_cli_login(id),
+        ["rename", id, name] => service.rename_account(id, name),
+        ["remove", id] => match tokio::runtime::Runtime::new() {
+            Ok(runtime) => runtime.block_on(service.remove_account(id)).map(|moved| {
+                println!(
+                    "Removed. {} projects moved to the default account.",
+                    moved.len()
+                );
+            }),
+            Err(error) => Err(format!("could not start runtime: {error}")),
+        },
+        ["default", id] => service.set_default_account(id),
+        ["project", project, "default"] => service.set_project_account(project, None),
+        ["project", project, id] => service.set_project_account(project, Some(id)),
+        _ => {
+            eprintln!("{}", usage_text());
+            return ExitCode::from(2);
+        }
+    };
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("termul-server claude: {error}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+fn usage_text() -> &'static str {
+    "Usage: termul-server claude [--state-dir PATH] account <list|add NAME|login ID|rename ID NAME|remove ID|default ID|project PROJECT_ID ID|default>"
+}
+
+/// Take the AD-14 data-dir lock for `termul-server claude install`. `None`
+/// after printing why it was refused.
+fn lock_state_dir(state_dir: &std::path::Path) -> Option<DataLocks> {
+    let mut locks = DataLocks::new();
+    match locks.lock_dir(state_dir) {
+        Ok(()) => Some(locks),
+        Err(error) if error.is_busy() => {
+            eprintln!(
+                "termul-server claude: install refused — a Termul host (termul-server or the desktop app) is running on this state directory: {error}"
+            );
+            None
+        }
+        Err(error) => {
+            eprintln!("termul-server claude: cannot lock the state directory: {error}");
+            None
+        }
+    }
+}
+
 fn yes_no(value: bool) -> &'static str {
     if value {
         "yes"
@@ -192,5 +292,5 @@ fn yes_no(value: bool) -> &'static str {
 }
 
 fn usage() -> &'static str {
-    "Usage: termul-server claude [--state-dir PATH] <auth status|auth login|auth mode claude-code|api-key|api-key set|api-key delete|install>"
+    "Usage: termul-server claude [--state-dir PATH] <auth status|auth login|auth mode claude-code|api-key|api-key set|api-key delete|install|account ...>"
 }

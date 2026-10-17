@@ -1,3 +1,4 @@
+import type { BaseBranchInfo } from '@shared/types/worktree.types'
 import type { Dispatch, SetStateAction } from 'react'
 import { Folder, FolderGit2, GitBranch } from '@/components/icons'
 import {
@@ -7,42 +8,68 @@ import {
   SelectTrigger,
   SelectValue
 } from '@/components/ui/select'
+import { WriteGate } from '@/components/ui/write-gate'
+import { OUTSIDE_PROJECT_ROOT_REASON } from '@/lib/active-worktree'
 import { cn } from '@/lib/utils'
-import type { BaseBranchInfo } from '@/lib/worktree-api'
+import { worktreeLabel } from '@/lib/workspace-rows'
+import type { Worktree } from '@/types/project'
 import { STRIP_MENU_ITEM_CLASS, STRIP_TRIGGER_CLASS } from './launcher-classes'
+import type { LaunchWorkspace } from './use-launch-workspace'
+
+const NO_WORKTREES_REASON = 'No worktrees yet'
+
+/** Why the Existing worktree item is unavailable, or `undefined` when usable. */
+function existingDisabledReason(worktrees: readonly Worktree[]): string | undefined {
+  if (worktrees.length === 0) return NO_WORKTREES_REASON
+  if (worktrees.every((w) => w.outsideProjectRoot === true)) return OUTSIDE_PROJECT_ROOT_REASON
+  return undefined
+}
 
 /**
  * Context strip tucked under the composer card (CAP-2) — always present, like
  * the chat composer's workspace strip. When worktree launches are available
- * (`interactive`) it carries the isolation-mode picker (Local vs New
- * worktree) and, in worktree mode, the base-branch picker. Otherwise it
- * degrades to the chat strip's read-only workspace + branch text so both
- * surfaces agree on "there is always a strip" (a non-git project shows just
- * Local, a git project adds its branch or Detached HEAD).
+ * (`interactive`) it carries the Workspace chip (Current checkout, Existing
+ * worktree or New worktree) and, per mode, the checkout's branch, the
+ * worktree picker or the base-branch picker. Otherwise it degrades to the chat
+ * strip's read-only workspace + branch text so both surfaces agree on "there
+ * is always a strip" (a non-git project shows just Local, a git project adds
+ * its branch or Detached HEAD).
  */
 export function LauncherContextStrip({
-  isolationMode,
-  setIsolationMode,
+  workspace,
+  worktrees,
   baseBranch,
   setBaseBranch,
   baseBranchInfo,
   baseOptions,
   interactive,
+  newWorktreeDisabledReason,
   gitBranch,
   isGitRepo
 }: {
-  isolationMode: 'current' | 'worktree'
-  setIsolationMode: Dispatch<SetStateAction<'current' | 'worktree'>>
+  /** Chip mode and the selected existing worktree (`useLaunchWorkspace`). */
+  workspace: Pick<
+    LaunchWorkspace,
+    'isolationMode' | 'setIsolationMode' | 'existingWorktreeId' | 'setExistingWorktreeId'
+  >
+  /** The project's listed worktrees (Existing worktree picker). */
+  worktrees: readonly Worktree[]
   baseBranch: string | null
   setBaseBranch: Dispatch<SetStateAction<string | null>>
   baseBranchInfo: BaseBranchInfo | null
   baseOptions: { value: string; label: string }[]
-  /** Worktree launches available — the pickers mount; else read-only text. */
+  /** Git project — the pickers mount; else read-only text. */
   interactive: boolean
+  /** When set, the "New worktree" option stays visible but disabled and this
+      reason is exposed on hover and to assistive tech (write-gated server). */
+  newWorktreeDisabledReason?: string
   /** Reactive project branch (the same fallback the chat strip reads). */
   gitBranch: string | null
   isGitRepo: boolean
 }): React.JSX.Element {
+  const { isolationMode, setIsolationMode, existingWorktreeId, setExistingWorktreeId } = workspace
+  const existingReason = existingDisabledReason(worktrees)
+
   return (
     <div
       data-agent-launcher-context-strip="true"
@@ -53,26 +80,97 @@ export function LauncherContextStrip({
           <Select
             value={isolationMode}
             onValueChange={(value) =>
-              value === 'current' || value === 'worktree' ? setIsolationMode(value) : undefined
+              value === 'current' || value === 'existing' || value === 'worktree'
+                ? setIsolationMode(value)
+                : undefined
             }
           >
-            <SelectTrigger aria-label="Isolation mode" className={STRIP_TRIGGER_CLASS}>
-              {isolationMode === 'worktree' ? (
-                <FolderGit2 className="size-3.5 shrink-0" />
-              ) : (
+            <SelectTrigger aria-label="Workspace" className={STRIP_TRIGGER_CLASS}>
+              {isolationMode === 'current' ? (
                 <Folder className="size-3.5 shrink-0" />
+              ) : (
+                <FolderGit2 className="size-3.5 shrink-0" />
               )}
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="current" className={STRIP_MENU_ITEM_CLASS}>
-                Local
+                Current checkout
               </SelectItem>
-              <SelectItem value="worktree" className={STRIP_MENU_ITEM_CLASS}>
-                New worktree
-              </SelectItem>
+              <div title={existingReason} className="flex w-full">
+                <SelectItem
+                  value="existing"
+                  className={STRIP_MENU_ITEM_CLASS}
+                  disabled={!!existingReason}
+                  aria-description={existingReason}
+                >
+                  Existing worktree
+                </SelectItem>
+              </div>
+              <WriteGate
+                gated={!!newWorktreeDisabledReason}
+                focusable={false}
+                className="flex w-full"
+              >
+                <SelectItem
+                  value="worktree"
+                  className={STRIP_MENU_ITEM_CLASS}
+                  disabled={!!newWorktreeDisabledReason}
+                  aria-description={newWorktreeDisabledReason}
+                >
+                  New worktree
+                </SelectItem>
+              </WriteGate>
             </SelectContent>
           </Select>
+
+          {isolationMode === 'current' && (
+            <span
+              className="ml-auto inline-flex min-w-0 items-center justify-end gap-1.5 px-2.5 text-xs text-muted-foreground"
+              title={gitBranch ?? 'HEAD is not on a branch'}
+            >
+              <GitBranch size={13} className="shrink-0" aria-hidden="true" />
+              <span className="sr-only">Branch: </span>
+              <span className="truncate">{gitBranch ?? 'Detached HEAD'}</span>
+            </span>
+          )}
+
+          {isolationMode === 'existing' && (
+            <div className="flex min-w-0 items-center justify-end gap-2">
+              <Select
+                value={existingWorktreeId ?? ''}
+                onValueChange={(value) => setExistingWorktreeId(value)}
+              >
+                <SelectTrigger
+                  aria-label="Worktree"
+                  className={cn(STRIP_TRIGGER_CLASS, 'min-w-0 [&>span]:truncate')}
+                >
+                  <GitBranch className="size-3.5 shrink-0" />
+                  <SelectValue placeholder="Select worktree" />
+                </SelectTrigger>
+                <SelectContent>
+                  {worktrees.map((w) => (
+                    <div
+                      key={w.id}
+                      title={w.outsideProjectRoot ? OUTSIDE_PROJECT_ROOT_REASON : w.path}
+                      className="flex w-full"
+                    >
+                      <SelectItem
+                        value={w.id}
+                        className={STRIP_MENU_ITEM_CLASS}
+                        disabled={w.outsideProjectRoot === true}
+                        aria-description={
+                          w.outsideProjectRoot ? OUTSIDE_PROJECT_ROOT_REASON : undefined
+                        }
+                      >
+                        {worktreeLabel(w)}
+                      </SelectItem>
+                    </div>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
 
           {isolationMode === 'worktree' && (
             <div className="flex min-w-0 items-center justify-end gap-2">

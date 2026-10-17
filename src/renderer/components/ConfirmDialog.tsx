@@ -1,7 +1,20 @@
 import { AnimatePresence, motion } from 'framer-motion'
-import { type KeyboardEvent, useCallback, useEffect } from 'react'
+import { type KeyboardEvent, useCallback, useEffect, useId, useRef } from 'react'
 import { AlertTriangle } from '@/components/icons'
 import { Button } from '@/components/ui/button'
+import { captureFocusReturnTarget } from '@/lib/focus-return'
+import { useOverlayRegistration } from '@/stores/overlay-stack-store'
+
+/**
+ * Prefix of the id each open `ConfirmDialog` registers on the overlay stack, so
+ * a caller can tell from the store that a confirm is (still) open
+ * (`lib/confirm-focus-return`).
+ */
+export const CONFIRM_DIALOG_OVERLAY_PREFIX = 'confirm-dialog:'
+
+/** Elements Tab reaches, in DOM order (the focus trap wraps over these). */
+const TABBABLE =
+  'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
 
 interface ConfirmDialogProps {
   isOpen: boolean
@@ -33,6 +46,50 @@ export function ConfirmDialog({
   onConfirm,
   onCancel
 }: ConfirmDialogProps): React.JSX.Element {
+  // Mobile web shell: system back cancels this dialog (inert on desktop).
+  const dialogId = useId()
+  const overlayId = `${CONFIRM_DIALOG_OVERLAY_PREFIX}${dialogId}`
+  useOverlayRegistration(overlayId, isOpen, onCancel, { mobileShellOnly: true })
+
+  // Focus moves into the dialog (Cancel for a danger confirm, so a stray
+  // Enter never destroys anything) and returns to where it was on close —
+  // when that element still exists; `lib/confirm-focus-return` handles the
+  // cases where it does not.
+  const returnFocusTo = useRef<HTMLElement | null>(null)
+  const dialogRef = useRef<HTMLDivElement>(null)
+  const initialFocusRef = useRef<HTMLButtonElement>(null)
+  useEffect(() => {
+    if (!isOpen) return
+    returnFocusTo.current = captureFocusReturnTarget()
+    const focusInitial = () => {
+      const dialog = dialogRef.current
+      if (!dialog || dialog.contains(document.activeElement)) return
+      // Loading disables the initial button; the dialog itself holds focus then.
+      const initial = initialFocusRef.current
+      if (initial && !initial.disabled) initial.focus()
+      else dialog.focus()
+    }
+    // A layer closing as the confirm opens (a menu that raised it) may take
+    // focus back for a few frames; keep pulling it in until it settles.
+    let frames = 0
+    let raf = requestAnimationFrame(function pull() {
+      focusInitial()
+      if (++frames < 30) raf = requestAnimationFrame(pull)
+    })
+    // Modal: focus that leaves the dialog comes back.
+    const contain = (e: FocusEvent) => {
+      if (e.target instanceof Node && !dialogRef.current?.contains(e.target)) focusInitial()
+    }
+    document.addEventListener('focusin', contain)
+    return () => {
+      cancelAnimationFrame(raf)
+      document.removeEventListener('focusin', contain)
+      const target = returnFocusTo.current
+      returnFocusTo.current = null
+      if (target?.isConnected) target.focus()
+    }
+  }, [isOpen])
+
   // Handle Escape key to close dialog
   useEffect(() => {
     if (!isOpen) return
@@ -50,7 +107,26 @@ export function ConfirmDialog({
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLDivElement>) => {
-      if (e.key === 'Enter') {
+      if (e.key === 'Tab') {
+        // Keep Tab inside the dialog (it is modal), over the children's
+        // controls as well as the footer buttons.
+        const tabbable = Array.from(e.currentTarget.querySelectorAll<HTMLElement>(TABBABLE))
+        const first = tabbable[0]
+        const last = tabbable[tabbable.length - 1]
+        const active = document.activeElement
+        if (!first) {
+          // Nothing tabbable (all disabled while loading): stay on the dialog.
+          e.preventDefault()
+        } else if (e.shiftKey && (active === first || active === e.currentTarget)) {
+          e.preventDefault()
+          last.focus()
+        } else if (!e.shiftKey && active === last) {
+          e.preventDefault()
+          first.focus()
+        }
+      } else if (e.key === 'Enter' && e.target === e.currentTarget && !isLoading) {
+        // Only Enter on the dialog itself confirms: a focused control handles
+        // its own Enter (Cancel must not confirm, a checkbox must not either).
         e.preventDefault()
         onConfirm()
       } else if (e.key === 'Escape') {
@@ -58,7 +134,7 @@ export function ConfirmDialog({
         onCancel()
       }
     },
-    [onConfirm, onCancel]
+    [onConfirm, onCancel, isLoading]
   )
 
   return (
@@ -80,7 +156,12 @@ export function ConfirmDialog({
             className="bg-card rounded-lg shadow-2xl w-[400px] border border-border overflow-hidden"
             onClick={(e) => e.stopPropagation()}
             onKeyDown={handleKeyDown}
+            ref={dialogRef}
             tabIndex={-1}
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby={`${dialogId}-title`}
+            aria-describedby={`${dialogId}-message`}
           >
             {/* Content */}
             <div className="p-6">
@@ -91,8 +172,15 @@ export function ConfirmDialog({
                   </div>
                 )}
                 <div className="flex-1">
-                  <h3 className="text-sm font-semibold text-foreground mb-1">{title}</h3>
-                  <p className="text-sm text-muted-foreground">{message}</p>
+                  <h3
+                    id={`${dialogId}-title`}
+                    className="text-sm font-semibold text-foreground mb-1"
+                  >
+                    {title}
+                  </h3>
+                  <p id={`${dialogId}-message`} className="text-sm text-muted-foreground">
+                    {message}
+                  </p>
                   {children && <div className="mt-4">{children}</div>}
                 </div>
               </div>
@@ -106,6 +194,7 @@ export function ConfirmDialog({
                 size="sm"
                 onClick={onCancel}
                 disabled={isLoading}
+                ref={variant === 'danger' ? initialFocusRef : undefined}
               >
                 {cancelLabel}
               </Button>
@@ -126,6 +215,7 @@ export function ConfirmDialog({
                 size="sm"
                 variant={variant === 'danger' ? 'destructive' : 'default'}
                 onClick={onConfirm}
+                ref={variant === 'danger' ? undefined : initialFocusRef}
                 disabled={isLoading}
               >
                 {isLoading ? 'Loading...' : confirmLabel}

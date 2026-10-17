@@ -38,15 +38,17 @@ export const FRESH = {
   agentSwitches: {},
   plans: {},
   commands: {},
+  commandsSeq: {},
   pendingPermissions: {},
   pendingQuestions: {},
   pendingElicitations: {},
   promptQueues: {},
   turnEndNotices: {},
   suppressQueueFlush: {},
+  promptCommandStates: {},
   transportReconnecting: false,
-  queuedProjectSwitchId: null,
-  pendingBrowserOpen: {}
+  pendingBrowserOpen: {},
+  autoOpenBrowserUrl: {}
 }
 
 /**

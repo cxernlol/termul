@@ -7,6 +7,7 @@
 
 import { type PersistedComposerOptions, PersistenceKeys } from '@shared/types/persistence.types'
 import type { WsAgentSummary } from '@shared/types/web-protocol.types'
+import { sessionModelSnapshot } from '@/components/chat/chat-input-bar-config'
 import type { AgentId, SessionId, ToolCall } from '@/lib/acp-api'
 import {
   deriveTitle,
@@ -15,12 +16,24 @@ import {
   type SessionPayload
 } from '@/lib/acp-history-persistence'
 import { getAcpTransport } from '@/lib/acp-transport'
+import { isDefiniteSpawnRejection } from '@/lib/agents/acp-spawn-errors'
 import { persistenceApi } from '@/lib/api'
+import { __resetCommandEngineForTesting } from '@/lib/command-engine'
+import { __clearCommandJournalForTesting } from '@/lib/command-journal'
+import { projectForCwd, resolveAgentSpawnEnv } from '@/lib/env-parser'
 import { logFrontendError } from '@/lib/log-api'
 import { isTauriContext } from '@/lib/tauri-runtime'
-import { agentReuseKey, configIdFromReuseKey, detachedReuseKey } from '../acp-reuse-keys'
+import { useProjectStore } from '@/stores/project-store'
+import type { Project } from '@/types/project'
+import {
+  agentReuseKey,
+  configIdFromReuseKey,
+  detachedReuseKey,
+  isDetachedReuseKey,
+  parseReuseKey
+} from '../acp-reuse-keys'
 import { ephemeralSessionIds } from './ephemeral-ids'
-import { isReusableStatus } from './helpers'
+import { isReusableStatus, SWITCH_SPLICE_ID_PREFIX, type SwitchMarkerFacts } from './helpers'
 import type { AcpSession, AcpState, ChatMessage, CommitMessageCollector } from './types'
 
 export { ephemeralSessionIds }
@@ -105,6 +118,36 @@ export function isHistoryCoveredEvent(sessionId: SessionId, eventSeq?: number): 
   return eventSeq <= (historySeqWatermarks.get(sessionId) ?? 0)
 }
 
+/**
+ * Per session, the subscribe cursor `attachLiveTurn` lowered to just before the
+ * open turn's prompt. The payload only summarizes that turn's tool calls, while
+ * the relay replays the turn in full: a covered tool_call/tool_call_update
+ * above the floor restores its card. Prompts and chunks stay covered.
+ */
+const liveTurnReplayFloors = new Map<SessionId, number>()
+
+export function noteLiveTurnReplayFloor(sessionId: SessionId, floor: number): void {
+  liveTurnReplayFloors.set(sessionId, floor)
+}
+
+export function forgetLiveTurnReplayFloor(sessionId: SessionId): void {
+  liveTurnReplayFloors.delete(sessionId)
+}
+
+/** The server seq of a covered tool event the attach replay re-delivers, else null. */
+export function liveTurnReplaySeq(sessionId: SessionId, eventSeq?: number): number | null {
+  const floor = liveTurnReplayFloors.get(sessionId)
+  if (floor === undefined || typeof eventSeq !== 'number' || eventSeq <= floor) return null
+  return isHistoryCoveredEvent(sessionId, eventSeq) ? eventSeq : null
+}
+
+/** A covered tool event, unless the attach replay re-delivers it in full. */
+export function isHistoryCoveredToolEvent(sessionId: SessionId, eventSeq?: number): boolean {
+  return (
+    isHistoryCoveredEvent(sessionId, eventSeq) && liveTurnReplaySeq(sessionId, eventSeq) === null
+  )
+}
+
 /** Record the authoritative history watermark for an installed payload. */
 export function noteHistoryWatermark(sessionId: SessionId, payload: SessionPayload): void {
   // `metadata.lastSeq` is the persisted-log cursor and can legitimately exceed
@@ -112,6 +155,7 @@ export function noteHistoryWatermark(sessionId: SessionId, payload: SessionPaylo
   // stale-low value must never under-cover the payload's own messages.
   const watermark = Math.max(payload.metadata.lastSeq ?? 0, maxPayloadSeq(payload))
   if (watermark > 0) historySeqWatermarks.set(sessionId, watermark)
+  liveTurnReplayFloors.delete(sessionId)
   // Keep the local seq counter above the server watermark (the recovery path
   // rebases the same way) so post-install live messages never receive local
   // stamps below the envelope seqs they arrived with.
@@ -121,6 +165,7 @@ export function noteHistoryWatermark(sessionId: SessionId, payload: SessionPaylo
 /** Test-only: clear per-session history watermarks between tests. */
 export function _resetHistorySeqWatermarksForTesting(): void {
   historySeqWatermarks.clear()
+  liveTurnReplayFloors.clear()
 }
 
 /**
@@ -152,6 +197,7 @@ export function persistSession(
   const liveMessages = (state.messages[sessionId] ?? []).map((m) =>
     m.streaming ? { ...m, streaming: false } : m
   )
+  const ownMessages = liveMessages.filter((m) => !m.id.startsWith(SWITCH_SPLICE_ID_PREFIX))
   const reuseKey = Object.keys(state.configToLiveAgent).find(
     (k) => state.configToLiveAgent[k] === session.agentId
   )
@@ -161,6 +207,12 @@ export function persistSession(
   // (including a prior `Untitled Chat N`) instead of regenerating one on every
   // persist. `rebaseUntitledCounter` keeps fresh numbers from colliding.
   const fallbackTitle = existingEntry?.title ?? nextUntitledTitle()
+  // Prefer the model the composer shows. Omit the keys when neither the live
+  // session nor the previous row has one, so a spread merge cannot wipe a
+  // host snapshot with `undefined`.
+  const recordedModel = sessionModelSnapshot(session)
+  const modelId = recordedModel?.modelId ?? existingEntry?.modelId
+  const modelName = recordedModel?.modelName ?? existingEntry?.modelName
   const entry: SessionIndexEntry = {
     id: sessionId,
     agentId: session.agentId,
@@ -170,8 +222,8 @@ export function persistSession(
     projectId: session.projectId,
     createdAt: session.createdAt,
     lastActivityAt: Date.now(),
-    messageCount: liveMessages.length,
-    lastSeq: liveMessages.reduce(
+    messageCount: ownMessages.length,
+    lastSeq: ownMessages.reduce(
       (max, m) => Math.max(max, typeof m.seq === 'number' ? m.seq : 0),
       0
     ),
@@ -187,6 +239,8 @@ export function persistSession(
     discovered: session.discovered ?? existingEntry?.discovered ?? false,
     worktreePath: session.worktreePath,
     worktreeBranch: session.worktreeBranch,
+    ...(modelId !== undefined ? { modelId } : {}),
+    ...(modelName !== undefined ? { modelName } : {}),
     // Story 3 (spec-in-chat-agent-switch): ordered-agent cache. The switch
     // orchestration writes the list at switch completion (see
     // `appendOrderedAgents`); every other persist carries the existing
@@ -200,13 +254,48 @@ export function persistSession(
 }
 
 /**
- * In-flight pre-warm spawns, keyed by `agentReuseKey(configId, cwd)`. Held
+ * In-flight pre-warm spawns, keyed by `agentReuseKey(configId, cwd, projectId)`. Held
  * outside reactive state (promises don't belong in the store) so `prewarmAgent`,
  * `startChat`, and `deleteAgentConfig` can dedupe against a warm that is still
  * spawning for the same config+cwd. The reactive `warmingConfigs` flag mirrors
  * membership for the UI.
  */
 export const inFlightWarms = new Map<string, Promise<AgentId | null>>()
+
+/** The same spawns, un-swallowed: what a joining caller judges by its own options. */
+const inFlightWarmOutcomes = new Map<string, Promise<AgentId | null>>()
+
+/**
+ * Definite host spawn rejections (`agent_unavailable` / `invalid_agent_config`,
+ * AD-5) by reuse key, with the launch signature they were issued for. Silent
+ * (automatic) spawns skip a key whose config is unchanged — the same request
+ * cannot succeed — while a user-initiated spawn always tries again and a
+ * success or config edit clears the record. In-memory only; the signature
+ * never leaves the renderer.
+ */
+const definiteSpawnRejections = new Map<string, string>()
+
+/**
+ * The launch signature each agent this renderer spawned was started with, by
+ * agent id. A warm agent whose signature no longer matches the current launch
+ * (an edited project env, for example) is not reused, so the next chat runs
+ * with the env the project has now. In-memory only.
+ */
+const liveAgentSignatures = new Map<AgentId, string>()
+
+/**
+ * The effective launch of a config in a working directory: the agent config
+ * plus the env the project owning `cwd` adds underneath it.
+ */
+function spawnSignature(config: AgentConfigLaunchFields, env: Record<string, string>): string {
+  return JSON.stringify([config.name, config.command, config.args, env, config.allowTerminal])
+}
+
+/** Test-only: forget recorded definite spawn rejections between tests. */
+export function _resetDefiniteSpawnRejectionsForTesting(): void {
+  definiteSpawnRejections.clear()
+  liveAgentSignatures.clear()
+}
 
 /** In-flight `session/new` for a prepare key. */
 export const inFlightPrepared = new Map<string, Promise<SessionId | null>>()
@@ -373,23 +462,47 @@ export const sessionReopenGenerations = new Map<SessionId, number>()
 export const handoffOnlyTurnIds = new Set<string>()
 
 /**
- * Issue #846: turn ids whose `user_prompt` echo from the server already
- * landed — proof the prompt was ACCEPTED (persist_user_prompt runs before the
- * agent dispatch), so a later transport drop leaves the outcome UNKNOWN, not
- * failed. `runPromptTurn`'s catch consults this before deciding whether the
- * Retry affordance may safely re-send. Entries are cleared once the dispatch
- * settles (either outcome) so the set stays small.
+ * Wire `turnId` of the turn THIS client dispatched and has not yet closed, per
+ * session. A terminator citing a different turn id is a stale one (a replay of
+ * an earlier turn) and must not end the current turn.
  */
-export const acceptedServerPromptTurnIds = new Set<string>()
+export const activeWirePromptTurns = new Map<SessionId, string>()
 
-/** Test-only: read the accepted-turn set (write-only to production code). */
-export function _acceptedServerPromptTurnIdsForTesting(): ReadonlySet<string> {
-  return acceptedServerPromptTurnIds
+/**
+ * Wire `turnId` of the latest turn THIS client dispatched whose `user_prompt`
+ * echo has landed, per session. The host sequences that echo on acceptance, so
+ * a dispatch whose reply is lost after its echo arrived is already known to be
+ * accepted and needs no pending-reconcile. Cleared alongside every
+ * `activeWirePromptTurns` delete so it stays bounded.
+ */
+export const echoedWirePromptTurns = new Map<SessionId, string>()
+
+const ENDED_PROMPT_TURN_LIMIT = 256
+const endedPromptTurnIds = new Set<string>()
+
+/**
+ * Idempotence guard for `prompt_complete`: returns true the first time a turn
+ * id is seen, false for every duplicate (live + replay, error + agent_error).
+ * Bounded so a long-lived tab does not grow without limit.
+ */
+export function claimPromptTurnEnd(turnId: string): boolean {
+  if (endedPromptTurnIds.has(turnId)) return false
+  endedPromptTurnIds.add(turnId)
+  if (endedPromptTurnIds.size > ENDED_PROMPT_TURN_LIMIT) {
+    const oldest = endedPromptTurnIds.values().next().value
+    if (oldest !== undefined) endedPromptTurnIds.delete(oldest)
+  }
+  return true
 }
 
-/** Test-only: clear the accepted-turn set between tests. */
-export function _resetAcceptedServerPromptTurnIdsForTesting(): void {
-  acceptedServerPromptTurnIds.clear()
+/** Test-only: reset command engine + journal + definite-rejection + turn-end tracking between tests. */
+export function _resetPromptReconcileForTesting(): void {
+  __resetCommandEngineForTesting()
+  __clearCommandJournalForTesting()
+  definiteSpawnRejections.clear()
+  activeWirePromptTurns.clear()
+  echoedWirePromptTurns.clear()
+  endedPromptTurnIds.clear()
 }
 
 /**
@@ -444,8 +557,9 @@ export function _handoffOnlyTurnIdsForTesting(): ReadonlySet<string> {
  *
  * Adoption seeds the store's agent presence (`agents` + `agentStatus`) from
  * the summary's capabilities and registers the reuse key
- * (`agentReuseKey(configId, cwd)`) → host agent id, so every later
- * `ensureLiveAgent`/`prepareChat` for that config+cwd reuses the host process.
+ * (`agentReuseKey(configId, cwd, projectId)`) → host agent id, so every later
+ * `ensureLiveAgent`/`prepareChat` for that config, cwd, and Project reuses the
+ * host process.
  *
  * Desktop skips the lookup by default (`isTauriContext()`): the desktop store
  * already owns its agents in memory. A reload while a turn is still running
@@ -464,7 +578,7 @@ export async function adoptHostOwnedAgent(
   sessionId: SessionId,
   configId: string,
   cwd: string,
-  options?: { allowDesktop?: boolean; isCurrent?: () => boolean }
+  options?: { allowDesktop?: boolean; isCurrent?: () => boolean; projectId?: string | null }
 ): Promise<{ adopted: AgentId | null; listingTrusted: boolean }> {
   const trimmedCwd = cwd.trim()
   if ((!options?.allowDesktop && isTauriContext()) || trimmedCwd.length === 0) {
@@ -503,7 +617,8 @@ export async function adoptHostOwnedAgent(
     source: 'acp-store.adoptHostOwnedAgent',
     message: `Reusing host agent ${match.id} that owns session ${sessionId} instead of spawning a duplicate`
   })
-  const reuseKey = agentReuseKey(configId, trimmedCwd)
+  const projectId = resolveSpawnProject(trimmedCwd, options?.projectId)?.id ?? ''
+  const reuseKey = agentReuseKey(configId, trimmedCwd, projectId || undefined)
   set((s) => ({
     agents: {
       ...s.agents,
@@ -528,9 +643,46 @@ export async function adoptHostOwnedAgent(
 export type EnsureLiveAgentOptions = {
   /** Mirror membership in `warmingConfigs` for the prewarm UI. */
   registerWarmUi?: boolean
-  /** When true, spawn failures resolve to `null` instead of rejecting (prewarm). */
+  /**
+   * When true, spawn failures resolve to `null` instead of rejecting (prewarm),
+   * and a spawn the host already rejected definitively for the same config is
+   * not re-issued.
+   */
   silentSpawnFailure?: boolean
+  /**
+   * User-facing callers (history reopen) that stay silent about transient spawn
+   * failures but must show a definite rejection: it rejects even when
+   * `silentSpawnFailure` is set, and a recorded rejection does not block the
+   * attempt (the user's action is a new intent).
+   */
+  surfaceDefiniteRejection?: boolean
+  /**
+   * Project of the spawn; it selects the Claude Account of a managed Claude
+   * agent. Without it, the Project whose folder holds `cwd` is used.
+   */
+  projectId?: string
 }
+
+/**
+ * The Project a spawn in `cwd` belongs to: `projectId` when given, else the
+ * Project whose worktree or root is `cwd`, else the one whose root holds it
+ * (longest match). The reuse key, the Claude Account and the project env of a
+ * spawn all come from this one resolution.
+ */
+export function resolveSpawnProject(
+  cwd: string,
+  projectId?: string | null
+): Pick<Project, 'id' | 'envVars'> | null {
+  const { projects } = useProjectStore.getState()
+  const explicit = projectId?.trim()
+  if (explicit) return projects.find((p) => p.id === explicit) ?? { id: explicit }
+  return projectForCwd(projects, cwd) ?? null
+}
+
+type AgentConfigLaunchFields = Pick<
+  AcpState['agentConfigs'][number],
+  'name' | 'command' | 'args' | 'env' | 'allowTerminal'
+>
 
 /**
  * Return a connected agent process for `configId + cwd`, spawning at most one
@@ -550,19 +702,32 @@ export function ensureLiveAgent(
   const config = get().agentConfigs.find((c) => c.id === configId)
   if (!config) return Promise.resolve(null)
 
-  const reuseKey = agentReuseKey(configId, trimmedCwd)
+  const project = resolveSpawnProject(trimmedCwd, options.projectId)
+  const projectId = project?.id ?? ''
+  const reuseKey = agentReuseKey(configId, trimmedCwd, projectId || undefined)
+  // The project contributes its env underneath the agent config, exactly as a
+  // terminal tab in that project gets it (`spawnTerminalInPane`) and as a
+  // terminal-native agent does (`launchAgentInPane`).
+  const env = resolveAgentSpawnEnv(project?.envVars, config.env)
+  const signature = spawnSignature(config, env)
   const currentAgentId = get().configToLiveAgent[reuseKey]
+  const currentSignature = currentAgentId ? liveAgentSignatures.get(currentAgentId) : undefined
+  const staleLaunch = currentSignature !== undefined && currentSignature !== signature
   if (
     currentAgentId &&
-    Object.values(get().sessions).some(
-      (session) =>
-        session.agentId === currentAgentId &&
-        session.status !== 'closed' &&
-        !ephemeralSessionIds.has(session.id)
-    )
+    (staleLaunch ||
+      Object.values(get().sessions).some(
+        (session) =>
+          session.agentId === currentAgentId &&
+          session.status !== 'closed' &&
+          !ephemeralSessionIds.has(session.id)
+      ))
   ) {
-    // One Agent process per Agent chat. Keep this process for its live chat
-    // and reserve the canonical key for the next chat.
+    // One Agent process per Agent chat, and none started with an outdated
+    // launch. Keep this process for whatever it still serves (a chat, or an
+    // ephemeral session such as a commit message whose session/new may not be
+    // in `sessions` yet; the host's idle reaper stops it once quiet) and
+    // reserve the canonical key for the next chat.
     set((s) => {
       if (s.configToLiveAgent[reuseKey] !== currentAgentId) return {}
       const configToLiveAgent = { ...s.configToLiveAgent }
@@ -573,32 +738,69 @@ export function ensureLiveAgent(
     void logFrontendError({
       level: 'info',
       source: 'acp-store.ensureLiveAgent',
-      message: `Detached agent ${currentAgentId} so the next Agent chat gets its own process`
+      message: staleLaunch
+        ? `Detached agent ${currentAgentId}: its launch env no longer matches the project`
+        : `Detached agent ${currentAgentId} so the next Agent chat gets its own process`
     })
   }
+
   const existing = get().configToLiveAgent[reuseKey]
   if (existing && isReusableStatus(get().agentStatus[existing])) {
     return Promise.resolve(existing)
   }
 
   const inFlight = inFlightWarms.get(reuseKey)
-  if (inFlight) return inFlight
+  if (inFlight) {
+    // Join the running spawn, but judge ITS failure by THIS caller's options: a
+    // prewarm (silent) started it, yet a user-initiated caller that joins must
+    // still see a definite rejection instead of a swallowed `null`.
+    const strict = inFlightWarmOutcomes.get(reuseKey)
+    return strict ? asCallerView(strict, reuseKey, configId, options) : inFlight
+  }
+
+  if (
+    options.silentSpawnFailure &&
+    !options.surfaceDefiniteRejection &&
+    definiteSpawnRejections.get(reuseKey) === signature
+  ) {
+    return Promise.resolve(null)
+  }
 
   if (options.registerWarmUi) {
     set((s) => ({ warmingConfigs: { ...s.warmingConfigs, [reuseKey]: true } }))
   }
 
-  const spawnPromise = (async (): Promise<AgentId | null> => {
+  if (projectId && otherProjectHoldsAgent(get(), configId, trimmedCwd, projectId)) {
+    void logFrontendError({
+      level: 'info',
+      source: 'acp-store.ensureLiveAgent',
+      message: `Project ${projectId} spawns its own agent for ${configId} at ${trimmedCwd}; another project already holds that cwd`
+    })
+  }
+
+  const strictSpawn = (async (): Promise<AgentId | null> => {
     try {
-      const agentId = await get().spawnAgent({
-        configId,
-        name: config.name,
-        command: config.command,
-        args: config.args,
-        env: config.env,
-        allowTerminal: config.allowTerminal
-      })
+      if (project?.envVars?.length) {
+        void logFrontendError({
+          level: 'info',
+          source: 'acp-store.ensureLiveAgent',
+          message: `Spawning ${config.name} with the env of project ${project.id} (${project.envVars.length} var(s))`
+        })
+      }
+      const agentId = await get().spawnAgent(
+        {
+          configId,
+          name: config.name,
+          command: config.command,
+          args: config.args,
+          env,
+          allowTerminal: config.allowTerminal
+        },
+        projectId || undefined
+      )
+      definiteSpawnRejections.delete(reuseKey)
       if (get().agentConfigs.some((c) => c.id === configId)) {
+        liveAgentSignatures.set(agentId, signature)
         set((s) => ({ configToLiveAgent: { ...s.configToLiveAgent, [reuseKey]: agentId } }))
         return agentId
       }
@@ -609,18 +811,11 @@ export function ensureLiveAgent(
       }
       return null
     } catch (err) {
-      if (options.silentSpawnFailure) {
-        console.warn('[acp] ensureLiveAgent failed for', reuseKey, err)
-        void logFrontendError({
-          level: 'warn',
-          source: 'acp-store.ensureLiveAgent',
-          message: `Silent spawn failure for config ${configId} (${reuseKey}): ${err instanceof Error ? err.message : String(err)}`
-        })
-        return null
-      }
+      if (isDefiniteSpawnRejection(err)) definiteSpawnRejections.set(reuseKey, signature)
       throw err
     } finally {
       inFlightWarms.delete(reuseKey)
+      inFlightWarmOutcomes.delete(reuseKey)
       if (options.registerWarmUi) {
         set((s) => {
           const warming = { ...s.warmingConfigs }
@@ -631,9 +826,59 @@ export function ensureLiveAgent(
     }
   })()
 
+  const spawnPromise = asCallerView(strictSpawn, reuseKey, configId, options)
   inFlightWarms.set(reuseKey, spawnPromise)
+  inFlightWarmOutcomes.set(reuseKey, strictSpawn)
+  // Joiners derive their own view; this handle must never be an unhandled rejection.
+  strictSpawn.catch(() => undefined)
   return spawnPromise
 }
+
+/** True when a different Project already has a live process for this config and cwd. */
+function otherProjectHoldsAgent(
+  state: AcpState,
+  configId: string,
+  cwd: string,
+  projectId: string
+): boolean {
+  return Object.keys(state.configToLiveAgent).some((key) => {
+    if (isDetachedReuseKey(key)) return false
+    const parsed = parseReuseKey(key)
+    return (
+      parsed.configId === configId &&
+      parsed.cwd === cwd &&
+      typeof parsed.projectId === 'string' &&
+      parsed.projectId.length > 0 &&
+      parsed.projectId !== projectId
+    )
+  })
+}
+
+/**
+ * The spawn's outcome as one caller sees it: a silent caller gets `null` for a
+ * failure (except a definite rejection it asked to surface); any other caller
+ * gets the rejection.
+ */
+function asCallerView(
+  strict: Promise<AgentId | null>,
+  reuseKey: string,
+  configId: string,
+  options: EnsureLiveAgentOptions
+): Promise<AgentId | null> {
+  if (!options.silentSpawnFailure) return strict
+  return strict.catch((err: unknown) => {
+    if (isDefiniteSpawnRejection(err) && options.surfaceDefiniteRejection) throw err
+    console.warn('[acp] ensureLiveAgent failed for', reuseKey, err)
+    void logFrontendError({
+      level: 'warn',
+      source: 'acp-store.ensureLiveAgent',
+      message: `Silent spawn failure for config ${configId} (${reuseKey}): ${err instanceof Error ? err.message : String(err)}`
+    })
+    return null
+  })
+}
+
+export type LiveSwitchLink = { sourceId: SessionId; marker: SwitchMarkerFacts }
 
 /**
  * Live switch target → source session link (spec-agent-switch-live-merged-transcript).
@@ -644,7 +889,7 @@ export function ensureLiveAgent(
  * otherwise collapse the merged view for the rest of the app session.
  * Entries clear in `dropSessionTranscriptState` (either endpoint dropped).
  */
-export const liveSwitchSources = new Map<SessionId, SessionId>()
+export const liveSwitchSources = new Map<SessionId, LiveSwitchLink>()
 
 /** Test-only: clear live-switch source links between tests. */
 export function _resetLiveSwitchSourcesForTesting(): void {

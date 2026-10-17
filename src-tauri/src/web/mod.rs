@@ -4,10 +4,10 @@
 //! through, plus the standalone Axum server (Stories 1.2–1.3) and the live WS
 //! relay (Story 1.4).
 //!
-//! - Desktop registers a [`sink::TauriEventSink`] (`acp:*` Tauri events).
-//! - Standalone `termul-server` registers a live [`sink::WsRelaySink`] (Story
-//!   1.4 — owns per-session event logs + seq counters + subscriber set) and
-//!   calls [`serve`].
+//! - Desktop and standalone `termul-server` both register a live
+//!   [`sink::WsRelaySink`] (owns per-session event logs + seq counters +
+//!   subscriber set). The desktop renderer reads it over a Tauri
+//!   `ipc::Channel` ([`ws::channel`]); `termul-server` calls [`serve`].
 //! - Dev static serving of `dist-web/` is [`assets`] (Story 1.3); production
 //!   rust-embed embedding/serving is complete.
 //!
@@ -22,11 +22,18 @@ pub mod assets;
 pub mod acp_api;
 pub mod auth;
 pub mod canvas_api;
+pub mod capabilities;
 pub mod catalog_api;
+pub mod chat_reads;
+pub mod command_ledger;
 pub mod config;
+pub mod connection_runtime;
 pub mod fs_api;
 pub mod fs_watcher;
 pub mod git_api;
+pub mod git_diff_stat_api;
+pub mod git_history_api;
+pub mod git_hunk_api;
 pub mod install_api;
 pub mod log_api;
 pub mod mcp_oauth_api;
@@ -34,34 +41,34 @@ pub mod mcp_probe_api;
 pub mod mcp_servers_api;
 pub mod origin;
 pub mod permissions;
+pub mod presence;
 pub mod project_icon_api;
 pub mod project_registry;
 pub mod projects_api;
+pub mod prompt_turn;
+#[cfg(test)]
+mod prompt_turn_tests;
+pub mod route_deadline;
 pub mod router;
 pub mod search_api;
 pub mod sink;
 pub mod skills_api;
 pub mod store;
 pub mod terminal_ws;
-pub mod workspace_api;
+pub mod watch;
 pub mod worktree_api;
+pub mod worktree_rename_api;
 pub mod ws;
 
 pub use config::ServerConfig;
 pub use permissions::PermissionRendezvous;
 pub use permissions::QuestionRendezvous;
-pub use project_registry::{
-    seed_from_file, ProjectListPayload, ProjectRegistry, ProjectSummary, ProjectsChangedPayload,
-};
-pub use sink::{
-    broadcast_chat_history_changed, broadcast_projects_changed, fan_out, EventSink, TauriEventSink,
-    WsRelaySink,
-};
+pub use project_registry::{ProjectListPayload, ProjectRegistry, ProjectSummary};
+pub use sink::{fan_out, EventSink, EventStream, StreamItem, WsRelaySink};
 pub use ws::{AppState, HistoryMode, ReliabilityTier, RuntimePolicy, SequencedEvent, WsErrorCode};
 
 use std::future::Future;
 use std::net::SocketAddr;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use tokio::net::TcpListener;
@@ -71,6 +78,7 @@ use tracing::{error, info, warn};
 use crate::acp::AcpManager;
 use crate::pty::PtyManager;
 use crate::trackers::{CwdTracker, ExitCodeTracker, GitTracker, TerminalEventHub};
+use crate::web::connection_runtime::{ConnectionRuntime, SOCKET_DRAIN_BOUND};
 use crate::web::store::WebStore;
 
 #[cfg(test)]
@@ -95,20 +103,12 @@ pub(crate) fn test_pty_manager() -> Arc<PtyManager> {
 /// machine. It is threaded into the `/canvas/*` routes and shut down
 /// (stdin-EOF → kill) in the serve cleanup, after Axum drains.
 ///
-/// `registry` is the in-memory [`ProjectRegistry`] the router reads for
-/// `GET /projects` + `switch_project` cwd resolution. The standalone binary
-/// seeds it from the file-backed [`crate::acp::project_registry::FileProjectRegistry`]
-/// at startup (VPS mode — `projects_file` resolves from `--projects-file` /
-/// `$TERMUL_PROJECTS_FILE` / the state-dir default); the desktop host seeds
-/// it via `remote_sync_projects` and calls [`serve_router`] directly (it
-/// never reaches this `serve` wrapper).
-///
-/// `workspace_manifest` is the host-owned [`WorkspaceManifestService`] for
-/// CAP-5 / Story 5 — atomically persists one versioned workspace manifest per
-/// project. The standalone binary opens it under
-/// `<service_account_state_dir>/workspace-manifests`; the desktop host opens
-/// its own under `<app_data_dir>/workspace-manifests` (never shared across
-/// processes — `Never`-clause). `None` degrades to fresh-only mode.
+/// `registry` is the host's durable [`ProjectRegistry`] the router reads for
+/// `GET /projects` + project-root containment checks and writes through the
+/// project command service. The standalone binary opens it at startup from its
+/// projects file (`--projects-file` / `$TERMUL_PROJECTS_FILE` / the state-dir
+/// default); the desktop host builds its own once at setup and calls
+/// [`serve_router`] directly (it never reaches this `serve` wrapper).
 ///
 /// `acp_catalog` is the host-owned [`AcpCatalogService`] for CAP-6 / Story 8 —
 /// resolves the trusted ACP catalog (OS/arch/runtime + per-agent status). The
@@ -123,6 +123,10 @@ pub(crate) fn test_pty_manager() -> Arc<PtyManager> {
 /// its own under `<app_data_dir>/acp-registry-binaries`. `None` degrades to
 /// `ACP_INSTALL_UNAVAILABLE`.
 ///
+/// `store` is the host-owned [`WebStore`], opened by the caller AFTER the data
+/// locks are held (`termul-server` opens it under the state dir or
+/// `--store-file`); `serve` never opens a store itself (AD-14).
+///
 /// The standalone binary owns its agent lifetime end-to-end, so it kills agents
 /// on exit. The desktop-hosted shared-live path calls [`serve_router`] directly
 /// and must NOT kill the desktop's live agents — see [`serve_router`].
@@ -136,26 +140,29 @@ pub async fn serve(
     exit_code_tracker: Arc<ExitCodeTracker>,
     ws_relay: Arc<WsRelaySink>,
     registry: Arc<crate::web::project_registry::ProjectRegistry>,
-    registry_persistence: Option<Arc<parking_lot::Mutex<crate::acp::FileProjectRegistry>>>,
-    projects_file: Option<PathBuf>,
     cfg: ServerConfig,
-    workspace_manifest: Option<Arc<crate::acp::WorkspaceManifestService>>,
     acp_catalog: Option<Arc<crate::acp::AcpCatalogService>>,
     acp_install: Option<Arc<crate::acp::install::AcpInstallService>>,
+    store: Arc<WebStore>,
     web_auth: Option<Arc<auth::WebAuth>>,
     canvas_pool: Option<Arc<crate::canvas::pool::CanvasDaemonPool>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // Issue #837: idle agent reaper (standalone server only — see the module
-    // doc for why this is NOT in `serve_router`). The shutdown future resolves
+    // Idle agent reaper (standalone server; the desktop starts its own from
+    // `lib.rs` — see the module doc for why this is NOT in `serve_router`).
+    // The shutdown future resolves
     // on SIGINT/SIGTERM OR when the router task finishes for any other reason
     // (bind failure, panic, early exit) so `serve` never hangs waiting on a
     // reaper whose signal can no longer arrive in-process.
     let (reaper_stop_tx, reaper_stop_rx) = tokio::sync::oneshot::channel::<()>();
-    let reaper_window = agent_reaper::idle_reap_window_from_env();
+    // A flag or env var locks the window. The 30-minute default stays open so
+    // Settings can change it.
+    agent_reaper::install_agent_idle_baseline(
+        cfg.agent_idle_window_secs,
+        crate::web::config::server_agent_idle_window_lock(&cfg),
+    );
     let reaper_handle = agent_reaper::spawn_agent_idle_reaper(
         acp.clone(),
-        ws_relay.clone(),
-        reaper_window,
+        agent_reaper::live_agent_idle_window,
         Box::pin(async move {
             tokio::select! {
                 _ = shutdown_signal_future() => {}
@@ -173,13 +180,11 @@ pub async fn serve(
         exit_code_tracker,
         ws_relay,
         registry,
-        registry_persistence,
-        projects_file,
         cfg,
         shutdown_signal_future(),
-        workspace_manifest,
         acp_catalog,
         acp_install,
+        store,
         // Standalone binary is NOT shared-live — its admission path is the
         // `--allow-remote-writes` opt-in, not a deployment-mode deny.
         false,
@@ -256,10 +261,15 @@ pub async fn serve(
 /// desktop-hosted shared-live server (`remote/host.rs`) calls this directly so
 /// toggling the server off never kills the desktop's live agents.
 ///
-/// `web_auth` is the CAP-1 interim token gate threaded into the router +
-/// `/ws` + `/terminal/ws`. The desktop shared-live host passes `None` (its
-/// cloudflared exposure predates this story — Epic-2 territory); `None` keeps
-/// every endpoint byte-identical to the pre-gate server.
+/// `store` is the host's already-opened [`WebStore`]. `serve_router` never
+/// opens or locks one: the desktop shared-live host passes the single
+/// instance opened once in `lib.rs` under `app_data_dir`, so stop/start
+/// cycles reuse it (AD-14).
+///
+/// `web_auth` is the token gate threaded into the router + `/ws` +
+/// `/terminal/ws`. `None` keeps every endpoint ungated (loopback-only hosts);
+/// the desktop shared-live host passes `Some` whenever it advertises a tunnel
+/// or binds beyond loopback (AD-3).
 #[allow(clippy::too_many_arguments)]
 pub async fn serve_router(
     acp: Arc<AcpManager>,
@@ -270,13 +280,11 @@ pub async fn serve_router(
     exit_code_tracker: Arc<ExitCodeTracker>,
     ws_relay: Arc<WsRelaySink>,
     registry: Arc<crate::web::project_registry::ProjectRegistry>,
-    registry_persistence: Option<Arc<parking_lot::Mutex<crate::acp::FileProjectRegistry>>>,
-    projects_file: Option<PathBuf>,
     cfg: ServerConfig,
     shutdown: impl Future<Output = ()> + Send + 'static,
-    workspace_manifest: Option<Arc<crate::acp::WorkspaceManifestService>>,
     acp_catalog: Option<Arc<crate::acp::AcpCatalogService>>,
     acp_install: Option<Arc<crate::acp::install::AcpInstallService>>,
+    store: Arc<WebStore>,
     shared_live_writes_denied: bool,
     web_auth: Option<Arc<auth::WebAuth>>,
     canvas_pool: Option<Arc<crate::canvas::pool::CanvasDaemonPool>>,
@@ -309,30 +317,33 @@ pub async fn serve_router(
     } else {
         HistoryMode::LiveOnly
     };
-    // Issue #613: resolve the server-side store path — explicit
-    // `--store-file` wins, otherwise default under the service-account state
-    // dir (same resolution posture as workspace-manifests / acp-catalog). The
-    // desktop shared-live host passes `store_file: None`, so it lands on the
-    // same default and gets a durable store too.
-    let store = Some(Arc::new(WebStore::open(
-        cfg.store_file
-            .clone()
-            .unwrap_or_else(|| cfg.service_account_state_dir().join("store.json")),
-    )));
-    // CAP-1 + #856: build the live project-root handle ONCE per server —
-    // the same `Arc` the router registers with the registry (a project
-    // switch rebinds it in place) AND the server-side fs watcher reads to
-    // re-arm at the new root.
-    let project_root_handle =
-        std::sync::Arc::new(parking_lot::RwLock::new(cfg.project_root.clone()));
-    // #856: spawn the FS watcher daemon here — once per SERVE, not per
-    // `router()` call (tests build routers freely and must never spawn an
-    // unkillable watcher). It broadcasts debounced `fs_changed` events to
-    // connected web clients over the control WS.
-    fs_watcher::spawn_fs_watcher(
-        std::sync::Arc::clone(&project_root_handle),
-        Arc::clone(&ws_relay),
-    );
+    // The boundary is "inside any registered project"; there is no single host
+    // project root. Only the removed `--project-root` flag (or its
+    // `$TERMUL_PROJECT_ROOT` fallback) seeds one in-memory project, and only
+    // while the registry has no usable project — a registry with real
+    // projects ignores it. The desktop host never passes one.
+    if let Some(seed_root) = cfg.seed_project_root.as_deref() {
+        registry.seed_root_if_no_usable_project(seed_root);
+        if !registry.is_within_any_registered_root(seed_root) {
+            warn!(
+                "configured project root '{}' is not inside any registered project; \
+                 git/worktree/search/skills/canvas and remote /fs writes only accept \
+                 registered project roots",
+                seed_root.display()
+            );
+        }
+    }
+    // AD-19: one shutdown handle + overflow tolerance for every socket this
+    // host upgrades.
+    let connections = ConnectionRuntime::from_config(&cfg);
+    // A serve start is a new host epoch for the watch hub: a client that sees
+    // the epoch change rebuilds its watched state from a fresh full-state frame.
+    ws_relay.watches().renew_epoch();
+    info!(target: "termul::web::watch", "watch hub host epoch renewed for this serve start");
+    let store_for_gc = Arc::clone(&store);
+    // Every change of a project's terminal set reaches its `terminals` watchers.
+    crate::web::watch::attach_terminal_set_observer(&pty, &ws_relay);
+    let socket_shutdown = connections.shutdown.clone();
     let app = router::router(
         Arc::clone(&acp),
         pty,
@@ -342,14 +353,10 @@ pub async fn serve_router(
         exit_code_tracker,
         Arc::clone(&ws_relay),
         Arc::clone(&registry),
-        registry_persistence,
-        projects_file,
-        project_root_handle,
         history_mode,
-        workspace_manifest,
         acp_catalog,
         acp_install,
-        store,
+        Some(store),
         cfg.allow_remote_writes,
         shared_live_writes_denied,
         // The effective externally reachable origin for OAuth redirect URIs.
@@ -366,20 +373,42 @@ pub async fn serve_router(
         // server instead (AD-8).
         canvas_pool,
         cfg.allowed_origins.clone(),
+        connections,
     );
 
+    // Stale device partitions are swept daily while this host serves; the
+    // task stops with it (the desktop shared-live host starts and stops).
+    let store_gc = store::spawn_gc_task(store_for_gc, Arc::clone(ws_relay.presence()));
     let handle = tokio::spawn(async move {
         // Patch D: `into_make_service_with_connect_info::<SocketAddr>()` so
         // the fs WRITE routes can extract `ConnectInfo<SocketAddr>` for the
         // localhost-only guard. Read routes and `/ws` are unaffected.
+        //
+        // Axum's graceful shutdown only drains plain HTTP requests: an
+        // upgraded socket is handed to a detached task. So the stop signal
+        // also tells every admitted `/ws` + `/terminal/ws` socket to close
+        // (`Close(1001)`), and the task below awaits them before it reports
+        // the server stopped.
+        let begin_socket_shutdown = socket_shutdown.clone();
         let serve_result = axum::serve(
             listener,
             app.into_make_service_with_connect_info::<SocketAddr>(),
         )
-        .with_graceful_shutdown(shutdown)
+        .with_graceful_shutdown(async move {
+            shutdown.await;
+            begin_socket_shutdown.begin();
+        })
         .await
         .inspect_err(|e| error!("ACP web server error: {}", e));
 
+        // Also reached when the server errored rather than being stopped.
+        socket_shutdown.begin();
+        let stragglers = socket_shutdown.drain(SOCKET_DRAIN_BOUND).await;
+        if stragglers > 0 {
+            error!("ACP web server stopped with {stragglers} socket task(s) still running");
+        }
+
+        store_gc.abort();
         match serve_result {
             Ok(()) => info!("ACP web server stopped"),
             Err(e) => error!("ACP web server stopped with error: {}", e),

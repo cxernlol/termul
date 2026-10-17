@@ -501,6 +501,77 @@ fn overlay_installed_marks_installed_agents_ready_with_command() {
     assert!(other.installed.is_none());
 }
 
+fn opencode_agent(version: &str, installed: Option<InstalledCatalogInfo>) -> CatalogAgent {
+    CatalogAgent {
+        id: "opencode".to_string(),
+        name: "OpenCode".to_string(),
+        version: version.to_string(),
+        description: "d".to_string(),
+        source: CatalogSource::Bundled,
+        distribution: serde_json::json!({
+            "binary": { "linux-x86_64": {
+                "cmd": "./package/bin/opencode",
+                "archive": "https://example.com/opencode.tgz",
+                "args": ["acp"]
+            }}
+        }),
+        runtime_requirements: Vec::new(),
+        status: SupportedAcpAgentStatus::InstallRequired,
+        platform_targets: Vec::new(),
+        installed,
+    }
+}
+
+#[test]
+fn external_opencode_v2_binary_marks_the_row_ready() {
+    let mut catalog = AcpCatalog {
+        host: host_with_runtimes(false, false),
+        agents: vec![opencode_agent("2.0.25", None)],
+    };
+    apply_external_opencode_binary(&mut catalog, Some(Path::new("/usr/local/bin/opencode")));
+    let agent = &catalog.agents[0];
+    assert_eq!(agent.status, SupportedAcpAgentStatus::Ready);
+    let info = agent.installed.as_ref().expect("installed block");
+    assert_eq!(info.command, "/usr/local/bin/opencode");
+    assert_eq!(info.args, vec!["acp".to_string()]);
+    // Catalog pin, so a newer PATH binary does not look like a downgrade.
+    assert_eq!(info.version, "2.0.25");
+}
+
+#[test]
+fn external_opencode_miss_leaves_install_required() {
+    let mut catalog = AcpCatalog {
+        host: host_with_runtimes(false, false),
+        agents: vec![opencode_agent("2.0.25", None)],
+    };
+    apply_external_opencode_binary(&mut catalog, None);
+    assert_eq!(
+        catalog.agents[0].status,
+        SupportedAcpAgentStatus::InstallRequired
+    );
+    assert!(catalog.agents[0].installed.is_none());
+}
+
+#[test]
+fn managed_opencode_install_wins_over_external_binary() {
+    let managed = InstalledCatalogInfo {
+        command: "/managed/opencode".to_string(),
+        args: vec!["acp".to_string()],
+        version: "1.18.30".to_string(),
+    };
+    let mut catalog = AcpCatalog {
+        host: host_with_runtimes(false, false),
+        agents: vec![opencode_agent("2.0.25", Some(managed))],
+    };
+    apply_external_opencode_binary(&mut catalog, Some(Path::new("/usr/local/bin/opencode")));
+    let info = catalog.agents[0]
+        .installed
+        .as_ref()
+        .expect("managed install");
+    assert_eq!(info.command, "/managed/opencode");
+    assert_eq!(info.version, "1.18.30");
+}
+
 #[test]
 fn overlay_installed_no_op_when_empty() {
     let mut catalog = AcpCatalog {
@@ -513,14 +584,23 @@ fn overlay_installed_no_op_when_empty() {
 
 // ---- I/O matrix: CDN augmentation (injected fetcher — no network) ----
 
+impl AcpCatalogService {
+    /// A service whose CDN fetch is `fetcher`; the `/ws` handler tests use it too.
+    pub(crate) fn with_snapshot_fetcher(root: PathBuf, fetcher: SnapshotFetcher) -> Arc<Self> {
+        fs::create_dir_all(&root).unwrap();
+        Arc::new(Self {
+            root,
+            cache: RwLock::new(None),
+            snapshot_fetch: fetcher,
+            snapshot_fetch_gate: Mutex::new(None),
+            opencode_probe: Mutex::new(None),
+            forced_snapshot_fetch: ForcedSnapshotFetch::default(),
+        })
+    }
+}
+
 fn service_with_fetcher(root: PathBuf, fetcher: SnapshotFetcher) -> Arc<AcpCatalogService> {
-    fs::create_dir_all(&root).unwrap();
-    Arc::new(AcpCatalogService {
-        root,
-        cache: RwLock::new(None),
-        snapshot_fetch: fetcher,
-        snapshot_fetch_gate: Mutex::new(None),
-    })
+    AcpCatalogService::with_snapshot_fetcher(root, fetcher)
 }
 
 fn cdn_snapshot(id: &str) -> AcpRegistrySnapshot {
@@ -1037,6 +1117,38 @@ async fn fetch_registry_snapshot_targets_shared_catalog_cache() {
     let _ = fs::remove_dir_all(root);
 }
 
+#[tokio::test]
+async fn concurrent_forced_fetches_share_one_registry_request() {
+    use std::sync::atomic::Ordering;
+    let (url, requests) = acp_registry_snapshot::test_server::serve_counted_registry().await;
+    let root = temp_dir("coalesced-forced-fetch");
+    let service = service_with_fetcher(
+        root.join("catalog"),
+        Arc::new(move |_, _| {
+            let url = url.clone();
+            Box::pin(async move {
+                acp_registry_snapshot::fetch_capped_registry_body(&url).await?;
+                Ok(resolved_cdn("cdn-only-test-agent"))
+            })
+        }),
+    );
+
+    let results =
+        futures::future::join_all((0..8).map(|_| service.fetch_registry_snapshot(true))).await;
+    for result in results {
+        assert_eq!(result.unwrap().agents[0].id, "cdn-only-test-agent");
+    }
+    assert_eq!(requests.load(Ordering::SeqCst), 1);
+
+    service.fetch_registry_snapshot(true).await.unwrap();
+    assert_eq!(
+        requests.load(Ordering::SeqCst),
+        2,
+        "a finished fetch is not reused"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
 // ---- I/O matrix: opt-in persistence + corrupt-file backup ----
 
 #[tokio::test]
@@ -1048,6 +1160,37 @@ async fn opt_in_persistence_round_trip() {
     assert!(service.is_opt_in(), "opt-in should be true after set");
     service.set_opt_in(false).unwrap();
     assert!(!service.is_opt_in(), "opt-in should be false after unset");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn opt_in_newer_schema_is_refused_and_never_overwritten() {
+    let root = temp_dir("opt-in-newer");
+    let catalog_dir = root.join("catalog");
+    fs::create_dir_all(&catalog_dir).unwrap();
+    let config_path = catalog_dir.join(CONFIG_FILENAME);
+    let newer = br#"{"schemaVersion":99,"optInCdn":true,"futureField":1}"#;
+    fs::write(&config_path, newer).unwrap();
+
+    let service = AcpCatalogService::open(catalog_dir.clone()).await.unwrap();
+    assert!(!service.is_opt_in(), "a refused config reads as off");
+    let error = service
+        .set_opt_in(true)
+        .expect_err("writing over a newer schema is refused");
+    assert!(
+        matches!(&error, CatalogError::NewerSchema(n) if n.found == 99),
+        "got {error:?}"
+    );
+    assert_eq!(fs::read(&config_path).unwrap(), newer, "file byte-identical");
+    let names: Vec<_> = fs::read_dir(&catalog_dir)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(
+        names.iter().all(|n| !n.contains(".bak")),
+        "no backup was made: {names:?}"
+    );
     let _ = fs::remove_dir_all(root);
 }
 

@@ -1,10 +1,14 @@
 import type { PreservedTerminalEntry } from '@shared/types/ipc.types'
+import { WEB_TERMINAL_ERROR_CODES } from '@shared/types/web-terminal-protocol.types'
 import { useEffect, useRef, useState } from 'react'
+import { toast } from 'sonner'
+import { hasCachedTerminal } from '@/components/terminal/terminal-cache'
 import { resolveAgentEnv } from '@/lib/agent-launch'
 import { getBuiltInAgent } from '@/lib/agents/agent-registry'
 import { loadCustomAgents } from '@/lib/agents/custom-agents'
 import { terminalApi } from '@/lib/api'
 import { resolveEnvForSpawn } from '@/lib/env-parser'
+import { whenProjectSwitchSettled } from '@/lib/project-switch/status-store'
 import { shellApi } from '@/lib/shell-api'
 import {
   beginProjectContinuityCorrelation,
@@ -125,14 +129,10 @@ function resetSpawnCallCount(sessionId: string): void {
 }
 
 async function cleanupSpawnedPtys(
-  terminals: Array<{ ptyId?: string }>,
+  ptyIds: readonly string[],
   restoreId: string,
   phase: string
 ): Promise<void> {
-  const ptyIds = Array.from(
-    new Set(terminals.map((terminal) => terminal.ptyId).filter((ptyId): ptyId is string => !!ptyId))
-  )
-
   if (ptyIds.length === 0) {
     return
   }
@@ -422,6 +422,19 @@ export function useTerminalRestore(): void {
             return
           }
 
+          // The visible pane tree belongs to the project being left until the
+          // switch commits: wait, or these tabs would land in the wrong tree.
+          await whenProjectSwitchSettled(projectIdToRestore)
+          // Settled also means failed/superseded/disposed: only a committed
+          // target owns the visible tree.
+          if (
+            isCancelled() ||
+            useWorkspaceStore.getState().activeProjectId !== projectIdToRestore
+          ) {
+            debugLog('useTerminalRestore', `CANCELLED [${callId}] after project switch settled`)
+            return
+          }
+
           const workspaceStore = useWorkspaceStore.getState()
           const preserveActiveTab = hasValidActiveAgentChatTab(workspaceStore, projectIdToRestore)
           reconcilePersistedHistoryIntoLiveTerminals(liveProjectTerminals, layout)
@@ -706,10 +719,18 @@ function reconcilePersistedHistoryIntoLiveTerminals(
       return terminal
     }
 
+    // A cached or mounted xterm already shows the persisted output, and it
+    // writes any store transcript as output it missed: taking the persisted
+    // copy would print it twice. Only its own missed-output transcript stays.
+    const xtermHoldsOutput =
+      (terminal.rendererAttachmentCount ?? 0) > 0 ||
+      (terminal.ptyId !== undefined && hasCachedTerminal(terminal.ptyId))
+
     return {
       ...terminal,
       pendingScrollback: terminal.pendingScrollback ?? persistedTerminal.scrollback,
-      transcript: terminal.transcript ?? persistedTerminal.transcript,
+      transcript:
+        terminal.transcript ?? (xtermHoldsOutput ? undefined : persistedTerminal.transcript),
       // R3: also carry the captured DEC modes so a pane-transition remount can
       // replay them (the live tracker is reset on unmount→remount). Prefer the
       // persisted snapshot when present so a stale in-memory pendingModes can't
@@ -896,52 +917,43 @@ async function restoreFromLayout(
     }> = []
     // Map old IDs to new IDs for active terminal selection and pane remapping
     const idMap = new Map<string, string>()
+    const spawnedPtyIds: string[] = []
 
-    // Story 5 (preserved-PTY reattach): before blindly re-spawning, ask the
-    // host (web transport only) which PTYs it still preserves for this
-    // project. On success the returned claims are already adopted by the
-    // client (see listPreservedAndAdoptClaims), so an attach below replays
-    // the retained scrollback (lastSeq=0) and keeps the SAME server-side
-    // terminal id alive instead of leaking a new PTY per reload. Any failure
-    // (desktop transport without the op, network, gate refusal, malformed
-    // reply) leaves `preserved` empty and the loop below spawns exactly as
-    // before — the fallback path is the unchanged legacy behavior.
     let preserved: PreservedTerminalEntry[] = []
-    if (typeof terminalApi.listPreserved === 'function') {
-      const preservedResult = await terminalApi.listPreserved(projectId)
-      if (preservedResult.success) {
-        preserved = preservedResult.data
-        emitTerminalContinuityEvent({
-          name: 'restore-path-selected',
-          correlationId: '',
-          projectId,
-          details: {
-            path: 'preserved-reattach',
-            preservedTerminalCount: preserved.length,
-            persistedTerminalCount: layout.terminals.length
-          }
-        })
-      } else {
-        emitTerminalContinuityEvent({
-          name: 'restore-failed',
-          correlationId: '',
-          projectId,
-          details: {
-            reason: 'list-preserved-unavailable',
-            code: preservedResult.code,
-            fallback: 'spawn'
-          }
-        })
-      }
+    const preservedResult = await terminalApi.listPreserved(projectId)
+    if (preservedResult.success) {
+      preserved = preservedResult.data
+      emitTerminalContinuityEvent({
+        name: 'restore-path-selected',
+        correlationId: '',
+        projectId,
+        details: {
+          path: 'preserved-reattach',
+          preservedTerminalCount: preserved.length,
+          persistedTerminalCount: layout.terminals.length
+        }
+      })
+    } else {
+      emitTerminalContinuityEvent({
+        name: 'restore-failed',
+        correlationId: '',
+        projectId,
+        details: {
+          reason: 'list-preserved-unavailable',
+          code: preservedResult.code,
+          fallback: 'spawn'
+        }
+      })
     }
     // Consumed entries are removed as tabs claim them so a preserved PTY is
     // never attached twice; leftovers get their own tabs below (resolved Q3:
     // ALL preserved restore as tabs, not just the active one).
     const preservedById = new Map(preserved.map((entry) => [entry.id, entry]))
 
+    const limitRefusals = { count: 0, message: '' }
     for (const persistedTerminal of layout.terminals) {
       if (isCancelled()) {
-        await cleanupSpawnedPtys(newTerminals, restoreId, 'during restore loop')
+        await cleanupSpawnedPtys(spawnedPtyIds, restoreId, 'during restore loop')
         debugLog('restoreFromLayout', `CANCELLED [${restoreId}] during restore loop`)
         return { status: 'cancelled', path: 'persisted-replay' }
       }
@@ -962,7 +974,7 @@ async function restoreFromLayout(
       try {
         const resolvedShell = await resolveShellToPath(persistedTerminal.shell)
         if (isCancelled()) {
-          await cleanupSpawnedPtys(newTerminals, restoreId, 'after shell resolution')
+          await cleanupSpawnedPtys(spawnedPtyIds, restoreId, 'after shell resolution')
           debugLog('restoreFromLayout', `CANCELLED [${terminalCallId}] after shell resolution`)
           return { status: 'cancelled', path: 'persisted-replay' }
         }
@@ -1127,6 +1139,14 @@ async function restoreFromLayout(
 
         if (!spawnResult.success || !spawnData) {
           debugLog('restoreFromLayout', `Spawn FAILED, skipping [${terminalCallId}]`)
+          if (
+            !spawnResult.success &&
+            'code' in spawnResult &&
+            spawnResult.code === WEB_TERMINAL_ERROR_CODES.TERMINAL_LIMIT
+          ) {
+            limitRefusals.count += 1
+            limitRefusals.message = spawnResult.error
+          }
           continue
         }
 
@@ -1144,6 +1164,7 @@ async function restoreFromLayout(
 
         // FIX #6: Increment SPAWN_CALL_COUNT for each successful spawn in the loop
         SPAWN_CALL_COUNT++
+        spawnedPtyIds.push(spawnData.id)
 
         idMap.set(persistedTerminal.id, newId)
         newTerminals.push({
@@ -1177,6 +1198,14 @@ async function restoreFromLayout(
         if (spawnTimeout) clearTimeout(spawnTimeout)
         TERMINALS_PENDING_PTY_ASSIGNMENT.delete(newId)
       }
+    }
+
+    // The host refuses a spawn past a terminal cap. Say so once: a skipped
+    // tab would otherwise vanish without a trace.
+    if (limitRefusals.count > 0) {
+      toast.error(
+        `${limitRefusals.count} terminal${limitRefusals.count === 1 ? '' : 's'} not restored. ${limitRefusals.message}`
+      )
     }
 
     // Story 5 (resolved Q3): every preserved PTY of the project restores as
@@ -1229,7 +1258,7 @@ async function restoreFromLayout(
     }
 
     if (isCancelled()) {
-      await cleanupSpawnedPtys(newTerminals, restoreId, 'before store mutation')
+      await cleanupSpawnedPtys(spawnedPtyIds, restoreId, 'before store mutation')
       debugLog('restoreFromLayout', `CANCELLED [${restoreId}] before store mutation`)
       return { status: 'cancelled', path: 'persisted-replay' }
     }
@@ -1256,7 +1285,12 @@ async function restoreFromLayout(
     const existingTerminals = terminalStore.terminals
     terminalStore.setTerminals([...existingTerminals, ...newTerminals])
 
-    if (idMap.size > 0) {
+    // Remap rewrites the visible tree: wait until the switch toward this
+    // project has committed so it is the tree being rewritten. Settled also
+    // means failed/superseded/disposed, so re-check that the target is visible.
+    if (idMap.size > 0) await whenProjectSwitchSettled(projectId)
+    const targetCommitted = useWorkspaceStore.getState().activeProjectId === projectId
+    if (idMap.size > 0 && targetCommitted) {
       useWorkspaceStore.getState().remapTerminalTabs(Object.fromEntries(idMap))
     }
 
@@ -1266,8 +1300,8 @@ async function restoreFromLayout(
       activeId = idMap.get(layout.activeTerminalId)!
     }
 
-    // Select the active terminal
-    if (activeId) {
+    // Select the active terminal (only while the target's tree is visible)
+    if (activeId && targetCommitted) {
       terminalStore.selectTerminal(activeId)
     }
 

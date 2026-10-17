@@ -3,6 +3,8 @@ import { resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const gateStatusRef = vi.hoisted(() => ({ current: 'ok' as string }))
+// These suites exercise the real class, not the invoke-backed double from vitest.setup.ts.
+vi.unmock('@/lib/acp-transport/desktop-transport')
 vi.mock('@/lib/web-auth-gate', () => ({
   flagWebAuthUnauthorized: vi.fn(),
   getWebAuthGateState: () => ({ status: gateStatusRef.current, submitting: false })
@@ -10,24 +12,61 @@ vi.mock('@/lib/web-auth-gate', () => ({
 vi.mock('@/lib/log-api', () => ({
   logFrontendError: vi.fn()
 }))
+const protocolReloadRef = vi.hoisted(() => ({
+  handle: vi.fn(),
+  clear: vi.fn()
+}))
+vi.mock('@/lib/web-protocol-reload', () => ({
+  handleProtocolVersionMismatch: protocolReloadRef.handle,
+  clearProtocolMismatchLatch: protocolReloadRef.clear
+}))
 
-// Static import of the globally mocked (vitest.setup.ts) Tauri IPC surface —
-// the desktop-path tests assert the exact command names + payloads.
-import { invoke } from '@tauri-apps/api/core'
+import { MAX_CLIENT_ID_LEN, WS_PROTOCOL_VERSION } from '@shared/types/web-protocol.types'
 import { logFrontendError } from '@/lib/log-api'
 import { flagWebAuthUnauthorized } from '@/lib/web-auth-gate'
 import {
   _resetAcpTransportForTests,
   _setAcpTransportForTests,
   AcpTransportError,
+  COMMAND_IN_PROGRESS_CODE,
   createAcpTransport,
+  isOutcomeUncertainError,
   isTransientAcpTransportError,
   resolveWsUrl,
-  toTauriEventName,
   toWsEventType,
   WsAcpTransport
 } from './acp-transport'
+import { DesktopAcpTransport } from './acp-transport/desktop-transport'
 import { classifySetupError } from './agents/acp-spawn-errors'
+
+// Reconnect backoff carries ±25 % jitter; pin it to the neutral factor so the
+// nominal 500ms/1s/2s delays are exact. Jitter bounds have their own cases.
+beforeEach(() => {
+  vi.spyOn(Math, 'random').mockReturnValue(0.5)
+})
+afterEach(() => {
+  vi.mocked(Math.random).mockRestore()
+})
+
+/**
+ * Host-side handshake validation mirroring the Rust `/ws` `authenticate` arm:
+ * version first, then identity. Returns the `err.code` or null when valid.
+ */
+function validateHandshake(payload: unknown): string | null {
+  const p = (payload ?? {}) as Record<string, unknown>
+  if (p.protocolVersion !== WS_PROTOCOL_VERSION) return 'protocol_version_mismatch'
+  for (const key of ['deviceId', 'clientInstanceId']) {
+    const value = p[key]
+    if (
+      typeof value !== 'string' ||
+      value.length === 0 ||
+      new TextEncoder().encode(value).length > MAX_CLIENT_ID_LEN
+    ) {
+      return 'invalid_client_identity'
+    }
+  }
+  return null
+}
 
 class FakeWebSocket {
   static OPEN = 1
@@ -35,6 +74,10 @@ class FakeWebSocket {
   static CLOSING = 2
   static CLOSED = 3
   static autoOpen = true
+  /** watch name → full state the host answers a `watch` request with. */
+  static watchStates: Record<string, unknown> = {}
+  /** `hostEpoch` of the watch frames the fake host sends. */
+  static watchEpoch = 'epoch-aaaaaaaa'
 
   readyState = FakeWebSocket.CONNECTING
   onopen: ((ev: Event) => void) | null = null
@@ -43,6 +86,8 @@ class FakeWebSocket {
   onclose: ((ev: CloseEvent) => void) | null = null
   sent: string[] = []
   authFail = false
+  /** When set, `authenticate` is refused with this `err.code` (AD-15). */
+  authRefusalCode: string | null = null
   /** When set, `respond_permission` replies with this err (default: not_implemented). */
   respondPermissionErr: { code: string; message: string } | null = null
   /** When set, `authenticate_agent` replies with this err (default: ok). */
@@ -64,6 +109,8 @@ class FakeWebSocket {
   holdSendPrompt = false
   /** When true, application pings remain unanswered (stale OPEN socket). */
   holdPing = false
+  /** When true, `subscribe` requests stay unanswered (stale OPEN socket). */
+  holdSubscribe = false
   /** Session ids whose subscribe request fails. */
   failSubscribeSessions = new Set<string>()
   /** Per-session subscribe failures used to distinguish transient/permanent recovery. */
@@ -82,23 +129,38 @@ class FakeWebSocket {
   deletedSessions: string[] = []
   /** CAP-11: when true, the `delete_session` stub replies `not_found`. */
   deleteSessionNotFound = false
+  /** Project registry requests the fake host received, in order. */
+  projectRequests: Array<{ type: string; payload: Record<string, unknown> }> = []
+  /** When set, the project registry stubs reply with this instead of ok. */
+  projectErr: { code: string; message: string; details?: unknown } | null = null
   /** CAP-11 compat: when true, `list_agents` replies with bare id strings
    * (the pre-CAP-11 server shape) instead of summary objects. */
   listAgentsAsStrings = false
-  switchProjectReply: unknown = null
   /** CAP-6 / Story 8: when set, `list_acp_catalog` replies with this catalog
    * payload; unset → falls through to the `not_implemented` fallback (so
-   * `probeRuntime`/`fetchRegistrySnapshot` degrade gracefully). */
+   * `probeRuntime` degrades gracefully). */
   catalogReply: unknown = null
+  /** When set, `fetch_acp_registry_snapshot` answers with this reply. */
+  registrySnapshotReply:
+    | { ok: true; payload: unknown }
+    | { ok: false; err: { code: string; message: string } }
+    | null = null
   historyMode: 'server' | 'live_only' = 'server'
   runtimePolicy = {
     turnTimeoutMs: 3_600_000,
     promptInactivityTimeoutMs: 3_600_000,
-    permissionReconnectGraceMs: 15_000,
     pingIntervalMs: 20_000,
     pongTimeoutMs: 75_000
   }
   snapshotEvents: unknown[] = []
+  /** Epoch of the fake host's session logs; a cursor under another epoch is `stale`. */
+  logEpoch = 'epoch-A'
+  /**
+   * The fake host's allocated seq frontier, independent of any cursor. `null`
+   * keeps the permissive default (reply head = the cursor, no ahead-of-head
+   * `stale`); a number makes a cursor above it `stale` like the real host.
+   */
+  hostHeadSeq: number | null = null
   snapshotFailureCodes = new Map<string, string>()
   /** Session payloads served by `get_session_payload`; unknown ids → not_found. */
   sessionPayloads: Record<string, unknown> = {}
@@ -135,6 +197,11 @@ class FakeWebSocket {
     this.sent.push(data)
     const req = JSON.parse(data) as { id: string; type: string; payload: unknown }
     if (req.type === 'authenticate') {
+      const refusal = this.authRefusalCode ?? validateHandshake(req.payload)
+      if (refusal) {
+        this.emitReply({ id: req.id, ok: false, err: { code: refusal, message: refusal } })
+        return
+      }
       if (this.authFail) {
         this.emitReply({
           id: req.id,
@@ -157,7 +224,8 @@ class FakeWebSocket {
       return
     }
     if (req.type === 'subscribe') {
-      const payload = req.payload as { sessionId: string; lastSeq?: number }
+      if (this.holdSubscribe) return
+      const payload = req.payload as { sessionId: string; lastSeq?: number; logEpoch?: string }
       const failureCode = this.subscribeFailureCodes.get(payload.sessionId)
       if (this.failSubscribeSessions.has(payload.sessionId) || failureCode) {
         this.emitReply({
@@ -167,7 +235,11 @@ class FakeWebSocket {
         })
         return
       }
-      if (payload.lastSeq === 99) {
+      if (
+        payload.lastSeq === 99 ||
+        (payload.logEpoch && payload.logEpoch !== this.logEpoch) ||
+        (this.hostHeadSeq !== null && (payload.lastSeq ?? 0) > this.hostHeadSeq)
+      ) {
         this.emitReply({
           id: req.id,
           ok: false,
@@ -178,7 +250,12 @@ class FakeWebSocket {
       this.emitReply({
         id: req.id,
         ok: true,
-        payload: { sessionId: payload.sessionId, replayed: 0 }
+        payload: {
+          sessionId: payload.sessionId,
+          replayed: 0,
+          logEpoch: this.logEpoch,
+          headSeq: this.hostHeadSeq ?? payload.lastSeq ?? 0
+        }
       })
       return
     }
@@ -196,20 +273,26 @@ class FakeWebSocket {
       this.emitReply({
         id: req.id,
         ok: true,
-        payload: { sessionId: payload.sessionId, watermark: 42, events: this.snapshotEvents }
+        payload: {
+          sessionId: payload.sessionId,
+          watermark: 42,
+          headSeq: 42,
+          logEpoch: this.logEpoch,
+          events: this.snapshotEvents
+        }
       })
-      return
-    }
-    if (req.type === 'switch_project' && this.switchProjectReply) {
-      this.emitReply({ id: req.id, ok: true, payload: this.switchProjectReply })
       return
     }
     // CAP-6 / Story 8: the WS transport resolves the ACP catalog through
     // `list_acp_catalog` (the host's OS/arch/runtime + per-agent status). When
     // `catalogReply` is set, reply with it; otherwise fall through to the
-    // `not_implemented` stub so `probeRuntime`/`fetchRegistrySnapshot` degrade.
+    // `not_implemented` stub so `probeRuntime` degrades.
     if (req.type === 'list_acp_catalog' && this.catalogReply) {
       this.emitReply({ id: req.id, ok: true, payload: this.catalogReply })
+      return
+    }
+    if (req.type === 'fetch_acp_registry_snapshot' && this.registrySnapshotReply) {
+      this.emitReply({ id: req.id, ...this.registrySnapshotReply })
       return
     }
     if (req.type === 'create_session') {
@@ -396,6 +479,30 @@ class FakeWebSocket {
       this.emitReply({ id: req.id, ok: true, payload: {} })
       return
     }
+    // Project registry commands: ok (`add_project` echoes the summary) unless
+    // `projectErr` makes the fake host refuse, like `project_busy`.
+    if (
+      req.type === 'add_project' ||
+      req.type === 'update_project' ||
+      req.type === 'remove_project' ||
+      req.type === 'set_default_project'
+    ) {
+      const payload = req.payload as Record<string, unknown>
+      this.projectRequests.push({ type: req.type, payload })
+      if (this.projectErr) {
+        this.emitReply({ id: req.id, ok: false, err: this.projectErr })
+        return
+      }
+      this.emitReply({
+        id: req.id,
+        ok: true,
+        payload:
+          req.type === 'add_project'
+            ? { project: { ...payload, path: payload.path, isArchived: false, isDefault: false } }
+            : {}
+      })
+      return
+    }
     if (req.type === 'kill_agent') {
       const payload = req.payload as { agentId?: string }
       if (!payload.agentId) {
@@ -471,6 +578,22 @@ class FakeWebSocket {
       this.emitReply({ id: req.id, ok: true, payload: this.setConfigOptionReply })
       return
     }
+    if (req.type === 'watch' || req.type === 'unwatch') {
+      const { watch, scope } = req.payload as { watch: string; scope?: string }
+      if (req.type === 'watch') {
+        // The state frame is queued before the reply, as the host does.
+        this.emit({
+          type: 'watch',
+          watch,
+          scope: scope ?? '',
+          revision: { hostEpoch: FakeWebSocket.watchEpoch, n: 1 },
+          reset: true,
+          state: FakeWebSocket.watchStates[watch] ?? []
+        })
+      }
+      this.emitReply({ id: req.id, ok: true, payload: { watch, scope: scope ?? '' } })
+      return
+    }
     this.emitReply({
       id: req.id,
       ok: false,
@@ -515,9 +638,8 @@ describe('acp-transport helpers', () => {
     expect(resolveWsUrl({ protocol: 'https:', host: 'example.com' })).toBe('wss://example.com/ws')
   })
 
-  it('translates acp:* ↔ prefix-dropped event names', () => {
+  it('translates acp:* names to prefix-dropped WS event types', () => {
     expect(toWsEventType('acp:message_chunk')).toBe('message_chunk')
-    expect(toTauriEventName('message_chunk')).toBe('acp:message_chunk')
   })
 })
 
@@ -656,6 +778,79 @@ describe('WsAcpTransport', () => {
     transport.dispose()
   })
 
+  describe('project registry commands', () => {
+    async function connected(): Promise<{
+      transport: WsAcpTransport
+      socket: () => FakeWebSocket
+    }> {
+      let socket: FakeWebSocket | null = null
+      class CaptureSocket extends FakeWebSocket {
+        constructor(url: string) {
+          super(url)
+          socket = this
+        }
+      }
+      const transport = new WsAcpTransport({
+        url: 'ws://test/ws',
+        WebSocketImpl: CaptureSocket as unknown as typeof WebSocket
+      })
+      await transport.connect()
+      return { transport, socket: () => socket as unknown as FakeWebSocket }
+    }
+
+    it('sends add_project and returns the summary the host registered', async () => {
+      const { transport, socket } = await connected()
+
+      const project = await transport.addProject({
+        id: 'p1',
+        name: 'App',
+        path: '/app',
+        color: 'blue'
+      })
+
+      expect(socket().projectRequests).toEqual([
+        { type: 'add_project', payload: { id: 'p1', name: 'App', path: '/app', color: 'blue' } }
+      ])
+      expect(project).toMatchObject({ id: 'p1', name: 'App', path: '/app' })
+      transport.dispose()
+    })
+
+    it('sends cascade only when asked to, on remove and on archive', async () => {
+      const { transport, socket } = await connected()
+
+      await transport.removeProject('p1')
+      await transport.removeProject('p1', { cascade: true })
+      await transport.updateProject('p2', { isArchived: true })
+      await transport.updateProject('p2', { isArchived: true, cascade: true })
+      await transport.setDefaultProject('p3')
+
+      expect(socket().projectRequests).toEqual([
+        { type: 'remove_project', payload: { projectId: 'p1' } },
+        { type: 'remove_project', payload: { projectId: 'p1', cascade: true } },
+        { type: 'update_project', payload: { projectId: 'p2', isArchived: true } },
+        { type: 'update_project', payload: { projectId: 'p2', isArchived: true, cascade: true } },
+        { type: 'set_default_project', payload: { projectId: 'p3' } }
+      ])
+      transport.dispose()
+    })
+
+    it('surfaces a project_busy refusal with the bound entities on the error', async () => {
+      const { transport, socket } = await connected()
+      socket().projectErr = {
+        code: 'project_busy',
+        message: 'project has live sessions',
+        details: { sessions: ['s1', 's2'], terminals: ['t1'] }
+      }
+
+      await expect(transport.removeProject('p1')).rejects.toMatchObject({
+        name: 'AcpTransportError',
+        code: 'project_busy',
+        details: { sessions: ['s1', 's2'], terminals: ['t1'] }
+      })
+      transport.dispose()
+    })
+  })
+
   it('authenticate routes the agent `authenticate` method over WS (authenticate_agent)', async () => {
     // The web client must run the ACP agent-advertised `authenticate` method
     // (e.g. `pi_terminal_login`) on the host — NOT throw "is not available
@@ -765,7 +960,7 @@ describe('WsAcpTransport', () => {
     transport.dispose()
   })
 
-  it('browser_open_request events reach onEvent subscribers', async () => {
+  it('drops an event without a session log position (the relay sends none but auth_required)', async () => {
     const transport = new WsAcpTransport({
       url: 'ws://test/ws',
       WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket
@@ -773,18 +968,16 @@ describe('WsAcpTransport', () => {
     await transport.connect()
     const sock = (transport as unknown as { socket: FakeWebSocket }).socket
 
-    const seen: Array<{ agentId: string; url: string }> = []
-    transport.onEvent<{ agentId: string; url: string }>('acp:browser_open_request', (payload) =>
-      seen.push(payload)
-    )
+    const seen: unknown[] = []
+    transport.onEvent('acp:browser_open_request', (payload) => seen.push(payload))
     sock.emit({
       sid: null,
       seq: 0,
       type: 'browser_open_request',
       payload: { agentId: 'agent-1', url: 'https://auth.example.com/x' }
     })
-    await vi.waitFor(() => expect(seen).toHaveLength(1))
-    expect(seen[0]).toEqual({ agentId: 'agent-1', url: 'https://auth.example.com/x' })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(seen).toEqual([])
 
     transport.dispose()
   })
@@ -876,13 +1069,26 @@ describe('WsAcpTransport', () => {
     await transport.setSessionReopenTimeout(300)
 
     expect(sock.sent.length).toBe(sentBefore)
+
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ success: true, data: { secs: 7200, source: 'setting' } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
+    )
+    await transport.setAgentIdleWindow(7200)
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining('/host/agent-idle-window'),
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ secs: 7200 }) })
+    )
+    fetchMock.mockRestore()
     transport.dispose()
   })
 
-  // CAP-6 / Story 8: the fake `probeRuntime`/`fetchRegistrySnapshot` stubs
-  // (hardcoded `{npx:true,uvx:true}` / `{agents:[]}`) are replaced by a real
-  // `list_acp_catalog` WS request — the host probes npx/uvx/node/bun/python3
-  // and returns the resolved catalog. These tests pin the request shape + the
+  // CAP-6 / Story 8: the fake `probeRuntime` stub (hardcoded
+  // `{npx:true,uvx:true}`) is replaced by a real `list_acp_catalog` WS
+  // request — the host probes npx/uvx/node/bun/python3 and returns the
+  // resolved catalog. These tests pin the request shape + the
   // reply mapping + the graceful degradation when the host is unavailable.
   it('probeRuntime sends list_acp_catalog and maps host.runtimes', async () => {
     const transport = new WsAcpTransport({
@@ -908,24 +1114,47 @@ describe('WsAcpTransport', () => {
     transport.dispose()
   })
 
-  it('fetchRegistrySnapshot sends list_acp_catalog and maps agents', async () => {
+  it.each([
+    'manual',
+    'background'
+  ] as const)('fetchRegistrySnapshot sends a %s fetch_acp_registry_snapshot and returns the host snapshot', async (reason) => {
     const transport = new WsAcpTransport({
       url: 'ws://test/ws',
       WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket
     })
     await transport.connect()
     const sock = (transport as unknown as { socket: FakeWebSocket }).socket
-    sock.catalogReply = {
-      host: { os: 'linux', arch: 'x86_64', runtimes: {} },
-      agents: [{ id: 'a', name: 'A', source: 'bundled', distribution: {} }]
+    const hostSnapshot = {
+      agents: [{ id: 'a', name: 'A', version: '1.0.0', description: '', distribution: {} }],
+      source: 'cache',
+      fetchedAt: '2026-10-15T12:00:00+00:00'
+    }
+    sock.registrySnapshotReply = { ok: true, payload: hostSnapshot }
+
+    await expect(transport.fetchRegistrySnapshot(reason)).resolves.toEqual(hostSnapshot)
+
+    const sent = sock.sent
+      .map((s) => JSON.parse(s) as { type: string; payload: unknown })
+      .filter((r) => r.type === 'fetch_acp_registry_snapshot')
+    expect(sent.map((r) => r.payload)).toEqual([{ reason }])
+    transport.dispose()
+  })
+
+  it('fetchRegistrySnapshot rejects with the host error code when the registry and cache both fail', async () => {
+    const transport = new WsAcpTransport({
+      url: 'ws://test/ws',
+      WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket
+    })
+    await transport.connect()
+    const sock = (transport as unknown as { socket: FakeWebSocket }).socket
+    sock.registrySnapshotReply = {
+      ok: false,
+      err: { code: 'REGISTRY_FETCH_FAILED', message: 'ACP registry request failed: timeout' }
     }
 
-    const snapshot = await transport.fetchRegistrySnapshot()
-    expect(snapshot.agents).toHaveLength(1)
-    expect(snapshot.source).toBe('network')
-
-    const sent = sock.sent.map((s) => JSON.parse(s) as { type: string })
-    expect(sent.some((r) => r.type === 'list_acp_catalog')).toBe(true)
+    await expect(transport.fetchRegistrySnapshot('manual')).rejects.toMatchObject({
+      code: 'REGISTRY_FETCH_FAILED'
+    })
     transport.dispose()
   })
 
@@ -942,7 +1171,7 @@ describe('WsAcpTransport', () => {
     transport.dispose()
   })
 
-  it('switchProject maps completed replies and subscribes the new session', async () => {
+  it('sends the owning projectId on create_session and subscribes the new session', async () => {
     const transport = new WsAcpTransport({
       url: 'ws://test/ws',
       WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket
@@ -950,118 +1179,18 @@ describe('WsAcpTransport', () => {
     await transport.connect()
     const sock = (transport as unknown as { socket: FakeWebSocket }).socket
 
-    sock.switchProjectReply = {
-      status: 'completed',
-      projectId: 'p-2',
-      sessionId: 's-new',
-      cwd: '/work/p2',
-      mcpServerCount: 2
-    }
-    await expect(transport.switchProject('p-2')).resolves.toEqual(sock.switchProjectReply)
+    const outcome = await transport.newSession('a1', '/work/p2', undefined, { projectId: 'p-2' })
 
-    const sent = sock.sent.map((s) => JSON.parse(s) as { type: string; payload: unknown })
-    const switchReq = sent.find((r) => r.type === 'switch_project')
-    expect(switchReq).toBeTruthy()
-    expect(switchReq?.payload).toEqual({ projectId: 'p-2' })
-    expect(sent).toContainEqual(
-      expect.objectContaining({ type: 'subscribe', payload: { sessionId: 's-new' } })
+    const frames = sock.sent.map((raw) => JSON.parse(raw) as { type: string; payload: unknown })
+    expect(frames).toContainEqual({
+      id: expect.any(String),
+      type: 'create_session',
+      payload: { agentId: 'a1', cwd: '/work/p2', ephemeral: false, projectId: 'p-2' }
+    })
+    expect(frames).toContainEqual(
+      expect.objectContaining({ type: 'subscribe', payload: { sessionId: outcome.sessionId } })
     )
-
-    transport.dispose()
-  })
-
-  it('switchProject passes through selected (cold-tab) replies without subscribing', async () => {
-    const transport = new WsAcpTransport({
-      url: 'ws://test/ws',
-      WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket
-    })
-    await transport.connect()
-    const sock = (transport as unknown as { socket: FakeWebSocket }).socket
-
-    sock.switchProjectReply = {
-      status: 'selected',
-      projectId: 'p-2',
-      cwd: '/work/p2'
-    }
-    await expect(transport.switchProject('p-2')).resolves.toEqual(sock.switchProjectReply)
-
-    const sent = sock.sent.map((s) => JSON.parse(s) as { type: string; payload: unknown })
-    const switchReq = sent.find((r) => r.type === 'switch_project')
-    expect(switchReq).toBeTruthy()
-    expect(switchReq?.payload).toEqual({ projectId: 'p-2' })
-    // Cold tab: no session, so the client must NOT subscribe early.
-    expect(sent).not.toContainEqual(expect.objectContaining({ type: 'subscribe' }))
-
-    transport.dispose()
-  })
-
-  it('switchProject maps queued replies without subscribing early', async () => {
-    const transport = new WsAcpTransport({
-      url: 'ws://test/ws',
-      WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket
-    })
-    await transport.connect()
-    const sock = (transport as unknown as { socket: FakeWebSocket }).socket
-    sock.switchProjectReply = {
-      status: 'queued',
-      projectId: 'p-2',
-      currentSessionId: 's-old'
-    }
-
-    await expect(transport.switchProject('p-2')).resolves.toEqual(sock.switchProjectReply)
-    const sent = sock.sent.map((s) => JSON.parse(s) as { type: string; payload: unknown })
-    expect(sent.filter((frame) => frame.type === 'subscribe')).toHaveLength(0)
-    transport.dispose()
-  })
-
-  it('subscribes before emitting queued project switch completion', async () => {
-    const transport = new WsAcpTransport({
-      url: 'ws://test/ws',
-      WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket
-    })
-    await transport.connect()
-    const sock = (transport as unknown as { socket: FakeWebSocket }).socket
-    const completed: unknown[] = []
-    transport.onEvent('project_switch_completed', (payload) => completed.push(payload))
-    const payload = {
-      status: 'completed',
-      requestId: 'r-switch',
-      projectId: 'p-2',
-      previousSessionId: 's-old',
-      sessionId: 's-new',
-      cwd: '/work/p2',
-      mcpServerCount: 1
-    }
-
-    sock.emit({ sid: 's-old', seq: 0, type: 'project_switch_completed', payload })
-    await vi.waitFor(() => expect(completed).toEqual([payload]))
-    const sent = sock.sent.map((s) => JSON.parse(s) as { type: string; payload: unknown })
-    expect(sent).toContainEqual(
-      expect.objectContaining({ type: 'subscribe', payload: { sessionId: 's-new' } })
-    )
-    transport.dispose()
-  })
-
-  it('delivers correlated queued project switch failure without subscribing', async () => {
-    const transport = new WsAcpTransport({
-      url: 'ws://test/ws',
-      WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket
-    })
-    await transport.connect()
-    const sock = (transport as unknown as { socket: FakeWebSocket }).socket
-    const failed: unknown[] = []
-    transport.onEvent('project_switch_failed', (payload) => failed.push(payload))
-    const payload = {
-      requestId: 'r-switch',
-      projectId: 'p-2',
-      previousSessionId: 's-old',
-      message: 'target project became unavailable before commit'
-    }
-
-    sock.emit({ sid: 's-old', seq: 0, type: 'project_switch_failed', payload })
-    await vi.waitFor(() => expect(failed).toEqual([payload]))
-    const sent = sock.sent.map((s) => JSON.parse(s) as { type: string })
-    expect(sent.filter((frame) => frame.type === 'subscribe')).toHaveLength(0)
+    expect(frames.some((frame) => frame.type === 'switch_project')).toBe(false)
     transport.dispose()
   })
 
@@ -1132,7 +1261,7 @@ describe('WsAcpTransport', () => {
     }
   })
 
-  it('delivers reliable events on arrival across a seq gap (no reorder-recovery)', async () => {
+  it('delivers live events only when contiguous after the subscribe head', async () => {
     const transport = new WsAcpTransport({
       url: 'ws://test/ws',
       WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket
@@ -1140,49 +1269,278 @@ describe('WsAcpTransport', () => {
     await transport.connect()
     const calls: unknown[] = []
     transport.onEvent('acp:tool_call', (p) => calls.push(p))
+    // Live-only subscribe: the host reports head 0, so the first live seq is 1.
+    await transport.subscribeSession('s1')
 
     const sock = (transport as unknown as { socket: FakeWebSocket }).socket
     const lastSeq = (transport as unknown as { lastSeq: Map<string, number> }).lastSeq
-    // seq 1 (session_created) was emitted before the client subscribed, so the
-    // cursor stays 0 — a permanent gap. A reliable tool_call at seq 3 lands in
-    // the gap: deliver immediately (not held behind the unfillable hole) and
-    // advance the cursor to 3.
-    sock.emit({ sid: 's1', seq: 3, type: 'tool_call', payload: { n: 3 } })
+    sock.emit({ sid: 's1', seq: 1, type: 'tool_call', payload: { n: 1 } })
+    sock.emit({ sid: 's1', seq: 2, type: 'tool_call', payload: { n: 2 } })
     await flushEvents(transport)
-    expect(calls).toEqual([{ n: 3 }])
-    expect(lastSeq.get('s1')).toBe(3)
-    // A subsequent contiguous event (seq 4) flows without duplication.
-    sock.emit({ sid: 's1', seq: 4, type: 'tool_call', payload: { n: 4 } })
-    await flushEvents(transport)
-    expect(calls).toEqual([{ n: 3 }, { n: 4 }])
-    expect(lastSeq.get('s1')).toBe(4)
+    expect(calls).toEqual([{ n: 1 }, { n: 2 }])
+    expect(lastSeq.get('s1')).toBe(2)
     transport.dispose()
   })
 
-  it('delivers lossy events in a gap and advances the cursor', async () => {
+  it('does not apply an event behind a skipped seq and installs a snapshot instead', async () => {
+    const transport = new WsAcpTransport({
+      url: 'ws://test/ws',
+      WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket
+    })
+    const recoveries: Array<{ watermark?: number }> = []
+    transport.setRecoveryHandler(async (recovery) => {
+      recoveries.push(recovery as { watermark?: number })
+    })
+    await transport.connect()
+    const calls: unknown[] = []
+    transport.onEvent('acp:tool_call', (p) => calls.push(p))
+    await transport.subscribeSession('s1')
+    const sock = (transport as unknown as { socket: FakeWebSocket }).socket
+
+    sock.emit({ sid: 's1', seq: 1, type: 'tool_call', payload: { n: 1 } })
+    // seq 2 was lost on the way: seq 3 must NOT be applied.
+    sock.emit({ sid: 's1', seq: 3, type: 'tool_call', payload: { n: 3 } })
+    await flushEvents(transport)
+    await vi.waitFor(() => expect(recoveries).toHaveLength(1))
+    expect(calls).toEqual([{ n: 1 }])
+    expect(recoveries[0]?.watermark).toBe(42)
+    const snapshotRequests = sock.sent.filter(
+      (frame) => JSON.parse(frame).type === 'recover_session_snapshot'
+    )
+    expect(snapshotRequests).toHaveLength(1)
+    // The snapshot moved the cursor to its watermark: the next contiguous live
+    // event after it applies, an older one stays dropped.
+    sock.emit({ sid: 's1', seq: 43, type: 'tool_call', payload: { n: 43 } })
+    sock.emit({ sid: 's1', seq: 4, type: 'tool_call', payload: { n: 4 } })
+    await flushEvents(transport)
+    expect(calls).toEqual([{ n: 1 }, { n: 43 }])
+    transport.dispose()
+  })
+
+  it('runs one snapshot at a time per session across a burst of discontinuous events', async () => {
+    const transport = new WsAcpTransport({
+      url: 'ws://test/ws',
+      WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket
+    })
+    transport.setRecoveryHandler(async () => {})
+    await transport.connect()
+    await transport.subscribeSession('s1')
+    const sock = (transport as unknown as { socket: FakeWebSocket }).socket
+    for (const seq of [5, 6, 7, 8]) {
+      sock.emit({ sid: 's1', seq, type: 'message_chunk', payload: { seq } })
+    }
+    await flushEvents(transport)
+    await vi.waitFor(() =>
+      expect(
+        sock.sent.filter((frame) => JSON.parse(frame).type === 'recover_session_snapshot')
+      ).toHaveLength(1)
+    )
+    transport.dispose()
+  })
+
+  it('applies replay up to the head in order across holes, then requires contiguity', async () => {
+    const transport = new WsAcpTransport({
+      url: 'ws://test/ws',
+      WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket
+    })
+    transport.setRecoveryHandler(async () => {})
+    await transport.connect()
+    const calls: Array<{ seq?: number }> = []
+    transport.onEvent('acp:tool_call', (_p, seq) => calls.push({ seq }))
+    const sock = (transport as unknown as { socket: FakeWebSocket }).socket
+    // The host's head is 6; this client holds seq 2. Seqs 3..5 never reach it
+    // (non-durable on the host): replay may skip them.
+    sock.hostHeadSeq = 6
+    transport.seedSessionCursor('s1', { lastSeq: 2, logEpoch: 'epoch-A' })
+    await transport.subscribeSession('s1')
+    // 6 is the last replayed seq; 7 is the next live seq.
+    sock.emit({ sid: 's1', seq: 6, type: 'tool_call', payload: {} })
+    sock.emit({ sid: 's1', seq: 7, type: 'tool_call', payload: {} })
+    await flushEvents(transport)
+    expect(calls.map((c) => c.seq)).toEqual([6, 7])
+    // 9 skips 8: not applied.
+    sock.emit({ sid: 's1', seq: 9, type: 'tool_call', payload: {} })
+    await flushEvents(transport)
+    expect(calls.map((c) => c.seq)).toEqual([6, 7])
+    transport.dispose()
+  })
+
+  it('installs a snapshot when the host sends a gap frame for a subscribed session', async () => {
+    const transport = new WsAcpTransport({
+      url: 'ws://test/ws',
+      WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket
+    })
+    const recoveries: unknown[] = []
+    transport.setRecoveryHandler(async (recovery) => {
+      recoveries.push(recovery)
+    })
+    await transport.connect()
+    await transport.subscribeSession('s1')
+    const sock = (transport as unknown as { socket: FakeWebSocket }).socket
+    // A gap for a session this socket never subscribed to is ignored.
+    sock.emit({ type: 'gap', sid: 'other' })
+    await flushEvents(transport)
+    expect(recoveries).toHaveLength(0)
+    sock.emit({ type: 'gap', sid: 's1' })
+    await flushEvents(transport)
+    await vi.waitFor(() => expect(recoveries).toHaveLength(1))
+    transport.dispose()
+  })
+
+  it('delivers a permission_request that arrives during a snapshot even though its seq is below the snapshot head', async () => {
+    const transport = new WsAcpTransport({
+      url: 'ws://test/ws',
+      WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket
+    })
+    transport.setRecoveryHandler(async () => {})
+    await transport.connect()
+    const requests: Array<{ payload: unknown; seq?: number }> = []
+    transport.onEvent('acp:permission_request', (p, seq) => requests.push({ payload: p, seq }))
+    const tools: unknown[] = []
+    transport.onEvent('acp:tool_call', (p) => tools.push(p))
+    await transport.subscribeSession('s1')
+    const sock = (transport as unknown as { socket: FakeWebSocket }).socket
+    sock.emit({ sid: 's1', seq: 1, type: 'tool_call', payload: { n: 1 } })
+    // seq 2 was lost: the permission_request at 3 exposes the hole. The
+    // snapshot (watermark 42) never holds a non-durable permission_request, so
+    // it must still reach the user; the tool_call is covered by the snapshot.
+    sock.emit({ sid: 's1', seq: 3, type: 'permission_request', payload: { requestId: 'r1' } })
+    sock.emit({ sid: 's1', seq: 4, type: 'tool_call', payload: { n: 4 } })
+    await flushEvents(transport)
+    await vi.waitFor(() => expect(requests).toHaveLength(1))
+    expect(requests[0]).toEqual({ payload: { requestId: 'r1' }, seq: undefined })
+    expect(tools).toEqual([{ n: 1 }])
+    transport.dispose()
+  })
+
+  it('installs one snapshot for a gap frame and the event the host sends behind it', async () => {
+    const transport = new WsAcpTransport({
+      url: 'ws://test/ws',
+      WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket
+    })
+    transport.setRecoveryHandler(async () => {})
+    await transport.connect()
+    await transport.subscribeSession('s1')
+    const sock = (transport as unknown as { socket: FakeWebSocket }).socket
+    // The host queues the gap frame ahead of the next event it delivers.
+    sock.emit({ type: 'gap', sid: 's1' })
+    sock.emit({ sid: 's1', seq: 5, type: 'message_chunk', payload: {} })
+    await flushEvents(transport)
+    await vi.waitFor(() =>
+      expect(
+        sock.sent.filter((frame) => JSON.parse(frame).type === 'recover_session_snapshot')
+      ).toHaveLength(1)
+    )
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(
+      sock.sent.filter((frame) => JSON.parse(frame).type === 'recover_session_snapshot')
+    ).toHaveLength(1)
+    transport.dispose()
+  })
+
+  it('live-only recovery adopts the head the subscribe reply names', async () => {
+    class LiveOnlyHeadSocket extends FakeWebSocket {
+      constructor(url: string) {
+        super(url)
+        this.historyMode = 'live_only'
+      }
+      send(data: string): void {
+        const req = JSON.parse(data) as {
+          id: string
+          type: string
+          payload: { sessionId: string; lastSeq?: number }
+        }
+        if (req.type === 'subscribe' && req.payload.lastSeq === undefined) {
+          this.sent.push(data)
+          this.emitReply({
+            id: req.id,
+            ok: true,
+            payload: {
+              sessionId: req.payload.sessionId,
+              replayed: 0,
+              logEpoch: 'epoch-A',
+              headSeq: 7
+            }
+          })
+          return
+        }
+        super.send(data)
+      }
+    }
+    const transport = new WsAcpTransport({
+      url: 'ws://test/ws',
+      WebSocketImpl: LiveOnlyHeadSocket as unknown as typeof WebSocket
+    })
+    const recoveries: unknown[] = []
+    transport.setRecoveryHandler(async (recovery) => recoveries.push(recovery))
+    await transport.connect()
+    const calls: Array<number | undefined> = []
+    transport.onEvent('acp:tool_call', (_p, seq) => calls.push(seq))
+    await transport.subscribeSession('s1', 99)
+    expect(recoveries).toEqual([{ sessionId: 's1', degraded: true }])
+    const sock = (transport as unknown as { socket: FakeWebSocket }).socket
+    sock.emit({ sid: 's1', seq: 8, type: 'tool_call', payload: {} })
+    sock.emit({ sid: 's1', seq: 10, type: 'tool_call', payload: {} })
+    await flushEvents(transport)
+    // 8 follows the head; 10 skips 9 and is not applied.
+    expect(calls).toEqual([8])
+    transport.dispose()
+  })
+
+  it('still repairs a gap frame that arrived while a subscribe was in flight and then failed', async () => {
+    const transport = new WsAcpTransport({
+      url: 'ws://test/ws',
+      WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket
+    })
+    transport.setRecoveryHandler(async () => {})
+    await transport.connect()
+    const sock = (transport as unknown as { socket: FakeWebSocket }).socket
+    sock.holdSubscribe = true
+    const subscribing = transport.subscribeSession('s1', 0).catch((error) => error)
+    await Promise.resolve()
+    sock.emit({ type: 'gap', sid: 's1' })
+    await flushEvents(transport)
+    const subscribeFrame = findSentRequest(sock, 'subscribe') as unknown as { id: string }
+    sock.emitReply({
+      id: subscribeFrame.id,
+      ok: false,
+      err: { code: 'unavailable', message: 'try later' }
+    })
+    expect(await subscribing).toBeInstanceOf(AcpTransportError)
+    await vi.waitFor(() =>
+      expect(
+        sock.sent.filter((frame) => JSON.parse(frame).type === 'recover_session_snapshot')
+      ).toHaveLength(1)
+    )
+    transport.dispose()
+  })
+
+  it('holds events that overtake the subscribe reply and judges them against its head', async () => {
     const transport = new WsAcpTransport({
       url: 'ws://test/ws',
       WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket
     })
     await transport.connect()
-    const chunks: unknown[] = []
-    transport.onEvent('acp:message_chunk', (p) => chunks.push(p))
-
+    const calls: Array<number | undefined> = []
+    transport.onEvent('acp:tool_call', (_p, seq) => calls.push(seq))
     const sock = (transport as unknown as { socket: FakeWebSocket }).socket
-    const lastSeq = (transport as unknown as { lastSeq: Map<string, number> }).lastSeq
-    // seq 1 was missed; a lossy message_chunk at seq 2 lands in a gap: it is
-    // delivered (lossy events still render) AND the cursor advances to 2.
-    sock.emit({ sid: 's1', seq: 2, type: 'message_chunk', payload: { n: 2 } })
+    // The host's replay (seq 1..3) reaches the socket BEFORE the reply that
+    // carries head 3; hold the reply, deliver the events, then release it.
+    sock.holdSubscribe = true
+    const subscribing = transport.subscribeSession('s1', 0)
+    await Promise.resolve()
+    sock.emit({ sid: 's1', seq: 1, type: 'tool_call', payload: {} })
+    sock.emit({ sid: 's1', seq: 3, type: 'tool_call', payload: {} })
     await flushEvents(transport)
-    expect(chunks).toEqual([{ n: 2 }])
-    expect(lastSeq.get('s1')).toBe(2)
-    // A reordered-earlier seq cannot arrive on a single FIFO WebSocket, but if
-    // one did it is dropped as `seq <= last` — the cursor never regresses.
-    // Documents the intentional removal of reorder-recovery (see spec Design Notes).
-    sock.emit({ sid: 's1', seq: 1, type: 'message_chunk', payload: { n: 1 } })
-    await flushEvents(transport)
-    expect(chunks).toEqual([{ n: 2 }])
-    expect(lastSeq.get('s1')).toBe(2)
+    expect(calls).toEqual([])
+    const subscribeFrame = findSentRequest(sock, 'subscribe') as unknown as { id: string }
+    sock.emitReply({
+      id: subscribeFrame.id,
+      ok: true,
+      payload: { sessionId: 's1', replayed: 2, logEpoch: 'epoch-A', headSeq: 3 }
+    })
+    await subscribing
+    expect(calls).toEqual([1, 3])
     transport.dispose()
   })
 
@@ -1194,9 +1552,11 @@ describe('WsAcpTransport', () => {
     await transport.connect()
     const calls: unknown[] = []
     transport.onEvent('acp:tool_call', (p) => calls.push(p))
+    transport.seedSessionCursor('s1', { lastSeq: 2, logEpoch: 'epoch-A' })
+    await transport.subscribeSession('s1')
 
     const sock = (transport as unknown as { socket: FakeWebSocket }).socket
-    // Live delivery at seq 3 (seq 1 was missed) advances the cursor to 3.
+    // Live delivery at seq 3 (head 2) advances the cursor to 3.
     sock.emit({ sid: 's1', seq: 3, type: 'tool_call', payload: { n: 3 } })
     await flushEvents(transport)
     expect(calls).toEqual([{ n: 3 }])
@@ -1223,20 +1583,21 @@ describe('WsAcpTransport', () => {
       seen.push({ payload: p, eventSeq })
     })
 
+    transport.seedSessionCursor('s1', { lastSeq: 6, logEpoch: 'epoch-A' })
+    await transport.subscribeSession('s1')
     const sock = (transport as unknown as { socket: FakeWebSocket }).socket
     sock.emit({ sid: 's1', seq: 7, type: 'message_chunk', payload: { n: 7 } })
     await flushEvents(transport)
     expect(seen).toEqual([{ payload: { n: 7 }, eventSeq: 7 }])
-    // Agent-level / relay events carry no per-session seq: the listener
-    // receives undefined (never a 0 that a `seq <= watermark` check could
-    // misread as history-covered).
-    const agentEvents: Array<{ payload: unknown; eventSeq?: number }> = []
-    transport.onEvent('acp:agent_spawned', (p, eventSeq) => {
-      agentEvents.push({ payload: p, eventSeq })
+    // An event without a session log position (seq 0) is not delivered: the
+    // relay sends none, and a 0 must never reach a `seq <= watermark` check.
+    const agentEvents: unknown[] = []
+    transport.onEvent('acp:agent_spawned', (p) => {
+      agentEvents.push(p)
     })
     sock.emit({ sid: null, seq: 0, type: 'agent_spawned', payload: { agentId: 'a1' } })
     await flushEvents(transport)
-    expect(agentEvents).toEqual([{ payload: { agentId: 'a1' }, eventSeq: undefined }])
+    expect(agentEvents).toEqual([])
     expect(seen).toHaveLength(1)
     transport.dispose()
   })
@@ -1258,6 +1619,8 @@ describe('WsAcpTransport', () => {
 
     const sock = (transport as unknown as { socket: FakeWebSocket }).socket
     const lastSeq = (transport as unknown as { lastSeq: Map<string, number> }).lastSeq
+    transport.seedSessionCursor('s1', { lastSeq: 3, logEpoch: 'epoch-A' })
+    await transport.subscribeSession('s1')
     sock.emit({
       type: 'events',
       events: [
@@ -1351,10 +1714,180 @@ describe('WsAcpTransport', () => {
 
     await transport.subscribeSession('s1', 99)
 
-    expect(recoveries).toEqual([{ sessionId: 's1', watermark: 42, events: sock.snapshotEvents }])
-    expect(transport.getSessionCursor('s1')).toBe(42)
+    expect(recoveries).toEqual([
+      {
+        sessionId: 's1',
+        watermark: 42,
+        headSeq: 42,
+        logEpoch: 'epoch-A',
+        events: sock.snapshotEvents
+      }
+    ])
+    expect(transport.getSessionCursor('s1')).toEqual({ lastSeq: 42, logEpoch: 'epoch-A' })
     const types = sock.sent.map((frame) => (JSON.parse(frame) as { type: string }).type)
     expect(types).toContain('recover_session_snapshot')
+    transport.dispose()
+  })
+
+  it('sends the stored log epoch with the cursor', async () => {
+    const transport = new WsAcpTransport({
+      url: 'ws://test/ws',
+      WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket
+    })
+    await transport.connect()
+    const sock = (transport as unknown as { socket: FakeWebSocket }).socket
+
+    transport.seedSessionCursor('s1', { lastSeq: 7, logEpoch: 'epoch-A' })
+    await transport.subscribeSession('s1', undefined, true)
+
+    expect(findSentRequest(sock, 'subscribe')?.payload).toEqual({
+      sessionId: 's1',
+      lastSeq: 7,
+      logEpoch: 'epoch-A'
+    })
+    transport.dispose()
+  })
+
+  it('stores the epoch a cursor-less subscribe is answered with', async () => {
+    const transport = new WsAcpTransport({
+      url: 'ws://test/ws',
+      WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket
+    })
+    await transport.connect()
+    const logEpochs = (transport as unknown as { logEpochs: Map<string, string> }).logEpochs
+
+    await transport.subscribeSession('s1', null, true)
+
+    expect(logEpochs.get('s1')).toBe('epoch-A')
+    transport.dispose()
+  })
+
+  it('a nonzero cursor with no known epoch is unverified: a snapshot replaces it and no bare cursor is sent', async () => {
+    const transport = new WsAcpTransport({
+      url: 'ws://test/ws',
+      WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket
+    })
+    const recoveries: unknown[] = []
+    transport.setRecoveryHandler(async (recovery) => {
+      recoveries.push(recovery)
+    })
+    await transport.connect()
+    const sock = (transport as unknown as { socket: FakeWebSocket }).socket
+
+    await transport.subscribeSession('s1', 5, true)
+
+    // No bare cursor goes out: the snapshot request replaces the subscribe.
+    expect(findSentRequest(sock, 'subscribe')).toBeUndefined()
+    expect(findSentRequest(sock, 'recover_session_snapshot')).toBeDefined()
+    expect(recoveries).toHaveLength(1)
+    expect(transport.getSessionCursor('s1')).toEqual({ lastSeq: 42, logEpoch: 'epoch-A' })
+    transport.dispose()
+  })
+
+  it('a cursor above the host head is stale even under the right epoch', async () => {
+    const transport = new WsAcpTransport({
+      url: 'ws://test/ws',
+      WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket
+    })
+    const recoveries: unknown[] = []
+    transport.setRecoveryHandler(async (recovery) => {
+      recoveries.push(recovery)
+    })
+    await transport.connect()
+    const sock = (transport as unknown as { socket: FakeWebSocket }).socket
+    sock.hostHeadSeq = 10
+    transport.seedSessionCursor('s1', { lastSeq: 30, logEpoch: 'epoch-A' })
+
+    await transport.subscribeSession('s1', undefined, true)
+
+    expect(recoveries).toHaveLength(1)
+    transport.dispose()
+  })
+
+  it('a cursor from an old host epoch gets stale, installs a snapshot and keeps delivering new events', async () => {
+    const transport = new WsAcpTransport({
+      url: 'ws://test/ws',
+      WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket
+    })
+    const recoveries: unknown[] = []
+    transport.setRecoveryHandler(async (recovery) => {
+      recoveries.push(recovery)
+    })
+    await transport.connect()
+    const sock = (transport as unknown as { socket: FakeWebSocket }).socket
+    // The host restarted without durable history: it now serves epoch-B while
+    // this client holds cursor 500 from epoch-A.
+    sock.logEpoch = 'epoch-B'
+    transport.seedSessionCursor('s1', { lastSeq: 500, logEpoch: 'epoch-A' })
+
+    await transport.subscribeSession('s1', undefined, true)
+
+    expect(recoveries).toHaveLength(1)
+    expect(transport.getSessionCursor('s1')).toEqual({ lastSeq: 42, logEpoch: 'epoch-B' })
+    // Seqs of the new log restart low: they must not be dropped as duplicates of epoch-A's 500.
+    const chunks: unknown[] = []
+    transport.onEvent('acp:message_chunk', (p) => chunks.push(p))
+    sock.emit({ sid: 's1', seq: 43, type: 'message_chunk', payload: { n: 43 } })
+    await flushEvents(transport)
+    expect(chunks).toEqual([{ n: 43 }])
+    transport.dispose()
+  })
+
+  it('snapshots when a subscribe sent without an epoch is answered under another epoch', async () => {
+    const transport = new WsAcpTransport({
+      url: 'ws://test/ws',
+      WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket
+    })
+    const recoveries: unknown[] = []
+    transport.setRecoveryHandler(async (recovery) => {
+      recoveries.push(recovery)
+    })
+    await transport.connect()
+    const sock = (transport as unknown as { socket: FakeWebSocket }).socket
+    transport.seedSessionCursor('s1', { lastSeq: 9, logEpoch: 'epoch-A' })
+    // A cursor-less live subscribe (explicit null) carries no epoch, so the host cannot refuse it.
+    sock.logEpoch = 'epoch-B'
+    await transport.subscribeSession('s1', null, true)
+
+    expect(recoveries).toHaveLength(1)
+    expect(transport.getSessionCursor('s1')?.logEpoch).toBe('epoch-B')
+    transport.dispose()
+  })
+
+  it('drops the stored cursor when the host answers under another epoch and the snapshot fails', async () => {
+    const transport = new WsAcpTransport({
+      url: 'ws://test/ws',
+      WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket
+    })
+    transport.setRecoveryHandler(async () => {})
+    await transport.connect()
+    const sock = (transport as unknown as { socket: FakeWebSocket }).socket
+    sock.snapshotFailureCodes.set('s1', 'agent_crashed')
+    transport.seedSessionCursor('s1', { lastSeq: 9, logEpoch: 'epoch-A' })
+    // The cursor-less subscribe cannot be refused by the host; its reply names epoch-B.
+    sock.logEpoch = 'epoch-B'
+    ;(transport as unknown as { logEpochs: Map<string, string> }).logEpochs.set('s1', 'epoch-OLD')
+
+    await expect(transport.subscribeSession('s1', null, true)).rejects.toBeDefined()
+
+    // The old pair must not survive to be re-presented against another log.
+    expect(transport.getSessionCursor('s1')).toBeNull()
+    transport.dispose()
+  })
+
+  it('a zero cursor still records the epoch and clears the previous pair', async () => {
+    const transport = new WsAcpTransport({
+      url: 'ws://test/ws',
+      WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket
+    })
+    transport.seedSessionCursor('s1', { lastSeq: 9, logEpoch: 'epoch-A' })
+    transport.seedSessionCursor('s1', { lastSeq: 0, logEpoch: 'epoch-B' })
+    const internals = transport as unknown as {
+      lastSeq: Map<string, number>
+      logEpochs: Map<string, string>
+    }
+    expect(internals.lastSeq.has('s1')).toBe(false)
+    expect(internals.logEpochs.get('s1')).toBe('epoch-B')
     transport.dispose()
   })
 
@@ -1394,6 +1927,34 @@ describe('WsAcpTransport', () => {
     expect(recoveries).toEqual([{ sessionId: 's1', degraded: true }])
     transport.dispose()
   })
+  it('a degraded recovery remembers the epoch the host answered with, so the next cursor goes out verified', async () => {
+    class LiveOnlySocket extends FakeWebSocket {
+      constructor(url: string) {
+        super(url)
+        this.historyMode = 'live_only'
+      }
+    }
+    const transport = new WsAcpTransport({
+      url: 'ws://test/ws',
+      WebSocketImpl: LiveOnlySocket as unknown as typeof WebSocket
+    })
+    transport.setRecoveryHandler(async () => {})
+    await transport.connect()
+    const sock = (transport as unknown as { socket: FakeWebSocket }).socket
+
+    await transport.subscribeSession('s1', 99)
+    // Events of the new log advance the cursor; only the stored epoch can verify it.
+    ;(transport as unknown as { lastSeq: Map<string, number> }).lastSeq.set('s1', 4)
+    await transport.subscribeSession('s1', undefined, true)
+
+    expect(findSentRequest(sock, 'subscribe')?.payload).toEqual({
+      sessionId: 's1',
+      lastSeq: 4,
+      logEpoch: 'epoch-A'
+    })
+    transport.dispose()
+  })
+
   it('captures the reopen generation before the snapshot round-trip and threads it to recovery', async () => {
     const transport = new WsAcpTransport({
       url: 'ws://test/ws',
@@ -1636,6 +2197,27 @@ describe('WsAcpTransport', () => {
       .filter((frame) => frame.type === 'subscribe')
     expect(subscriptions).toHaveLength(2)
     expect(subscriptions.every((frame) => frame.payload.lastSeq === 0)).toBe(true)
+    transport.dispose()
+  })
+
+  it('sends mcpServers on reopen only when the caller provides the list', async () => {
+    const transport = new WsAcpTransport({
+      url: 'ws://test/ws',
+      WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket
+    })
+    await transport.connect()
+    const sock = (transport as unknown as { socket: FakeWebSocket }).socket
+
+    await transport.loadSession('a1', 's-plain', '/work')
+    await transport.resumeSession('a1', 's-reload', '/work', undefined, { mcpServers: [] })
+
+    const frames = sock.sent.map(
+      (frame) => JSON.parse(frame) as { type: string; payload: Record<string, unknown> }
+    )
+    const load = frames.find((frame) => frame.type === 'load_session')
+    const resume = frames.find((frame) => frame.type === 'resume_session')
+    expect(load?.payload).not.toHaveProperty('mcpServers')
+    expect(resume?.payload.mcpServers).toEqual([])
     transport.dispose()
   })
 
@@ -2066,6 +2648,99 @@ describe('WsAcpTransport', () => {
 })
 
 // Story 5.3 (AC3, T6) — transport-level reconnect listener.
+describe('WsAcpTransport host-offline (Close 1001)', () => {
+  afterEach(() => {
+    _resetAcpTransportForTests(null)
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+
+  function closeWith1001(transport: WsAcpTransport): void {
+    const sock = (transport as unknown as { socket: FakeWebSocket }).socket
+    sock.readyState = FakeWebSocket.CLOSED
+    sock.onclose?.(new CloseEvent('close', { code: 1001 }))
+  }
+
+  it('reports host-offline and opens no socket until /health answers, then reconnects once', async () => {
+    vi.useFakeTimers()
+    const created: FakeWebSocket[] = []
+    class TrackedWebSocket extends FakeWebSocket {
+      constructor(...args: ConstructorParameters<typeof FakeWebSocket>) {
+        super(...args)
+        created.push(this)
+      }
+    }
+    let healthy = false
+    const health = vi.fn(async () => ({ ok: healthy }) as Response)
+    vi.stubGlobal('fetch', health)
+    const transport = new WsAcpTransport({
+      url: 'ws://test/ws',
+      WebSocketImpl: TrackedWebSocket as unknown as typeof WebSocket
+    })
+    const states: string[] = []
+    transport.setConnectionStateListener((state) => states.push(state))
+    await transport.connect()
+    const before = created.length
+
+    closeWith1001(transport)
+    expect(transport.getConnectionState()).toBe('host-offline')
+    expect(states.at(-1)).toBe('host-offline')
+
+    // The fast backoff window passes: no socket opens, only slow health probes.
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(created.length).toBe(before)
+    await expect(transport.connect()).rejects.toThrow(/offline/)
+
+    // The host stays down across two slow probes, then answers.
+    await vi.advanceTimersByTimeAsync(20_000)
+    expect(health).toHaveBeenCalled()
+    expect(created.length).toBe(before)
+    healthy = true
+    await vi.advanceTimersByTimeAsync(15_000)
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(created.length).toBe(before + 1)
+    expect(transport.getConnectionState()).toBe('connected')
+    transport.dispose()
+  })
+
+  it('retryHostOffline asks /health at once', async () => {
+    vi.useFakeTimers()
+    const health = vi.fn(async () => ({ ok: true }) as Response)
+    vi.stubGlobal('fetch', health)
+    const transport = new WsAcpTransport({
+      url: 'ws://test/ws',
+      WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket
+    })
+    await transport.connect()
+    closeWith1001(transport)
+    expect(health).not.toHaveBeenCalled()
+    transport.retryHostOffline()
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(health).toHaveBeenCalledTimes(1)
+    expect(transport.getConnectionState()).toBe('connected')
+    transport.dispose()
+  })
+
+  it('keeps the backoff loop for any other close code', async () => {
+    vi.useFakeTimers()
+    const health = vi.fn(async () => ({ ok: true }) as Response)
+    vi.stubGlobal('fetch', health)
+    const transport = new WsAcpTransport({
+      url: 'ws://test/ws',
+      WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket
+    })
+    await transport.connect()
+    const sock = (transport as unknown as { socket: FakeWebSocket }).socket
+    sock.readyState = FakeWebSocket.CLOSED
+    sock.onclose?.(new CloseEvent('close', { code: 1006 }))
+    expect(transport.getConnectionState()).not.toBe('host-offline')
+    await vi.advanceTimersByTimeAsync(600)
+    expect(health).not.toHaveBeenCalled()
+    expect((transport as unknown as { socket: FakeWebSocket }).socket).not.toBe(sock)
+    transport.dispose()
+  })
+})
+
 // Verifies the `setReconnectListener` callback fires `true` on
 // `scheduleReconnect` (WS drop) and `false` on `reconnect` success.
 describe('WsAcpTransport reconnect listener (Story 5.3)', () => {
@@ -2149,6 +2824,87 @@ describe('WsAcpTransport reconnect listener (Story 5.3)', () => {
     await transport.connect()
     // Initial connect must NOT fire the listener — only reconnect transitions.
     expect(states).toEqual([])
+    transport.dispose()
+  })
+})
+
+// State watches (projects, chat history, agents): frames reach the WatchClient
+// ahead of the `watch` reply, every reconnect resubscribes, and a revision gap
+// makes the client ask for fresh state.
+describe('WsAcpTransport state watches', () => {
+  afterEach(() => {
+    FakeWebSocket.watchStates = {}
+    FakeWebSocket.watchEpoch = 'epoch-aaaaaaaa'
+    vi.useRealTimers()
+  })
+
+  const socketOf = (transport: WsAcpTransport): FakeWebSocket =>
+    (transport as unknown as { socket: FakeWebSocket }).socket
+
+  const watchRequests = (transport: WsAcpTransport): string[] =>
+    socketOf(transport)
+      .sent.map((frame) => JSON.parse(frame) as { type: string; payload: { watch?: string } })
+      .filter((frame) => frame.type === 'watch')
+      .map((frame) => frame.payload.watch ?? '')
+
+  function open(): WsAcpTransport {
+    return new WsAcpTransport({
+      url: 'ws://test/ws',
+      WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket
+    })
+  }
+
+  it('subscribes once the socket is authenticated and applies the state frame', async () => {
+    FakeWebSocket.watchStates.projects = { projects: [{ id: 'p1' }] }
+    const transport = open()
+    const states: unknown[] = []
+    transport.watches.subscribe('projects', { onState: (state) => states.push(state) })
+
+    await transport.connect()
+    await vi.waitFor(() => expect(states).toEqual([{ projects: [{ id: 'p1' }] }]))
+    expect(watchRequests(transport)).toEqual(['projects'])
+    transport.dispose()
+  })
+
+  it('applies a contiguous delta and resubscribes when one is skipped', async () => {
+    const transport = open()
+    const deltas: unknown[] = []
+    transport.watches.subscribe('agents', { onState: () => {}, onDelta: (d) => deltas.push(d) })
+    await transport.connect()
+    await vi.waitFor(() => expect(watchRequests(transport)).toEqual(['agents']))
+    const sock = socketOf(transport)
+    const frame = (n: number, delta: unknown) =>
+      sock.emit({
+        type: 'watch',
+        watch: 'agents',
+        scope: '',
+        revision: { hostEpoch: FakeWebSocket.watchEpoch, n },
+        delta
+      })
+
+    frame(2, 'one')
+    frame(4, 'skipped')
+
+    expect(deltas).toEqual(['one'])
+    await vi.waitFor(() => expect(watchRequests(transport)).toEqual(['agents', 'agents']))
+    transport.dispose()
+  })
+
+  it('resubscribes every watch on the fresh socket after a reconnect', async () => {
+    vi.useFakeTimers()
+    const transport = open()
+    const states: unknown[] = []
+    transport.watches.subscribe('chat_history', { onState: (state) => states.push(state) })
+    await transport.connect()
+    await vi.advanceTimersByTimeAsync(10)
+    expect(states).toHaveLength(1)
+
+    socketOf(transport).close()
+    await vi.advanceTimersByTimeAsync(2500)
+    await vi.advanceTimersByTimeAsync(50)
+
+    expect(watchRequests(transport)).toEqual(['chat_history'])
+    expect(states).toHaveLength(2)
     transport.dispose()
   })
 })
@@ -2294,7 +3050,6 @@ type TransportInternals = {
   socket: FakeWebSocket
   connecting: Promise<void> | null
   reconnecting: boolean
-  lastHiddenAt: number | null
   visibilityHandler: (() => void) | null
   focusHandler: (() => void) | null
   pageShowHandler: (() => void) | null
@@ -2458,7 +3213,6 @@ describe('WsAcpTransport visibility-triggered reconnect (web idle persist)', () 
     expect(states).toEqual([])
     expect(internals.socket).toBe(socketBefore)
     expect(findSentRequest(socketBefore, 'ping')).toBeDefined()
-    expect(internals.lastHiddenAt).toBeNull() // consumed
 
     const timerField = transport as unknown as {
       reconnectTimer: ReturnType<typeof setTimeout> | null
@@ -2543,7 +3297,7 @@ describe('WsAcpTransport visibility-triggered reconnect (web idle persist)', () 
     })
   }
 
-  it('ignores lifecycle signals during reconnect backoff without resetting the retry', async () => {
+  it('does not start an extra probe or reconnect for lifecycle signals while the socket is healthy and a probe is in flight', async () => {
     vi.useFakeTimers()
     const transport = new WsAcpTransport({
       url: 'ws://test/ws',
@@ -2551,17 +3305,16 @@ describe('WsAcpTransport visibility-triggered reconnect (web idle persist)', () 
     })
     await transport.connect()
     const internals = transport as unknown as TransportInternals
-    internals.socket.close()
-    const timer = internals.reconnectTimer
-    const attempt = internals.reconnectAttempt
+    const socket = internals.socket
+    socket.holdPing = true
 
     window.dispatchEvent(new Event('pageshow'))
     document.dispatchEvent(new Event('resume'))
     window.dispatchEvent(new Event('online'))
 
-    expect(internals.reconnectTimer).toBe(timer)
-    expect(internals.reconnectAttempt).toBe(attempt)
-    expect(internals.reconnecting).toBe(true)
+    expect(socket.sent.filter((raw) => JSON.parse(raw).type === 'ping')).toHaveLength(1)
+    expect(internals.reconnectTimer).toBeNull()
+    expect(internals.socket).toBe(socket)
     transport.dispose()
   })
 
@@ -2606,6 +3359,59 @@ describe('WsAcpTransport visibility-triggered reconnect (web idle persist)', () 
     transport.dispose()
   })
 
+  it('a plain focus of a socket that never left the page does not ping; focus after blur does, once', async () => {
+    vi.useFakeTimers()
+    const transport = new WsAcpTransport({
+      url: 'ws://test/ws',
+      WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket
+    })
+    await transport.connect()
+    const internals = transport as unknown as TransportInternals
+    const socket = internals.socket
+    const pings = () => socket.sent.filter((raw) => JSON.parse(raw).type === 'ping').length
+
+    window.dispatchEvent(new Event('focus'))
+    window.dispatchEvent(new Event('focus'))
+    await Promise.resolve()
+    expect(pings()).toBe(0)
+
+    window.dispatchEvent(new Event('blur'))
+    window.dispatchEvent(new Event('focus'))
+    await Promise.resolve()
+    expect(pings()).toBe(1)
+    await vi.advanceTimersByTimeAsync(10)
+    // The probe cleared the away flag: the next plain focus is free again.
+    window.dispatchEvent(new Event('focus'))
+    await Promise.resolve()
+    expect(pings()).toBe(1)
+
+    // A hide → show cycle re-arms the probe on its own return signal.
+    dispatchVisibility('hidden')
+    dispatchVisibility('visible')
+    await vi.advanceTimersByTimeAsync(10)
+    expect(pings()).toBe(2)
+    transport.dispose()
+  })
+
+  it('pageshow, online and resume still probe a never-blurred socket', async () => {
+    vi.useFakeTimers()
+    const transport = new WsAcpTransport({
+      url: 'ws://test/ws',
+      WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket
+    })
+    await transport.connect()
+    const socket = (transport as unknown as TransportInternals).socket
+    const pings = () => socket.sent.filter((raw) => JSON.parse(raw).type === 'ping').length
+    window.dispatchEvent(new Event('pageshow'))
+    await vi.advanceTimersByTimeAsync(10)
+    window.dispatchEvent(new Event('online'))
+    await vi.advanceTimersByTimeAsync(10)
+    document.dispatchEvent(new Event('resume'))
+    await vi.advanceTimersByTimeAsync(10)
+    expect(pings()).toBe(3)
+    transport.dispose()
+  })
+
   it('dispose() detaches the visibility/focus listeners', async () => {
     vi.useFakeTimers()
     const transport = new WsAcpTransport({
@@ -2628,10 +3434,37 @@ describe('WsAcpTransport visibility-triggered reconnect (web idle persist)', () 
     expect(internals.onlineHandler).toBeNull()
   })
 
-  // CAP-2: stale-threshold skip — after >30s hidden, the client skips the
-  // round-trip ping validation and goes directly to forceReconnect with
-  // backoff reset, recovering within the server's grace window.
-  it('skips ping validation and force-reconnects on long background return (>30s hidden)', async () => {
+  // CLI-F4/AD Conventions › Reconnect: the 30 s hidden-duration forced
+  // reconnect is retired — the host holds a backgrounded socket for 300 s, so
+  // every return signal PROBES the held socket and reconnects only on failure.
+  it('probes the held socket after a long (>30s) background and keeps it when the probe succeeds', async () => {
+    vi.useFakeTimers()
+    const transport = new WsAcpTransport({
+      url: 'ws://test/ws',
+      WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket
+    })
+    await transport.connect()
+    const states: boolean[] = []
+    transport.setReconnectListener((r) => states.push(r))
+    await transport.subscribeSession('sess-A')
+    const internals = transport as unknown as TransportInternals
+    const oldSocket = internals.socket
+
+    dispatchVisibility('hidden')
+    await vi.advanceTimersByTimeAsync(120_000)
+    oldSocket.sent.length = 0
+    dispatchVisibility('visible')
+    await vi.advanceTimersByTimeAsync(10)
+
+    expect(findSentRequest(oldSocket, 'ping')).toBeDefined() // probed, not replaced
+    expect(internals.socket).toBe(oldSocket)
+    expect(oldSocket.readyState).toBe(FakeWebSocket.OPEN)
+    expect(states).toEqual([])
+    expect(internals.reconnectTimer).toBeNull()
+    transport.dispose()
+  })
+
+  it('reconnects after a long background only when the probe fails, cursor-resubscribing', async () => {
     vi.useFakeTimers()
     const transport = new WsAcpTransport({
       url: 'ws://test/ws',
@@ -2650,37 +3483,140 @@ describe('WsAcpTransport visibility-triggered reconnect (web idle persist)', () 
       payload: { role: 'agent', content: { text: 'before background' } }
     })
     await Promise.resolve()
-    expect(internals.lastSeq.get('sess-A')).toBe(1)
 
-    // Simulate >30s of background time (exceeds VISIBILITY_STALE_THRESHOLD_MS).
     dispatchVisibility('hidden')
-    await vi.advanceTimersByTimeAsync(31_000)
-    // Clear sent buffer so heartbeat pings from the hidden period don't
-    // interfere — we only care about pings sent after visibility return.
-    oldSocket.sent.length = 0
+    await vi.advanceTimersByTimeAsync(120_000)
+    oldSocket.holdPing = true // the held socket died while backgrounded
     dispatchVisibility('visible')
-
-    // forceReconnect fires immediately — no ping request sent after visibility return.
-    expect(findSentRequest(oldSocket, 'ping')).toBeUndefined()
+    await vi.advanceTimersByTimeAsync(4_900)
+    expect(states).toEqual([]) // still within the bounded probe
+    await vi.advanceTimersByTimeAsync(200)
+    expect(states).toEqual([true])
     expect(oldSocket.readyState).toBe(FakeWebSocket.CLOSED)
-    expect(oldSocket.onclose).toBeNull() // handlers detached
 
-    // Backoff was reset to 0, so the reconnect delay is RECONNECT_BASE_MS (500ms).
     await vi.advanceTimersByTimeAsync(600)
-    await Promise.resolve()
-    expect(states[0]).toBe(true) // reconnecting
     expect(internals.socket).not.toBe(oldSocket)
-    // Cursor-resubscribe with lastSeq.
-    const sub = findSentRequest(internals.socket, 'subscribe')
-    expect(sub?.payload).toMatchObject({ sessionId: 'sess-A', lastSeq: 1 })
-
+    expect(findSentRequest(internals.socket, 'subscribe')?.payload).toMatchObject({
+      sessionId: 'sess-A',
+      lastSeq: 1
+    })
     transport.dispose()
   })
 
-  // CAP-2: backoff reset — forceReconnect resets reconnectAttempt to 0 so the
-  // visibility-triggered path always starts with the minimum delay, regardless
-  // of how many prior reconnect failures elevated the backoff.
-  it('resets reconnect backoff to zero in forceReconnect after long background', async () => {
+  for (const signal of ['visibility', 'focus', 'pageshow', 'resume', 'online'] as const) {
+    it(`${signal} cuts a pending backoff short without resetting the attempt counter`, async () => {
+      vi.useFakeTimers()
+      const transport = new WsAcpTransport({
+        url: 'ws://test/ws',
+        WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket
+      })
+      await transport.connect()
+      const states: boolean[] = []
+      transport.setReconnectListener((r) => states.push(r))
+      const internals = transport as unknown as TransportInternals
+      internals.reconnectAttempt = 4 // elevated: the pending delay would be the 8s cap
+      const oldSocket = internals.socket
+      oldSocket.close()
+      expect(internals.reconnectTimer).not.toBeNull()
+      expect(internals.reconnectAttempt).toBe(5)
+
+      if (signal === 'visibility') dispatchVisibility('visible')
+      else if (signal === 'resume') document.dispatchEvent(new Event('resume'))
+      else window.dispatchEvent(new Event(signal))
+      expect(internals.reconnectTimer).toBeNull() // backoff cut short
+
+      await vi.advanceTimersByTimeAsync(10)
+      expect(internals.socket).not.toBe(oldSocket)
+      expect(internals.socket.readyState).toBe(FakeWebSocket.OPEN)
+      expect(states).toEqual([true, false])
+      expect(internals.reconnectAttempt).toBe(5) // not reset by the wake
+      transport.dispose()
+    })
+  }
+
+  it('rate-limits wake-triggered early attempts so a focus burst is not a connect storm', async () => {
+    vi.useFakeTimers()
+    DelayedOpenWebSocket.pending = []
+    const transport = new WsAcpTransport({
+      url: 'ws://test/ws',
+      WebSocketImpl: DelayedOpenWebSocket as unknown as typeof WebSocket
+    })
+    const connecting = transport.connect()
+    await Promise.resolve()
+    const internals = transport as unknown as TransportInternals
+    ;(internals.socket as DelayedOpenWebSocket).openAndAuthenticate()
+    await connecting
+    internals.reconnectAttempt = 3 // elevated so a self-fired timer cannot mask the wake
+    internals.socket.close()
+
+    window.dispatchEvent(new Event('focus')) // cuts the backoff → attempt starts
+    expect(DelayedOpenWebSocket.pending).toHaveLength(2)
+    // Further focus events join the in-flight handshake instead of adding sockets.
+    window.dispatchEvent(new Event('focus'))
+    expect(DelayedOpenWebSocket.pending).toHaveLength(2)
+
+    // The attempt dies at once; the next backoff is pending. A focus within the
+    // same second must NOT cut it short again…
+    DelayedOpenWebSocket.pending[1].close()
+    await Promise.resolve()
+    expect(internals.reconnectTimer).not.toBeNull()
+    window.dispatchEvent(new Event('focus'))
+    expect(internals.reconnectTimer).not.toBeNull()
+    expect(DelayedOpenWebSocket.pending).toHaveLength(2)
+
+    // …but once the minimum spacing has elapsed a wake signal does.
+    await vi.advanceTimersByTimeAsync(1_000)
+    window.dispatchEvent(new Event('focus'))
+    expect(DelayedOpenWebSocket.pending.length).toBeGreaterThanOrEqual(3)
+    transport.dispose()
+  })
+
+  it('a resume signal revalidates in the resubscribe phase when the socket is no longer OPEN (CLI-F3)', async () => {
+    vi.useFakeTimers()
+    class HoldResubscribeSocket extends FakeWebSocket {
+      static instances = 0
+      holdSubscribe = false
+
+      constructor(url: string) {
+        super(url)
+        HoldResubscribeSocket.instances += 1
+        this.holdSubscribe = HoldResubscribeSocket.instances > 1
+      }
+
+      send(data: string): void {
+        if (this.holdSubscribe && (JSON.parse(data) as { type: string }).type === 'subscribe') {
+          this.sent.push(data)
+          return
+        }
+        super.send(data)
+      }
+    }
+    const transport = new WsAcpTransport({
+      url: 'ws://test/ws',
+      WebSocketImpl: HoldResubscribeSocket as unknown as typeof WebSocket
+    })
+    await transport.connect()
+    await transport.subscribeSession('sess-A')
+    const internals = transport as unknown as TransportInternals
+    internals.socket.close()
+    await vi.advanceTimersByTimeAsync(600) // reconnect: auth ok, resubscribe in flight
+    expect(internals.reconnecting).toBe(true)
+    expect(internals.connecting).toBeNull()
+    expect(internals.reconnectTimer).toBeNull()
+
+    // The OS dropped the socket without delivering `onclose`.
+    const dead = internals.socket
+    dead.readyState = FakeWebSocket.CLOSED
+    window.dispatchEvent(new Event('online'))
+
+    // Recovery starts now, not after the 15s resubscribe bound / 60s timer.
+    expect(internals.socket).toBeNull()
+    expect(dead.onclose).toBeNull()
+    expect(internals.reconnectTimer).not.toBeNull()
+    transport.dispose()
+  })
+
+  it('resets the backoff counter only after 60s of stable connection, not on connect', async () => {
     vi.useFakeTimers()
     const transport = new WsAcpTransport({
       url: 'ws://test/ws',
@@ -2688,73 +3624,179 @@ describe('WsAcpTransport visibility-triggered reconnect (web idle persist)', () 
     })
     await transport.connect()
     const internals = transport as unknown as TransportInternals
+    internals.socket.close()
+    expect(internals.reconnectAttempt).toBe(1)
 
-    // Simulate elevated backoff from prior failures (auto-open sockets reset
-    // the counter on successful reconnect, so set it directly).
-    internals.reconnectAttempt = 5
-
-    // Simulate long background (>30s) which triggers forceReconnect.
-    dispatchVisibility('hidden')
-    await vi.advanceTimersByTimeAsync(31_000)
-    dispatchVisibility('visible')
-
-    // forceReconnect resets backoff to 0, then scheduleReconnect increments
-    // to 1. The delay used was RECONNECT_BASE_MS * 2^0 = 500ms (not 2^5 = 16s).
-    expect(internals.reconnectAttempt).toBe(1) // 0 (reset) + 1 (increment)
-    await vi.advanceTimersByTimeAsync(600) // base delay fires
-    await Promise.resolve()
-
+    await vi.advanceTimersByTimeAsync(600) // reconnected
+    expect(internals.socket.readyState).toBe(FakeWebSocket.OPEN)
+    expect(internals.reconnectAttempt).toBe(1) // connect alone does not reset
+    await vi.advanceTimersByTimeAsync(58_000)
+    expect(internals.reconnectAttempt).toBe(1)
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(internals.reconnectAttempt).toBe(0) // 60s stable
     transport.dispose()
   })
 
-  // Regression: forceReconnect must cancel a pending reconnect timer (from a
-  // prior close during backgrounding) instead of returning early. Without
-  // this, a stale-return after the socket closed in the background would be
-  // stranded on the old elevated backoff timer.
-  it('cancels pending reconnect timer and resets backoff on stale visibility return', async () => {
+  it('a connection that drops before 60s keeps climbing the backoff ladder', async () => {
+    vi.useFakeTimers()
+    const transport = new WsAcpTransport({
+      url: 'ws://test/ws',
+      WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket
+    })
+    await transport.connect()
+    const internals = transport as unknown as TransportInternals
+    internals.socket.close() // attempt 0 → 1, 500ms
+    await vi.advanceTimersByTimeAsync(600)
+    await vi.advanceTimersByTimeAsync(30_000) // up for only 30s
+    internals.socket.close() // flap: attempt 1 → 2, 1000ms
+    expect(internals.reconnectAttempt).toBe(2)
+    await vi.advanceTimersByTimeAsync(900)
+    expect(internals.reconnectTimer).not.toBeNull() // 1s delay still pending
+    await vi.advanceTimersByTimeAsync(200)
+    expect(internals.reconnectTimer).toBeNull()
+    expect(internals.socket.readyState).toBe(FakeWebSocket.OPEN)
+    transport.dispose()
+  })
+
+  for (const [randomValue, delayMs] of [
+    [0, 375],
+    [1, 625]
+  ] as const) {
+    it(`reconnect delay carries ±25% jitter (random=${randomValue} → ${delayMs}ms)`, async () => {
+      vi.useFakeTimers()
+      vi.mocked(Math.random).mockReturnValue(randomValue)
+      const transport = new WsAcpTransport({
+        url: 'ws://test/ws',
+        WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket
+      })
+      await transport.connect()
+      const internals = transport as unknown as TransportInternals
+      internals.socket.close()
+      await vi.advanceTimersByTimeAsync(delayMs - 1)
+      expect(internals.reconnectTimer).not.toBeNull()
+      await vi.advanceTimersByTimeAsync(1)
+      expect(internals.reconnectTimer).toBeNull() // fired exactly at the jittered delay
+      transport.dispose()
+    })
+  }
+
+  // CLI-F4: upgrade + authenticate share one ~10 s handshake bound on /ws.
+  it('fails a stalled /ws upgrade at the 10s handshake bound and re-arms the backoff', async () => {
     vi.useFakeTimers()
     DelayedOpenWebSocket.pending = []
     const transport = new WsAcpTransport({
       url: 'ws://test/ws',
       WebSocketImpl: DelayedOpenWebSocket as unknown as typeof WebSocket
     })
-    // Open + authenticate the initial socket manually.
-    const connecting = transport.connect()
-    await Promise.resolve()
     const internals = transport as unknown as TransportInternals
-    const initSocket = internals.socket as DelayedOpenWebSocket
-    initSocket.openAndAuthenticate()
-    await connecting
-
-    // Simulate backgrounding.
-    dispatchVisibility('hidden')
-
-    // Close the socket — scheduleReconnect sets a timer.
-    initSocket.close()
+    let failure: unknown
+    void transport.connect().catch((error) => {
+      failure = error
+    })
+    await vi.advanceTimersByTimeAsync(9_999)
+    expect(failure).toBeUndefined()
+    await vi.advanceTimersByTimeAsync(1)
+    expect(failure).toMatchObject({ code: 'timeout' })
+    expect(internals.socket).toBeNull()
+    expect(DelayedOpenWebSocket.pending[0].readyState).toBe(FakeWebSocket.CLOSED)
     expect(internals.reconnectTimer).not.toBeNull()
-    expect(internals.reconnecting).toBe(true)
-    const oldTimer = internals.reconnectTimer
+    transport.dispose()
+  })
 
-    // Manually elevate reconnectAttempt to simulate prior failures that
-    // happened before the background period.
-    internals.reconnectAttempt = 4
-
-    // Advance into background (>30s).
-    await vi.advanceTimersByTimeAsync(31_000)
-
-    // Stale visibility return should cancel the pending timer and force reconnect.
-    dispatchVisibility('visible')
-
-    // forceReconnect cancelled the old timer, reset backoff to 0, and
-    // scheduleReconnect created a new timer with RECONNECT_BASE_MS delay.
-    expect(internals.reconnectTimer).not.toBe(oldTimer)
-    // forceReconnect reset backoff to 0, scheduleReconnect incremented to 1.
-    expect(internals.reconnectAttempt).toBeLessThanOrEqual(1)
-
-    // The new timer fires at 500ms (base delay, not elevated).
-    await vi.advanceTimersByTimeAsync(600)
+  it('fails an unanswered authenticate at the 10s handshake bound', async () => {
+    vi.useFakeTimers()
+    class AuthSilentSocket extends DelayedOpenWebSocket {
+      send(data: string): void {
+        if ((JSON.parse(data) as { type: string }).type === 'authenticate') {
+          this.sent.push(data)
+          return
+        }
+        super.send(data)
+      }
+    }
+    DelayedOpenWebSocket.pending = []
+    const transport = new WsAcpTransport({
+      url: 'ws://test/ws',
+      WebSocketImpl: AuthSilentSocket as unknown as typeof WebSocket
+    })
+    const internals = transport as unknown as TransportInternals
+    let failure: unknown
+    void transport.connect().catch((error) => {
+      failure = error
+    })
     await Promise.resolve()
+    DelayedOpenWebSocket.pending[0].openAndAuthenticate()
+    await vi.advanceTimersByTimeAsync(9_900)
+    expect(failure).toBeUndefined()
+    await vi.advanceTimersByTimeAsync(100)
+    expect(failure).toMatchObject({ code: 'timeout' })
+    expect(internals.socket).toBeNull()
+    expect(internals.reconnectTimer).not.toBeNull()
+    transport.dispose()
+  })
 
+  // CLI-F2: per-type timers, each >= the host's own bound for that operation.
+  it('keeps install_acp_agent pending past the former 60s timer and times out at 330s', async () => {
+    vi.useFakeTimers()
+    const transport = new WsAcpTransport({
+      url: 'ws://test/ws',
+      WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket
+    })
+    await transport.connect()
+    const sock = (transport as unknown as { socket: FakeWebSocket }).socket
+    const origSend = sock.send.bind(sock)
+    sock.send = (data: string) => {
+      if ((JSON.parse(data) as { type: string }).type === 'install_acp_agent') return
+      origSend(data)
+    }
+    let settled: unknown
+    void transport.installAcpAgent('agent-1').then(
+      (v) => {
+        settled = { ok: v }
+      },
+      (err) => {
+        settled = { err }
+      }
+    )
+    await vi.advanceTimersByTimeAsync(300_000) // host bound: 120s download + 180s child
+    expect(settled).toBeUndefined()
+    await vi.advanceTimersByTimeAsync(29_999)
+    expect(settled).toBeUndefined()
+    await vi.advanceTimersByTimeAsync(1)
+    expect(settled).toMatchObject({ err: expect.objectContaining({ code: 'timeout' }) })
+    sock.send = origSend
+    transport.dispose()
+  })
+
+  it('keeps create_session pending through the 60s host cap and times out at 90s', async () => {
+    vi.useFakeTimers()
+    const transport = new WsAcpTransport({
+      url: 'ws://test/ws',
+      WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket
+    })
+    await transport.connect()
+    const sock = (transport as unknown as { socket: FakeWebSocket }).socket
+    const origSend = sock.send.bind(sock)
+    sock.send = (data: string) => {
+      if ((JSON.parse(data) as { type: string }).type === 'create_session') return
+      origSend(data)
+    }
+    let settled: unknown
+    void transport.newSession('agent-1', '/tmp', undefined, { ephemeral: true }).then(
+      (v) => {
+        settled = { ok: v }
+      },
+      (err) => {
+        settled = { err }
+      }
+    )
+    await vi.advanceTimersByTimeAsync(60_000) // server SESSION_NEW_TIMEOUT: the reply would land here
+    expect(settled).toBeUndefined()
+    await vi.advanceTimersByTimeAsync(29_999)
+    expect(settled).toBeUndefined()
+    await vi.advanceTimersByTimeAsync(1)
+    expect(settled).toMatchObject({ err: expect.objectContaining({ code: 'timeout' }) })
+    sock.send = origSend
     transport.dispose()
   })
 
@@ -2794,40 +3836,134 @@ describe('WsAcpTransport visibility-triggered reconnect (web idle persist)', () 
     transport.dispose()
   })
 
-  it('retries a transient subscription failure with backoff and reports success after recovery', async () => {
+  it('keeps the socket and the other sessions up while one failing session retries alone, then degrades it to snapshot recovery (CLI-F1)', async () => {
     vi.useFakeTimers()
-    class TransientSubscribeFailureSocket extends FakeWebSocket {
+    class OneSessionFailsSocket extends FakeWebSocket {
       static instances = 0
 
       constructor(url: string) {
         super(url)
-        TransientSubscribeFailureSocket.instances += 1
-        if (TransientSubscribeFailureSocket.instances === 2) {
-          this.subscribeFailureCodes.set('sess-transient', 'closed')
+        OneSessionFailsSocket.instances += 1
+        if (OneSessionFailsSocket.instances === 2) {
+          this.subscribeFailureCodes.set('sess-slow', 'closed')
         }
       }
     }
     const transport = new WsAcpTransport({
       url: 'ws://test/ws',
-      WebSocketImpl: TransientSubscribeFailureSocket as unknown as typeof WebSocket
+      WebSocketImpl: OneSessionFailsSocket as unknown as typeof WebSocket
     })
     await transport.connect()
-    await transport.subscribeSession('sess-transient')
+    await transport.subscribeSession('sess-slow')
+    await transport.subscribeSession('sess-ok')
     const states: boolean[] = []
     transport.setReconnectListener((state) => states.push(state))
     const internals = transport as unknown as TransportInternals
     internals.socket.close()
 
-    await vi.advanceTimersByTimeAsync(600)
-    expect(states).toEqual([true])
-    expect(internals.reconnectAttempt).toBe(2)
-    expect(internals.reconnectTimer).not.toBeNull()
-
-    await vi.advanceTimersByTimeAsync(1_100)
-    await vi.waitFor(() => expect(states).toEqual([true, false]))
+    // The pass completes: sess-ok re-subscribed, sess-slow handed to its own
+    // retry. The reconnect is NOT failed and the socket is NOT torn down.
+    await vi.advanceTimersByTimeAsync(700)
     expect(states).toEqual([true, false])
-    expect(internals.reconnectAttempt).toBe(0)
-    expect(internals.subscribed.has('sess-transient')).toBe(true)
+    const kept = internals.socket
+    expect(kept.readyState).toBe(FakeWebSocket.OPEN)
+    expect(internals.reconnectTimer).toBeNull()
+    const subscribesFor = (sid: string) =>
+      kept.sent
+        .map((raw) => JSON.parse(raw) as { type: string; payload: { sessionId?: string } })
+        .filter((req) => req.type === 'subscribe' && req.payload.sessionId === sid)
+    expect(subscribesFor('sess-ok')).toHaveLength(1)
+    expect(subscribesFor('sess-slow')).toHaveLength(1)
+
+    // Two more cursor retries (1s, 2s backoff) keep failing on the same socket.
+    await vi.advanceTimersByTimeAsync(1_100)
+    await vi.advanceTimersByTimeAsync(2_100)
+    expect(subscribesFor('sess-slow')).toHaveLength(3)
+    expect(internals.socket).toBe(kept)
+    expect(subscribesFor('sess-ok')).toHaveLength(1) // other sessions untouched
+
+    // The next attempt (4s) degrades to snapshot + live recovery.
+    await vi.advanceTimersByTimeAsync(4_100)
+    expect(findSentRequest(kept, 'recover_session_snapshot')?.payload).toMatchObject({
+      sessionId: 'sess-slow'
+    })
+    expect(internals.socket).toBe(kept)
+    expect(internals.subscribed.has('sess-slow')).toBe(true)
+    expect(internals.lastSeq.get('sess-slow')).toBe(42) // snapshot watermark adopted
+    transport.dispose()
+  })
+})
+
+describe('WsAcpTransport half-open socket during the resubscribe pass', () => {
+  afterEach(() => {
+    _resetAcpTransportForTests(null)
+    vi.useRealTimers()
+  })
+
+  it('probes after the first per-session timeout and tears down a dead socket instead of stalling N x 15s', async () => {
+    vi.useFakeTimers()
+    class HalfOpenOnReconnectSocket extends FakeWebSocket {
+      static instances: HalfOpenOnReconnectSocket[] = []
+
+      constructor(url: string) {
+        super(url)
+        HalfOpenOnReconnectSocket.instances.push(this)
+        if (HalfOpenOnReconnectSocket.instances.length === 2) {
+          // The reconnected socket authenticates, then goes silent (half-open).
+          this.holdSubscribe = true
+          this.holdPing = true
+        }
+      }
+    }
+    const transport = new WsAcpTransport({
+      url: 'ws://test/ws',
+      WebSocketImpl: HalfOpenOnReconnectSocket as unknown as typeof WebSocket
+    })
+    await transport.connect()
+    for (const sid of ['sess-1', 'sess-2', 'sess-3']) await transport.subscribeSession(sid)
+    const internals = transport as unknown as TransportInternals
+    internals.socket.close()
+    // Backoff (<=~700ms) + one 15s subscribe timeout + one 5s probe timeout.
+    await vi.advanceTimersByTimeAsync(700)
+    const halfOpen = internals.socket
+    expect(HalfOpenOnReconnectSocket.instances).toHaveLength(2)
+    await vi.advanceTimersByTimeAsync(15_000 + 5_000 + 100)
+
+    // Without the probe the pass would still be waiting on sess-2/sess-3 (45s).
+    expect(halfOpen.readyState).toBe(FakeWebSocket.CLOSED)
+    const subscribes = halfOpen.sent
+      .map((raw) => JSON.parse(raw) as { type: string })
+      .filter((req) => req.type === 'subscribe')
+    expect(subscribes).toHaveLength(1)
+    expect(internals.reconnectTimer).not.toBeNull() // backoff re-armed, pass failed as a connection error
+    transport.dispose()
+  })
+
+  it('a timed-out session on a socket that still answers pings keeps the socket and retries alone', async () => {
+    vi.useFakeTimers()
+    class SlowSubscribeSocket extends FakeWebSocket {
+      static instances: SlowSubscribeSocket[] = []
+
+      constructor(url: string) {
+        super(url)
+        SlowSubscribeSocket.instances.push(this)
+        if (SlowSubscribeSocket.instances.length === 2) this.holdSubscribe = true
+      }
+    }
+    const transport = new WsAcpTransport({
+      url: 'ws://test/ws',
+      WebSocketImpl: SlowSubscribeSocket as unknown as typeof WebSocket
+    })
+    await transport.connect()
+    await transport.subscribeSession('sess-1')
+    const internals = transport as unknown as TransportInternals
+    internals.socket.close()
+    await vi.advanceTimersByTimeAsync(700)
+    const kept = internals.socket
+    await vi.advanceTimersByTimeAsync(15_000 + 100)
+    // Ping answered → healthy socket: not torn down.
+    expect(kept.readyState).toBe(FakeWebSocket.OPEN)
+    expect(internals.socket).toBe(kept)
     transport.dispose()
   })
 })
@@ -2988,33 +4124,6 @@ describe('agent_auth_required transport parity (story 7 frozen contract)', () =>
 
     transport.dispose()
   })
-
-  it('Tauri acp_new_session flattened string rejection classifies as an auth setup error', async () => {
-    // Desktop parity: the Tauri command returns Result<_, String>, so invoke
-    // rejects with the bare Rust error string — no Error instance, no .code
-    // (a session/new auth_required failure flattens to the acp Error Display
-    // message, "Authentication required"). Classification must still land on
-    // `auth` via the message-pattern fallback.
-    const { invoke } = await import('@tauri-apps/api/core')
-    vi.mocked(invoke).mockRejectedValueOnce('Authentication required')
-    const transport = createAcpTransport({ force: 'tauri' })
-
-    const err = await transport.newSession('a1', '/work').then(
-      () => {
-        throw new Error('newSession unexpectedly resolved')
-      },
-      (e: unknown) => e
-    )
-
-    // The desktop path surfaces the flattened string verbatim…
-    expect(err).toBe('Authentication required')
-    // …and still classifies as an auth setup error without a coded error.
-    const classified = classifySetupError(err)
-    expect(classified.category).toBe('auth')
-    expect(classified.detail).toBe('Authentication required')
-
-    transport.dispose()
-  })
 })
 
 describe('createAcpTransport selection', () => {
@@ -3022,140 +4131,21 @@ describe('createAcpTransport selection', () => {
     _resetAcpTransportForTests(null)
   })
 
-  it('desktop transports a successful option change without a snapshot', async () => {
-    vi.mocked(invoke).mockResolvedValue(null)
-    const transport = createAcpTransport({ force: 'tauri' })
-    await expect(transport.setConfigOption('a1', 's1', 'model', 'm2')).resolves.toBeNull()
-    expect(invoke).toHaveBeenCalledWith('acp_set_config_option', {
-      agentId: 'a1',
-      sessionId: 's1',
-      configId: 'model',
-      valueId: 'm2'
+  it('selects the desktop Channel transport in a Tauri context and the plain WS client otherwise', () => {
+    const desktop = createAcpTransport({ force: 'tauri' })
+    expect(desktop).toBeInstanceOf(DesktopAcpTransport)
+    // Desktop history stays in the Tauri store whatever the relay negotiates.
+    expect(desktop.historyMode?.()).toBe('tauri_store')
+    desktop.dispose()
+
+    const web = createAcpTransport({
+      force: 'ws',
+      ws: { url: 'ws://test/ws', WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket }
     })
-    transport.dispose()
-  })
-
-  it('desktop load/resume return the typed Tauri invoke outcome', async () => {
-    const outcome = { configOptions: [] }
-    vi.mocked(invoke).mockResolvedValue(outcome)
-    const transport = createAcpTransport({ force: 'tauri' })
-
-    await expect(transport.loadSession('a1', 's1', '/work')).resolves.toEqual(outcome)
-    expect(invoke).toHaveBeenCalledWith('acp_load_session', {
-      agentId: 'a1',
-      sessionId: 's1',
-      cwd: '/work'
-    })
-    await expect(transport.resumeSession('a1', 's1', '/work')).resolves.toEqual(outcome)
-    expect(invoke).toHaveBeenCalledWith('acp_resume_session', {
-      agentId: 'a1',
-      sessionId: 's1',
-      cwd: '/work'
-    })
-    transport.dispose()
-  })
-
-  it('desktop recordAgentSwitch invokes acp_record_agent_switch with the exact five camelCase keys', async () => {
-    vi.mocked(invoke).mockResolvedValue(undefined)
-    const transport = createAcpTransport({ force: 'tauri' })
-
-    // CAP-2: the durable agent-switch marker — the desktop adapter must
-    // forward every identity field the command validates.
-    await expect(
-      transport.recordAgentSwitch('s-old', {
-        fromConfigId: 'omp',
-        toConfigId: 'claude',
-        newSessionId: 's-new',
-        summaryText: 'Handoff summary'
-      })
-    ).resolves.toBeUndefined()
-    expect(invoke).toHaveBeenCalledWith('acp_record_agent_switch', {
-      sessionId: 's-old',
-      fromConfigId: 'omp',
-      toConfigId: 'claude',
-      newSessionId: 's-new',
-      summaryText: 'Handoff summary'
-    })
-    transport.dispose()
-  })
-
-  it('desktop promoteSession invokes acp_promote_session and resolves on success', async () => {
-    vi.mocked(invoke).mockResolvedValue(undefined)
-    const transport = createAcpTransport({ force: 'tauri' })
-
-    // Story 8: the desktop path delegates promotion to the Rust driver via
-    // `acp_promote_session` — a successful command resolves with no payload.
-    await expect(transport.promoteSession?.('a1', 's1')).resolves.toBeUndefined()
-    expect(invoke).toHaveBeenCalledWith('acp_promote_session', {
-      agentId: 'a1',
-      sessionId: 's1'
-    })
-    transport.dispose()
-  })
-
-  it('desktop promoteSession propagates a failed promotion outcome', async () => {
-    vi.mocked(invoke).mockRejectedValue(new Error('failed to persist promoted session: disk full'))
-    const transport = createAcpTransport({ force: 'tauri' })
-
-    // A backend promote failure must reject so the store can re-mark the
-    // session ephemeral and warn the user (chat stays non-durable).
-    await expect(transport.promoteSession?.('a1', 's1')).rejects.toThrow(
-      'failed to persist promoted session'
-    )
-    expect(invoke).toHaveBeenCalledWith('acp_promote_session', {
-      agentId: 'a1',
-      sessionId: 's1'
-    })
-    transport.dispose()
-  })
-
-  it('desktop sendPrompt/sendPromptBlocks forward the client turnId to acp_send_prompt', async () => {
-    vi.mocked(invoke).mockResolvedValue('end_turn')
-    const transport = createAcpTransport({ force: 'tauri' })
-
-    // The durable `user_prompt` record must carry the client-minted turnId so
-    // the restored bubble materializes `turn:<turnId>` — id-matching the
-    // optimistic bubble scroll-up backfill anchors on (web parity; a dropped
-    // turnId left the twin as `user:seq-*` and duplicated the first prompt).
-    await expect(transport.sendPrompt('a1', 's1', 'hello', 'turn-1')).resolves.toBe('end_turn')
-    expect(invoke).toHaveBeenCalledWith('acp_send_prompt', {
-      agentId: 'a1',
-      sessionId: 's1',
-      text: 'hello',
-      turnId: 'turn-1',
-      displayContent: undefined
-    })
-
-    await expect(
-      transport.sendPromptBlocks('a1', 's1', [{ type: 'text', text: 'hi' }], 'turn-2')
-    ).resolves.toBe('end_turn')
-    expect(invoke).toHaveBeenCalledWith('acp_send_prompt', {
-      agentId: 'a1',
-      sessionId: 's1',
-      content: [{ type: 'text', text: 'hi' }],
-      turnId: 'turn-2',
-      displayContent: undefined
-    })
-    transport.dispose()
-  })
-
-  it('desktop listAgentDetails invokes acp_list_agent_details (CAP-11 parity)', async () => {
-    const { invoke } = await import('@tauri-apps/api/core')
-    const summaries = [
-      {
-        id: 'a1',
-        name: 'Claude',
-        configId: 'claude',
-        namespace: 'config:claude',
-        capabilities: { loadSession: true }
-      }
-    ]
-    vi.mocked(invoke).mockResolvedValue(summaries)
-    const transport = createAcpTransport({ force: 'tauri' })
-
-    await expect(transport.listAgentDetails?.()).resolves.toEqual(summaries)
-    expect(invoke).toHaveBeenCalledWith('acp_list_agent_details')
-    transport.dispose()
+    expect(web).toBeInstanceOf(WsAcpTransport)
+    expect(web).not.toBeInstanceOf(DesktopAcpTransport)
+    expect(web.historyMode?.()).toBe('live_only')
+    web.dispose()
   })
 
   it('accepts an injected transport via test helper', async () => {
@@ -3193,28 +4183,6 @@ describe('createAcpTransport selection', () => {
 describe('reopen admission failure parity (ACP_REOPEN_TURN_ACTIVE)', () => {
   beforeEach(() => {
     _resetAcpTransportForTests(null)
-  })
-
-  it('desktop load/resume surface the admission rejection and recover on retry', async () => {
-    const { invoke } = await import('@tauri-apps/api/core')
-    const transport = createAcpTransport({ force: 'tauri' })
-    // The desktop command rejects the IPC promise with the manager's plain
-    // error string (Result<_, String>).
-    vi.mocked(invoke).mockRejectedValueOnce('ACP_REOPEN_TURN_ACTIVE: session s1')
-    await expect(transport.loadSession('a1', 's1', '/work')).rejects.toContain(
-      'ACP_REOPEN_TURN_ACTIVE'
-    )
-    vi.mocked(invoke).mockRejectedValueOnce('ACP_REOPEN_TURN_ACTIVE: session s1')
-    await expect(transport.resumeSession('a1', 's1', '/work')).rejects.toContain(
-      'ACP_REOPEN_TURN_ACTIVE'
-    )
-
-    // Caller recovery: once the active turn finishes, the identical retry succeeds.
-    const outcome = { configOptions: [] }
-    vi.mocked(invoke).mockResolvedValue(outcome)
-    await expect(transport.loadSession('a1', 's1', '/work')).resolves.toEqual(outcome)
-    await expect(transport.resumeSession('a1', 's1', '/work')).resolves.toEqual(outcome)
-    transport.dispose()
   })
 
   it('ws load/resume surface the admission rejection and recover on retry', async () => {
@@ -3313,6 +4281,104 @@ describe('WsAcpTransport web auth token presentation (CAP-1)', () => {
     expect(authReq?.payload.token).toBe('dev')
     transport.dispose()
   })
+
+  it('sends the full versioned handshake payload on every (re)handshake', async () => {
+    const transport = new WsAcpTransport({
+      url: 'ws://test/ws',
+      WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket
+    })
+    // The fake host validates version + identity; connect() only resolves for
+    // a valid payload.
+    await transport.connect()
+    const internals = transport as unknown as { socket: FakeWebSocket }
+    const authReq = internals.socket.sent
+      .map((s) => JSON.parse(s) as { type: string; payload: Record<string, unknown> })
+      .find((r) => r.type === 'authenticate')
+    expect(authReq?.payload).toEqual({
+      token: 'dev',
+      protocolVersion: WS_PROTOCOL_VERSION,
+      deviceId: window.localStorage.getItem('termul.deviceId'),
+      clientInstanceId: window.sessionStorage.getItem('termul.clientInstanceId')
+    })
+    transport.dispose()
+  })
+})
+
+// AD-15: a stale protocol / bad identity can never be fixed by retrying.
+describe('WsAcpTransport versioned handshake refusals (AD-15)', () => {
+  function refusedBy(code: string): typeof WebSocket {
+    return class extends FakeWebSocket {
+      constructor(url: string) {
+        super(url)
+        this.authRefusalCode = code
+      }
+    } as unknown as typeof WebSocket
+  }
+
+  beforeEach(() => {
+    protocolReloadRef.handle.mockClear()
+    vi.mocked(flagWebAuthUnauthorized).mockClear()
+    vi.mocked(logFrontendError).mockClear()
+  })
+
+  afterEach(() => {
+    _resetAcpTransportForTests(null)
+    vi.useRealTimers()
+  })
+
+  it('protocol_version_mismatch halts reconnect, reloads once via the helper, and never flags the token gate', async () => {
+    vi.useFakeTimers()
+    const transport = new WsAcpTransport({
+      url: 'ws://test/ws',
+      WebSocketImpl: refusedBy('protocol_version_mismatch')
+    })
+    const states: string[] = []
+    transport.setConnectionStateListener((state) => states.push(state))
+    const internals = transport as unknown as TransportInternals
+
+    // The first rejection may carry the transport-level 'closed' (the fake's
+    // synchronous close races the refusal, same as the #907 token halt); the
+    // halt itself is the contract, and later connect() calls name the cause.
+    await expect(transport.connect()).rejects.toBeInstanceOf(AcpTransportError)
+    expect(protocolReloadRef.handle).toHaveBeenCalledTimes(1)
+    expect(protocolReloadRef.handle).toHaveBeenCalledWith('WsAcpTransport')
+    expect(vi.mocked(flagWebAuthUnauthorized)).not.toHaveBeenCalled()
+    expect(states[states.length - 1]).toBe('disconnected')
+    expect(states).not.toContain('reconnecting')
+    expect(internals.reconnectTimer).toBeNull()
+
+    // Nothing re-arms and later connect() calls refuse without a new socket
+    // or a second reload request.
+    await vi.advanceTimersByTimeAsync(20_000)
+    expect(internals.reconnectTimer).toBeNull()
+    await expect(transport.connect()).rejects.toMatchObject({
+      code: 'protocol_version_mismatch'
+    })
+    expect(internals.socket).toBeNull()
+    expect(protocolReloadRef.handle).toHaveBeenCalledTimes(1)
+    transport.dispose()
+  })
+
+  it('invalid_client_identity is non-retryable and never reloads', async () => {
+    vi.useFakeTimers()
+    const transport = new WsAcpTransport({
+      url: 'ws://test/ws',
+      WebSocketImpl: refusedBy('invalid_client_identity')
+    })
+    const internals = transport as unknown as TransportInternals
+
+    await expect(transport.connect()).rejects.toBeInstanceOf(AcpTransportError)
+    await expect(transport.connect()).rejects.toMatchObject({
+      code: 'invalid_client_identity'
+    })
+    await vi.advanceTimersByTimeAsync(20_000)
+    expect(protocolReloadRef.handle).not.toHaveBeenCalled()
+    expect(internals.reconnectTimer).toBeNull()
+    expect(vi.mocked(logFrontendError)).toHaveBeenCalledWith(
+      expect.objectContaining({ source: 'WsAcpTransport.handshake', level: 'error' })
+    )
+    transport.dispose()
+  })
 })
 
 // reconnect transitions only) — this one also covers the initial connect.
@@ -3368,7 +4434,7 @@ describe('WsAcpTransport connection-state listener (Story 10)', () => {
     vi.useRealTimers()
   })
 
-  it("stays 'reconnecting' when a required session resubscription fails — 'connected' fires only after recovery succeeds", async () => {
+  it("reports 'connected' once the resubscribe pass completes even when one session fails — that session retries alone on the same socket (CLI-F1)", async () => {
     vi.useFakeTimers()
     const transport = new WsAcpTransport({
       url: 'ws://test/ws',
@@ -3383,31 +4449,28 @@ describe('WsAcpTransport connection-state listener (Story 10)', () => {
     // The reconnect attempt's fresh socket fails the resubscribe with a
     // TRANSIENT code (not_found would prune the session as obsolete instead).
     FakeWebSocket.transientSubscribeFailuresOnNextSocket = { 'sess-x': 'unavailable' }
-    const sock = (transport as unknown as { socket: FakeWebSocket }).socket
-    sock.close()
+    const internals = transport as unknown as TransportInternals
+    internals.socket.close()
     expect(states).toEqual(['connecting', 'connected', 'reconnecting'])
 
-    // Backoff → reconnect: socket opens, auth handshake completes — but the
-    // resubscribe fails, so 'connected' must NOT fire; the state stays
-    // 'reconnecting' and the retry loop re-arms.
+    // Backoff → reconnect: socket opens, auth handshake completes, the one
+    // failing session is handed to its own retry — the socket is NOT torn down
+    // and the channel is reported healthy.
     await vi.advanceTimersByTimeAsync(600)
     await Promise.resolve()
-    expect(states).toEqual(['connecting', 'connected', 'reconnecting'])
-    const timerField = transport as unknown as {
-      reconnectTimer: ReturnType<typeof setTimeout> | null
-    }
-    expect(timerField.reconnectTimer).not.toBeNull()
-
-    // Next attempt recovers (the static failure was consumed by the previous
-    // socket) — 'connected' fires only now, after the resubscribe succeeds.
-    await vi.advanceTimersByTimeAsync(1100)
-    await Promise.resolve()
     expect(states).toEqual(['connecting', 'connected', 'reconnecting', 'connected'])
+    expect(internals.reconnectTimer).toBeNull()
+    const keptSocket = internals.socket
+    expect(keptSocket.readyState).toBe(FakeWebSocket.OPEN)
 
-    if (timerField.reconnectTimer) {
-      clearTimeout(timerField.reconnectTimer)
-      timerField.reconnectTimer = null
-    }
+    // The per-session retry recovers on the SAME socket once the host-side
+    // condition clears.
+    keptSocket.subscribeFailureCodes.clear()
+    await vi.advanceTimersByTimeAsync(1_300)
+    expect(internals.socket).toBe(keptSocket)
+    expect(keptSocket.sent.filter((raw) => JSON.parse(raw).type === 'subscribe')).toHaveLength(2)
+    expect(internals.subscribed.has('sess-x')).toBe(true)
+
     transport.dispose()
     vi.useRealTimers()
   })
@@ -3479,6 +4542,49 @@ describe('WsAcpTransport unauthorized authenticate halts reconnect churn (#907)'
     await vi.advanceTimersByTimeAsync(20_000)
     expect(internals.reconnectTimer).toBeNull()
     expect(internals.socket).toBeNull()
+    transport.dispose()
+  })
+
+  it('reports (false, recovered=false) when a reconnect cycle ends on the token halt, and (false, true) only after a real recovery', async () => {
+    vi.useFakeTimers()
+    let reject = false
+    class RefuseOnReconnectWebSocket extends FakeWebSocket {
+      constructor(url: string) {
+        super(url)
+        this.authFail = reject
+      }
+    }
+    const transport = new WsAcpTransport({
+      url: 'ws://test/ws',
+      WebSocketImpl: RefuseOnReconnectWebSocket as unknown as typeof WebSocket
+    })
+    await transport.connect()
+    const calls: Array<[boolean, boolean | undefined]> = []
+    transport.setReconnectListener((reconnecting, recovered) =>
+      calls.push([reconnecting, recovered])
+    )
+    const internals = transport as unknown as TransportInternals
+
+    // Drop → the reconnect handshake is refused (token halt): no recovery.
+    reject = true
+    internals.socket.close()
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(calls).toEqual([
+      [true, undefined],
+      [false, false]
+    ])
+
+    // Token fixed → a later reconnect that really recovers reports `true`.
+    calls.length = 0
+    gateStatusRef.current = 'ok'
+    reject = false
+    await transport.connect()
+    internals.socket.close()
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(calls).toEqual([
+      [true, undefined],
+      [false, true]
+    ])
     transport.dispose()
   })
 
@@ -3573,5 +4679,213 @@ describe('WsAcpTransport unauthorized authenticate halts reconnect churn (#907)'
       timerField.reconnectTimer = null
     }
     transport.dispose()
+  })
+})
+
+describe('WsAcpTransport host liveness from host frames', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('replaces a half-open socket after 2.5 heartbeat intervals of host silence and a failed probe', async () => {
+    const transport = new WsAcpTransport({
+      url: 'ws://test/ws',
+      WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket
+    })
+    await transport.connect()
+    const internals = transport as unknown as TransportInternals
+    const oldSocket = internals.socket
+    // The host stops answering and sending: the socket still reads OPEN.
+    oldSocket.holdPing = true
+    await vi.advanceTimersByTimeAsync(24_000)
+    expect(internals.socket).toBe(oldSocket)
+    // Past 25 s of silence the transport probes; the probe times out (5 s) and
+    // the socket is replaced.
+    await vi.advanceTimersByTimeAsync(12_000)
+    expect(internals.socket).not.toBe(oldSocket)
+    expect(oldSocket.readyState).toBe(FakeWebSocket.CLOSED)
+    transport.dispose()
+  })
+
+  it('keeps the socket while heartbeat frames arrive, whatever happens to ping replies', async () => {
+    const transport = new WsAcpTransport({
+      url: 'ws://test/ws',
+      WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket
+    })
+    await transport.connect()
+    const internals = transport as unknown as TransportInternals
+    const socket = internals.socket
+    socket.holdPing = true
+    for (let i = 0; i < 12; i += 1) {
+      await vi.advanceTimersByTimeAsync(10_000)
+      socket.emit({ type: 'heartbeat' })
+    }
+    expect(internals.socket).toBe(socket)
+    expect(socket.readyState).toBe(FakeWebSocket.OPEN)
+    transport.dispose()
+  })
+})
+
+describe('WsAcpTransport per-session degrade', () => {
+  it('reports a session whose resubscribe retries run out as degraded, alone, without failing the reconnect', async () => {
+    vi.useFakeTimers()
+    try {
+      const transport = new WsAcpTransport({
+        url: 'ws://test/ws',
+        WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket
+      })
+      const recoveries: unknown[] = []
+      transport.setRecoveryHandler(async (recovery) => {
+        recoveries.push(recovery)
+      })
+      await transport.connect()
+      await transport.subscribeSession('sess-ok')
+      await transport.subscribeSession('sess-x')
+
+      FakeWebSocket.transientSubscribeFailuresOnNextSocket = { 'sess-x': 'unavailable' }
+      const internals = transport as unknown as TransportInternals
+      internals.socket.close()
+      await vi.advanceTimersByTimeAsync(600)
+      await Promise.resolve()
+      const kept = internals.socket
+      expect(kept.readyState).toBe(FakeWebSocket.OPEN)
+      // Neither the cursor resubscribe nor the snapshot fallback ever works.
+      kept.snapshotFailureCodes.set('sess-x', 'unavailable')
+      await vi.advanceTimersByTimeAsync(300_000)
+
+      expect(recoveries).toEqual([{ sessionId: 'sess-x', degraded: true }])
+      expect(internals.socket).toBe(kept)
+      expect(internals.subscribed.has('sess-ok')).toBe(true)
+      expect(internals.subscribed.has('sess-x')).toBe(false)
+      transport.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
+describe('WsAcpTransport commands (AD-5)', () => {
+  type Frame = { id: string; type: string; command_id?: string; payload: unknown }
+  /** Scripted host answers by request type; unscripted types use the stock fake. */
+  const script = new Map<string, (frame: Frame) => unknown>()
+  let socket: ScriptedSocket | undefined
+
+  class ScriptedSocket extends FakeWebSocket {
+    constructor(url: string) {
+      super(url)
+      socket = this
+    }
+    send(data: string): void {
+      const frame = JSON.parse(data) as Frame
+      let answer: unknown
+      for (const [type, handler] of script) {
+        if (type === frame.type) answer = handler(frame)
+      }
+      if (answer === undefined) {
+        super.send(data)
+        return
+      }
+      this.sent.push(data)
+      if (answer !== null) this.emitReply({ id: frame.id, ...(answer as object) })
+    }
+    framesOf(type: string): Frame[] {
+      return this.sent.map((raw) => JSON.parse(raw) as Frame).filter((f) => f.type === type)
+    }
+  }
+
+  async function connected(): Promise<WsAcpTransport> {
+    const transport = new WsAcpTransport({
+      url: 'ws://test/ws',
+      WebSocketImpl: ScriptedSocket as unknown as typeof WebSocket
+    })
+    await transport.connect()
+    return transport
+  }
+
+  afterEach(() => {
+    script.clear()
+    socket = undefined
+    _resetAcpTransportForTests(null)
+  })
+
+  it('sets frame.command_id (stable across resends) and keeps the per-attempt frame id fresh', async () => {
+    script.set('close_session', () => ({ ok: true, payload: {} }))
+    const transport = await connected()
+    await transport.closeSession('a1', 's1', { commandId: 'cmd-1' })
+    await transport.closeSession('a1', 's1', { commandId: 'cmd-1' })
+    const frames = socket?.framesOf('close_session') ?? []
+    expect(frames.map((f) => f.command_id)).toEqual(['cmd-1', 'cmd-1'])
+    expect(frames[0].id).not.toBe(frames[1].id)
+    transport.dispose()
+  })
+
+  it("sends no command_id when the caller has none (today's behavior)", async () => {
+    script.set('close_session', () => ({ ok: true, payload: {} }))
+    const transport = await connected()
+    await transport.closeSession('a1', 's1')
+    expect(socket?.framesOf('close_session')[0]).not.toHaveProperty('command_id')
+    transport.dispose()
+  })
+
+  it("hands the reply's visible_at to the caller and keeps the payload unwrapped", async () => {
+    script.set('load_session', () => ({ ok: true, payload: { models: null }, visible_at: 12 }))
+    const transport = await connected()
+    const seen: number[] = []
+    const outcome = await transport.loadSession('a1', 's1', '/w', undefined, {
+      commandId: 'cmd-2',
+      onVisibleAt: (v) => seen.push(v)
+    })
+    expect(outcome).toEqual({ models: null })
+    expect(seen).toEqual([12])
+    transport.dispose()
+  })
+
+  it('ignores a malformed visible_at', async () => {
+    script.set('load_session', () => ({ ok: true, payload: {}, visible_at: 'soon' }))
+    const transport = await connected()
+    const onVisibleAt = vi.fn()
+    await transport.loadSession('a1', 's1', '/w', undefined, {
+      commandId: 'c',
+      onVisibleAt
+    })
+    expect(onVisibleAt).not.toHaveBeenCalled()
+    transport.dispose()
+  })
+
+  it('an in_progress receipt for a non-prompt command is "still pending", never a result', async () => {
+    script.set('spawn_agent', () => ({ ok: true, payload: { receipt: 'in_progress' } }))
+    const transport = await connected()
+    await expect(
+      transport.spawnAgent({ name: 'n', command: 'c', args: [], env: {} }, { commandId: 'cmd-3' })
+    ).rejects.toMatchObject({ code: COMMAND_IN_PROGRESS_CODE })
+    expect(isOutcomeUncertainError(new AcpTransportError(COMMAND_IN_PROGRESS_CODE, 'x'))).toBe(true)
+    transport.dispose()
+  })
+
+  it('carries visible_at on a rejection and the stable outcome_unknown code', async () => {
+    script.set('close_session', () => ({
+      ok: false,
+      err: { code: 'outcome_unknown', message: 'no longer known' },
+      visible_at: 4
+    }))
+    const transport = await connected()
+    const error = await transport.closeSession('a1', 's1', { commandId: 'c' }).catch((e) => e)
+    expect(error).toBeInstanceOf(AcpTransportError)
+    expect(error).toMatchObject({ code: 'outcome_unknown', visibleAt: 4 })
+    expect(isOutcomeUncertainError(error)).toBe(true)
+    transport.dispose()
+  })
+
+  it('outcome-uncertain covers transient, unauthorized and outcome_unknown only', () => {
+    for (const code of ['closed', 'timeout', 'unauthorized', 'outcome_unknown']) {
+      expect(isOutcomeUncertainError(new AcpTransportError(code, 'x'))).toBe(true)
+    }
+    for (const code of ['not_found', 'command_conflict', 'agent_unavailable', 'forbidden']) {
+      expect(isOutcomeUncertainError(new AcpTransportError(code, 'x'))).toBe(false)
+    }
+    expect(isOutcomeUncertainError(new Error('closed'))).toBe(false)
   })
 })

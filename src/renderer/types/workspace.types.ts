@@ -26,8 +26,9 @@ export type DropPosition = 'left' | 'right' | 'top' | 'bottom' | 'center'
 export type TabReorderPosition = 'before' | 'after'
 
 export interface DragPayload {
-  type: 'tab' | 'file'
+  type: 'tab' | 'file' | 'chat'
   tabId?: string
   filePath?: string
+  sessionId?: string
   sourcePaneId?: string
 }

@@ -93,12 +93,17 @@ fn server_config_bind_addr() {
         host: "127.0.0.1".to_string(),
         port: 8080,
         event_log_capacity: 4096,
-        permission_timeout_secs: 60,
-        permission_reconnect_grace_secs: 15,
-        project_root: PathBuf::from("/tmp"),
+        agent_idle_window_secs: DEFAULT_AGENT_IDLE_WINDOW_SECS,
+        agent_idle_window_locked: false,
+        overflow_tolerance: DEFAULT_OVERFLOW_TOLERANCE,
+        max_terminals_per_project: DEFAULT_MAX_TERMINALS_PER_PROJECT,
+        receipt_retention_secs: DEFAULT_RECEIPT_RETENTION_SECS,
+        partition_gc_age_secs: DEFAULT_PARTITION_GC_AGE_SECS,
+        partition_byte_budget: DEFAULT_PARTITION_BYTE_BUDGET,
+        deprecation_warnings: Vec::new(),
+        seed_project_root: None,
         projects_file: None,
         sessions_dir: None,
-        workspace_manifests_dir: None,
         acp_catalog_dir: None,
         store_file: None,
         allow_remote_writes: false,
@@ -115,12 +120,17 @@ fn server_config_bind_addr() {
         host: "example.com".to_string(),
         port: 8080,
         event_log_capacity: 4096,
-        permission_timeout_secs: 60,
-        permission_reconnect_grace_secs: 15,
-        project_root: PathBuf::from("/tmp"),
+        agent_idle_window_secs: DEFAULT_AGENT_IDLE_WINDOW_SECS,
+        agent_idle_window_locked: false,
+        overflow_tolerance: DEFAULT_OVERFLOW_TOLERANCE,
+        max_terminals_per_project: DEFAULT_MAX_TERMINALS_PER_PROJECT,
+        receipt_retention_secs: DEFAULT_RECEIPT_RETENTION_SECS,
+        partition_gc_age_secs: DEFAULT_PARTITION_GC_AGE_SECS,
+        partition_byte_budget: DEFAULT_PARTITION_BYTE_BUDGET,
+        deprecation_warnings: Vec::new(),
+        seed_project_root: None,
         projects_file: None,
         sessions_dir: None,
-        workspace_manifests_dir: None,
         acp_catalog_dir: None,
         store_file: None,
         allow_remote_writes: false,
@@ -129,6 +139,17 @@ fn server_config_bind_addr() {
         state_dir: None,
     };
     assert_eq!(bad.bind_addr(), None);
+}
+
+/// Startup warnings that come from the removed permission flags only.
+/// `from_args` also queues warnings for invalid tunable env values, and
+/// those depend on the process environment, so tests that look at the
+/// removed flags must not count them.
+fn removed_flag_warnings(cfg: &ServerConfig) -> Vec<&String> {
+    cfg.deprecation_warnings
+        .iter()
+        .filter(|warning| warning.contains("--permission-"))
+        .collect()
 }
 
 #[test]
@@ -140,22 +161,53 @@ fn from_args_defaults() {
         cfg.event_log_capacity, 4096,
         "default event-log-capacity is 4096 (AC4)"
     );
-    assert_eq!(
-        cfg.permission_timeout_secs, 60,
-        "default permission-timeout is 60s (Story 1.7 / FR14)"
-    );
-    assert_eq!(
-        cfg.permission_reconnect_grace_secs, 60,
-        "default reconnect grace is 60s (CAP-4: mobile wake + reconnect chain)"
-    );
-    // PR-S4: project_root defaults to $HOME / $USERPROFILE when the env var
-    // is unset. The CI hosts in this repo all set $HOME, so the resolved
-    // value should be non-empty. We don't assert an exact path because the
-    // test environment may differ across platforms.
     assert!(
-        !cfg.project_root.as_os_str().is_empty(),
-        "default project_root should resolve from $HOME when $TERMUL_PROJECT_ROOT is unset"
+        removed_flag_warnings(&cfg).is_empty(),
+        "no removed flags passed => no removed-flag warnings"
     );
+}
+
+/// The removed `--project-root` flag still parses: it is validated, seeds one
+/// project (`seed_project_root`) and queues one startup warning. Without it
+/// (and without the env fallback) there is no seed and no warning — there is
+/// no default host project root any more.
+#[test]
+fn from_args_project_root_is_a_removed_flag_that_only_seeds() {
+    let _g = ENV_LOCK.lock().expect("ENV_LOCK poisoned");
+    let saved = save_env(&["TERMUL_PROJECT_ROOT"]);
+    std::env::remove_var("TERMUL_PROJECT_ROOT");
+    let none = ServerConfig::from_args(Vec::<&str>::new()).expect("defaults");
+    let dir = tempdir_like("seed-root-flag");
+    let flagged =
+        ServerConfig::from_args(["--project-root", dir.to_str().unwrap()]).expect("flag parses");
+    std::env::set_var("TERMUL_PROJECT_ROOT", &dir);
+    let from_env = ServerConfig::from_args(Vec::<&str>::new()).expect("env parses");
+    restore_env(saved);
+
+    assert_eq!(none.seed_project_root, None, "no flag, no env: nothing is seeded");
+    assert!(none.deprecation_warnings.iter().all(|w| !w.contains("project-root")));
+
+    let canonical = dir.canonicalize().expect("canonical dir");
+    assert_eq!(flagged.seed_project_root.as_deref(), Some(canonical.as_path()));
+    let warnings: Vec<_> = flagged
+        .deprecation_warnings
+        .iter()
+        .filter(|w| w.contains("--project-root"))
+        .collect();
+    assert_eq!(warnings.len(), 1);
+    assert!(warnings[0].contains("removed option"));
+
+    assert_eq!(from_env.seed_project_root.as_deref(), Some(canonical.as_path()));
+    assert!(from_env.deprecation_warnings.iter().any(|w| w.contains("$TERMUL_PROJECT_ROOT")));
+    cleanup(&dir);
+}
+
+#[test]
+fn from_args_bad_project_root_fails_fast() {
+    let missing = std::env::temp_dir().join("termul-no-such-seed-root-dir");
+    let err = ServerConfig::from_args(["--project-root", missing.to_str().unwrap()])
+        .expect_err("a missing seed root must abort");
+    assert!(matches!(err, ParseCliError::Message(_)));
 }
 
 #[test]
@@ -223,51 +275,171 @@ fn from_args_missing_event_log_capacity_value() {
 }
 
 #[test]
-fn from_args_accepts_permission_timeout() {
-    let cfg = ServerConfig::from_args(["--permission-timeout", "30"]).expect("parse");
-    assert_eq!(cfg.permission_timeout_secs, 30);
-    // Other defaults stay intact.
+fn from_args_removed_permission_flags_parse_and_warn_once_each() {
+    let cfg = ServerConfig::from_args([
+        "--permission-timeout",
+        "30",
+        "--permission-reconnect-grace",
+        "5",
+    ])
+    .expect("removed flags still parse");
+    let warnings = removed_flag_warnings(&cfg);
+    assert_eq!(warnings.len(), 2);
+    assert!(warnings[0].contains("--permission-timeout"));
+    assert!(warnings[0].contains("'30'"));
+    assert!(warnings[1].contains("--permission-reconnect-grace"));
+    assert!(warnings[1].contains("'5'"));
+    // Everything else is unaffected.
     assert_eq!(cfg.host, "127.0.0.1");
     assert_eq!(cfg.port, 8080);
-    assert_eq!(cfg.event_log_capacity, 4096);
 }
 
 #[test]
-fn from_args_accepts_permission_reconnect_grace() {
-    let cfg = ServerConfig::from_args(["--permission-reconnect-grace", "20"]).expect("parse");
-    assert_eq!(cfg.permission_reconnect_grace_secs, 20);
+fn from_args_removed_permission_flags_tolerate_invalid_values() {
+    for (flag, value) in [
+        ("--permission-timeout", "0"),
+        ("--permission-timeout", "soon"),
+        ("--permission-reconnect-grace", "0"),
+        ("--permission-reconnect-grace", "-3"),
+    ] {
+        let cfg = ServerConfig::from_args([flag, value])
+            .unwrap_or_else(|e| panic!("{flag} {value} must not abort: {e}"));
+        let warnings = removed_flag_warnings(&cfg);
+        assert_eq!(warnings.len(), 1, "{flag} {value}");
+        assert!(warnings[0].contains(flag));
+    }
 }
 
 #[test]
-fn from_args_rejects_permission_reconnect_grace_zero() {
+fn from_args_removed_permission_flags_tolerate_missing_value() {
+    // Trailing: no value at all.
+    let cfg = ServerConfig::from_args(["--permission-timeout"]).expect("must not abort");
+    let warnings = removed_flag_warnings(&cfg);
+    assert_eq!(warnings.len(), 1);
+    assert!(warnings[0].contains("no value"));
+    // Followed by another flag: that flag is NOT swallowed as the value.
+    let cfg = ServerConfig::from_args(["--permission-reconnect-grace", "--port", "9091"])
+        .expect("must not abort");
+    assert_eq!(cfg.port, 9091, "the next flag keeps its own value");
+    let warnings = removed_flag_warnings(&cfg);
+    assert_eq!(warnings.len(), 1);
+    assert!(warnings[0].contains("no value"));
+    // `-h` is help, never the removed flag's value.
     assert!(matches!(
-        ServerConfig::from_args(["--permission-reconnect-grace", "0"]),
-        Err(ParseCliError::Message(_))
+        ServerConfig::from_args(["--permission-timeout", "-h"]),
+        Err(ParseCliError::Help)
     ));
 }
 
 #[test]
-fn from_args_rejects_permission_timeout_zero() {
-    assert!(matches!(
-        ServerConfig::from_args(["--permission-timeout", "0"]),
-        Err(ParseCliError::Message(_))
-    ));
+fn from_args_tunable_defaults() {
+    let _g = ENV_LOCK.lock().expect("ENV_LOCK poisoned");
+    let saved = save_env(&[
+        AGENT_IDLE_WINDOW_ENV,
+        PARTITION_GC_AGE_ENV,
+        PARTITION_BYTE_BUDGET_ENV,
+    ]);
+    for key in [
+        AGENT_IDLE_WINDOW_ENV,
+        PARTITION_GC_AGE_ENV,
+        PARTITION_BYTE_BUDGET_ENV,
+    ] {
+        std::env::remove_var(key);
+    }
+    let cfg = ServerConfig::from_args(Vec::<&str>::new()).expect("defaults");
+    restore_env(saved);
+    assert_eq!(cfg.agent_idle_window_secs, 1800);
+    assert!(!cfg.agent_idle_window_locked);
+    assert_eq!(cfg.overflow_tolerance, 15);
+    assert_eq!(cfg.receipt_retention_secs, 600);
+    assert_eq!(cfg.partition_gc_age_secs, 90 * 24 * 60 * 60);
+    assert_eq!(cfg.partition_byte_budget, 16 * 1024 * 1024);
 }
 
 #[test]
-fn from_args_rejects_non_numeric_permission_timeout() {
-    assert!(matches!(
-        ServerConfig::from_args(["--permission-timeout", "soon"]),
-        Err(ParseCliError::Message(_))
-    ));
+fn from_args_accepts_tunable_flags() {
+    let _g = ENV_LOCK.lock().expect("ENV_LOCK poisoned");
+    let cfg = ServerConfig::from_args([
+        "--agent-idle-window-secs",
+        "120",
+        "--overflow-tolerance",
+        "7",
+        "--receipt-retention-secs",
+        "30",
+        "--partition-gc-age-secs",
+        "86400",
+        "--partition-byte-budget",
+        "1048576",
+    ])
+    .expect("parse");
+    assert_eq!(cfg.agent_idle_window_secs, 120);
+    assert_eq!(cfg.overflow_tolerance, 7);
+    assert_eq!(cfg.receipt_retention_secs, 30);
+    assert_eq!(cfg.partition_gc_age_secs, 86400);
+    assert_eq!(cfg.partition_byte_budget, 1_048_576);
 }
 
 #[test]
-fn from_args_missing_permission_timeout_value() {
-    assert!(matches!(
-        ServerConfig::from_args(["--permission-timeout"]),
-        Err(ParseCliError::Message(_))
-    ));
+fn from_args_rejects_zero_non_numeric_and_missing_tunable_values() {
+    for flag in [
+        "--agent-idle-window-secs",
+        "--overflow-tolerance",
+        "--receipt-retention-secs",
+        "--partition-gc-age-secs",
+        "--partition-byte-budget",
+    ] {
+        for bad in ["0", "soon", "-1", ""] {
+            assert!(
+                matches!(
+                    ServerConfig::from_args([flag, bad]),
+                    Err(ParseCliError::Message(_))
+                ),
+                "{flag} {bad:?} must be rejected"
+            );
+        }
+        assert_eq!(
+            ServerConfig::from_args([flag]),
+            Err(ParseCliError::Message(format!("missing value for {flag}")))
+        );
+    }
+}
+
+#[test]
+fn from_args_tunable_env_fallback_flag_wins_and_invalid_env_warns() {
+    let _g = ENV_LOCK.lock().expect("ENV_LOCK poisoned");
+    let saved = save_env(&[
+        AGENT_IDLE_WINDOW_ENV,
+        PARTITION_GC_AGE_ENV,
+        PARTITION_BYTE_BUDGET_ENV,
+    ]);
+    std::env::set_var(AGENT_IDLE_WINDOW_ENV, "45");
+    std::env::set_var(PARTITION_GC_AGE_ENV, "3600");
+    std::env::set_var(PARTITION_BYTE_BUDGET_ENV, "2048");
+    let from_env = ServerConfig::from_args(Vec::<&str>::new()).expect("parse");
+    let flag_wins = ServerConfig::from_args(["--agent-idle-window-secs", "60"]).expect("parse");
+
+    // Invalid env never aborts: it is ignored with one warning each.
+    std::env::set_var(AGENT_IDLE_WINDOW_ENV, "0");
+    std::env::set_var(PARTITION_GC_AGE_ENV, "nope");
+    std::env::set_var(PARTITION_BYTE_BUDGET_ENV, "  ");
+    let invalid = ServerConfig::from_args(Vec::<&str>::new()).expect("parse");
+    restore_env(saved);
+
+    assert_eq!(from_env.agent_idle_window_secs, 45);
+    assert!(from_env.agent_idle_window_locked);
+    assert_eq!(from_env.partition_gc_age_secs, 3600);
+    assert_eq!(from_env.partition_byte_budget, 2048);
+    assert!(from_env.deprecation_warnings.is_empty());
+    assert_eq!(flag_wins.agent_idle_window_secs, 60);
+    assert!(flag_wins.agent_idle_window_locked);
+
+    assert_eq!(invalid.agent_idle_window_secs, DEFAULT_AGENT_IDLE_WINDOW_SECS);
+    assert!(!invalid.agent_idle_window_locked);
+    assert_eq!(invalid.partition_gc_age_secs, DEFAULT_PARTITION_GC_AGE_SECS);
+    assert_eq!(invalid.partition_byte_budget, DEFAULT_PARTITION_BYTE_BUDGET);
+    assert_eq!(invalid.deprecation_warnings.len(), 2, "blank env is silent");
+    assert!(invalid.deprecation_warnings[0].contains(AGENT_IDLE_WINDOW_ENV));
+    assert!(invalid.deprecation_warnings[1].contains(PARTITION_GC_AGE_ENV));
 }
 
 #[test]
@@ -286,36 +458,29 @@ fn from_args_unknown_option() {
     ));
 }
 
-// Patch 17: `--workspace-manifests-dir` CLI flag accept / missing /
-// empty-value tests (mirrors the `--permission-timeout` test pattern).
-
+// `--workspace-manifests-dir` was removed with the workspace manifest: it is
+// parsed and ignored like the removed permission flags.
 #[test]
-fn from_args_accepts_workspace_manifests_dir() {
+fn from_args_removed_workspace_manifests_dir_parses_and_warns_once() {
     let cfg = ServerConfig::from_args(["--workspace-manifests-dir", "/var/lib/termul/manifests"])
-        .expect("parse");
-    assert_eq!(
-        cfg.workspace_manifests_dir,
-        Some(PathBuf::from("/var/lib/termul/manifests"))
-    );
-    // Other defaults stay intact.
-    assert_eq!(cfg.host, "127.0.0.1");
-    assert_eq!(cfg.port, 8080);
-}
-
-#[test]
-fn from_args_missing_workspace_manifests_dir_value() {
-    assert!(matches!(
-        ServerConfig::from_args(["--workspace-manifests-dir"]),
-        Err(ParseCliError::Message(_))
-    ));
-}
-
-#[test]
-fn from_args_rejects_empty_workspace_manifests_dir() {
-    assert!(matches!(
-        ServerConfig::from_args(["--workspace-manifests-dir", ""]),
-        Err(ParseCliError::Message(_))
-    ));
+        .expect("the removed flag still parses");
+    let warnings: Vec<_> = cfg
+        .deprecation_warnings
+        .iter()
+        .filter(|warning| warning.contains("--workspace-manifests-dir"))
+        .collect();
+    assert_eq!(warnings.len(), 1);
+    assert!(warnings[0].contains("'/var/lib/termul/manifests'"));
+    // A missing or empty value never aborts startup, and the next flag keeps its own value.
+    for args in [
+        vec!["--workspace-manifests-dir"],
+        vec!["--workspace-manifests-dir", ""],
+        vec!["--workspace-manifests-dir", "--port", "9091"],
+    ] {
+        ServerConfig::from_args(args).expect("a removed flag must not abort startup");
+    }
+    let cfg = ServerConfig::from_args(["--workspace-manifests-dir", "--port", "9091"]).unwrap();
+    assert_eq!(cfg.port, 9091);
 }
 
 #[test]
@@ -419,12 +584,17 @@ fn service_account_state_dir_falls_through_empty_env_var() {
         host: "127.0.0.1".to_string(),
         port: 8080,
         event_log_capacity: 4096,
-        permission_timeout_secs: 60,
-        permission_reconnect_grace_secs: 15,
-        project_root: PathBuf::from("/tmp"),
+        agent_idle_window_secs: DEFAULT_AGENT_IDLE_WINDOW_SECS,
+        agent_idle_window_locked: false,
+        overflow_tolerance: DEFAULT_OVERFLOW_TOLERANCE,
+        max_terminals_per_project: DEFAULT_MAX_TERMINALS_PER_PROJECT,
+        receipt_retention_secs: DEFAULT_RECEIPT_RETENTION_SECS,
+        partition_gc_age_secs: DEFAULT_PARTITION_GC_AGE_SECS,
+        partition_byte_budget: DEFAULT_PARTITION_BYTE_BUDGET,
+        deprecation_warnings: Vec::new(),
+        seed_project_root: None,
         projects_file: None,
         sessions_dir: None,
-        workspace_manifests_dir: None,
         acp_catalog_dir: None,
         store_file: None,
         allow_remote_writes: false,
@@ -457,6 +627,27 @@ static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn clear_remote_writes_env() {
     std::env::remove_var("TERMUL_SERVER_ALLOW_REMOTE_WRITES");
+}
+
+#[test]
+fn desktop_agent_idle_window_reads_env_then_default() {
+    let _g = ENV_LOCK.lock().expect("ENV_LOCK poisoned");
+    let saved = save_env(&[AGENT_IDLE_WINDOW_ENV]);
+    std::env::remove_var(AGENT_IDLE_WINDOW_ENV);
+    let open = desktop_agent_idle_window_secs();
+    assert_eq!(open.secs, DEFAULT_AGENT_IDLE_WINDOW_SECS);
+    assert!(!open.from_env);
+
+    std::env::set_var(AGENT_IDLE_WINDOW_ENV, "90");
+    let locked = desktop_agent_idle_window_secs();
+    assert_eq!(locked.secs, 90);
+    assert!(locked.from_env);
+
+    std::env::set_var(AGENT_IDLE_WINDOW_ENV, "0");
+    let invalid = desktop_agent_idle_window_secs();
+    assert_eq!(invalid.secs, DEFAULT_AGENT_IDLE_WINDOW_SECS);
+    assert!(!invalid.from_env);
+    restore_env(saved);
 }
 
 #[test]
@@ -1193,4 +1384,93 @@ fn from_args_state_dir_sessions_dir_must_be_dir_if_exists() {
         matches!(result, Err(ParseCliError::Message(_))),
         "a <state-dir>/sessions FILE must fail fast like an explicit --sessions-dir file"
     );
+}
+
+#[test]
+fn a_receipt_retention_above_the_maximum_is_clamped_with_a_warning() {
+    let _g = ENV_LOCK.lock().expect("ENV_LOCK poisoned");
+    let cfg = ServerConfig::from_args(["--receipt-retention-secs", "18446744073709551615"])
+        .expect("parse");
+
+    assert_eq!(cfg.receipt_retention_secs, MAX_RECEIPT_RETENTION_SECS);
+    assert!(cfg
+        .deprecation_warnings
+        .iter()
+        .any(|warning| warning.contains("--receipt-retention-secs")));
+}
+
+#[test]
+fn a_later_receipt_retention_within_the_maximum_drops_the_clamp_warning() {
+    let _g = ENV_LOCK.lock().expect("ENV_LOCK poisoned");
+    let cfg = ServerConfig::from_args([
+        "--receipt-retention-secs",
+        "18446744073709551615",
+        "--receipt-retention-secs",
+        "120",
+    ])
+    .expect("parse");
+
+    assert_eq!(cfg.receipt_retention_secs, 120);
+    assert!(!cfg
+        .deprecation_warnings
+        .iter()
+        .any(|warning| warning.contains("--receipt-retention-secs")));
+}
+
+#[test]
+fn max_terminals_per_project_defaults_to_ten_and_takes_the_flag() {
+    let _g = ENV_LOCK.lock().expect("ENV_LOCK poisoned");
+    let saved = save_env(&[MAX_TERMINALS_PER_PROJECT_ENV]);
+    std::env::remove_var(MAX_TERMINALS_PER_PROJECT_ENV);
+    let default = ServerConfig::from_args(Vec::<&str>::new()).expect("defaults");
+    let flagged =
+        ServerConfig::from_args(["--max-terminals-per-project", "4"]).expect("parse");
+    restore_env(saved);
+    assert_eq!(DEFAULT_MAX_TERMINALS_PER_PROJECT, 10);
+    assert_eq!(default.max_terminals_per_project, 10);
+    assert_eq!(flagged.max_terminals_per_project, 4);
+}
+
+#[test]
+fn max_terminals_per_project_rejects_zero_non_numeric_and_missing_values() {
+    for bad in ["0", "many", "-1", ""] {
+        assert!(
+            matches!(
+                ServerConfig::from_args(["--max-terminals-per-project", bad]),
+                Err(ParseCliError::Message(_))
+            ),
+            "{bad:?} must be rejected"
+        );
+    }
+    assert_eq!(
+        ServerConfig::from_args(["--max-terminals-per-project"]),
+        Err(ParseCliError::Message(
+            "missing value for --max-terminals-per-project".to_string()
+        ))
+    );
+}
+
+#[test]
+fn max_terminals_per_project_env_fallback_flag_wins_and_invalid_env_warns() {
+    let _g = ENV_LOCK.lock().expect("ENV_LOCK poisoned");
+    let saved = save_env(&[MAX_TERMINALS_PER_PROJECT_ENV]);
+    std::env::set_var(MAX_TERMINALS_PER_PROJECT_ENV, "6");
+    let from_env = ServerConfig::from_args(Vec::<&str>::new()).expect("parse");
+    let flag_wins =
+        ServerConfig::from_args(["--max-terminals-per-project", "3"]).expect("parse");
+    let desktop = desktop_max_terminals_per_project();
+
+    std::env::set_var(MAX_TERMINALS_PER_PROJECT_ENV, "0");
+    let invalid = ServerConfig::from_args(Vec::<&str>::new()).expect("parse");
+    let desktop_invalid = desktop_max_terminals_per_project();
+    restore_env(saved);
+
+    assert_eq!(from_env.max_terminals_per_project, 6);
+    assert!(from_env.deprecation_warnings.is_empty());
+    assert_eq!(flag_wins.max_terminals_per_project, 3);
+    assert_eq!(desktop, 6, "the desktop host reads the same env var");
+    assert_eq!(invalid.max_terminals_per_project, DEFAULT_MAX_TERMINALS_PER_PROJECT);
+    assert_eq!(invalid.deprecation_warnings.len(), 1);
+    assert!(invalid.deprecation_warnings[0].contains(MAX_TERMINALS_PER_PROJECT_ENV));
+    assert_eq!(desktop_invalid, DEFAULT_MAX_TERMINALS_PER_PROJECT);
 }

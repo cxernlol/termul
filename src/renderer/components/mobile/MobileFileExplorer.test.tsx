@@ -1,7 +1,33 @@
 import type { DirectoryEntry } from '@shared/types/filesystem.types'
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { MobileFileExplorer } from './MobileFileExplorer'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { useRef, useState } from 'react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import {
+  _resetSheetFocusReturnForTests,
+  recordSheetOpener,
+  setSheetFocusDestination
+} from '@/lib/sheet-focus-return'
+import {
+  __resetServerCapabilityCache,
+  primeServerCapability,
+  serverPathsCaseInsensitive
+} from '@/lib/tauri-runtime'
+import {
+  armMobileOverlayBackStack,
+  pressSystemBack,
+  settleOverlayBackStack,
+  waitForSentinelDepth
+} from '@/lib/test-utils/overlay-back-stack'
+import {
+  readOverlaySentinelDepth,
+  useOverlayRegistration,
+  useOverlayStackStore
+} from '@/stores/overlay-stack-store'
+import {
+  buildFolderCrumbs,
+  MobileFileExplorer,
+  resolveBreadcrumbTarget
+} from './MobileFileExplorer'
 
 let mockReducedMotion = false
 
@@ -29,6 +55,8 @@ const mockCollapseAll = vi.fn()
 
 const mockOpenFile = vi.fn()
 const mockCloseFile = vi.fn()
+const mockRenameOpenFile = vi.fn()
+const mockRenameEditorTab = vi.fn()
 const mockAddEditorTab = vi.fn()
 const mockRemoveTab = vi.fn()
 
@@ -37,7 +65,8 @@ const mockRemoveTab = vi.fn()
 const mockEditorStore = {
   openFile: mockOpenFile,
   openFiles: new Map<string, unknown>(),
-  closeFile: mockCloseFile
+  closeFile: mockCloseFile,
+  renameOpenFile: mockRenameOpenFile
 }
 
 const mockCreateFile = vi.fn()
@@ -48,6 +77,7 @@ const mockCopyFile = vi.fn()
 const mockToastError = vi.fn()
 const mockPersistenceRead = vi.fn()
 const mockPersistenceWrite = vi.fn()
+const mockLogFrontendError = vi.fn()
 let mockProjectId: string | undefined
 
 // Mutable explorer state so individual tests can seed the tree (loaded root,
@@ -70,7 +100,9 @@ vi.mock('@/stores/file-explorer-store', () => ({
   })
 }))
 
-vi.mock('@/stores/editor-store', () => ({
+vi.mock('@/stores/editor-store', async (importOriginal) => ({
+  renameBetweenSaves: (await importOriginal<typeof import('@/stores/editor-store')>())
+    .renameBetweenSaves,
   useEditorStore: {
     getState: () => mockEditorStore
   }
@@ -80,7 +112,8 @@ vi.mock('@/stores/workspace-store', () => ({
   useWorkspaceStore: {
     getState: vi.fn(() => ({
       addEditorTab: mockAddEditorTab,
-      removeTab: mockRemoveTab
+      removeTab: mockRemoveTab,
+      renameEditorTab: mockRenameEditorTab
     }))
   },
   editorTabId: (path: string) => `edit-${path}`
@@ -102,6 +135,10 @@ vi.mock('@/lib/api', () => ({
     read: (...args: unknown[]) => mockPersistenceRead(...args),
     write: (...args: unknown[]) => mockPersistenceWrite(...args)
   }
+}))
+
+vi.mock('@/lib/log-api', () => ({
+  logFrontendError: (...args: unknown[]) => mockLogFrontendError(...args)
 }))
 
 vi.mock('sonner', () => ({
@@ -190,7 +227,9 @@ describe('MobileFileExplorer', () => {
     fireEvent.click(await screen.findByText('sub'))
 
     expect(await screen.findByRole('heading', { name: 'sub' })).toBeInTheDocument()
-    expect(screen.getByText('sub', { selector: 'p' })).toBeInTheDocument()
+    // Below root the path line is the breadcrumb; its last segment is the
+    // current folder.
+    expect(screen.getByText('sub', { selector: '[aria-current="page"]' })).toBeInTheDocument()
     expect(screen.getByLabelText('Back to parent folder')).toBeEnabled()
     expect(screen.getByTestId('mobile-folder-view')).toHaveAttribute(
       'data-navigation-direction',
@@ -252,6 +291,44 @@ describe('MobileFileExplorer', () => {
     expect(await screen.findByRole('heading', { name: 'proj' })).toBeInTheDocument()
     expect(screen.getByLabelText('Back to parent folder')).toBeDisabled()
     expect(mockPersistenceRead).toHaveBeenCalledWith('mobile-file-explorer/proj-1')
+    expect(mockLogFrontendError).toHaveBeenCalledWith({
+      level: 'warn',
+      source: 'MobileFileExplorer.restore',
+      message:
+        'saved folder is outside the project root under a case-insensitive compare; showing the root'
+    })
+  })
+
+  it('falls back to the project root when a persisted `..` path escapes the root', async () => {
+    // `/proj/../other/sub` starts with the root prefix but resolves outside it.
+    mockProjectId = 'proj-1'
+    mockPersistenceRead.mockResolvedValue({ success: true, data: '/proj/../other/sub' })
+    setRoot([entry('a.txt', 'file')])
+
+    render(<MobileFileExplorer open onOpenChange={vi.fn()} />)
+
+    expect(await screen.findByRole('heading', { name: 'proj' })).toBeInTheDocument()
+    expect(screen.getByLabelText('Back to parent folder')).toBeDisabled()
+    expect(screen.queryByRole('navigation', { name: 'Folder path' })).not.toBeInTheDocument()
+  })
+
+  it('restores a persisted path with dot segments as its resolved folder', async () => {
+    mockProjectId = 'proj-1'
+    mockPersistenceRead.mockResolvedValue({ success: true, data: '/proj/./sub/../src' })
+    setRoot([entry('src', 'directory')])
+    mockExplorerState.directoryContents.set('/proj/src', [])
+
+    render(<MobileFileExplorer open onOpenChange={vi.fn()} />)
+
+    expect(await screen.findByRole('heading', { name: 'src' })).toBeInTheDocument()
+    // The clean path drives the breadcrumb: no `.` or `..` crumb appears.
+    const nav = await screen.findByRole('navigation', { name: 'Folder path' })
+    expect(
+      within(nav)
+        .getAllByRole('button')
+        .map((button) => button.textContent)
+    ).toEqual(['proj'])
+    expect(within(nav).getByText('src')).toHaveAttribute('aria-current', 'page')
   })
 
   it('restores a canonical-cased persisted folder against a config-cased root (case-insensitive isWithinRoot)', async () => {
@@ -272,6 +349,128 @@ describe('MobileFileExplorer', () => {
     expect(await screen.findByRole('heading', { name: 'sub' })).toBeInTheDocument()
     expect(screen.getByLabelText('Back to parent folder')).toBeEnabled()
     expect(mockPersistenceRead).toHaveBeenCalledWith('mobile-file-explorer/proj-1')
+  })
+
+  describe('on a host whose filesystem keeps path case (#641)', () => {
+    beforeEach(async () => {
+      __resetServerCapabilityCache()
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          status: 200,
+          json: async () => ({ status: 'ok', allowRemoteWrites: true, caseInsensitivePaths: false })
+        })
+      )
+      primeServerCapability()
+      await waitFor(() => expect(serverPathsCaseInsensitive()).toBe(false))
+    })
+
+    afterEach(() => {
+      __resetServerCapabilityCache()
+      vi.unstubAllGlobals()
+    })
+
+    it('falls back to the root instead of restoring a differently cased folder outside it', async () => {
+      mockProjectId = 'proj-1'
+      mockPersistenceRead.mockResolvedValue({ success: true, data: '/work/repo/child' })
+      mockExplorerState.rootPath = '/Work/Repo'
+      mockExplorerState.directoryContents = new Map([
+        ['/Work/Repo', [entry('a.txt', 'file', '/Work/Repo/a.txt')]]
+      ])
+
+      render(<MobileFileExplorer open onOpenChange={vi.fn()} />)
+
+      expect(await screen.findByRole('heading', { name: 'Repo' })).toBeInTheDocument()
+      expect(await screen.findByText('a.txt')).toBeInTheDocument()
+      expect(screen.getByLabelText('Back to parent folder')).toBeDisabled()
+      expect(mockToggleDirectory).not.toHaveBeenCalledWith('/work/repo/child')
+      expect(mockLogFrontendError).toHaveBeenCalledWith({
+        level: 'warn',
+        source: 'MobileFileExplorer.restore',
+        message:
+          'saved folder is outside the project root under a case-sensitive compare; showing the root'
+      })
+    })
+
+    it('still restores an exactly cased persisted folder', async () => {
+      mockProjectId = 'proj-1'
+      mockPersistenceRead.mockResolvedValue({ success: true, data: '/Work/Repo/child' })
+      mockExplorerState.rootPath = '/Work/Repo'
+      mockExplorerState.directoryContents = new Map([
+        ['/Work/Repo', [entry('child', 'directory', '/Work/Repo/child')]],
+        ['/Work/Repo/child', []]
+      ])
+
+      render(<MobileFileExplorer open onOpenChange={vi.fn()} />)
+
+      expect(await screen.findByRole('heading', { name: 'child' })).toBeInTheDocument()
+      expect(screen.getByLabelText('Back to parent folder')).toBeEnabled()
+      expect(mockLogFrontendError).not.toHaveBeenCalledWith(
+        expect.objectContaining({ source: 'MobileFileExplorer.restore' })
+      )
+    })
+  })
+
+  describe('when /health answers after the drawer opened (#641)', () => {
+    const keepsCase = { status: 'ok', allowRemoteWrites: true, caseInsensitivePaths: false }
+    let resolveHealth!: (body: Record<string, unknown>) => void
+    let resolveRead!: (res: { success: boolean; data?: string }) => void
+
+    beforeEach(() => {
+      __resetServerCapabilityCache()
+      const health = new Promise<Record<string, unknown>>((resolve) => {
+        resolveHealth = resolve
+      })
+      vi.stubGlobal(
+        'fetch',
+        vi
+          .fn()
+          .mockReturnValue(
+            health.then((body) => ({ ok: true, status: 200, json: async () => body }))
+          )
+      )
+      mockPersistenceRead.mockReturnValue(
+        new Promise<{ success: boolean; data?: string }>((resolve) => {
+          resolveRead = resolve
+        })
+      )
+      mockProjectId = 'proj-1'
+      mockExplorerState.rootPath = '/Work/Repo'
+      mockExplorerState.directoryContents = new Map([
+        ['/Work/Repo', [entry('a.txt', 'file', '/Work/Repo/a.txt')]]
+      ])
+      primeServerCapability()
+    })
+
+    afterEach(() => {
+      __resetServerCapabilityCache()
+      vi.unstubAllGlobals()
+    })
+
+    it('drops a differently cased saved folder once /health says the host keeps case', async () => {
+      render(<MobileFileExplorer open onOpenChange={vi.fn()} />)
+      await act(async () => resolveRead({ success: true, data: '/work/repo/child' }))
+      expect(await screen.findByRole('heading', { name: 'child' })).toBeInTheDocument()
+
+      await act(async () => resolveHealth(keepsCase))
+
+      expect(await screen.findByRole('heading', { name: 'Repo' })).toBeInTheDocument()
+      expect(await screen.findByText('a.txt')).toBeInTheDocument()
+      expect(screen.getByLabelText('Back to parent folder')).toBeDisabled()
+    })
+
+    it('finishes the restore when /health answers while the saved-folder read is pending', async () => {
+      render(<MobileFileExplorer open onOpenChange={vi.fn()} />)
+      expect(screen.getByText('Loading…')).toBeInTheDocument()
+
+      await act(async () => resolveHealth(keepsCase))
+      await act(async () => resolveRead({ success: true, data: '/work/repo/child' }))
+
+      expect(await screen.findByRole('heading', { name: 'Repo' })).toBeInTheDocument()
+      expect(await screen.findByText('a.txt')).toBeInTheDocument()
+      expect(screen.queryByText('Loading…')).not.toBeInTheDocument()
+    })
   })
 
   it('restores the new project folder after a project switch', async () => {
@@ -362,7 +561,7 @@ describe('MobileFileExplorer', () => {
     fireEvent.click(await screen.findByText('child'))
     expect(await screen.findByText('inside.txt')).toBeInTheDocument()
     // Drive-root (`C:/`) subtitle must show the full child name, not drop a char.
-    expect(screen.getByText('child', { selector: 'p' })).toBeInTheDocument()
+    expect(screen.getByText('child', { selector: '[aria-current="page"]' })).toBeInTheDocument()
     fireEvent.click(screen.getByLabelText('Back to parent folder'))
 
     expect(await screen.findByText('child')).toBeInTheDocument()
@@ -561,10 +760,10 @@ describe('MobileFileExplorer', () => {
     await waitFor(() => expect(mockRefreshDirectory).toHaveBeenCalledWith('/proj'))
   })
 
-  it('renames a file via Enter using the parentOf-derived target and reconciles the open tab', async () => {
+  it('renames a file via Enter using the parentOf-derived target and moves the open tab with its edits', async () => {
     const file = entry('old.txt', 'file')
     setRoot([file])
-    mockEditorStore.openFiles.set('/proj/old.txt', { isDirty: false })
+    mockEditorStore.openFiles.set('/proj/old.txt', { isDirty: true })
 
     render(<MobileFileExplorer open onOpenChange={vi.fn()} />)
 
@@ -580,8 +779,12 @@ describe('MobileFileExplorer', () => {
     )
     // Clearing rename state before the await prevents a double submit.
     expect(mockRenameFile).toHaveBeenCalledTimes(1)
-    await waitFor(() => expect(mockCloseFile).toHaveBeenCalledWith('/proj/old.txt'))
-    await waitFor(() => expect(mockRemoveTab).toHaveBeenCalledWith('edit-/proj/old.txt'))
+    await waitFor(() =>
+      expect(mockRenameOpenFile).toHaveBeenCalledWith('/proj/old.txt', '/proj/new.txt')
+    )
+    expect(mockRenameEditorTab).toHaveBeenCalledWith('/proj/old.txt', '/proj/new.txt')
+    expect(mockCloseFile).not.toHaveBeenCalled()
+    expect(mockRemoveTab).not.toHaveBeenCalled()
     await waitFor(() => expect(mockRefreshDirectory).toHaveBeenCalledWith('/proj'))
   })
 
@@ -667,5 +870,816 @@ describe('MobileFileExplorer', () => {
     expect(await screen.findByText('No active project')).toBeInTheDocument()
     // The new-file/new-folder actions are disabled without a root.
     expect(await screen.findByLabelText('New file')).toBeDisabled()
+  })
+
+  // ── Files breadcrumb: the header path is tappable segments ──────────────
+
+  /** Opens the sheet on a persisted folder so a deep path is shown directly. */
+  async function openAtFolder(
+    root: string,
+    folder: string,
+    contents: Array<[string, DirectoryEntry[]]> = []
+  ): Promise<HTMLElement> {
+    mockProjectId = 'proj-1'
+    mockPersistenceRead.mockResolvedValue({ success: true, data: folder })
+    mockExplorerState.rootPath = root
+    mockExplorerState.directoryContents = new Map(contents)
+    render(<MobileFileExplorer open onOpenChange={vi.fn()} />)
+    return screen.findByRole('navigation', { name: 'Folder path' })
+  }
+
+  const crumbLabels = (nav: HTMLElement): string[] =>
+    within(nav)
+      .getAllByRole('button')
+      .map((button) => button.textContent ?? '')
+
+  it('splits the path below root into ancestor buttons and a plain current folder', async () => {
+    const nav = await openAtFolder('/proj', '/proj/src/renderer/lib', [
+      ['/proj/src/renderer/lib', []]
+    ])
+
+    expect(crumbLabels(nav)).toEqual(['proj', 'src', 'renderer'])
+    const current = within(nav).getByText('lib')
+    expect(current).toHaveAttribute('aria-current', 'page')
+    expect(current.closest('button')).toBeNull()
+    // Separators are decorative chevrons between segments, hidden from AT.
+    const separators = nav.querySelectorAll('[data-termul-icon="ChevronRight"]')
+    expect(separators).toHaveLength(3)
+    for (const separator of separators) expect(separator).toHaveAttribute('aria-hidden', 'true')
+    expect(nav.textContent).toBe('projsrcrendererlib')
+    // The root-only line is replaced below root.
+    expect(screen.queryByText('Project files')).not.toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'lib' })).toBeInTheDocument()
+  })
+
+  it('tapping an ancestor navigates there, slides back, persists the folder and loads the listing', async () => {
+    const nav = await openAtFolder('/proj', '/proj/src/renderer/lib', [
+      ['/proj/src/renderer/lib', []]
+    ])
+    mockToggleDirectory.mockClear()
+    mockPersistenceWrite.mockClear()
+
+    fireEvent.click(within(nav).getByRole('button', { name: 'src' }))
+
+    expect(await screen.findByRole('heading', { name: 'src' })).toBeInTheDocument()
+    expect(screen.getByTestId('mobile-folder-view')).toHaveAttribute(
+      'data-navigation-direction',
+      'back'
+    )
+    expect(mockPersistenceWrite).toHaveBeenCalledWith('mobile-file-explorer/proj-1', '/proj/src')
+    // /proj/src was not cached, so the shown folder is loaded like any other.
+    await waitFor(() => expect(mockToggleDirectory).toHaveBeenCalledWith('/proj/src'))
+    // The new current folder is plain text now; only the root stays a button.
+    const updated = screen.getByRole('navigation', { name: 'Folder path' })
+    expect(crumbLabels(updated)).toEqual(['proj'])
+    expect(within(updated).getByText('src')).toHaveAttribute('aria-current', 'page')
+  })
+
+  it('tapping the root segment returns to the root and shows Project files', async () => {
+    const nav = await openAtFolder('/proj', '/proj/src/renderer', [
+      ['/proj', [entry('src', 'directory')]],
+      ['/proj/src/renderer', []]
+    ])
+
+    fireEvent.click(within(nav).getByRole('button', { name: 'proj' }))
+
+    expect(await screen.findByRole('heading', { name: 'proj' })).toBeInTheDocument()
+    expect(screen.getByText('Project files')).toBeInTheDocument()
+    expect(screen.queryByRole('navigation', { name: 'Folder path' })).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Back to parent folder')).toBeDisabled()
+    expect(screen.getByTestId('mobile-folder-view')).toHaveAttribute(
+      'data-navigation-direction',
+      'back'
+    )
+    expect(mockPersistenceWrite).toHaveBeenCalledWith('mobile-file-explorer/proj-1', '/proj')
+  })
+
+  it('shows Project files and no segments at the root', async () => {
+    setRoot([entry('a.txt', 'file')])
+
+    render(<MobileFileExplorer open onOpenChange={vi.fn()} />)
+
+    expect(await screen.findByText('Project files')).toBeInTheDocument()
+    expect(screen.queryByRole('navigation', { name: 'Folder path' })).not.toBeInTheDocument()
+  })
+
+  it('disables the segment buttons while a create request is pending, like Back', async () => {
+    const nav = await openAtFolder('/proj', '/proj/sub/deep', [['/proj/sub/deep', []]])
+    let resolveCreate: ((result: { success: true; data: undefined }) => void) | undefined
+    mockCreateFile.mockReturnValue(
+      new Promise((resolve) => {
+        resolveCreate = resolve
+      })
+    )
+    expect(within(nav).getByRole('button', { name: 'sub' })).toBeEnabled()
+
+    fireEvent.click(screen.getByLabelText('New file'))
+    const input = await screen.findByPlaceholderText('new-file.txt')
+    fireEvent.change(input, { target: { value: 'made.txt' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    await waitFor(() => expect(mockCreateFile).toHaveBeenCalledWith('/proj/sub/deep/made.txt'))
+    expect(screen.getByLabelText('Back to parent folder')).toBeDisabled()
+    for (const button of within(nav).getAllByRole('button')) expect(button).toBeDisabled()
+
+    resolveCreate?.({ success: true, data: undefined })
+    await waitFor(() => expect(mockRefreshDirectory).toHaveBeenCalledWith('/proj/sub/deep'))
+    await waitFor(() => expect(within(nav).getByRole('button', { name: 'sub' })).toBeEnabled())
+  })
+
+  it('clears the inline create form when a segment is tapped', async () => {
+    const nav = await openAtFolder('/proj', '/proj/sub/deep', [['/proj/sub/deep', []]])
+
+    fireEvent.click(screen.getByLabelText('New folder'))
+    expect(await screen.findByPlaceholderText('new-folder')).toBeInTheDocument()
+
+    fireEvent.click(within(nav).getByRole('button', { name: 'sub' }))
+
+    expect(await screen.findByRole('heading', { name: 'sub' })).toBeInTheDocument()
+    expect(screen.queryByPlaceholderText('new-folder')).not.toBeInTheDocument()
+  })
+
+  it('clears the inline rename state when a segment is tapped', async () => {
+    const nav = await openAtFolder('/proj', '/proj/sub/deep', [
+      ['/proj/sub/deep', [entry('f.txt', 'file', '/proj/sub/deep/f.txt')]],
+      ['/proj/sub', [entry('deep', 'directory', '/proj/sub/deep')]]
+    ])
+
+    fireEvent.click(await screen.findByLabelText('Actions for f.txt'))
+    fireEvent.click(await screen.findByText('Rename'))
+    expect(await screen.findByLabelText('Rename f.txt')).toBeInTheDocument()
+
+    fireEvent.click(within(nav).getByRole('button', { name: 'sub' }))
+    expect(await screen.findByRole('heading', { name: 'sub' })).toBeInTheDocument()
+
+    // Drill back into the folder where the rename was open: the row is a plain
+    // row again, not a leftover rename input.
+    fireEvent.click(await screen.findByText('deep'))
+    expect(await screen.findByRole('heading', { name: 'deep' })).toBeInTheDocument()
+    expect(await screen.findByText('f.txt')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Rename f.txt')).not.toBeInTheDocument()
+    expect(mockRenameFile).not.toHaveBeenCalled()
+  })
+
+  it('preserves casing: ancestors are prefixes of the current path, the root segment is the stored root', async () => {
+    const nav = await openAtFolder('e:/proj', 'E:/proj/sub/child', [
+      ['E:/proj/sub/child', []],
+      ['E:/proj/sub', []]
+    ])
+    expect(crumbLabels(nav)).toEqual(['proj', 'sub'])
+
+    fireEvent.click(within(nav).getByRole('button', { name: 'sub' }))
+    expect(await screen.findByRole('heading', { name: 'sub' })).toBeInTheDocument()
+    expect(mockPersistenceWrite).toHaveBeenCalledWith('mobile-file-explorer/proj-1', 'E:/proj/sub')
+
+    const updated = screen.getByRole('navigation', { name: 'Folder path' })
+    fireEvent.click(within(updated).getByRole('button', { name: 'proj' }))
+    expect(await screen.findByRole('heading', { name: 'proj' })).toBeInTheDocument()
+    expect(mockPersistenceWrite).toHaveBeenLastCalledWith('mobile-file-explorer/proj-1', 'e:/proj')
+    expect(screen.getByLabelText('Back to parent folder')).toBeDisabled()
+  })
+
+  it('shows full names under a Windows drive root and the drive segment targets the drive root', async () => {
+    const nav = await openAtFolder('C:/', 'C:/Users/Alice', [['C:/Users/Alice', []]])
+
+    expect(crumbLabels(nav)).toEqual(['C:', 'Users'])
+    expect(within(nav).getByText('Alice')).toHaveAttribute('aria-current', 'page')
+    expect(nav.textContent).toBe('C:UsersAlice')
+
+    fireEvent.click(within(nav).getByRole('button', { name: 'C:' }))
+
+    expect(await screen.findByRole('heading', { name: 'C:' })).toBeInTheDocument()
+    expect(mockPersistenceWrite).toHaveBeenCalledWith('mobile-file-explorer/proj-1', 'C:/')
+    expect(screen.getByLabelText('Back to parent folder')).toBeDisabled()
+  })
+
+  it('gives each segment a vertical-only 44px hit area and clips the path from the left', async () => {
+    const nav = await openAtFolder('/proj', '/proj/src/lib', [['/proj/src/lib', []]])
+
+    for (const button of within(nav).getAllByRole('button')) {
+      // 16px row + 14px slop on each side = 44px; inset-x-0 keeps neighbours
+      // from overlapping and the header from growing.
+      expect(button.className).toContain('h-4')
+      expect(button.className).toContain('after:-inset-y-3.5')
+      expect(button.className).toContain('after:inset-x-0')
+      expect(button.className).not.toContain('after:-inset-1.5')
+    }
+    // Narrow widths: end-aligned + x-axis clip clips from the left, and the
+    // current folder never shrinks away. The clip is x-only: `overflow-hidden`
+    // would clip the vertical hit-slop above (jsdom has no layout, so the
+    // class is the only observable).
+    expect(nav.className).toContain('overflow-x-clip')
+    expect(nav.className).not.toContain('overflow-hidden')
+    expect(nav.className).toContain('justify-end')
+    expect(within(nav).getByText('lib').className).toContain('shrink-0')
+    // Semantic tokens only.
+    expect(nav.className).toContain('text-muted-foreground')
+    expect(within(nav).getByText('lib').className).toContain('text-foreground')
+  })
+
+  describe('a Windows-hosted termul-server (verbatim paths, L-20)', () => {
+    it('shows real segments for a persisted verbatim folder under a plain drive root', async () => {
+      const nav = await openAtFolder('C:/proj', '//?/C:/proj/src/lib', [['C:/proj/src/lib', []]])
+
+      expect(crumbLabels(nav)).toEqual(['proj', 'src'])
+      expect(within(nav).getByText('lib')).toHaveAttribute('aria-current', 'page')
+      expect(nav.textContent).toBe('projsrclib')
+      expect(screen.getByRole('heading', { name: 'lib' })).toBeInTheDocument()
+      expect(screen.getByLabelText('Back to parent folder')).toBeEnabled()
+    })
+
+    it('drills through verbatim entries, taps an ancestor and steps Back one level at a time', async () => {
+      mockExplorerState.rootPath = 'C:/proj'
+      mockExplorerState.directoryContents = new Map([
+        ['C:/proj', [entry('src', 'directory', '//?/C:/proj/src')]],
+        ['C:/proj/src', [entry('lib', 'directory', '//?/C:/proj/src/lib')]],
+        ['C:/proj/src/lib', [entry('deep', 'directory', '//?/C:/proj/src/lib/deep')]],
+        ['C:/proj/src/lib/deep', []]
+      ])
+      mockProjectId = 'proj-1'
+      mockPersistenceRead.mockResolvedValue({ success: false })
+      render(<MobileFileExplorer open onOpenChange={vi.fn()} />)
+
+      fireEvent.click(await screen.findByText('src'))
+      fireEvent.click(await screen.findByText('lib'))
+      fireEvent.click(await screen.findByText('deep'))
+
+      // The breadcrumb is real segments, not the garbled fallback path.
+      const nav = await screen.findByRole('navigation', { name: 'Folder path' })
+      expect(crumbLabels(nav)).toEqual(['proj', 'src', 'lib'])
+      expect(within(nav).getByText('deep')).toHaveAttribute('aria-current', 'page')
+      expect(mockPersistenceWrite).toHaveBeenLastCalledWith(
+        'mobile-file-explorer/proj-1',
+        'C:/proj/src/lib/deep'
+      )
+
+      // Back goes up exactly one level, not to the root.
+      fireEvent.click(screen.getByLabelText('Back to parent folder'))
+      expect(await screen.findByRole('heading', { name: 'lib' })).toBeInTheDocument()
+      expect(mockPersistenceWrite).toHaveBeenLastCalledWith(
+        'mobile-file-explorer/proj-1',
+        'C:/proj/src/lib'
+      )
+      expect(crumbLabels(screen.getByRole('navigation', { name: 'Folder path' }))).toEqual([
+        'proj',
+        'src'
+      ])
+
+      // Tapping an ancestor navigates there.
+      fireEvent.click(
+        within(screen.getByRole('navigation', { name: 'Folder path' })).getByRole('button', {
+          name: 'src'
+        })
+      )
+      expect(await screen.findByRole('heading', { name: 'src' })).toBeInTheDocument()
+      expect(mockPersistenceWrite).toHaveBeenLastCalledWith(
+        'mobile-file-explorer/proj-1',
+        'C:/proj/src'
+      )
+
+      // And Back from there lands on the root.
+      fireEvent.click(screen.getByLabelText('Back to parent folder'))
+      expect(await screen.findByText('Project files')).toBeInTheDocument()
+      expect(screen.getByLabelText('Back to parent folder')).toBeDisabled()
+    })
+
+    it('maps a verbatim UNC folder onto a plain UNC root', async () => {
+      const nav = await openAtFolder('//srv/share', '//?/UNC/srv/share/p/q', [
+        ['//srv/share/p/q', []]
+      ])
+
+      expect(crumbLabels(nav)).toEqual(['share', 'p'])
+      expect(within(nav).getByText('q')).toHaveAttribute('aria-current', 'page')
+    })
+
+    it('hands the raw listing path, unchanged, to file operations', async () => {
+      mockExplorerState.rootPath = 'C:/proj'
+      mockExplorerState.directoryContents = new Map([
+        ['C:/proj', [entry('a.txt', 'file', '//?/C:/proj/a.txt')]]
+      ])
+      render(<MobileFileExplorer open onOpenChange={vi.fn()} />)
+
+      fireEvent.click(await screen.findByText('a.txt'))
+
+      await waitFor(() => expect(mockOpenFile).toHaveBeenCalledWith('//?/C:/proj/a.txt'))
+      expect(mockSelectPath).toHaveBeenCalledWith('//?/C:/proj/a.txt')
+      expect(mockAddEditorTab).toHaveBeenCalledWith('//?/C:/proj/a.txt')
+    })
+
+    it('still groups plain paths exactly as before', async () => {
+      const nav = await openAtFolder('/proj', '/proj/src/lib', [['/proj/src/lib', []]])
+
+      expect(crumbLabels(nav)).toEqual(['proj', 'src'])
+    })
+  })
+
+  describe('a breadcrumb wider than the header (clipped ancestors, L-35)', () => {
+    type Report = Array<{ target: Element; isIntersecting: boolean }>
+
+    class FakeObserver {
+      static instances: FakeObserver[] = []
+      observed: Element[] = []
+      disconnected = false
+
+      constructor(
+        readonly callback: (entries: Report) => void,
+        readonly options: IntersectionObserverInit
+      ) {
+        FakeObserver.instances.push(this)
+      }
+
+      observe(element: Element): void {
+        this.observed.push(element)
+      }
+
+      disconnect(): void {
+        this.disconnected = true
+      }
+    }
+
+    const latest = (): FakeObserver => {
+      const observer = FakeObserver.instances.at(-1)
+      if (!observer) throw new Error('no observer was created')
+      return observer
+    }
+
+    beforeEach(() => {
+      FakeObserver.instances = []
+    })
+
+    afterEach(() => {
+      vi.unstubAllGlobals()
+    })
+
+    it('observes every ancestor against the path row; all start tabbable', async () => {
+      vi.stubGlobal('IntersectionObserver', FakeObserver)
+      const nav = await openAtFolder('/proj', '/proj/src/lib/deep', [['/proj/src/lib/deep', []]])
+
+      await waitFor(() => expect(FakeObserver.instances.length).toBeGreaterThan(0))
+      const buttons = within(nav).getAllByRole('button')
+      expect(latest().options.root).toBe(nav)
+      expect(latest().observed).toEqual(buttons)
+      for (const button of buttons) expect(button).not.toHaveAttribute('tabindex')
+    })
+
+    it('takes a fully clipped ancestor out of the tab order, and puts it back once visible', async () => {
+      vi.stubGlobal('IntersectionObserver', FakeObserver)
+      const nav = await openAtFolder('/proj', '/proj/src/lib/deep', [['/proj/src/lib/deep', []]])
+      await waitFor(() => expect(FakeObserver.instances.length).toBeGreaterThan(0))
+      const [root, src, lib] = within(nav).getAllByRole('button')
+
+      act(() =>
+        latest().callback([
+          { target: root, isIntersecting: false },
+          { target: src, isIntersecting: false },
+          { target: lib, isIntersecting: true }
+        ])
+      )
+      expect(root).toHaveAttribute('tabindex', '-1')
+      expect(src).toHaveAttribute('tabindex', '-1')
+      expect(lib).not.toHaveAttribute('tabindex')
+      // The Back button still steps up a level, so nothing is unreachable.
+      expect(screen.getByLabelText('Back to parent folder')).toBeEnabled()
+
+      act(() => latest().callback([{ target: src, isIntersecting: true }]))
+      expect(src).not.toHaveAttribute('tabindex')
+      expect(root).toHaveAttribute('tabindex', '-1')
+    })
+
+    it('observes the new ancestors after navigating, and drops a segment that left', async () => {
+      vi.stubGlobal('IntersectionObserver', FakeObserver)
+      const nav = await openAtFolder('/proj', '/proj/src/lib/deep', [
+        ['/proj/src/lib/deep', []],
+        ['/proj/src', []]
+      ])
+      await waitFor(() => expect(FakeObserver.instances.length).toBeGreaterThan(0))
+      const lib = within(nav).getByRole('button', { name: 'lib' })
+      act(() => latest().callback([{ target: lib, isIntersecting: false }]))
+      expect(lib).toHaveAttribute('tabindex', '-1')
+
+      fireEvent.click(within(nav).getByRole('button', { name: 'src' }))
+      expect(await screen.findByRole('heading', { name: 'src' })).toBeInTheDocument()
+
+      const updated = screen.getByRole('navigation', { name: 'Folder path' })
+      await waitFor(() => expect(latest().options.root).toBe(updated))
+      expect(latest().observed).toEqual(within(updated).getAllByRole('button'))
+      for (const button of within(updated).getAllByRole('button')) {
+        expect(button).not.toHaveAttribute('tabindex')
+      }
+    })
+
+    it('without IntersectionObserver every segment stays tabbable', async () => {
+      vi.stubGlobal('IntersectionObserver', undefined)
+      const nav = await openAtFolder('/proj', '/proj/src/lib/deep', [['/proj/src/lib/deep', []]])
+
+      expect(within(nav).getAllByRole('button')).toHaveLength(3)
+      for (const button of within(nav).getAllByRole('button')) {
+        expect(button).not.toHaveAttribute('tabindex')
+      }
+      expect(FakeObserver.instances).toHaveLength(0)
+    })
+  })
+
+  describe('navigateTo guard', () => {
+    it('ignores a target outside the root and logs a warning', () => {
+      expect(resolveBreadcrumbTarget('/other/sub', '/proj', '/proj/sub', false)).toBeNull()
+
+      expect(mockLogFrontendError).toHaveBeenCalledTimes(1)
+      expect(mockLogFrontendError).toHaveBeenCalledWith(
+        expect.objectContaining({ level: 'warn', source: 'MobileFileExplorer.navigateTo' })
+      )
+    })
+
+    it('ignores a target when there is no root and logs a warning', () => {
+      expect(resolveBreadcrumbTarget('/proj/sub', null, null, false)).toBeNull()
+
+      expect(mockLogFrontendError).toHaveBeenCalledTimes(1)
+      expect(mockLogFrontendError).toHaveBeenCalledWith(
+        expect.objectContaining({ level: 'warn', source: 'MobileFileExplorer.navigateTo' })
+      )
+    })
+
+    it('does not mistake a sibling that shares the root prefix for a child', () => {
+      expect(resolveBreadcrumbTarget('/proj-two/sub', '/proj', '/proj/sub', false)).toBeNull()
+      expect(mockLogFrontendError).toHaveBeenCalledTimes(1)
+    })
+
+    it('is silent for the folder already shown and resolves a valid ancestor', () => {
+      expect(resolveBreadcrumbTarget('/proj/sub', '/proj', '/proj/sub', false)).toBeNull()
+      expect(resolveBreadcrumbTarget('E:/proj/sub', 'e:/proj', 'E:/proj/sub', true)).toBeNull()
+      expect(resolveBreadcrumbTarget('/proj/src', '/proj', '/proj/src/lib', false)).toBe(
+        '/proj/src'
+      )
+      expect(resolveBreadcrumbTarget('e:/proj', 'e:/proj', 'E:/proj/sub', true)).toBe('e:/proj')
+      expect(mockLogFrontendError).not.toHaveBeenCalled()
+    })
+
+    it('resolves dot segments before the containment check', () => {
+      // Lexically under `/proj` by prefix, but outside once `..` is applied.
+      expect(resolveBreadcrumbTarget('/proj/../private', '/proj', '/proj/sub', false)).toBeNull()
+      expect(resolveBreadcrumbTarget('/proj/..', '/proj', '/proj/sub', false)).toBeNull()
+      expect(mockLogFrontendError).toHaveBeenCalledTimes(2)
+      expect(mockLogFrontendError).toHaveBeenCalledWith(
+        expect.objectContaining({ level: 'warn', source: 'MobileFileExplorer.navigateTo' })
+      )
+
+      // Dot segments that stay inside the root resolve to the clean folder.
+      mockLogFrontendError.mockClear()
+      expect(resolveBreadcrumbTarget('/proj/./sub/../src', '/proj', '/proj/sub/lib', false)).toBe(
+        '/proj/src'
+      )
+      expect(mockLogFrontendError).not.toHaveBeenCalled()
+    })
+
+    it('keeps drive and posix roots when resolving dot segments', () => {
+      expect(resolveBreadcrumbTarget('C:/Users/Alice/..', 'C:/', 'C:/Users/Alice', true)).toBe(
+        'C:/Users'
+      )
+      // `..` cannot climb above a drive root.
+      expect(resolveBreadcrumbTarget('C:\\Users\\..\\..', 'C:/', 'C:/Users/Alice', true)).toBe(
+        'C:/'
+      )
+      expect(resolveBreadcrumbTarget('/usr/lib/..', '/', '/usr/lib', false)).toBe('/usr')
+      expect(resolveBreadcrumbTarget('/usr/../../..', '/', '/usr/lib', false)).toBe('/')
+      expect(mockLogFrontendError).not.toHaveBeenCalled()
+    })
+
+    it('builds no crumbs at or outside the root', () => {
+      expect(buildFolderCrumbs('/proj', '/proj', false)).toBeNull()
+      expect(buildFolderCrumbs('/proj', '/elsewhere/sub', false)).toBeNull()
+      expect(buildFolderCrumbs('/', '/usr/lib', false)).toEqual({
+        ancestors: [
+          { label: '/', path: '/' },
+          { label: 'usr', path: '/usr' }
+        ],
+        currentLabel: 'lib'
+      })
+    })
+  })
+})
+
+/**
+ * Focus return (a11y floor). Radix returns focus on close only to a
+ * Dialog.Trigger, and these sheets are opened by plain buttons, so focus used
+ * to fall to <body>. The explorer's sheets now return it to the recorded opener,
+ * or to the destination the shell hands over once a file opened.
+ */
+describe('MobileFileExplorer focus return', () => {
+  /** Mirrors the shell: a "Browse files" opener, a header title, and the explorer. */
+  function Harness({ withDestination = true }: { withDestination?: boolean }) {
+    const [open, setOpen] = useState(false)
+    const titleRef = useRef<HTMLHeadingElement>(null)
+    return (
+      <>
+        <button
+          type="button"
+          onClick={(event) => {
+            recordSheetOpener('files-sheet', event.currentTarget)
+            setOpen(true)
+          }}
+        >
+          Browse files
+        </button>
+        <h1 ref={titleRef} tabIndex={-1}>
+          Header title
+        </h1>
+        <MobileFileExplorer
+          open={open}
+          onOpenChange={setOpen}
+          onFileOpened={
+            withDestination
+              ? () => setSheetFocusDestination('files-sheet', titleRef.current)
+              : undefined
+          }
+        />
+      </>
+    )
+  }
+
+  async function openFiles(): Promise<HTMLElement> {
+    const opener = screen.getByRole('button', { name: 'Browse files' })
+    fireEvent.click(opener)
+    await screen.findByRole('dialog')
+    return opener
+  }
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    // A sheet the previous test left mounted is unmounted by cleanup, and Radix
+    // fires its close-focus handler in a setTimeout(0). Let that run before this
+    // test records its own opener, which the handler would otherwise consume.
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    _resetSheetFocusReturnForTests()
+    mockProjectId = undefined
+    mockPersistenceRead.mockReset()
+    mockPersistenceWrite.mockReset()
+    mockReducedMotion = false
+    mockOpenFile.mockResolvedValue(true)
+    mockCopyFile.mockResolvedValue({ success: true, data: undefined })
+    mockEditorStore.openFiles.clear()
+    ;(document.activeElement as HTMLElement | null)?.blur()
+  })
+
+  it('returns focus to the opener when the sheet closes via its Close button', async () => {
+    setRoot([entry('a.txt', 'file')])
+    render(<Harness />)
+    const opener = await openFiles()
+    await screen.findByText('a.txt')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }))
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    await waitFor(() => expect(document.activeElement).toBe(opener))
+  })
+
+  it('returns focus to the opener when Escape closes the sheet', async () => {
+    setRoot([entry('a.txt', 'file')])
+    render(<Harness />)
+    const opener = await openFiles()
+    await screen.findByText('a.txt')
+
+    fireEvent.keyDown(document, { key: 'Escape' })
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    await waitFor(() => expect(document.activeElement).toBe(opener))
+  })
+
+  it('moves focus to the destination, not the opener, when a file opened', async () => {
+    setRoot([entry('a.txt', 'file')])
+    render(<Harness />)
+    await openFiles()
+
+    fireEvent.click(await screen.findByText('a.txt'))
+
+    await waitFor(() => expect(mockAddEditorTab).toHaveBeenCalledWith('/proj/a.txt'))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Header title' }))
+    )
+  })
+
+  it('falls back to the opener when no destination is handed over', async () => {
+    setRoot([entry('a.txt', 'file')])
+    render(<Harness withDestination={false} />)
+    const opener = await openFiles()
+
+    fireEvent.click(await screen.findByText('a.txt'))
+
+    await waitFor(() => expect(mockAddEditorTab).toHaveBeenCalled())
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    await waitFor(() => expect(document.activeElement).toBe(opener))
+  })
+
+  it('does not call onFileOpened when opening the file fails', async () => {
+    setRoot([entry('a.txt', 'file')])
+    mockOpenFile.mockRejectedValue(new Error('boom'))
+    const onFileOpened = vi.fn()
+    render(<MobileFileExplorer open onOpenChange={vi.fn()} onFileOpened={onFileOpened} />)
+
+    fireEvent.click(await screen.findByText('a.txt'))
+
+    await waitFor(() => expect(mockToastError).toHaveBeenCalled())
+    expect(onFileOpened).not.toHaveBeenCalled()
+  })
+
+  describe('file-actions sheet', () => {
+    it('returns focus to the row Actions button when it is dismissed', async () => {
+      setRoot([entry('note.txt', 'file')])
+      render(<Harness />)
+      await openFiles()
+      const actions = await screen.findByLabelText('Actions for note.txt')
+
+      fireEvent.click(actions)
+      await screen.findByText('Duplicate')
+      fireEvent.keyDown(document, { key: 'Escape' })
+
+      await waitFor(() => expect(screen.queryByText('Duplicate')).not.toBeInTheDocument())
+      await waitFor(() => expect(document.activeElement).toBe(actions))
+      // The Files sheet itself is still open underneath.
+      expect(screen.getByRole('dialog')).toBeInTheDocument()
+    })
+
+    it('returns focus to the row Actions button when Duplicate is chosen', async () => {
+      setRoot([entry('note.txt', 'file')])
+      render(<Harness />)
+      await openFiles()
+      const actions = await screen.findByLabelText('Actions for note.txt')
+
+      fireEvent.click(actions)
+      fireEvent.click(await screen.findByText('Duplicate'))
+
+      await waitFor(() => expect(mockCopyFile).toHaveBeenCalled())
+      await waitFor(() => expect(screen.queryByText('Duplicate')).not.toBeInTheDocument())
+      await waitFor(() => expect(document.activeElement).toBe(actions))
+    })
+
+    it('leaves focus in the delete confirm when Delete is chosen', async () => {
+      setRoot([entry('doomed.txt', 'file')])
+      render(<Harness />)
+      await openFiles()
+
+      fireEvent.click(await screen.findByLabelText('Actions for doomed.txt'))
+      fireEvent.click(await screen.findByText('Delete'))
+
+      const confirm = await screen.findByRole('alertdialog')
+      // Radix fires the actions sheet's onCloseAutoFocus in a setTimeout(0);
+      // wait it out and check that the confirm kept focus rather than the
+      // actions button taking it back.
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      expect(confirm.contains(document.activeElement)).toBe(true)
+    })
+
+    it('leaves focus on the rename input when Rename is chosen', async () => {
+      setRoot([entry('note.txt', 'file')])
+      render(<Harness />)
+      await openFiles()
+
+      fireEvent.click(await screen.findByLabelText('Actions for note.txt'))
+      fireEvent.click(await screen.findByText('Rename'))
+
+      const input = await screen.findByLabelText('Rename note.txt')
+      await waitFor(() => expect(screen.queryByText('Duplicate')).not.toBeInTheDocument())
+      // Radix fires onCloseAutoFocus in a setTimeout(0); wait it out and check
+      // that the autofocused input kept focus.
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      expect(document.activeElement).toBe(input)
+    })
+  })
+})
+
+describe('MobileFileExplorer overlay back stack', () => {
+  let cleanup: () => void
+
+  /** Registers the Files sheet the way MobileChatShell does (own state + close). */
+  function FilesSheetHarness(): React.JSX.Element {
+    const [open, setOpen] = useState(true)
+    useOverlayRegistration('files-sheet', open, () => setOpen(false))
+    return <MobileFileExplorer open={open} onOpenChange={setOpen} />
+  }
+
+  const stackIds = (): string[] => useOverlayStackStore.getState().stack.map((entry) => entry.id)
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockProjectId = undefined
+    mockReducedMotion = false
+    mockEditorStore.openFiles.clear()
+    mockDeletePath.mockResolvedValue({ success: true, data: undefined })
+    mockRenameFile.mockResolvedValue({ success: true, data: undefined })
+    setRoot([entry('doomed.txt', 'file')])
+    // A route entry below the base entry, so a route back has somewhere to go.
+    window.history.replaceState(null, '', '#/route-a')
+    window.history.pushState(null, '', '#/base')
+    cleanup = armMobileOverlayBackStack()
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+  })
+
+  describe('mobile shell', () => {
+    it('registers the row actions above the Files sheet and back closes only the row actions', async () => {
+      render(<FilesSheetHarness />)
+      await waitForSentinelDepth(1)
+
+      fireEvent.click(await screen.findByLabelText('Actions for doomed.txt'))
+      expect(await screen.findByText('Rename')).toBeInTheDocument()
+      expect(stackIds()).toEqual(['files-sheet', 'mobile-file-actions'])
+      await waitForSentinelDepth(2)
+
+      await pressSystemBack()
+
+      await waitFor(() => expect(screen.queryByText('Rename')).not.toBeInTheDocument())
+      expect(stackIds()).toEqual(['files-sheet'])
+      expect(screen.getByRole('heading', { name: 'proj' })).toBeInTheDocument()
+      expect(location.hash).toBe('#/base')
+      expect(readOverlaySentinelDepth(history.state)).toBe(1)
+    })
+
+    it('Delete swaps the row actions for the confirm without a traversal, then two backs leave no dead press', async () => {
+      render(<FilesSheetHarness />)
+      await waitForSentinelDepth(1)
+      fireEvent.click(await screen.findByLabelText('Actions for doomed.txt'))
+      await waitForSentinelDepth(2)
+      const backSpy = vi.spyOn(history, 'back')
+      const goSpy = vi.spyOn(history, 'go')
+      const pushSpy = vi.spyOn(history, 'pushState')
+
+      fireEvent.click(await screen.findByText('Delete'))
+
+      expect(await screen.findByRole('alertdialog')).toBeInTheDocument()
+      await settleOverlayBackStack()
+      expect(stackIds()).toHaveLength(2)
+      expect(stackIds()[0]).toBe('files-sheet')
+      expect(stackIds()[1]).toMatch(/^alert-dialog:/)
+      expect(backSpy).not.toHaveBeenCalled()
+      expect(goSpy).not.toHaveBeenCalled()
+      expect(pushSpy).not.toHaveBeenCalled()
+      expect(readOverlaySentinelDepth(history.state)).toBe(2)
+
+      // First back: only the delete confirm closes.
+      await pressSystemBack()
+      await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
+      expect(screen.getByRole('heading', { name: 'proj' })).toBeInTheDocument()
+      expect(mockDeletePath).not.toHaveBeenCalled()
+      expect(stackIds()).toEqual(['files-sheet'])
+
+      // Second back: the Files sheet closes. Neither press was dead.
+      await pressSystemBack()
+      await waitFor(() =>
+        expect(screen.queryByRole('heading', { name: 'proj' })).not.toBeInTheDocument()
+      )
+      expect(stackIds()).toEqual([])
+      expect(location.hash).toBe('#/base')
+      expect(readOverlaySentinelDepth(history.state)).toBe(0)
+    })
+
+    it('a row action that closes the row sheet (Rename) consumes its sentinel', async () => {
+      render(<FilesSheetHarness />)
+      await waitForSentinelDepth(1)
+      fireEvent.click(await screen.findByLabelText('Actions for doomed.txt'))
+      await waitForSentinelDepth(2)
+
+      fireEvent.click(await screen.findByText('Rename'))
+
+      expect(await screen.findByLabelText('Rename doomed.txt')).toBeInTheDocument()
+      await waitForSentinelDepth(1)
+      expect(stackIds()).toEqual(['files-sheet'])
+    })
+
+    it('does not keep a phantom row-actions overlay when the Files sheet closes under it', async () => {
+      const { rerender } = render(<MobileFileExplorer open onOpenChange={vi.fn()} />)
+      fireEvent.click(await screen.findByLabelText('Actions for doomed.txt'))
+      expect(await screen.findByText('Rename')).toBeInTheDocument()
+      expect(stackIds()).toEqual(['mobile-file-actions'])
+      await waitForSentinelDepth(1)
+
+      // The parent closes the Files sheet; the nested row sheet unmounts with it.
+      rerender(<MobileFileExplorer open={false} onOpenChange={vi.fn()} />)
+
+      await waitFor(() => expect(stackIds()).toEqual([]))
+      await waitForSentinelDepth(0)
+    })
+  })
+
+  describe('desktop shell', () => {
+    it('is inert: the row sheet is not registered and nothing is pushed or traversed', async () => {
+      useOverlayStackStore.getState().setMobileShell(false)
+      const pushSpy = vi.spyOn(history, 'pushState')
+      const backSpy = vi.spyOn(history, 'back')
+      const goSpy = vi.spyOn(history, 'go')
+      render(<MobileFileExplorer open onOpenChange={vi.fn()} />)
+
+      fireEvent.click(await screen.findByLabelText('Actions for doomed.txt'))
+      expect(await screen.findByText('Rename')).toBeInTheDocument()
+      expect(stackIds()).toEqual([])
+      fireEvent.click(screen.getByText('Rename'))
+      await settleOverlayBackStack()
+
+      expect(pushSpy).not.toHaveBeenCalled()
+      expect(backSpy).not.toHaveBeenCalled()
+      expect(goSpy).not.toHaveBeenCalled()
+    })
   })
 })

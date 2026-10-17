@@ -1,7 +1,7 @@
 /**
  * Detects whether the renderer should use the ChatGPT-style mobile web shell
- * (Epic 5 follow-up): hide ActivityRail / TitleBar / persistent sidebar / tab
- * strip. Desktop Tauri always keeps the full IDE chrome.
+ * (Epic 5 follow-up): hide the Rail / top row / Side panel / tab strip.
+ * Desktop Tauri always keeps the full IDE chrome.
  *
  * Viewport breakpoint (not pane width) — shell chrome is viewport-level.
  *
@@ -57,7 +57,7 @@ export function resolveMobileWebShell(
  * alias so the shell still tracks orientation changes on the older mobile
  * browsers this hook targets.
  */
-function subscribeMediaQuery(
+export function subscribeMediaQuery(
   mql: MediaQueryList,
   onChange: (matches: boolean) => void
 ): () => void {

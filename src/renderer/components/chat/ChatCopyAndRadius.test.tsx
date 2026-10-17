@@ -26,8 +26,11 @@ vi.mock('@/stores/workspace-store', () => ({
 }))
 
 vi.mock('@/stores/project-store', () => ({
-  useActiveProject: () => chatProjectRef.current,
-  getActiveWorktreeFromStore: () => null
+  useActiveProject: () => chatProjectRef.current
+}))
+
+vi.mock('@/stores/shell-layout-store', () => ({
+  useWorktreePick: () => undefined
 }))
 
 import {
@@ -42,7 +45,7 @@ import { ChatHistoryTab } from './ChatHistoryTab'
 describe('ChatHistoryTab copy (story 12)', () => {
   beforeEach(() => {
     chatSessionIndexRef.current = []
-    chatProjectRef.current = { id: 'p1', path: '/work', activeWorktreeId: null, worktrees: [] }
+    chatProjectRef.current = { id: 'p1', path: '/work', worktrees: [] }
   })
 
   it('empty-state CTA references the button with matching case ("New chat")', () => {

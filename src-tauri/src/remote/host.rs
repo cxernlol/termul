@@ -20,13 +20,25 @@
 //! This path therefore calls [`crate::web::serve_router`] directly (which never
 //! kills agents) and drives shutdown through an `oneshot` channel.
 //!
-//! ## Bind model
+//! ## Bind model and the bearer token (AD-3)
 //!
-//! Defaults to localhost. `All` (`0.0.0.0`) exposes the server on the LAN; the
-//! status-bar UI surfaces a warning in that case. Auth/token-gating lands in
-//! Epic 2 — until then, LAN exposure is the operator's explicit decision.
+//! Defaults to localhost. `All` (`0.0.0.0`) exposes the server on the LAN. The
+//! host is ungated ONLY on loopback with no tunnel: when it binds beyond
+//! loopback or the caller advertises a tunnel URL, the bearer token is
+//! required on HTTP, `/ws` and `/terminal/ws` (see
+//! [`shared_live_requires_token`]). The token is persisted under the desktop's
+//! `app_data_dir` and rides the shared URL's `#token=` fragment, so a scanning
+//! device connects without a manual entry.
+//!
+//! ## One host per durable path (AD-14)
+//!
+//! The shared-live host never opens a store of its own and never touches the
+//! service-account state dir: the caller hands in the desktop's single
+//! already-opened, already-locked `Arc<WebStore>` ([`SharedLiveData`]), so
+//! stop/start cycles reuse the same instance.
 
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use serde::Serialize;
@@ -34,9 +46,11 @@ use tokio::process::Child;
 use tokio::sync::oneshot;
 use tracing::{info, warn};
 
-use crate::acp::{AcpCatalogService, AcpInstallService, AcpManager, WorkspaceManifestService};
+use crate::acp::{AcpCatalogService, AcpInstallService, AcpManager};
 use crate::pty::PtyManager;
+use crate::web::auth::{self, WebAuth, WebAuthOrigin, WebAuthResolution};
 use crate::web::sink::WsRelaySink;
+use crate::web::store::WebStore;
 use crate::web::{serve_router, ProjectRegistry, ServerConfig};
 
 /// Which network interface(s) the in-process web server binds to.
@@ -81,24 +95,37 @@ impl RemoteBindMode {
         self.host()
     }
 
-    /// `true` when bound to all interfaces (LAN-exposed).
-    ///
-    /// Currently unused: the desktop-hosted server always binds localhost
-    /// because the cloudflared quick-tunnel targets it (the LAN `all` mode is
-    /// removed from the popover and deferred — see
-    /// `spec-remote-qr-cloudflared-tunnel`). Retained + tested for the
-    /// deferred LAN-only connect mode.
-    #[allow(dead_code)]
+    /// `true` when bound to all interfaces (LAN-exposed). Drives
+    /// [`shared_live_requires_token`].
     pub fn is_lan_exposed(self) -> bool {
         matches!(self, Self::All)
     }
+}
+
+/// Whether the shared-live host must require the bearer token (AD-3): it is
+/// ungated only on loopback with no tunnel advertised. Decided BEFORE the
+/// server starts so there is never a window where an exposed host is open.
+#[must_use]
+pub fn shared_live_requires_token(bind_mode: RemoteBindMode, tunnel_planned: bool) -> bool {
+    tunnel_planned || bind_mode.is_lan_exposed()
+}
+
+/// Durable inputs the desktop hands the shared-live host (AD-14).
+#[derive(Clone)]
+pub struct SharedLiveData {
+    /// The desktop's single web store, opened once in `lib.rs` at
+    /// `<app_data_dir>/store.json` inside the already-locked data dir.
+    pub store: Arc<WebStore>,
+    /// The desktop `app_data_dir`: the bearer token file lives here, never in
+    /// the service-account state dir.
+    pub data_dir: PathBuf,
 }
 
 /// Status of the desktop-hosted web server, returned to the frontend.
 ///
 /// Field shape is preserved verbatim from the legacy PTY server so the renderer's
 /// `RemoteStatus` type and status-bar UI stay unchanged.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoteStatus {
     pub running: bool,
@@ -110,8 +137,24 @@ pub struct RemoteStatus {
     pub bind_host: Option<String>,
     /// Ephemeral `https://*.trycloudflare.com` tunnel URL when the built-in
     /// cloudflared quick-tunnel is up; `None` when stopped or before the URL
-    /// arrives. The StatusBar QR encodes this (never the local `url`).
+    /// arrives. This is the SHARED link the StatusBar QR encodes and the copy
+    /// button copies (never the local `url`): when the host is token-gated it
+    /// carries the bearer token in the fragment (`#token=<token>`), so it is a
+    /// secret — never log it (`Debug` redacts it).
     pub tunnel_url: Option<String>,
+}
+
+impl std::fmt::Debug for RemoteStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RemoteStatus")
+            .field("running", &self.running)
+            .field("url", &self.url)
+            .field("port", &self.port)
+            .field("bind_mode", &self.bind_mode)
+            .field("bind_host", &self.bind_host)
+            .field("tunnel_url", &self.tunnel_url.as_ref().map(|_| "***"))
+            .finish()
+    }
 }
 
 impl RemoteStatus {
@@ -156,8 +199,13 @@ struct RemoteServer {
     serve_handle: Option<tokio::task::JoinHandle<()>>,
     addr: SocketAddr,
     bind_mode: RemoteBindMode,
-    /// Ephemeral trycloudflare URL (set when the quick-tunnel came up).
+    /// Ephemeral trycloudflare URL (set when the quick-tunnel came up). Stored
+    /// bare; `status()` appends the token fragment when the host is gated.
     tunnel_url: Option<String>,
+    /// The bearer gate when this host requires the token (tunnel/non-loopback);
+    /// `None` for an ungated loopback host. Owns the secret used to build the
+    /// shared URL — never logged.
+    web_auth: Option<Arc<WebAuth>>,
     /// `true` once the cloudflared watchdog observed the child exit. Read by
     /// `status()` (sync) to drop the stale `tunnel_url` so the renderer poller
     /// clears the QR (it would otherwise offer a link that yields "This site
@@ -223,12 +271,6 @@ impl RemoteServerState {
     /// start wins the slot race, the loser signals its spawned task to drain
     /// before returning `Err` (no orphaned second server).
     ///
-    /// `workspace_manifest` is the desktop's own `WorkspaceManifestService`
-    /// (opened under `<app_data_dir>/workspace-manifests` in `lib.rs`).
-    /// Threaded through to `serve_router` so the web/remote client can
-    /// read/write a project's manifest through `/workspace/*`. `None`
-    /// degrades to fresh-only mode.
-    ///
     /// `acp_catalog` is the desktop's own `AcpCatalogService` (opened under
     /// `<app_data_dir>/acp-catalog` in `lib.rs`). Threaded through to
     /// `serve_router` so the web/remote client can resolve the catalog through
@@ -240,6 +282,15 @@ impl RemoteServerState {
     /// to `serve_router` so the web/remote client can install through
     /// `POST /acp/install` + WS `install_acp_agent`. `None` degrades to
     /// `ACP_INSTALL_UNAVAILABLE`.
+    ///
+    /// `tunnel_planned` is `true` when the caller will advertise a tunnel URL
+    /// right after this returns (the desktop always does). Together with the
+    /// bind mode it decides, BEFORE the listener binds, whether the bearer
+    /// token is required ([`shared_live_requires_token`]); the token is
+    /// resolved from `data.data_dir` and the shared URL carries it.
+    ///
+    /// `data.store` is the desktop's single already-opened web store; this
+    /// host never opens one, so stop/start cycles reuse the same instance.
     #[allow(clippy::too_many_arguments)]
     pub async fn start(
         &self,
@@ -247,17 +298,19 @@ impl RemoteServerState {
         pty: Arc<PtyManager>,
         ws_relay: Arc<WsRelaySink>,
         registry: Arc<ProjectRegistry>,
-        _bind_mode: RemoteBindMode,
-        workspace_manifest: Option<Arc<WorkspaceManifestService>>,
+        requested_bind_mode: RemoteBindMode,
+        tunnel_planned: bool,
+        data: &SharedLiveData,
         acp_catalog: Option<Arc<AcpCatalogService>>,
         acp_install: Option<Arc<AcpInstallService>>,
     ) -> Result<RemoteStatus, String> {
         // The built-in cloudflared quick-tunnel forwards to localhost, so the
         // desktop-hosted server always binds localhost regardless of the
         // caller's bind mode — the LAN `all` mode is removed from the popover
-        // and deferred (see spec-remote-qr-cloudflared-tunnel). The param stays
-        // for API stability / the standalone binary's parity path; it is
-        // ignored here (`_bind_mode`) to avoid churning every caller.
+        // and deferred (see spec-remote-qr-cloudflared-tunnel). The requested
+        // mode no longer changes the listener, but it still feeds the token
+        // decision below so a LAN request fails closed (gated) should the bind
+        // ever honor it again.
         let bind_mode = RemoteBindMode::Localhost;
         {
             let slot = self.inner.lock().unwrap();
@@ -266,104 +319,69 @@ impl RemoteServerState {
             }
         }
 
-        // CAP-1 / Story 1: resolve the project-root boundary for the
-        // shared-live server from the **active project** (the
-        // `ProjectRegistry`'s default-project path), NOT the user home dir.
-        // On a cross-drive setup (profile on C:, project on E:) the home-dir
-        // fallback rejects every `/skills`, `/git/*`, and `/search/content`
-        // probe for the real project with `OUTSIDE_PROJECT_ROOT`. The registry
-        // carries display paths (not canonical forms), so we run the result
-        // through `resolve_and_validate_project_root` so the value stored in
-        // `ServerConfig::project_root` is a canonical absolute path to an
-        // existing directory — exactly like the standalone `termul-server`.
-        //
-        // Fallback chain:
-        // 1. Registry default project path → canonicalize.
-        // 2. `default_project_root()` ($TERMUL_PROJECT_ROOT / $HOME) → canonicalize.
-        // 3. None discoverable → fatal (the server cannot enforce a boundary).
-        //
-        // A transient canonicalization failure on the registry default (deleted
-        // between sync and start) falls through to the home fallback rather
-        // than refusing to start — the operator can still re-sync the registry
-        // and rebind live. A `warn!` is logged so the operator notices.
-        let project_root = {
-            // 1. Try the registry's default-project path first.
-            let from_registry = registry.default_project_path().and_then(|p| {
-                match crate::web::config::resolve_and_validate_project_root(std::path::Path::new(
-                    &p,
-                )) {
-                    Ok(canonical) => Some(canonical),
-                    Err(e) => {
-                        warn!(
-                            "shared-live: registry default project path '{}' failed \
-                                 canonicalization: {}; falling back to home",
-                            p, e
-                        );
-                        None
-                    }
+        // AD-3: decide BEFORE binding whether the bearer token is required, so
+        // an exposed host is never open even for an instant. The token lives
+        // under the desktop's `app_data_dir` (never the service-account dir)
+        // and is never logged — only its source path.
+        let requires_token = shared_live_requires_token(requested_bind_mode, tunnel_planned);
+        let web_auth: Option<Arc<WebAuth>> =
+            match auth::resolve_shared_live(requires_token, &data.data_dir)
+                .map_err(|e| format!("Failed to start remote server: {e}"))?
+            {
+                WebAuthResolution::Ungated => {
+                    info!("Shared-live web server: loopback only, no tunnel — ungated");
+                    None
                 }
-            });
-            if let Some(root) = from_registry {
-                root
-            } else {
-                // 2. Empty registry / bad default → home fallback + warn.
-                let raw_root = crate::web::config::default_project_root().ok_or_else(|| {
-                    "could not determine project root for shared-live server: \
-                     set $TERMUL_PROJECT_ROOT or ensure $HOME is available"
-                        .to_string()
-                })?;
-                warn!(
-                    "shared-live started with no usable registry default; project_root \
-                     fell back to home ({}). /skills, /git/*, /search/content will \
-                     reject any project outside this tree until a project is synced.",
-                    raw_root.display()
-                );
-                crate::web::config::resolve_and_validate_project_root(&raw_root).map_err(|e| {
-                    format!(
-                        "shared-live server refused to start: {e} \
-                         (set $TERMUL_PROJECT_ROOT to a valid directory)"
-                    )
-                })?
-            }
-        };
+                WebAuthResolution::Gated { auth, origin } => {
+                    match &origin {
+                        WebAuthOrigin::Configured => {
+                            info!("Shared-live web server: bearer token required (configured)")
+                        }
+                        WebAuthOrigin::Loaded(path) | WebAuthOrigin::Generated(path) => info!(
+                            "Shared-live web server: bearer token required (token file {})",
+                            path.display()
+                        ),
+                    }
+                    Some(auth)
+                }
+            };
 
         let cfg = ServerConfig {
             host: bind_mode.host().to_string(),
             // OS-assigned ephemeral port (avoids fixed-port conflicts).
             port: 0,
             event_log_capacity: ws_relay.event_log_capacity(),
-            permission_timeout_secs: ws_relay
-                .rendezvous()
-                .map(|r| r.timeout().as_secs())
-                .unwrap_or(60),
-            permission_reconnect_grace_secs: ws_relay
-                .rendezvous()
-                .map(|r| r.disconnect_grace().as_secs())
-                .unwrap_or(15),
-            project_root,
-            // Desktop-hosted shared-live mode queries the live desktop
-            // `AcpManager` via the in-memory renderer-fed registry, NOT a
-            // server-owned file (AC2 / architecture Gap #3). The
-            // file-backed `acp::project_registry` is VPS-mode-only.
+            // Startup baseline (env or 30 minutes). The live reaper reads
+            // `resolved_agent_idle_window`, which also applies App Preferences
+            // when the env var is unset.
+            agent_idle_window_secs: crate::web::config::desktop_agent_idle_window_secs().secs,
+            agent_idle_window_locked: crate::web::config::desktop_agent_idle_window_secs()
+                .from_env,
+            overflow_tolerance: crate::web::config::DEFAULT_OVERFLOW_TOLERANCE,
+            max_terminals_per_project: crate::web::config::DEFAULT_MAX_TERMINALS_PER_PROJECT,
+            receipt_retention_secs: ws_relay.ledger().retention().as_secs(),
+            // Unset until the device-state work picks values.
+            partition_gc_age_secs: crate::web::config::DEFAULT_PARTITION_GC_AGE_SECS,
+            partition_byte_budget: crate::web::config::DEFAULT_PARTITION_BYTE_BUDGET,
+            deprecation_warnings: Vec::new(),
+            // The desktop host never seeds a project: its registry is the
+            // durable `<app_data_dir>/projects.json`, fed by the renderer.
+            seed_project_root: None,
+            // The desktop's durable registry (`<app_data_dir>/projects.json`)
+            // is built once at setup and passed to `start`; the config path
+            // is standalone-only.
             projects_file: None,
             sessions_dir: None,
-            // CAP-5 / Story 5: this path-override field is standalone-only.
-            // The desktop shared-live host passes its already-opened
-            // `WorkspaceManifestService` directly to `serve_router` (see the
-            // `workspace_manifest` argument below), so no path is resolved
-            // from the config here — `None` degrades nothing on this path.
-            workspace_manifests_dir: None,
             acp_catalog_dir: None,
-            // Issue #613: `None` → resolve `<service_account_state_dir>/store.json`
-            // at serve time (the shared-live host gets a durable store too).
+            // The shared-live store is the desktop's single instance, passed to
+            // `serve_router` below; this path override is never consulted.
             store_file: None,
             // Desktop shared-live LAN clients stay view-only for mutations
             // (CWE-306 guard stays on); only the standalone `termul-server`
             // honors the `--allow-remote-writes` opt-in.
             allow_remote_writes: false,
-            // The web auth token gate (CAP-1 interim) is standalone-only: the
-            // desktop shared-live host passes None (ungated; its cloudflared
-            // exposure predates this story — Epic-2 territory).
+            // The bearer token reaches `serve_router` as the resolved
+            // `WebAuth` (see `web_auth` above), not through the config.
             web_auth_token: None,
             // Same-host check only. Browser clients are served by this
             // process; the desktop app itself uses Tauri IPC, not these
@@ -390,20 +408,18 @@ impl RemoteServerState {
             pty.exit_code_tracker(),
             ws_relay,
             registry,
-            None,
-            None,
             cfg,
             shutdown,
-            workspace_manifest,
             acp_catalog,
             acp_install,
+            Arc::clone(&data.store),
             // Desktop shared-live: the cloudflared tunnel forwards public
             // traffic to a loopback source, so the guard denies ALL writes
             // before peer evaluation regardless of allow_remote_writes.
             true,
-            // No web auth gate on the desktop shared-live path (see the
-            // `web_auth_token: None` note above).
-            None,
+            // Bearer gate: `Some` whenever the host advertises a tunnel or
+            // binds beyond loopback (AD-3); `None` only for loopback-only.
+            web_auth.clone(),
             // OpenPencil canvas mode: the desktop shared-live host does NOT
             // serve /canvas/* (AD-8 — the desktop's stable MCP proxy lives on
             // the agentation server); the routes degrade to typed 502
@@ -439,6 +455,7 @@ impl RemoteServerState {
             // `remote_server_start` — keeps this method testable without a real
             // cloudflared binary (the lifecycle tests bind/stop/status here).
             tunnel_url: None,
+            web_auth,
             tunnel_dead: None,
             tunnel_watchdog: None,
         });
@@ -467,10 +484,12 @@ impl RemoteServerState {
                     // before we proceed (returns Err(Cancelled) — ignored).
                     let _ = handle.await;
                 }
-                // Signal drain, then await the serve task so Axum finishes
-                // flushing before the caller proceeds (e.g. app exit →
-                // `kill_all`). `Drop` would only signal; awaiting here enforces
-                // ordering.
+                // Signal drain, then await the serve task. It drains Axum and
+                // gives upgraded `/ws` + `/terminal/ws` sockets a bounded chance
+                // to close with `Close(1001)`; close delivery can time out, and
+                // tasks still running after the abort grace are logged. `Drop`
+                // would only signal; awaiting here enforces the serve task's
+                // bounded shutdown before the caller proceeds.
                 if let Some(tx) = server.shutdown_tx.take() {
                     let _ = tx.send(());
                 }
@@ -520,7 +539,13 @@ impl RemoteServerState {
             warn!("cloudflared tunnel child exited; clearing stale tunnel URL");
             server.tunnel_url = None;
         }
-        RemoteStatus::running(server.addr, server.bind_mode, server.tunnel_url.clone())
+        // The shared link: the bare tunnel URL, plus `#token=<token>` when the
+        // host is gated so a scanning device connects without manual entry.
+        let shared_url = server.tunnel_url.as_deref().map(|url| match &server.web_auth {
+            Some(auth) => auth.share_url(url),
+            None => url.to_string(),
+        });
+        RemoteStatus::running(server.addr, server.bind_mode, shared_url)
     }
 
     /// Attach a started cloudflared quick-tunnel (URL + live child) to the

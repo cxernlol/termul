@@ -1,4 +1,5 @@
 import type { ITerminalOptions } from '@xterm/xterm'
+import { MONO_STACK } from '@/lib/font-stacks'
 import { getActiveTerminalTheme } from '@/lib/themes'
 
 // Resize debounce delay in milliseconds - prevents flooding PTY with resize events during drag
@@ -10,12 +11,8 @@ export const RESIZE_DEBOUNCE_MS = 50
 export const CONPTY_MIN_BUILD_NUMBER = 21376
 
 export const DEFAULT_TERMINAL_OPTIONS: ITerminalOptions = {
-  // Cross-platform monospace stack:
-  // - JetBrains Mono Variable: bundled via @fontsource-variable, available everywhere.
-  // - Cascadia / Menlo / Consolas / SF Mono: native fallbacks per OS.
-  // - Ubuntu Mono / DejaVu Sans Mono: ships with most Linux distros.
-  fontFamily:
-    '"JetBrains Mono Variable", "JetBrains Mono", "Cascadia Code", "SF Mono", Menlo, Monaco, Consolas, "Ubuntu Mono", "DejaVu Sans Mono", "Liberation Mono", "Courier New", monospace',
+  // Bundled Paper Mono on every OS. `monospace` covers glyphs the file lacks.
+  fontFamily: MONO_STACK,
   fontSize: 14,
   lineHeight: 1.2,
   cursorBlink: true,
@@ -27,8 +24,10 @@ export const DEFAULT_TERMINAL_OPTIONS: ITerminalOptions = {
   ignoreBracketedPasteMode: false,
   rightClickSelectsWord: true,
   // xterm screenReaderMode routes keystrokes through the a11y textarea path, which
-  // can emit duplicate bytes to the PTY (see xtermjs/xterm.js#3467). Default off;
-  // re-enable only when we add an explicit user-facing accessibility setting.
+  // can emit duplicate bytes to the PTY (see xtermjs/xterm.js#3467, repo #267).
+  // Default off. The explicit user-facing setting is AppSettings.terminalScreenReaderMode
+  // (Terminal Appearance > Screen reader mode); ConnectedTerminal applies it at
+  // construction, so only new terminals pick it up.
   screenReaderMode: false
 }
 

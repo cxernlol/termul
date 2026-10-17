@@ -9,8 +9,7 @@
  * or middleware changes.
  */
 
-import type { AgentId, SessionId } from '@/lib/acp-api'
-import { getAcpTransport } from '@/lib/acp-transport'
+import { type AgentId, acpApi, type SessionId } from '@/lib/acp-api'
 import {
   agentPolicy,
   deriveAgentConfig,
@@ -19,7 +18,13 @@ import {
 } from '@/lib/agents/acp-registry'
 import { acpCatalogApi } from '@/lib/api'
 import { logFrontendError } from '@/lib/log-api'
-import { agentReuseKey, configIdFromReuseKey, detachedReuseKey } from './acp-reuse-keys'
+import {
+  agentReuseKey,
+  configIdFromReuseKey,
+  detachedReuseKey,
+  isDetachedReuseKey,
+  parseReuseKey
+} from './acp-reuse-keys'
 import type { AcpGet, AcpSet, AcpState } from './acp-store'
 
 /**
@@ -54,16 +59,29 @@ const inFlightAgentUpdates = new Map<string, Promise<'applied' | 'unchanged'>>()
  * Update Application follow-through: tear down a config's warm/prepared state
  * so the NEXT chat for this config spawns the applied version instead of
  * claiming a stale warm process (QA: a post-update new chat reused the old
- * binary and the pending-restart banner never cleared). Warm processes with NO
- * open sessions are killed outright; a live agent (open chat) keeps its
- * process — only the reuse mapping detaches, mirroring
- * `detachAgentForNewCredentials`, so the running chat is never interrupted.
+ * binary and the pending-restart banner never cleared). A process whose only
+ * sessions are closed or unclaimed warm-pool prepared sessions is killed
+ * outright. Any other session (a live chat, the active chat, or an ephemeral
+ * temporary such as a claimed chat whose promote failed) keeps its process —
+ * only the reuse mapping detaches, so a running chat is never interrupted.
  */
 export async function teardownConfigForUpdate(
   deps: AgentUpdateStoreDeps,
   configId: string
 ): Promise<void> {
   const { get, set, inFlightWarms, inFlightPrepared, invalidateOptionsCache } = deps
+  // Read prepared membership fresh at each decision: the loop awaits in-flight
+  // warm spawns, and a chat claimed during that await leaves `preparedSessions`
+  // and must then protect its agent. The prepared-session teardown below
+  // (`cancelPreparedChat`) only runs after the loop.
+  const protectsAgent = (session: { id: SessionId; status: string }): boolean => {
+    if (session.status === 'closed') return false
+    const state = get()
+    const unclaimedPrepared =
+      Object.values(state.preparedSessions).includes(session.id) &&
+      session.id !== state.activeSessionId
+    return !unclaimedPrepared
+  }
   const reuseKeys = new Set<string>([
     ...Object.keys(get().configToLiveAgent),
     ...inFlightWarms.keys()
@@ -73,8 +91,14 @@ export async function teardownConfigForUpdate(
     const pending = inFlightWarms.get(key)
     const agentId = pending ? await pending : get().configToLiveAgent[key]
     const mapped = get().configToLiveAgent[key]
+    // Closed sessions and unclaimed warm-pool prepared sessions do not protect
+    // the process. Counting the prepared one kept the old idle agent alive
+    // forever whenever the launcher held a prepared chat on it (orphaned agent
+    // processes on update). Every other session, including ephemeral
+    // temporaries that are not prepared, keeps the agent running.
     const hasOpenSession =
-      agentId != null && Object.values(get().sessions).some((s) => s.agentId === agentId)
+      agentId != null &&
+      Object.values(get().sessions).some((s) => s.agentId === agentId && protectsAgent(s))
     // Detach the reuse mapping unconditionally (an in-flight warm that never
     // registered leaves a dangling key; deleting a missing key is a no-op).
     if (mapped != null) {
@@ -160,7 +184,7 @@ export function applyAgentUpdateFlow(
         // Managed npm install (S2-TS policy): update through the same host
         // install seam as first install; never rewrite it back to an npx
         // launcher that can resolve an unpinned package at spawn.
-        const installed = await getAcpTransport().installAcpAgent(agent.id)
+        const installed = await acpApi.installAcpAgent(agent.id)
         const env = mergeEnv({})
         // Old Claude templates carried an unresolved/inline API-key value.
         // New auth is host-keychain-only, so do not migrate that value into
@@ -181,7 +205,7 @@ export function applyAgentUpdateFlow(
         if (!derived.archiveUrl) {
           throw new Error(`Agent ${agent.id} requires a manual install; update it outside Termul`)
         }
-        const installed = await getAcpTransport().installAcpAgent(agent.id)
+        const installed = await acpApi.installAcpAgent(agent.id)
         await get().saveAgentConfig({
           ...existing,
           name: agent.name,
@@ -223,7 +247,8 @@ export function detachAgentForNewCredentials(
   cwd: string
 ): void {
   const { get, set, isEphemeralSession } = deps
-  const reuseKey = agentReuseKey(configId, cwd)
+  const trimmedCwd = cwd.trim()
+  const reuseKey = agentReuseKey(configId, trimmedCwd)
   for (const key of [
     ...Object.keys(get().preparedSessions),
     ...Object.keys(get().preparingChatKeys),
@@ -232,25 +257,32 @@ export function detachAgentForNewCredentials(
     if (key.startsWith(`${reuseKey}\0`)) get().cancelPreparedChat(key)
   }
   // Preserve the old process and its active sessions. Only future launches
-  // may consume the newly stored credentials.
+  // may consume the newly stored credentials. Detach every Project-scoped
+  // key for this config and cwd, not only the legacy two-segment key.
   set((s) => {
     const configToLiveAgent = { ...s.configToLiveAgent }
-    const previousAgent = configToLiveAgent[reuseKey]
-    delete configToLiveAgent[reuseKey]
-    if (
-      previousAgent &&
-      Object.values(s.sessions).some(
-        (session) =>
-          session.agentId === previousAgent &&
-          session.status !== 'closed' &&
-          !isEphemeralSession(session.id)
-      )
-    ) {
-      // Keep the old agent resolvable for live chat history, model changes,
-      // and cleanup, without allowing the next prepare to reuse its key.
-      configToLiveAgent[detachedReuseKey(reuseKey, previousAgent)] = previousAgent
+    let changed = false
+    for (const [key, previousAgent] of Object.entries(s.configToLiveAgent)) {
+      if (isDetachedReuseKey(key)) continue
+      const parsed = parseReuseKey(key)
+      if (parsed.configId !== configId || parsed.cwd !== trimmedCwd) continue
+      delete configToLiveAgent[key]
+      changed = true
+      if (
+        previousAgent &&
+        Object.values(s.sessions).some(
+          (session) =>
+            session.agentId === previousAgent &&
+            session.status !== 'closed' &&
+            !isEphemeralSession(session.id)
+        )
+      ) {
+        // Keep the old agent resolvable for live chat history, model changes,
+        // and cleanup, without allowing the next prepare to reuse its key.
+        configToLiveAgent[detachedReuseKey(key, previousAgent)] = previousAgent
+      }
     }
-    return { configToLiveAgent }
+    return changed ? { configToLiveAgent } : {}
   })
 }
 
