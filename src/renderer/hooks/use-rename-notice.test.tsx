@@ -125,4 +125,94 @@ describe('useRenameNotice', () => {
 
     expect(screen.getByText('Termul is now Troupe')).toBeTruthy()
   })
+
+  /**
+   * gh-1850: sonner measures a toast once and reuses that height for the
+   * hover-expanded stack. The desktop window starts hidden, so the notice can
+   * mount while the viewport is still a few pixels wide and the narrow layout
+   * wraps into a very tall toast. jsdom has no layout, so the toast's height
+   * is modelled from the viewport width: narrow wraps tall, wide fits short.
+   */
+  describe('when the viewport size changes after the notice is shown', () => {
+    const NARROW_HEIGHT = 1491
+    const WIDE_HEIGHT = 110
+    const originalWidth = window.innerWidth
+    let rectSpy: ReturnType<typeof vi.spyOn>
+
+    function setViewportWidth(width: number): void {
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: width })
+    }
+
+    function noticeHeight(): string {
+      const node = screen.getByText('Termul is now Troupe').closest('[data-sonner-toast]')
+      if (!(node instanceof HTMLElement)) throw new Error('rename notice toast not found')
+      return node.style.getPropertyValue('--initial-height')
+    }
+
+    async function resizeTo(width: number, event: 'resize' | 'visibilitychange' = 'resize') {
+      setViewportWidth(width)
+      await act(async () => {
+        const target = event === 'resize' ? window : document
+        target.dispatchEvent(new Event(event))
+        await new Promise((resolve) => setTimeout(resolve, 200))
+        for (let i = 0; i < 3; i++) await new Promise((resolve) => setTimeout(resolve, 0))
+      })
+    }
+
+    beforeEach(() => {
+      rectSpy = vi
+        .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+        .mockImplementation(function (this: HTMLElement) {
+          const height = this.hasAttribute('data-sonner-toast')
+            ? window.innerWidth < 600
+              ? NARROW_HEIGHT
+              : WIDE_HEIGHT
+            : 0
+          return DOMRect.fromRect({ x: 0, y: 0, width: window.innerWidth, height })
+        })
+    })
+
+    afterEach(() => {
+      rectSpy.mockRestore()
+      setViewportWidth(originalWidth)
+    })
+
+    it('re-measures the toast once the hidden window gets its real size', async () => {
+      localStorage.setItem('termul.deviceId', 'device-from-0.4.60')
+      setViewportWidth(120)
+      await launch()
+      expect(noticeHeight()).toBe(`${NARROW_HEIGHT}px`)
+
+      await resizeTo(1280)
+
+      expect(noticeHeight()).toBe(`${WIDE_HEIGHT}px`)
+      expect(screen.getAllByText('Termul is now Troupe')).toHaveLength(1)
+    })
+
+    it('re-measures the toast when the window becomes visible', async () => {
+      localStorage.setItem('termul.deviceId', 'device-from-0.4.60')
+      setViewportWidth(120)
+      await launch()
+
+      await resizeTo(1280, 'visibilitychange')
+
+      expect(noticeHeight()).toBe(`${WIDE_HEIGHT}px`)
+    })
+
+    it('does not bring the notice back on a resize after Got it', async () => {
+      localStorage.setItem('termul.deviceId', 'device-from-0.4.60')
+      setViewportWidth(120)
+      await launch()
+
+      await act(async () => {
+        screen.getByRole('button', { name: 'Got it' }).click()
+        // sonner removes a dismissed toast after its 200ms exit animation.
+        await new Promise((resolve) => setTimeout(resolve, 300))
+      })
+      await resizeTo(1280)
+
+      expect(screen.queryByText('Termul is now Troupe')).toBeNull()
+      expect(localStorage.getItem('termul.renameNotice')).toBe('dismissed')
+    })
+  })
 })
