@@ -143,6 +143,15 @@ function syncSwitch(): HTMLElement {
   return screen.getByRole('switch', { name: 'Keep the catalog up to date' })
 }
 
+function searchBox(): HTMLElement {
+  return screen.getByRole('textbox', { name: 'Search the MCP catalog' })
+}
+
+/** Whether `later` comes after `earlier` in document order. */
+function follows(later: Node, earlier: Node): boolean {
+  return (earlier.compareDocumentPosition(later) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0
+}
+
 async function findRow(name: string): Promise<HTMLElement> {
   await screen.findByText(name)
   return rowOf(name)
@@ -313,7 +322,7 @@ describe('McpCatalogBrowser', () => {
 })
 
 describe('McpCatalogBrowser catalog source', () => {
-  it('holds the source card slot above the search box until the status arrives', async () => {
+  it('holds the source card slot below the search box and the list until the status arrives', async () => {
     search.mockResolvedValue(page([installable]))
     let answer: (result: IpcResult<McpCatalogStatus>) => void = () => {}
     status.mockReturnValue(
@@ -325,10 +334,8 @@ describe('McpCatalogBrowser catalog source', () => {
 
     const placeholder = screen.getByTestId('mcp-catalog-source-placeholder')
     expect(placeholder).toHaveAttribute('aria-busy', 'true')
-    const searchBox = screen.getByRole('textbox', { name: 'Search the MCP catalog' })
-    expect(
-      placeholder.compareDocumentPosition(searchBox) & Node.DOCUMENT_POSITION_FOLLOWING
-    ).toBeTruthy()
+    expect(follows(placeholder, searchBox())).toBe(true)
+    expect(follows(placeholder, await findRow('Weather Tools'))).toBe(true)
 
     await act(async () => answer(catalog()))
 
@@ -336,7 +343,53 @@ describe('McpCatalogBrowser catalog source', () => {
     expect(screen.queryByTestId('mcp-catalog-source-placeholder')).toBeNull()
   })
 
-  it('reserves the real sync row while loading so a wrapped description cannot shift the search box', async () => {
+  // The loaded card can be taller than the placeholder (a sample note, a long
+  // sync error), and its status line changes while the page is open. Below the
+  // search box and the list, that growth cannot push either of them down.
+  it.each([
+    ['the default status', catalog(), 'Up to date.'],
+    [
+      'the sample catalog with sync off',
+      catalog({ sample: true, sync: { state: 'disabled' } }),
+      /^This is the small sample bundled with this build/
+    ],
+    [
+      'a long sync error',
+      catalog({
+        sync: {
+          state: 'failed',
+          error: `the registry could not be reached: ${'connection refused, '.repeat(12)}giving up.`,
+          retryAt: new Date(2026, 9, 20, 12, 5).toISOString()
+        }
+      }),
+      /^Sync failed: the registry could not be reached/
+    ],
+    [
+      'a full download in progress',
+      catalog({ sync: { state: 'syncing', full: true, fetched: 1200 } }),
+      'Downloading the full registry… 1,200 servers so far.'
+    ]
+  ])('keeps the source card below the search box and the list with %s', async (_, reply, line) => {
+    search.mockResolvedValue(page([installable]))
+    status.mockResolvedValue(reply)
+    render(<McpCatalogBrowser />)
+
+    const statusLine = await screen.findByText(line)
+    expect(follows(statusLine, searchBox())).toBe(true)
+    expect(follows(statusLine, await findRow('Weather Tools'))).toBe(true)
+    expect(follows(syncSwitch(), searchBox())).toBe(true)
+  })
+
+  it('shows the unreadable-status note below the search box', async () => {
+    search.mockResolvedValue(page([installable]))
+    status.mockResolvedValue({ success: false, error: 'boom', code: 'IO' })
+    render(<McpCatalogBrowser />)
+
+    const note = await screen.findByText("Troupe couldn't check where the catalog comes from.")
+    expect(follows(note, searchBox())).toBe(true)
+  })
+
+  it('reserves the real sync row while loading so a wrapped description keeps its height', async () => {
     search.mockResolvedValue(page([installable]))
     status.mockReturnValue(new Promise(() => {}))
     render(<McpCatalogBrowser />)

@@ -92,11 +92,10 @@ function PlaceholderLine({ line, bar }: { line: string; bar: string }): React.JS
 }
 
 /**
- * Line-for-line stand-in for the source card while the first status loads, so
- * the search box under it does not jump down when the card arrives. The sync
- * row is the real one (disabled), not a skeleton, so its description wraps to
- * the same height at every width — a fixed-height bar under-reserves when the
- * description wraps to two lines on a narrow card.
+ * Line-for-line stand-in for the source card while the first status loads. The
+ * sync row is the real one (disabled), not a skeleton, so its description wraps
+ * to the same height at every width. The loaded card can still be taller (a
+ * sample note, a long sync error), which is why the card sits below the list.
  */
 function CatalogSourcePlaceholder(): React.JSX.Element {
   return (
@@ -371,7 +370,10 @@ export function McpCatalogBrowser(): React.JSX.Element {
       title="MCP catalog"
       footnote={block && <span id={hintId}>{MCP_INSTALL_BLOCK_TEXT[block]}</span>}
     >
-      <CatalogSource {...status} />
+      {/* The source card is not above the search box: its height depends on the
+          status, which arrives after first paint and changes while the page is
+          open (sample note, sync progress, a sync error of any length), so above
+          the box it would push the box and the list down. */}
       <div className="relative">
         <Search size={13} aria-hidden className={PANEL_FIELD_ICON_CLASS} />
         <input
@@ -454,6 +456,7 @@ export function McpCatalogBrowser(): React.JSX.Element {
           )}
         </>
       )}
+      <CatalogSource {...status} />
       <McpCatalogInstallDialog
         install={install}
         onEnableSync={
