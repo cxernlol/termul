@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import type { ToolCall } from '@/lib/acp-api'
@@ -165,7 +165,11 @@ describe('subagents in the transcript', () => {
     seq = 10
     useOverlayStackStore.setState({ stack: [] })
   })
-  afterEach(() => {
+  afterEach(async () => {
+    cleanup()
+    // FocusScope restores focus on a 0ms timer. Drain that timer before the
+    // next file replaces this document.
+    await act(() => new Promise((resolve) => setTimeout(resolve, 0)))
     useAcpStore.setState({ toolCalls: {} })
   })
 

@@ -13,8 +13,8 @@ import { useCallback, useEffect, useState } from 'react'
 export function useForcedCollapse(
   initialCollapsed: boolean,
   force: boolean
-): { collapsed: boolean; toggle: () => void } {
-  const [collapsed, setCollapsed] = useState(initialCollapsed)
+): { collapsed: boolean; toggle: () => void; setCollapsed: (next: boolean) => void } {
+  const [collapsed, setCollapsedState] = useState(initialCollapsed)
   const [toggledDuringForce, setToggledDuringForce] = useState(false)
 
   // The mark only matters inside one force window.
@@ -25,9 +25,15 @@ export function useForcedCollapse(
   const effectiveCollapsed = force && !toggledDuringForce ? true : collapsed
 
   const toggle = useCallback(() => {
-    setCollapsed(!effectiveCollapsed)
+    setCollapsedState(!effectiveCollapsed)
     if (force) setToggledDuringForce(true)
   }, [effectiveCollapsed, force])
 
-  return { collapsed: effectiveCollapsed, toggle }
+  // Programmatic open/close (a finished plan, or a new plan). A forced
+  // collapse still wins until that window ends; the requested state shows after.
+  const setCollapsed = useCallback((next: boolean) => {
+    setCollapsedState(next)
+  }, [])
+
+  return { collapsed: effectiveCollapsed, toggle, setCollapsed }
 }

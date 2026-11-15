@@ -109,10 +109,10 @@ describe('ChatMarkdownCode', () => {
     }
   })
 
-  it('renders a termul-plan fence as a PlanPanel, not a code block', () => {
+  it('renders nothing for a termul-plan fence', () => {
     const plan = [{ content: 'Read the spec', status: 'pending' }]
     const json = JSON.stringify(plan)
-    const { getByText, queryByTestId } = render(
+    const { container, queryByTestId, queryByText } = render(
       withTooltip(
         <ChatMarkdownCode className="language-termul-plan" data-block node={{ value: json }}>
           {json}
@@ -120,22 +120,10 @@ describe('ChatMarkdownCode', () => {
       )
     )
 
-    expect(getByText('Read the spec')).toBeInTheDocument()
+    expect(queryByText('Read the spec')).toBeNull()
     expect(queryByTestId('code-block')).toBeNull()
-  })
-
-  it('shows a fallback card for a malformed termul-plan fence and logs it once', () => {
-    const malformed = (
-      <ChatMarkdownCode className="language-termul-plan" data-block node={{ value: '{bad' }}>
-        {'{bad'}
-      </ChatMarkdownCode>
-    )
-    const { getByText, queryByTestId, rerender } = render(withTooltip(malformed))
-    rerender(withTooltip(malformed))
-
-    expect(getByText('Plan snapshot unavailable')).toBeInTheDocument()
-    expect(queryByTestId('code-block')).toBeNull()
-    expect(logFrontendError).toHaveBeenCalledTimes(1)
+    expect(container).toBeEmptyDOMElement()
+    expect(logFrontendError).not.toHaveBeenCalled()
   })
 
   it('renders nothing for an empty plan fence', () => {
@@ -151,9 +139,9 @@ describe('ChatMarkdownCode', () => {
     expect(logFrontendError).not.toHaveBeenCalled()
   })
 
-  it('shows a streaming placeholder when the fence is incomplete', () => {
+  it('renders nothing for an incomplete termul-plan fence', () => {
     useIsCodeFenceIncompleteMock.mockReturnValue(true)
-    const { getByText, queryByTestId } = render(
+    const { container, queryByText } = render(
       withTooltip(
         <ChatMarkdownCode className="language-termul-plan" data-block node={{ value: 'partial' }}>
           {'partial'}
@@ -161,7 +149,7 @@ describe('ChatMarkdownCode', () => {
       )
     )
 
-    expect(getByText('Plan snapshot incomplete')).toBeInTheDocument()
-    expect(queryByTestId('code-block')).toBeNull()
+    expect(queryByText('Plan snapshot incomplete')).toBeNull()
+    expect(container).toBeEmptyDOMElement()
   })
 })

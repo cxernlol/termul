@@ -81,6 +81,7 @@ import { AcpConnectionCoordinator, type AcpRecovery } from '@/lib/acp-connection
 import { getAcpTransport, isTransientAcpTransportError } from '@/lib/acp-transport'
 import { splitReadOnlyGuard } from '@/lib/github-handoff/read-only-guard'
 import { logFrontendError } from '@/lib/log-api'
+import { foldRecoveredPlan, markPlanTool } from '@/lib/plan-session'
 import { wireBlocksToDisplay } from '@/lib/skills-wire-reverse'
 import { useChatStartPickStore } from '@/stores/chat-start-pick-store'
 import { getAgentChatSessionIdsInAllTrees, useWorkspaceStore } from '@/stores/workspace-store'
@@ -88,6 +89,7 @@ import type { QueuedPrompt } from '../prompt-queue-orchestration'
 import { attachAgentRosterWatch } from './agent-roster-watch'
 import {
   dropHiddenToolCalls,
+  dropPlanForSession,
   dropRecordKey,
   normalizeUserMessages,
   partitionTranscriptTurns,
@@ -299,6 +301,8 @@ async function installTransportRecovery(
   // cards instead of blanking the session's tool-call list.
   const recoveredToolCalls: ToolCall[] = []
   let recoveredCommands: { list: AvailableCommand[]; seq: number } | null = null
+  // Plan events in the snapshot. `null` means the snapshot never mentioned a plan.
+  const recoveredPlan = foldRecoveredPlan(recovery.events)
   let openRole: 'agent' | 'thought' | 'user' | null = null
   for (const event of recovery.events) {
     const payload = event.payload as Record<string, unknown>
@@ -395,14 +399,14 @@ async function installTransportRecovery(
       openRole = null
       const toolCall = payload.toolCall as ToolCall | undefined
       if (!toolCall || typeof toolCall.toolCallId !== 'string') continue
-      const stamped: ToolCall = {
+      const stamped: ToolCall = markPlanTool({
         ...withSubagentIngest(toolCall),
         ...applyTerminalStream(undefined, toolCall),
         timestamp: typeof toolCall.timestamp === 'number' ? toolCall.timestamp : Date.now(),
         // The envelope seq is the server record seq: timeline placement and
         // hidden-turn attribution match the recovered bubbles.
         seq: typeof toolCall.seq === 'number' ? toolCall.seq : event.seq
-      }
+      })
       // Upsert by toolCallId (mirrors `_onToolCall`): a re-emitted call keeps
       // its original timeline placement while the latest fields win.
       const idx = recoveredToolCalls.findIndex((t) => t.toolCallId === stamped.toolCallId)
@@ -424,13 +428,13 @@ async function installTransportRecovery(
       const idx = recoveredToolCalls.findIndex((t) => t.toolCallId === update.toolCallId)
       if (idx === -1) continue
       const prior = recoveredToolCalls[idx]
-      recoveredToolCalls[idx] = {
+      recoveredToolCalls[idx] = markPlanTool({
         ...prior,
         ...withSubagentIngest(update),
         ...applyTerminalStream(prior, update),
         timestamp: prior.timestamp,
         seq: prior.seq
-      }
+      })
     } else if (event.type === 'prompt_complete') {
       // Split boundary: the following chunk run opens a fresh bubble.
       openRole = null
@@ -494,6 +498,13 @@ async function installTransportRecovery(
             seq: recoveredCommands.seq
           })
         : {}),
+      ...(recoveredPlan === null
+        ? {}
+        : {
+            plans: recoveredPlan.length
+              ? { ...current.plans, [recovery.sessionId]: recoveredPlan }
+              : dropPlanForSession(current.plans, recovery.sessionId)
+          }),
       degradedRecoverySessions: dropRecordKey(current.degradedRecoverySessions, recovery.sessionId),
       sessions: session
         ? {

@@ -129,6 +129,46 @@ describe('buildTimeline', () => {
     expect(buildTimeline(messages, summaries)).toEqual(buildTimeline(messages, []))
   })
 
+  it('omits plan tool calls and does not treat a plan fence as reply text', () => {
+    const fence = '```termul-plan\n[{"content":"Ship it","status":"completed"}]\n```'
+    const messages = [
+      msg('u1', 'user', 10, 1, 'do the work'),
+      agentBlocks('a1', 30, 4, [
+        { type: 'text', text: 'Done.\n' },
+        { type: 'text', text: fence }
+      ])
+    ]
+    const tools: ToolCall[] = [
+      { toolCallId: 'plan-1', title: 'TodoWrite', status: 'completed', seq: 2, timestamp: 20 },
+      {
+        toolCallId: 'read-1',
+        title: 'Read',
+        kind: 'read',
+        status: 'completed',
+        seq: 3,
+        timestamp: 25
+      }
+    ]
+    const items = buildTimeline(messages, tools)
+    expect(items.map(timelineItemId)).toEqual(['u1', 'read-1', 'a1'])
+    const grouped = groupTurnActivity(items, false)
+    const reply = grouped.find((item) => item.kind === 'message' && item.message.id === 'a1')
+    expect(reply?.kind === 'message' ? reply.turnText : '').toContain('Done.')
+    expect(reply?.kind === 'message' ? reply.turnText : '').not.toContain('termul-plan')
+    expect(reply?.kind === 'message' ? reply.turnText : '').not.toContain('Ship it')
+  })
+
+  it('drops a historical message that is only a plan fence', () => {
+    const fence = '```termul-plan\n[{"content":"Only the plan","status":"pending"}]\n```'
+    const items = buildTimeline(
+      [msg('u1', 'user', 10, 1, 'go'), agentBlocks('a1', 20, 3, [{ type: 'text', text: fence }])],
+      [{ toolCallId: 'p1', planTool: true, status: 'completed', seq: 2, timestamp: 15 }]
+    )
+    const grouped = groupTurnActivity(items, false)
+    expect(grouped.some((item) => item.kind === 'message' && item.message.id === 'a1')).toBe(false)
+    expect(grouped.some((item) => item.kind === 'tool')).toBe(false)
+  })
+
   it('keeps a tool call whose restoredSummary flag is not strictly true', () => {
     const tools = [{ ...tool('t1', 10, 1), restoredSummary: false }]
     expect(buildTimeline([], tools).map(timelineItemId)).toEqual(['t1'])

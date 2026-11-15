@@ -772,11 +772,12 @@ from the plan store (logged `source: 'planRehydrate'`); the agent can still emit
 >   a `[termul: tool output truncated]` marker on live update (logged once per toolCallId
 >   without content; non-string values pass through).
 
-The `termul-plan` fence is rendered inline inside historical (non-streaming) messages by
-`TermulPlanRenderer` (`src/renderer/components/chat/ChatMarkdownPlanFence.tsx`) as a read-only
-`PlanPanel`. The live streaming turn shows the sticky `PlanPanel` pinned in `AgentChatPanel`
-instead — the inline renderer is gated to `!streaming` so an in-flight turn never renders a
-duplicate plan UI.
+The `termul-plan` fence is **not** rendered. The sticky `PlanPanel` in `AgentChatPanel` is the
+only plan UI, for the live turn and for a reopened chat. Display and copy paths strip the fence
+(`stripTermulPlanFences`). On `openHistorySession` the fence still restores `plans[sessionId]`.
+A finished turn's restored plan has no `in_progress` items: turn end, and a reopen of a finished
+turn, return those items to `pending`. See `docs/acp-agent-plan-compliance.md` for the new-plan
+vs in-place-update rule.
 
 ### `acp:usage_update`
 

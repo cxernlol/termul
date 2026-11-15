@@ -16,7 +16,6 @@ import { logFrontendError } from '@/lib/log-api'
 import { syntaxShikiPair } from '@/lib/themes/syntax-shiki'
 import { cn } from '@/lib/utils'
 import { useColorTheme } from '@/stores/app-settings-store'
-import { TermulPlanRenderer } from './ChatMarkdownPlanFence'
 import { ChatImageGallery, ChatMedia, MediaAltChip } from './ChatMedia'
 import { chatCodePlugin } from './chat-code-plugin'
 import { ChatMarkdownCode } from './chat-markdown-code'
@@ -62,17 +61,10 @@ const CODE_PLUGIN = chatCodePlugin
 /** Live Mermaid diagram rendering for ```mermaid fences. */
 const MERMAID_PLUGIN = mermaidPlugin
 /**
- * Base plugin set used while the agent message is still streaming. The
- * `termul-plan` renderer is deliberately absent here so an in-flight turn
- * never renders a duplicate inline plan (the live sticky `PlanPanel` covers
- * the streaming turn). Historical (non-streaming) messages swap in
- * `STREAMDOWN_PLUGINS_WITH_PLAN` via the `plugins` prop on `AgentProse`.
+ * Plan fences are never rendered in the transcript. The sticky `PlanPanel`
+ * is the only plan UI, for the live turn and for a reopened chat.
  */
 const STREAMDOWN_PLUGINS = { code: CODE_PLUGIN, mermaid: MERMAID_PLUGIN }
-const STREAMDOWN_PLUGINS_WITH_PLAN = {
-  ...STREAMDOWN_PLUGINS,
-  renderers: [{ language: 'termul-plan', component: TermulPlanRenderer }]
-}
 
 // Copy on code blocks, plus download (save an agent-generated file); no line
 // numbers (chat snippets are short). Mermaid keeps its interactive controls.
@@ -339,11 +331,7 @@ export function AgentProse({
         caret={streaming ? 'block' : undefined}
         animated={reduced ? false : STREAMDOWN_ANIMATED}
         parseIncompleteMarkdown={streaming}
-        // The `termul-plan` renderer is attached only to historical
-        // (non-streaming) messages so an in-flight turn never renders a
-        // duplicate inline plan — the live sticky `PlanPanel` owns the
-        // streaming turn.
-        plugins={streaming ? STREAMDOWN_PLUGINS : STREAMDOWN_PLUGINS_WITH_PLAN}
+        plugins={STREAMDOWN_PLUGINS}
         remarkPlugins={filePathContext ? FILE_PATH_REMARK_PLUGINS : MEDIA_REMARK_PLUGINS}
         allowedTags={STREAMDOWN_ALLOWED_TAGS}
         parseMarkdownIntoBlocksFn={parseChatMarkdownBlocks}

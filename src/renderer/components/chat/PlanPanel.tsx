@@ -1,8 +1,9 @@
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
-import { useId } from 'react'
+import { useEffect, useId, useRef } from 'react'
 import { CheckCircle2, ChevronDown, Circle, ListChecks } from '@/components/icons'
 import { Spinner } from '@/components/ui/spinner'
 import type { PlanEntry } from '@/lib/acp-api'
+import { isNewPlanList, isSettledPlan, planEntryIdentity, planEntryKeys } from '@/lib/plan-session'
 import { cn } from '@/lib/utils'
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '../ui/accordion'
 import { CollapseExpandMotion } from '../ui/collapse-expand-motion'
@@ -77,11 +78,6 @@ function StatusIcon({ status }: { status?: string }): React.JSX.Element {
   )
 }
 
-function getPlanEntryIdentity(entry: PlanEntry): string {
-  const id = entry.id
-  return typeof id === 'string' && id.trim() ? id : entry.content
-}
-
 function PriorityBadge({ priority }: { priority?: string }): React.JSX.Element {
   const key = priority && PRIORITY_LABEL[priority] ? priority : 'low'
   return (
@@ -120,13 +116,28 @@ export function PlanPanel({
   forceCollapsed = false
 }: PlanPanelProps): React.JSX.Element {
   const reduced = useReducedMotion() ?? false
-  // Collapse state is component-local: it survives `entries` changes so
-  // mid-turn `acp:plan_update` events keep the user's collapse choice. Reset
-  // only on unmount or session switch (the panel is remounted per session).
-  const { collapsed, toggle } = useForcedCollapse(defaultCollapsed, forceCollapsed)
-  // Unique id per PlanPanel instance so the sticky panel and an inline
-  // historical renderer never collide on `id="plan-panel-body"`.
+  // Collapse state is component-local. An in-place update keeps the user's
+  // choice. A finished plan closes itself. A new plan (no shared entry with
+  // the previous list) opens again. Reset on unmount or session switch (the
+  // panel is remounted per session).
+  const startCollapsed = defaultCollapsed || isSettledPlan(entries)
+  const { collapsed, toggle, setCollapsed } = useForcedCollapse(startCollapsed, forceCollapsed)
   const bodyId = useId()
+  const previousList = useRef<{ ids: string[]; settled: boolean } | null>(null)
+
+  useEffect(() => {
+    const ids = entries.flatMap(planEntryKeys)
+    const settled = isSettledPlan(entries)
+    const previous = previousList.current
+    if (ids.length > 0) previousList.current = { ids, settled }
+    if (!previous || ids.length === 0 || previous.ids.length === 0) return
+    if (isNewPlanList(previous.ids, ids)) {
+      // A new plan opens, unless it is already finished. A finished plan stays closed.
+      setCollapsed(settled)
+      return
+    }
+    if (settled && !previous.settled) setCollapsed(true)
+  }, [entries, setCollapsed])
   const completed = entries.filter((e) => e.status === 'completed').length
   const inProgressCount = entries.filter((e) => e.status === 'in_progress').length
   const hasInProgress = inProgressCount > 0
@@ -190,7 +201,7 @@ export function PlanPanel({
                   <Accordion type="single" collapsible className="flex flex-col px-2 pb-1.5 pt-0.5">
                     {entries.map((entry, i) => {
                       const detail = getPlanDetail(entry)
-                      const entryValue = `entry-${getPlanEntryIdentity(entry)}`
+                      const entryValue = `entry-${planEntryIdentity(entry)}`
                       const motionProps = {
                         initial: reduced ? { opacity: 0 } : { opacity: 0, y: 6 },
                         animate: reduced ? { opacity: 1 } : { opacity: 1, y: 0 },

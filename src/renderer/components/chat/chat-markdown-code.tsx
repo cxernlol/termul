@@ -15,7 +15,6 @@ import { IconActionButton } from '@/components/ui/icon-action-button'
 import { IconSwap } from '@/components/ui/icon-swap'
 import { copyText } from '@/lib/copy-text'
 import { cn } from '@/lib/utils'
-import { TermulPlanRenderer } from './ChatMarkdownPlanFence'
 
 const MERMAID_PLUGIN = mermaidPlugin
 const LANGUAGE_RE = /language-([^\s]+)/
@@ -133,7 +132,7 @@ export function ChatMarkdownCode({
   children,
   node,
   ...props
-}: ChatMarkdownCodeProps): React.JSX.Element {
+}: ChatMarkdownCodeProps): React.JSX.Element | null {
   const { lineNumbers } = useContext(StreamdownContext)
   const isIncomplete = useIsCodeFenceIncomplete()
   const isInline = !('data-block' in props)
@@ -173,19 +172,9 @@ export function ChatMarkdownCode({
     )
   }
 
-  // termul-plan fences render as an inline read-only PlanPanel, not a code
-  // block. This override replaces Streamdown's default `code` component (the
-  // only one that consults the `renderers` plugin config), so the lookup must
-  // happen here. `useIsCodeFenceIncomplete` is the public per-block hook that
-  // reports whether THIS fence is still being streamed — the same signal the
-  // default component passes to custom renderers.
-  if (language === 'termul-plan') {
-    return (
-      <Suspense fallback={null}>
-        <TermulPlanRenderer code={code} isIncomplete={isIncomplete} language={language} />
-      </Suspense>
-    )
-  }
+  // A persisted plan snapshot is not a code block and not a second plan card.
+  // Display text strips the fence; this hides one that still reaches markdown.
+  if (language === 'termul-plan') return null
 
   const blockLanguage = language || 'text'
   const deferHighlight = isIncomplete && code.length > OPEN_FENCE_HIGHLIGHT_MAX_CHARS

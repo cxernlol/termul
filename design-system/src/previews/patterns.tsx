@@ -6,9 +6,9 @@ import {
   AlertTriangle,
   Check,
   Copy,
+  Edit,
   FolderOpen,
   Info,
-  Pencil,
   Plus,
   Terminal,
   Trash2,
@@ -318,7 +318,7 @@ export function DropdownMenuPreview() {
               <ContextMenuShortcut>Ctrl+Shift+C</ContextMenuShortcut>
             </ContextMenuItem>
             <ContextMenuItem>
-              <Pencil aria-hidden />
+              <Edit aria-hidden />
               Rename
             </ContextMenuItem>
             <ContextMenuSeparator />

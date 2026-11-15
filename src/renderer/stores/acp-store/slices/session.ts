@@ -10,6 +10,7 @@ import {
   type AgentId,
   acpApi,
   type ContentBlock,
+  type PlanEntry,
   type SessionId,
   type SessionInfo,
   type SessionReopenOutcome,
@@ -36,6 +37,12 @@ import { CODEX_CLI_SIGNED_OUT_MESSAGE } from '@/lib/agents/codex-cli-auth'
 import { deleteSessionTempFiles } from '@/lib/attachment-temp-cleanup'
 import { retryWireBlocks } from '@/lib/composer/retry-wire'
 import { logFrontendError } from '@/lib/log-api'
+import {
+  planEventHasList,
+  plansAfterToolCall,
+  settleRunningPlan,
+  withDurablePlanInput
+} from '@/lib/plan-session'
 import { isTauriContext } from '@/lib/tauri-runtime'
 import { useProjectStore } from '@/stores/project-store'
 import {
@@ -963,22 +970,18 @@ async function openHistorySessionInner(
   onTranscriptInstalled()
 
   // Rehydrate the sticky plan from the latest assistant message's
-  // `termul-plan` fence (single source of truth). Scans the payload messages
-  // (not the trimmed live window) so the fence is found even when the
-  // trimming boundary lands on the snapshot carrier. Skip silently when a
-  // live `plans[id]` already exists from an in-flight turn — the live plan
-  // owns the active turn; the fence only rehydrates a closed/reopened chat.
+  // `termul-plan` fence. Scans the payload messages (not the trimmed live
+  // window) so the fence is found even when the trimming boundary lands on
+  // the snapshot carrier. Skip silently when a live `plans[id]` already
+  // exists from an in-flight turn — the live plan owns the active turn.
   if (!get().plans[id]) {
-    // Scan the INSTALLED (hidden-filtered) transcript: a fence inside a hidden
-    // greeting turn must not rehydrate a plan whose source never renders.
     const rehydrated = scanPlanFenceFromMessages(installed.messages)
     if (rehydrated && rehydrated.length > 0) {
-      set((s) => ({ plans: { ...s.plans, [id]: rehydrated } }))
+      // A finished turn must not come back with a spinner. A turn that is
+      // still running keeps `in_progress`.
+      const restored = turnLive ? rehydrated : (settleRunningPlan(rehydrated) ?? rehydrated)
+      set((s) => ({ plans: { ...s.plans, [id]: restored } }))
     } else {
-      // Detect a malformed fence (fence present but JSON unparseable / not an
-      // array / empty after coercion) and warn so a corrupted snapshot is
-      // visible without crashing the rehydrate. Leave `plans[id]` empty so
-      // the agent can still emit a fresh plan.
       const lastAgent = [...installed.messages].reverse().find((m) => m.role === 'agent')
       const hasMalformedFence =
         lastAgent?.blocks.some(
@@ -990,6 +993,12 @@ async function openHistorySessionInner(
           source: 'planRehydrate',
           message: `Malformed termul-plan fence in history session ${id}; leaving plans empty`
         })
+      } else {
+        const fromTools = replayDurablePlan(get().toolCalls[id])
+        if (fromTools && fromTools.length > 0) {
+          const restored = turnLive ? fromTools : (settleRunningPlan(fromTools) ?? fromTools)
+          set((s) => ({ plans: { ...s.plans, [id]: restored } }))
+        }
       }
     }
   }
@@ -1146,16 +1155,7 @@ async function openHistorySessionInner(
       source: 'acp.openHistorySession',
       message: `Session ${id} persisted a live turn but no owning agent is connected; clearing the dead turn and reopening normally`
     })
-    set((s) => {
-      const session = s.sessions[id]
-      if (!session) return {}
-      return {
-        sessions: {
-          ...s.sessions,
-          [id]: { ...session, activeTurn: false, openTurnId: null }
-        }
-      }
-    })
+    set((s) => clearDeadTurn(s, id))
   }
   if (options?.forceNewAgent) {
     // A reload must not keep the previous turn's spinner. The button is
@@ -1163,12 +1163,7 @@ async function openHistorySessionInner(
     set((s) => {
       const session = s.sessions[id]
       if (!session || (!session.activeTurn && !session.openTurnId)) return {}
-      return {
-        sessions: {
-          ...s.sessions,
-          [id]: { ...session, activeTurn: false, openTurnId: null }
-        }
-      }
+      return clearDeadTurn(s, id)
     })
   }
   if (!turnOwnerConnected && meta.agentConfigId && meta.cwd) {
@@ -1253,16 +1248,7 @@ async function openHistorySessionInner(
       source: 'acp.openHistorySession',
       message: `Session ${id} turn owner ${liveAgentId} disconnected during reopen; clearing the dead turn and reopening normally`
     })
-    set((s) => {
-      const session = s.sessions[id]
-      if (!session) return {}
-      return {
-        sessions: {
-          ...s.sessions,
-          [id]: { ...session, activeTurn: false, openTurnId: null }
-        }
-      }
-    })
+    set((s) => clearDeadTurn(s, id))
   }
 
   const connected = get().agentStatus[liveAgentId] === 'connected'
@@ -1706,6 +1692,36 @@ async function applyIndexEntries(
     indexedSessionIds: new Set(merged.map((e) => e.id))
   })
   await recoverDroppedLaunchChats(merged)
+}
+
+/** Replay durable plan tool records, in order. `null` when none carry a list. */
+function replayDurablePlan(calls: ToolCall[] | undefined): PlanEntry[] | null {
+  if (!calls || calls.length === 0) return null
+  let entries: PlanEntry[] | undefined
+  let seen = false
+  for (const call of calls) {
+    const tool = withDurablePlanInput(call)
+    if (!planEventHasList(tool)) continue
+    const next = plansAfterToolCall({ session: entries ?? [] }, 'session', tool)
+    if (!next) continue
+    entries = next.plans.session ?? []
+    seen = true
+  }
+  return seen ? (entries ?? []) : null
+}
+
+/** The turn cannot finish. Stop the spinner and any running plan item. */
+function clearDeadTurn(state: AcpState, id: SessionId): Partial<AcpState> {
+  const session = state.sessions[id]
+  if (!session) return {}
+  const plan = settleRunningPlan(state.plans[id])
+  return {
+    sessions: {
+      ...state.sessions,
+      [id]: { ...session, activeTurn: false, openTurnId: null }
+    },
+    ...(plan && plan !== state.plans[id] ? { plans: { ...state.plans, [id]: plan } } : {})
+  }
 }
 
 export const createSessionSlice: StateCreator<AcpState, [], [], SessionSliceState> = (

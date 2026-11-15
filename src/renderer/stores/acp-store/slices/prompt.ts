@@ -28,6 +28,7 @@ import { bumpTurnEndNotice } from '@/lib/agent-chat-notify'
 import { parseBrowserConsentTicket } from '@/lib/browser-consent-api'
 import { COMMAND_RESEND_DELAYS_MS, settleCommand } from '@/lib/command-engine'
 import { logFrontendError } from '@/lib/log-api'
+import { settleRunningPlan } from '@/lib/plan-session'
 import { randomUUID } from '@/lib/uuid'
 import { isCodexAccountRestarting } from '@/stores/codex-account-restart'
 import { readOnlyGuardOfSession } from '@/stores/github-chat-links-store'
@@ -1513,14 +1514,30 @@ export const createPromptSlice: StateCreator<AcpState, [], [], PromptSliceState>
     // consistent before the turn status flips.
     flushCoalescedSync()
     set((s) => {
+      // The turn is over, so nothing is still running. Settle before the
+      // snapshot so a reload restores pending items, not a spinner.
+      const livePlan = s.plans[e.sessionId]
+      const settledPlan = settleRunningPlan(livePlan)
+      if (settledPlan !== livePlan) {
+        const stopped = (livePlan ?? []).filter((entry) => entry.status === 'in_progress').length
+        void logFrontendError({
+          level: 'info',
+          source: 'planSession',
+          message: `Turn ended (${e.stopReason}) for session ${e.sessionId}; ${stopped} in-progress plan item(s) returned to pending`
+        })
+      }
+      const plans =
+        settledPlan && settledPlan !== livePlan
+          ? { ...s.plans, [e.sessionId]: settledPlan }
+          : s.plans
       // Snapshot the live plan onto the just-finished assistant message's
-      // `blocks` BEFORE `finalizeStreaming` so historical turns retain their
-      // plan-of-record (the fence is the rehydrate source of truth). The
-      // append is a pure data op; `finalizeStreaming` only flips the
-      // `streaming` flag, so the fence survives the finalize pass.
+      // `blocks` BEFORE `finalizeStreaming` so a reopened chat can restore the
+      // panel. The fence is not rendered. The append is a pure data op;
+      // `finalizeStreaming` only flips the `streaming` flag, so the fence
+      // survives the finalize pass.
       let withSnapshot = s.messages
       try {
-        withSnapshot = appendPlanSnapshot(s.messages, e.sessionId, s.plans[e.sessionId])
+        withSnapshot = appendPlanSnapshot(s.messages, e.sessionId, settledPlan)
       } catch (error) {
         // Impossible in practice (pure JS over a PlanEntry[]), but a bad
         // entry could throw inside JSON.stringify. Log + continue turn-end
@@ -1541,9 +1558,12 @@ export const createPromptSlice: StateCreator<AcpState, [], [], PromptSliceState>
         s.pendingElicitations ?? {},
         e.sessionId
       )
-      if (!session) return { messages, pendingPermissions, pendingQuestions, pendingElicitations }
+      if (!session) {
+        return { messages, plans, pendingPermissions, pendingQuestions, pendingElicitations }
+      }
       return {
         messages,
+        plans,
         pendingPermissions,
         pendingQuestions,
         pendingElicitations,

@@ -29,6 +29,7 @@ import {
 } from '@/lib/acp-history-persistence'
 import { splitReadOnlyGuard } from '@/lib/github-handoff/read-only-guard'
 import { logFrontendError } from '@/lib/log-api'
+import { markPlanTool, planEventHasList, plansAfterToolCall } from '@/lib/plan-session'
 import { wireBlocksToDisplay } from '@/lib/skills-wire-reverse'
 import { forgetComposerSession } from '../composer-options'
 import {
@@ -958,6 +959,28 @@ type TranscriptSliceState = Pick<
   | '_onUsageUpdate'
 >
 
+/** Fold a plan tool into `plans` and log a replacement or a clear. */
+function planPatch(
+  plans: AcpState['plans'],
+  sessionId: SessionId,
+  tool: ToolCall
+): Partial<AcpState> {
+  const change = plansAfterToolCall(plans, sessionId, tool)
+  if (!change) return {}
+  if (change.kind === 'new' || change.kind === 'clear') {
+    const count = change.plans[sessionId]?.length ?? 0
+    void logFrontendError({
+      level: 'info',
+      source: 'planSession',
+      message:
+        change.kind === 'clear'
+          ? `Cleared the plan for session ${sessionId} from a plan tool`
+          : `Replaced the plan for session ${sessionId} from a plan tool (${count} entries)`
+    })
+  }
+  return { plans: change.plans }
+}
+
 export const createTranscriptSlice: StateCreator<AcpState, [], [], TranscriptSliceState> = (
   set,
   get
@@ -1478,6 +1501,7 @@ export const createTranscriptSlice: StateCreator<AcpState, [], [], TranscriptSli
       // Dropped entirely: even the structural subset exceeds the live bound
       // (the agent-sent toolCallId/kind/status alone is oversized).
       if (!stamped) return {}
+      const marked = markPlanTool(stamped)
       // Upsert by toolCallId (replace-or-append) so reconnect-replay overlap
       // can't double-render a tool card — the latest call wins. The transport's
       // `seq <= last` drop is the seq-level guard; this upsert is the
@@ -1488,9 +1512,10 @@ export const createTranscriptSlice: StateCreator<AcpState, [], [], TranscriptSli
       const idx = list.findIndex((t) => t.toolCallId === e.toolCall.toolCallId)
       if (idx === -1) {
         return {
+          ...(planEventHasList(e.toolCall) ? planPatch(s.plans, e.sessionId, marked) : {}),
           toolCalls: {
             ...s.toolCalls,
-            [e.sessionId]: [...list, stamped]
+            [e.sessionId]: [...list, marked]
           }
         }
       }
@@ -1502,17 +1527,21 @@ export const createTranscriptSlice: StateCreator<AcpState, [], [], TranscriptSli
       // past the live bound.
       const merged = clampLiveToolCallFields(e.sessionId, {
         ...list[idx],
-        ...stamped,
+        ...marked,
         // A live event turns a restored summary into a real timeline card.
         restoredSummary: undefined,
         // A legacy record without ordering stamps adopts the live ones.
-        timestamp: list[idx].timestamp ?? stamped.timestamp,
-        seq: list[idx].seq ?? stamped.seq
+        timestamp: list[idx].timestamp ?? marked.timestamp,
+        seq: list[idx].seq ?? marked.seq
       })
       if (!merged) return {}
+      const stored = markPlanTool(merged)
       const next = [...list]
-      next[idx] = merged
+      next[idx] = stored
       return {
+        ...(planEventHasList(e.toolCall)
+          ? planPatch(s.plans, e.sessionId, { ...stored, rawInput: e.toolCall.rawInput })
+          : {}),
         toolCalls: { ...s.toolCalls, [e.sessionId]: next }
       }
     }
@@ -1559,12 +1588,19 @@ export const createTranscriptSlice: StateCreator<AcpState, [], [], TranscriptSli
       // An update without `locations` keeps the stored ones: they were
       // bounded when stored, and a file-change summary may claim more paths
       // than the live bound (every file of a multi-file edit).
-      const next = [...list]
-      next[idx] =
+      const stored = markPlanTool(
         clampedUpdate.locations === undefined && list[idx].locations !== undefined
           ? { ...merged, locations: list[idx].locations }
           : merged
-      return { toolCalls: { ...s.toolCalls, [e.sessionId]: next } }
+      )
+      const next = [...list]
+      next[idx] = stored
+      return {
+        ...(planEventHasList(e.update)
+          ? planPatch(s.plans, e.sessionId, { ...stored, rawInput: e.update.rawInput })
+          : {}),
+        toolCalls: { ...s.toolCalls, [e.sessionId]: next }
+      }
     }
     if (useCoalesce) {
       coalesceSet(e.sessionId, apply)

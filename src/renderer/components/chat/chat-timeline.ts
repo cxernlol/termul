@@ -1,5 +1,6 @@
 import type { ToolCall } from '@/lib/acp-api'
 import type { AgentSwitchRecord } from '@/lib/acp-history-persistence'
+import { isPlanToolCall, stripTermulPlanFences } from '@/lib/plan-session'
 import type { AgentReloadMark, ChatMessage } from '@/stores/acp-store'
 import { isSubagentCall, type ParentTurn } from './tool-call-summary'
 
@@ -87,6 +88,8 @@ export function buildTimeline(
     // only — they never render as timeline cards, so a restored chat looks
     // exactly as it did before summaries were materialized.
     if (tool.restoredSummary === true) return
+    // The plan lives in the sticky panel. The tool call must not also be a card.
+    if (isPlanToolCall(tool)) return
     // A subagent's own tool calls show inside its dispatch card's details.
     if (tool.parentToolCallId && callIds.has(tool.parentToolCallId)) return
     stamped.push({
@@ -176,18 +179,21 @@ const agentTextCache = new WeakMap<ChatMessage, string>()
 function agentText(message: ChatMessage): string {
   const cached = agentTextCache.get(message)
   if (cached !== undefined) return cached
-  const text = message.blocks
-    .filter((b) => b.type === 'text')
-    .map((b) => b.text ?? '')
-    .join('')
+  const text = stripTermulPlanFences(
+    message.blocks
+      .filter((b) => b.type === 'text')
+      .map((b) => b.text ?? '')
+      .join('')
+  )
   agentTextCache.set(message, text)
   return text
 }
 
 function hasSubstantiveText(message: ChatMessage): boolean {
-  return message.blocks.some(
-    (block) => block.type === 'text' && (block.text ?? '').trim().length > 0
-  )
+  return message.blocks.some((block) => {
+    if (block.type !== 'text') return false
+    return stripTermulPlanFences(block.text ?? '').trim().length > 0
+  })
 }
 
 function hasMediaContent(message: ChatMessage): boolean {

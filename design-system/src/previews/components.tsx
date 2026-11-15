@@ -4,9 +4,9 @@ import {
   Check,
   ChevronDown,
   Copy,
+  Edit,
   GitBranch,
   MoreHorizontal,
-  Pencil,
   Plus,
   RefreshCw,
   Search,
@@ -434,7 +434,7 @@ export function WriteGates() {
       <Row label="gated">
         <WriteGate gated>
           <Button variant="outline" disabled>
-            <Pencil aria-hidden />
+            <Edit aria-hidden />
             Edit file
           </Button>
         </WriteGate>
@@ -442,7 +442,7 @@ export function WriteGates() {
       <Row label="ungated">
         <WriteGate gated={false}>
           <Button variant="outline">
-            <Pencil aria-hidden />
+            <Edit aria-hidden />
             Edit file
           </Button>
         </WriteGate>
@@ -669,7 +669,7 @@ export function IconActions() {
             <Copy aria-hidden />
           </IconActionButton>
           <IconActionButton label="Edit" onClick={() => undefined}>
-            <Pencil aria-hidden />
+            <Edit aria-hidden />
           </IconActionButton>
           <IconActionButton label="Delete" onClick={() => undefined}>
             <Trash2 aria-hidden />

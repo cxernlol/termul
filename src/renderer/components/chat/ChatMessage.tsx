@@ -15,6 +15,7 @@ import {
 import type { TermulToolEntry } from '@/lib/composer/termul-tools'
 import { parseToolSegments } from '@/lib/composer/tool-tokens'
 import type { FilePathResolutionContext } from '@/lib/file-path-links'
+import { stripTermulPlanFences } from '@/lib/plan-session'
 import {
   isFolderTokenPath,
   parseCommandSegments,
@@ -50,12 +51,13 @@ import { ToolChip } from './ToolChip'
 // the ~800-line limit. Re-exported so existing importers keep their paths.
 export { AgentProse, TermulFilePathButton, TermulMarkdownMedia } from './chat-agent-prose'
 
-/** Concatenate the text of all text blocks. */
-function blocksToText(blocks: ContentBlock[]): string {
-  return blocks
+/** Concatenate text blocks. Agent snapshots are removed. User text stays. */
+function blocksToText(blocks: ContentBlock[], role: ChatMessageType['role']): string {
+  const text = blocks
     .filter((b) => b.type === 'text')
     .map((b) => b.text ?? '')
     .join('')
+  return role === 'agent' ? stripTermulPlanFences(text) : text
 }
 
 function UserMessageText({ text }: { text: string }): React.JSX.Element {
@@ -344,7 +346,7 @@ function ChatMessageComponent({
   const isMobileShell = useMobileWebShell()
 
   const isUser = message.role === 'user'
-  const text = blocksToText(message.blocks)
+  const text = blocksToText(message.blocks, message.role)
   const hasMedia = message.blocks.some((block) => block.type !== 'text')
   // Only messages that render `MessageActions` take part in the mobile actions
   // model: every user message, and an agent message only at its settled turn

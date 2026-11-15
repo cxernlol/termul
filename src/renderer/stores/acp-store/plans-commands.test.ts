@@ -145,7 +145,7 @@ import { invoke } from '@tauri-apps/api/core'
 import type { PlanEntry } from '@/lib/acp-api'
 import { getCachedSessionPayload, setCachedSessionPayload } from '@/lib/acp-history-persistence'
 import { logFrontendError } from '@/lib/log-api'
-import { type ChatMessage, useAcpStore } from '@/stores/acp-store'
+import { _flushCoalescedForTesting, type ChatMessage, useAcpStore } from '@/stores/acp-store'
 import { FRESH, seedSession } from './testkit'
 
 describe('ACP agent plan store', () => {
@@ -286,7 +286,11 @@ describe('ACP agent plan store', () => {
     const json = (fenceBlock!.text as string).replace(/^```termul-plan\n/, '').replace(/\n```$/, '')
     expect(JSON.parse(json)).toEqual([
       { content: 'Read AC file', status: 'completed', priority: 'high' },
-      { content: 'Fix bug', status: 'in_progress', priority: 'high' }
+      { content: 'Fix bug', status: 'pending', priority: 'high' }
+    ])
+    expect(useAcpStore.getState().plans['sess-1']).toEqual([
+      { content: 'Read AC file', status: 'completed', priority: 'high' },
+      { content: 'Fix bug', status: 'pending', priority: 'high' }
     ])
     // streaming flag flipped by finalizeStreaming
     expect(lastAgent!.streaming).toBe(false)
@@ -406,9 +410,7 @@ describe('ACP agent plan store', () => {
     // Exactly one fence — the prior one was replaced, not appended
     expect(fences).toHaveLength(1)
     const json = (fences[0]!.text as string).replace(/^```termul-plan\n/, '').replace(/\n```$/, '')
-    expect(JSON.parse(json)).toEqual([
-      { content: 'new plan', status: 'in_progress', priority: 'high' }
-    ])
+    expect(JSON.parse(json)).toEqual([{ content: 'new plan', status: 'pending', priority: 'high' }])
   })
 
   it('_onPromptComplete survives a JSON.stringify failure in appendPlanSnapshot without blocking turn-end (logs source: planSnapshot)', () => {
@@ -571,7 +573,10 @@ describe('ACP agent plan store', () => {
       ]
     })
     await useAcpStore.getState().openHistorySession('sess-rehydrate')
-    expect(useAcpStore.getState().plans['sess-rehydrate']).toEqual(plan)
+    expect(useAcpStore.getState().plans['sess-rehydrate']).toEqual([
+      { content: 'historical task', status: 'completed', priority: 'high' },
+      { content: 'next step', status: 'pending', priority: 'medium' }
+    ])
   })
 
   it('openHistorySession leaves plans[id] empty and warns when the fence JSON is malformed', async () => {
@@ -686,7 +691,229 @@ describe('ACP agent plan store', () => {
     })
     await useAcpStore.getState().openHistorySession('sess-twofence')
     expect(useAcpStore.getState().plans['sess-twofence']).toEqual([
-      { content: 'second', status: 'in_progress' }
+      { content: 'second', status: 'pending' }
+    ])
+  })
+
+  it('keeps one plan per session: a disjoint ACP list replaces, an overlap updates in place', () => {
+    seedSession('sess-1', 'agent-1', false)
+    useAcpStore.setState((s) => ({
+      sessions: {
+        ...s.sessions,
+        'sess-2': {
+          ...s.sessions['sess-1']!,
+          id: 'sess-2',
+          agentId: 'agent-2'
+        }
+      }
+    }))
+    useAcpStore.getState()._onPlanUpdate({
+      agentId: 'agent-1',
+      sessionId: 'sess-1',
+      plan: {
+        entries: [
+          { content: 'First', status: 'pending' },
+          { content: 'Second', status: 'in_progress' }
+        ]
+      }
+    })
+    useAcpStore.getState()._onPlanUpdate({
+      agentId: 'agent-1',
+      sessionId: 'sess-1',
+      plan: {
+        entries: [
+          { content: 'First', status: 'completed' },
+          { content: 'Second', status: 'in_progress' }
+        ]
+      }
+    })
+    expect(useAcpStore.getState().plans['sess-1']).toEqual([
+      { content: 'First', status: 'completed' },
+      { content: 'Second', status: 'in_progress' }
+    ])
+
+    useAcpStore.getState()._onPlanUpdate({
+      agentId: 'agent-1',
+      sessionId: 'sess-1',
+      plan: { entries: [{ content: 'Brand new', status: 'pending' }] }
+    })
+    expect(useAcpStore.getState().plans['sess-1']).toEqual([
+      { content: 'Brand new', status: 'pending' }
+    ])
+    expect(useAcpStore.getState().plans['sess-2']).toBeUndefined()
+  })
+
+  it('merges a Claude TodoWrite and replaces when merge is false', () => {
+    seedSession('sess-1', 'agent-1', true)
+    useAcpStore.getState()._onToolCall({
+      agentId: 'agent-1',
+      sessionId: 'sess-1',
+      toolCall: {
+        toolCallId: 'todo-1',
+        title: 'TodoWrite',
+        status: 'completed',
+        rawInput: {
+          merge: false,
+          todos: [
+            { id: 'a', content: 'Read the file', status: 'pending' },
+            { id: 'b', content: 'Edit the file', status: 'pending' }
+          ]
+        }
+      }
+    })
+    useAcpStore.getState()._onToolCallUpdate({
+      agentId: 'agent-1',
+      sessionId: 'sess-1',
+      update: {
+        toolCallId: 'todo-1',
+        title: 'TodoWrite',
+        status: 'completed',
+        rawInput: {
+          merge: true,
+          todos: [{ id: 'a', content: 'Read the file', status: 'completed' }]
+        }
+      }
+    })
+    _flushCoalescedForTesting()
+    expect(useAcpStore.getState().plans['sess-1']).toEqual([
+      { id: 'a', content: 'Read the file', status: 'completed' },
+      { id: 'b', content: 'Edit the file', status: 'pending' }
+    ])
+    expect(useAcpStore.getState().toolCalls['sess-1']?.[0]?.planTool).toBe(true)
+
+    useAcpStore.getState()._onToolCall({
+      agentId: 'agent-1',
+      sessionId: 'sess-1',
+      toolCall: {
+        toolCallId: 'todo-2',
+        _meta: { claudeCode: { toolName: 'TodoWrite' } },
+        status: 'completed',
+        rawInput: {
+          merge: false,
+          todos: [{ id: 'c', content: 'Ship it', status: 'in_progress' }]
+        }
+      }
+    })
+    _flushCoalescedForTesting()
+    expect(useAcpStore.getState().plans['sess-1']).toEqual([
+      { id: 'c', content: 'Ship it', status: 'in_progress' }
+    ])
+  })
+
+  it('treats a Codex update_plan as a full list and ignores an empty in-flight call', () => {
+    seedSession('sess-1', 'agent-1', true)
+    useAcpStore.getState()._onPlanUpdate({
+      agentId: 'agent-1',
+      sessionId: 'sess-1',
+      plan: { entries: [{ content: 'Keep me', status: 'pending' }] }
+    })
+    useAcpStore.getState()._onToolCall({
+      agentId: 'agent-1',
+      sessionId: 'sess-1',
+      toolCall: {
+        toolCallId: 'codex-1',
+        title: 'update_plan',
+        status: 'in_progress',
+        rawInput: { plan: [] }
+      }
+    })
+    _flushCoalescedForTesting()
+    expect(useAcpStore.getState().plans['sess-1']).toEqual([
+      { content: 'Keep me', status: 'pending' }
+    ])
+
+    useAcpStore.getState()._onToolCallUpdate({
+      agentId: 'agent-1',
+      sessionId: 'sess-1',
+      update: {
+        toolCallId: 'codex-1',
+        title: 'update_plan',
+        status: 'completed',
+        rawInput: {
+          plan: [
+            { step: 'Keep me', status: 'completed' },
+            { step: 'Run tests', status: 'in_progress' }
+          ]
+        }
+      }
+    })
+    _flushCoalescedForTesting()
+    expect(useAcpStore.getState().plans['sess-1']).toEqual([
+      { content: 'Keep me', status: 'completed' },
+      { content: 'Run tests', status: 'in_progress' }
+    ])
+  })
+
+  it('returns in-progress items to pending when the turn is cancelled', () => {
+    seedSession('sess-1', 'agent-1', true)
+    useAcpStore.setState((s) => ({
+      messages: {
+        ...s.messages,
+        'sess-1': [
+          {
+            id: 'm-agent',
+            role: 'agent',
+            blocks: [{ type: 'text', text: 'stopping' }],
+            streaming: true,
+            timestamp: 1,
+            seq: 2
+          }
+        ]
+      },
+      plans: {
+        'sess-1': [
+          { content: 'Done', status: 'completed' },
+          { content: 'Running', status: 'in_progress' }
+        ]
+      }
+    }))
+    useAcpStore.getState()._onPromptComplete({
+      agentId: 'agent-1',
+      sessionId: 'sess-1',
+      stopReason: 'cancelled'
+    })
+    expect(useAcpStore.getState().plans['sess-1']).toEqual([
+      { content: 'Done', status: 'completed' },
+      { content: 'Running', status: 'pending' }
+    ])
+    const fence = useAcpStore
+      .getState()
+      .messages['sess-1'].find((message) => message.role === 'agent')
+      ?.blocks.find((block) => block.text?.includes('termul-plan'))
+    expect(fence?.text).toContain('"status":"pending"')
+    expect(fence?.text).not.toContain('in_progress')
+  })
+
+  it('does not replay an older plan when a tool call later reports status only', () => {
+    seedSession('sess-1', 'agent-1', true)
+    useAcpStore.getState()._onToolCall({
+      agentId: 'agent-1',
+      sessionId: 'sess-1',
+      toolCall: {
+        toolCallId: 'todo-a',
+        title: 'TodoWrite',
+        status: 'completed',
+        rawInput: { merge: false, todos: [{ id: 'a', content: 'First list', status: 'pending' }] }
+      }
+    })
+    useAcpStore.getState()._onToolCall({
+      agentId: 'agent-1',
+      sessionId: 'sess-1',
+      toolCall: {
+        toolCallId: 'todo-b',
+        title: 'TodoWrite',
+        status: 'completed',
+        rawInput: { merge: false, todos: [{ id: 'b', content: 'Second list', status: 'pending' }] }
+      }
+    })
+    useAcpStore.getState()._onToolCallUpdate({
+      agentId: 'agent-1',
+      sessionId: 'sess-1',
+      update: { toolCallId: 'todo-a', status: 'completed' }
+    })
+    _flushCoalescedForTesting()
+    expect(useAcpStore.getState().plans['sess-1']).toEqual([
+      { id: 'b', content: 'Second list', status: 'pending' }
     ])
   })
 })

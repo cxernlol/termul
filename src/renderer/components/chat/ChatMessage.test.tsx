@@ -313,22 +313,50 @@ describe('ChatMessage', () => {
     expect(screen.getByTestId('streamdown')).toHaveAttribute('data-mode', 'static')
   })
 
-  it('wires the termul-plan renderer only for non-streaming (historical) messages', () => {
-    // Streaming message: the sticky PlanPanel covers the live turn; the
-    // inline renderer is deliberately absent so no duplicate plan UI shows.
+  it('never wires a termul-plan renderer, live or historical', () => {
     const { unmount: unmountStreaming } = render(
       <ChatMessage message={agentMessage(true)} isLast />
     )
     expect(screen.getByTestId('streamdown')).toHaveAttribute('data-renderer-languages', '')
     unmountStreaming()
 
-    // Historical message: the termul-plan renderer is attached so a
-    // persisted snapshot fence renders an inline read-only PlanPanel.
     render(<ChatMessage message={agentMessage(false)} isLast />)
-    expect(screen.getByTestId('streamdown')).toHaveAttribute(
-      'data-renderer-languages',
-      'termul-plan'
+    expect(screen.getByTestId('streamdown')).toHaveAttribute('data-renderer-languages', '')
+  })
+
+  it('keeps a plan fence the user typed', () => {
+    const fence = '```termul-plan\n[{"content":"Ship the plan","status":"completed"}]\n```'
+    const message: ChatMessageType = {
+      id: 'user-fence',
+      role: 'user',
+      blocks: [{ type: 'text', text: fence }],
+      streaming: false,
+      timestamp: 0
+    }
+    render(
+      <TooltipProvider>
+        <ChatMessage message={message} isLast />
+      </TooltipProvider>
     )
+    expect(screen.getByText(/Ship the plan/)).toBeInTheDocument()
+  })
+
+  it('does not render a persisted plan fence inside a historical reply', () => {
+    const fence = '```termul-plan\n[{"content":"Ship the plan","status":"completed"}]\n```'
+    const message: ChatMessageType = {
+      ...agentMessage(false),
+      blocks: [
+        { type: 'text', text: 'Commit landed.\n' },
+        { type: 'text', text: fence }
+      ]
+    }
+
+    render(<ChatMessage message={message} isLast />)
+
+    expect(screen.getByTestId('streamdown')).toHaveTextContent('Commit landed.')
+    expect(screen.queryByText(/Ship the plan/)).toBeNull()
+    expect(screen.queryByRole('region', { name: 'Execution plan' })).toBeNull()
+    expect(screen.getByTestId('streamdown').textContent).not.toContain('termul-plan')
   })
 
   it('stops the Streamdown caret when a newer timeline item follows', () => {

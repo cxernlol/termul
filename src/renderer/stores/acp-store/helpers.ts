@@ -765,8 +765,8 @@ export function appendPlanSnapshot(
   // CommonMark requires the opening ``` of a fenced code block to be at the
   // start of a line. `blocksToText` joins text blocks with '', so a preceding
   // prose block that does not end in '\n' would glue the fence opener onto the
-  // prose (e.g. "working on it```termul-plan") and Streamdown would not recognize
-  // the fence — the snapshot would render as plain text instead of a PlanPanel.
+  // prose (e.g. "working on it```termul-plan") and a later rehydrate would not
+  // recognize the fence. The fence is stored for the sticky panel only.
   // `blocksToText` skips non-text blocks, so the block that ends up immediately
   // before the fence in the joined text is the LAST non-empty text block —
   // search backward for it (not just the last array element, which may be a

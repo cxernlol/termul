@@ -1,7 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { useState } from 'react'
 import { describe, expect, it } from 'vitest'
-import { TermulPlanRenderer } from './ChatMarkdownPlanFence'
 import { PlanPanel } from './PlanPanel'
 
 describe('PlanPanel', () => {
@@ -38,12 +37,15 @@ describe('PlanPanel', () => {
     })
   })
 
-  it('keeps entries without detail as simple rows', () => {
+  it('keeps entries without detail as simple rows', async () => {
     render(<PlanPanel entries={[{ content: 'No detail', status: 'completed' }]} />)
 
-    expect(screen.getByText('No detail')).toBeInTheDocument()
+    // A finished plan starts closed. The row is still there after a tap.
+    const toggle = screen.getByRole('button', { name: /Plan, 1 of 1 task/ })
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    fireEvent.click(toggle)
+    expect(await screen.findByText('No detail')).toHaveClass('line-through')
     expect(screen.queryByRole('button', { name: /No detail/ })).toBeNull()
-    expect(screen.getByText('No detail')).toHaveClass('line-through')
   })
 
   it('shows a text priority badge instead of a color-only dot', () => {
@@ -59,7 +61,7 @@ describe('PlanPanel', () => {
     expect(screen.getByText('Low')).toBeInTheDocument()
   })
 
-  it('bounds long plans and updates status while the panel is live', () => {
+  it('bounds long plans and updates status while the panel is live', async () => {
     const { container, rerender } = render(
       <PlanPanel entries={Array.from({ length: 20 }, (_, i) => ({ content: `Task ${i}` }))} />
     )
@@ -70,7 +72,10 @@ describe('PlanPanel', () => {
     expect(screen.getByText('Task 0').parentElement).toHaveClass('min-h-7')
 
     rerender(<PlanPanel entries={[{ content: 'Task 0', status: 'completed' }]} />)
-    expect(screen.getByText('Task 0')).toHaveClass('line-through')
+    const toggle = screen.getByRole('button', { name: /Plan, 1 of 1 task/ })
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    fireEvent.click(toggle)
+    expect(await screen.findByText('Task 0')).toHaveClass('line-through')
   })
 
   it('collapses to just the header when the chevron toggle is clicked', async () => {
@@ -145,10 +150,10 @@ describe('PlanPanel', () => {
   })
 
   it('exposes a11y attributes on the region and header toggle', () => {
-    render(<PlanPanel entries={[{ content: 'Task A', status: 'completed' }]} />)
+    render(<PlanPanel entries={[{ content: 'Task A', status: 'pending' }]} />)
     const region = screen.getByRole('region', { name: 'Execution plan' })
     expect(region).toBeInTheDocument()
-    const toggle = screen.getByRole('button', { name: /Plan, 1 of 1 task/ })
+    const toggle = screen.getByRole('button', { name: /Plan, 0 of 1 task/ })
     expect(toggle).toHaveAttribute('aria-expanded', 'true')
     // aria-controls is a useId-generated dynamic id — just verify it exists and
     // matches the body's id.
@@ -189,31 +194,105 @@ describe('PlanPanel', () => {
   })
 })
 
-describe('TermulPlanRenderer (termul-plan fence renderer)', () => {
-  it('renders a read-only PlanPanel from valid fence JSON', () => {
-    const code = JSON.stringify([
-      { content: 'Read AC file', status: 'completed', priority: 'high' },
-      { content: 'Fix bug', status: 'in_progress', priority: 'high' }
-    ])
-    render(<TermulPlanRenderer code={code} isIncomplete={false} language="termul-plan" />)
-    // The renderer reuses PlanPanel, so the entries appear as plan rows
-    expect(screen.getByRole('region', { name: 'Execution plan' })).toBeInTheDocument()
-    expect(screen.getByText('Read AC file')).toBeInTheDocument()
-    expect(screen.getByText('Fix bug')).toBeInTheDocument()
-  })
-
-  it('shows a fallback card when the fence JSON is malformed', () => {
-    render(
-      <TermulPlanRenderer code="{not valid json" isIncomplete={false} language="termul-plan" />
+describe('PlanPanel finished and new plans', () => {
+  it('closes when every item becomes completed, and stays closed on a later status tweak', async () => {
+    const { rerender } = render(
+      <PlanPanel
+        entries={[
+          { content: 'Task A', status: 'in_progress' },
+          { content: 'Task B', status: 'pending' }
+        ]}
+      />
     )
-    expect(screen.getByText('Plan snapshot unavailable')).toBeInTheDocument()
-    expect(screen.queryByRole('region', { name: 'Execution plan' })).toBeNull()
+    const open = screen.getByRole('button', { name: /Plan, 0 of 2 tasks, task in progress/ })
+    expect(open).toHaveAttribute('aria-expanded', 'true')
+
+    rerender(
+      <PlanPanel
+        entries={[
+          { content: 'Task A', status: 'completed' },
+          { content: 'Task B', status: 'completed' }
+        ]}
+      />
+    )
+    const closed = screen.getByRole('button', { name: /Plan, 2 of 2 tasks/ })
+    expect(closed).toHaveAttribute('aria-expanded', 'false')
+    await waitFor(() => {
+      expect(screen.queryByText('Task A')).not.toBeInTheDocument()
+    })
+
+    fireEvent.click(closed)
+    expect(closed).toHaveAttribute('aria-expanded', 'true')
+    rerender(
+      <PlanPanel
+        entries={[
+          { content: 'Task A', status: 'completed' },
+          { content: 'Task B', status: 'cancelled' }
+        ]}
+      />
+    )
+    expect(screen.getByRole('button', { name: /Plan, 1 of 2 tasks/ })).toHaveAttribute(
+      'aria-expanded',
+      'true'
+    )
   })
 
-  it('shows a streaming placeholder when the fence is incomplete', () => {
-    render(<TermulPlanRenderer code="partial" isIncomplete={true} language="termul-plan" />)
-    expect(screen.getByText('Plan snapshot incomplete')).toBeInTheDocument()
-    expect(screen.queryByRole('region', { name: 'Execution plan' })).toBeNull()
+  it('keeps a finished replacement plan closed', () => {
+    const { rerender } = render(
+      <PlanPanel entries={[{ content: 'Old task', status: 'in_progress' }]} />
+    )
+    expect(screen.getByRole('button', { name: /task in progress/ })).toHaveAttribute(
+      'aria-expanded',
+      'true'
+    )
+    rerender(<PlanPanel entries={[{ content: 'Different task', status: 'completed' }]} />)
+    expect(screen.getByRole('button', { name: /Plan, 1 of 1 task/ })).toHaveAttribute(
+      'aria-expanded',
+      'false'
+    )
+  })
+
+  it('opens again when a new plan replaces the finished one', async () => {
+    const { rerender } = render(
+      <PlanPanel entries={[{ content: 'Old task', status: 'completed' }]} />
+    )
+    expect(screen.getByRole('button', { name: /Plan, 1 of 1 task/ })).toHaveAttribute(
+      'aria-expanded',
+      'false'
+    )
+
+    rerender(
+      <PlanPanel
+        entries={[
+          { content: 'New task', status: 'in_progress' },
+          { content: 'Next task', status: 'pending' }
+        ]}
+      />
+    )
+    const opened = screen.getByRole('button', { name: /Plan, 0 of 2 tasks, task in progress/ })
+    expect(opened).toHaveAttribute('aria-expanded', 'true')
+    expect(await screen.findByText('New task')).toBeInTheDocument()
+  })
+
+  it('keeps a manual close when the same plan gains an item', () => {
+    const { rerender } = render(
+      <PlanPanel entries={[{ id: 'a', content: 'Task A', status: 'pending' }]} />
+    )
+    const toggle = screen.getByRole('button', { name: /Plan, 0 of 1 task/ })
+    fireEvent.click(toggle)
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+
+    rerender(
+      <PlanPanel
+        entries={[
+          { id: 'a', content: 'Task A', status: 'in_progress' },
+          { id: 'b', content: 'Task B', status: 'pending' }
+        ]}
+      />
+    )
+    expect(
+      screen.getByRole('button', { name: /Plan, 0 of 2 tasks, task in progress/ })
+    ).toHaveAttribute('aria-expanded', 'false')
   })
 })
 
@@ -240,7 +319,7 @@ describe('PlanPanel dock collapse (mobile dock)', () => {
     expect(await screen.findByText('One')).toBeInTheDocument()
   })
 
-  it('stays expanded by default (desktop and the inline plan fence)', () => {
+  it('stays expanded by default while work remains', () => {
     render(<PlanPanel entries={entries} />)
     expect(bar()).toHaveAttribute('aria-expanded', 'true')
   })

@@ -33,6 +33,7 @@
  */
 import type { ContentBlock, ToolCall } from '@/lib/acp-api'
 import { serializeSelectionContexts } from '@/lib/composer/selection-context'
+import { isPlanToolCall, stripTermulPlanFences } from '@/lib/plan-session'
 import { sanitizeDisplayText } from '@/lib/skill-tokens'
 import type { ChatMessage } from '@/stores/acp-store'
 import { describeToolCall } from './tool-call-summary'
@@ -163,6 +164,7 @@ function mergeByArrival(messages: ChatMessage[], toolCalls: ToolCall[]): Handoff
     })
   })
   toolCalls.forEach((tc, i) => {
+    if (isPlanToolCall(tc)) return
     stamped.push({
       item: { kind: 'tool', tool: tc },
       seq: typeof tc.seq === 'number' ? tc.seq : undefined,
@@ -263,12 +265,11 @@ function truncateFragment(value: string, max: number): string {
 }
 
 function messageText(message: ChatMessage): string {
-  return sanitizeFragment(
-    message.blocks
-      .filter((b) => b.type === 'text')
-      .map((b) => b.text ?? '')
-      .join('')
-  ).trim()
+  const text = message.blocks
+    .filter((b) => b.type === 'text')
+    .map((b) => b.text ?? '')
+    .join('')
+  return sanitizeFragment(message.role === 'agent' ? stripTermulPlanFences(text) : text).trim()
 }
 
 /** Compact tool one-liner via `describeToolCall`, e.g. "Read auth.ts L1-40". */

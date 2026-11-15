@@ -380,3 +380,63 @@ fn a_subagents_multi_file_edit_masks_every_persisted_path() {
         "{second}"
     );
 }
+
+#[test]
+fn a_plan_tool_call_is_marked_and_drops_its_arguments() {
+    let kept = super::normalize_durable_payload(
+        "tool_call",
+        &json!({
+            "sessionId": "chat",
+            "toolCall": {
+                "toolCallId": "plan-1",
+                "kind": "other",
+                "status": "completed",
+                "title": "mcp__troupe__plan",
+                "rawInput": { "todos": [{ "content": "Ship it", "status": "pending" }] },
+            },
+        }),
+    );
+    let tool = &kept["toolCall"];
+    assert_eq!(tool["planTool"], json!(true));
+    assert!(tool.get("rawInput").is_none());
+    assert!(tool.get("title").is_none());
+    assert_eq!(
+        tool["planEntries"],
+        json!([{ "content": "Ship it", "status": "pending" }])
+    );
+}
+
+#[test]
+fn a_read_tool_call_is_not_marked_as_a_plan() {
+    let kept = super::normalize_durable_payload(
+        "tool_call",
+        &json!({
+            "sessionId": "chat",
+            "toolCall": {
+                "toolCallId": "read-1",
+                "kind": "read",
+                "status": "completed",
+                "title": "Read Plan.md",
+                "rawInput": { "path": "Plan.md" },
+            },
+        }),
+    );
+    assert!(kept["toolCall"].get("planTool").is_none());
+}
+
+#[test]
+fn claude_todowrite_and_codex_update_plan_are_plan_tools() {
+    for (title, tool_name) in [("TodoWrite", "TodoWrite"), ("update_plan", "update_plan")] {
+        let kept = super::normalize_durable_payload(
+            "tool_call",
+            &json!({
+                "toolCall": {
+                    "toolCallId": title,
+                    "status": "in_progress",
+                    "_meta": { "claudeCode": { "toolName": tool_name } },
+                },
+            }),
+        );
+        assert_eq!(kept["toolCall"]["planTool"], json!(true), "{title}");
+    }
+}

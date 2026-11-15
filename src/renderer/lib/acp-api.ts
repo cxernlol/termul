@@ -221,6 +221,9 @@ export interface ToolCall {
   /** True for a restored durable file-change summary (payload `toolCalls`):
    * feeds the changed-files list but never renders as a timeline card. */
   restoredSummary?: boolean
+  /** Plan/todo write. The sticky plan panel owns it; the timeline skips it.
+   * Set at ingest and kept on the durable record so a reload stays hidden. */
+  planTool?: boolean
   /** The host's canonical record when this call dispatches a subagent, lifted
    * from `_meta["termul/subagent"]` at ingest. Absent on later events = unchanged. */
   subagent?: Subagent

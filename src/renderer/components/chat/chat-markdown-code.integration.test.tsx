@@ -40,7 +40,7 @@ describe('ChatMarkdownCode with Streamdown', () => {
     }, HIGHLIGHT_TIMEOUT)
   })
 
-  it('renders a termul-plan fence as a PlanPanel instead of a code block', async () => {
+  it('does not render a termul-plan fence as a plan card or a code block', async () => {
     const plan = [
       { content: 'Investigate the renderer bypass', status: 'completed' },
       { content: 'Fix the delegation in ChatMarkdownCode', status: 'in_progress' }
@@ -62,9 +62,9 @@ describe('ChatMarkdownCode with Streamdown', () => {
     )
 
     await waitFor(() => {
-      expect(screen.getByRole('region', { name: 'Execution plan' })).toBeInTheDocument()
-      expect(screen.getByText('Investigate the renderer bypass')).toBeInTheDocument()
-      expect(screen.getByText('Fix the delegation in ChatMarkdownCode')).toBeInTheDocument()
+      expect(screen.queryByRole('region', { name: 'Execution plan' })).toBeNull()
+      expect(screen.queryByText('Investigate the renderer bypass')).toBeNull()
+      expect(screen.queryByText('Fix the delegation in ChatMarkdownCode')).toBeNull()
       expect(container.querySelector('[data-streamdown="code-block-body"]')).toBeNull()
     }, HIGHLIGHT_TIMEOUT)
   })
