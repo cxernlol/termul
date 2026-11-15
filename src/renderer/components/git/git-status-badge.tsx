@@ -1,5 +1,5 @@
 import type { GitFileStatus } from '@shared/types/ipc.types'
-import { Check, FileCode, FileQuestion, Minus, Pencil, Plus, RotateCcw } from '@/components/icons'
+import { Check, Edit, FileCode, FileQuestion, Minus, Plus, RotateCcw } from '@/components/icons'
 
 /** Human-readable labels for each git file status, shared across git surfaces. */
 export const GIT_STATUS_LABELS: Record<GitFileStatus, string> = {
@@ -20,7 +20,7 @@ export function GitStatusBadge({ status }: { status: GitFileStatus }) {
       icon = <Plus className="text-success" size={14} aria-hidden />
       break
     case 'modified':
-      icon = <Pencil className="text-warning" size={14} aria-hidden />
+      icon = <Edit className="text-warning" size={14} aria-hidden />
       break
     case 'deleted':
       icon = <Minus className="text-destructive" size={14} aria-hidden />

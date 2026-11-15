@@ -7,7 +7,7 @@ import type { IpcResult } from '@shared/types/ipc.types'
 import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
-import { AlertCircle, Hand, KeyRound, Loader2, Pencil, Trash2 } from '@/components/icons'
+import { AlertCircle, Edit, Hand, KeyRound, Loader2, Trash2 } from '@/components/icons'
 import { Button } from '@/components/ui/button'
 import { FOCUS_RING_CLASS } from '@/components/ui/panel-styles'
 import { Switch } from '@/components/ui/switch'
@@ -241,7 +241,7 @@ export function AutomationDetail({
               className="ml-auto pointer-coarse:h-11"
               onClick={onEdit}
             >
-              <Pencil size={14} />
+              <Edit size={14} />
               Edit
             </Button>
           )}

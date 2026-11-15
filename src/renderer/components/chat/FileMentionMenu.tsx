@@ -3,7 +3,7 @@ import {
   ChevronLeft,
   File,
   Folder,
-  FolderTree,
+  Folder2,
   MessageSquare,
   type TermulIcon
 } from '@/components/icons'
@@ -34,7 +34,7 @@ interface FileMentionMenuProps {
 function rowIcon(row: MentionRow): TermulIcon {
   switch (row.kind) {
     case 'category':
-      return row.target === 'conversations' ? MessageSquare : FolderTree
+      return row.target === 'conversations' ? MessageSquare : Folder2
     case 'conversation':
       return MessageSquare
     case 'file':

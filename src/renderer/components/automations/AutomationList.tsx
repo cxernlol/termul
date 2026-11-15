@@ -1,5 +1,5 @@
 import type { Automation, AutomationId } from '@shared/types/automation.types'
-import { Workflow } from '@/components/icons'
+import { CalendarClock } from '@/components/icons'
 import { FOCUS_RING_CLASS } from '@/components/ui/panel-styles'
 import { cn } from '@/lib/utils'
 import {
@@ -109,7 +109,7 @@ function AutomationRow({
 export function AutomationListEmpty(): React.JSX.Element {
   return (
     <div className="flex flex-col items-center gap-3 px-6 py-12 text-center">
-      <Workflow size={24} className="text-muted-foreground" />
+      <CalendarClock size={24} className="text-muted-foreground" />
       <div className="flex max-w-xs flex-col gap-1">
         <p className="text-sm font-medium text-foreground">No automations yet</p>
         <p className="text-xs text-muted-foreground">

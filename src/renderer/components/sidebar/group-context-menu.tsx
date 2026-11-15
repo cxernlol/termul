@@ -1,4 +1,4 @@
-import { Edit2, FolderPlus, Palette, Plus, Trash2 } from '@/components/icons'
+import { Edit, FolderPlus, Palette, Plus, Trash2 } from '@/components/icons'
 import {
   ContextMenuCheckboxItem,
   ContextMenuContent,
@@ -34,7 +34,7 @@ export function GroupContextMenuContent({
   return (
     <ContextMenuContent className="w-56">
       <ContextMenuItem onSelect={() => onStartRename(group)}>
-        <Edit2 className="mr-2 size-3.5" /> Rename group
+        <Edit className="mr-2 size-3.5" /> Rename group
       </ContextMenuItem>
       <ContextMenuItem onSelect={() => onOpenColorPicker(group.id, 'group')}>
         <Palette className="mr-2 size-3.5" /> Change color

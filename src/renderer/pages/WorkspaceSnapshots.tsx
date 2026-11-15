@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
 import { CreateSnapshotModal } from '@/components/CreateSnapshotModal'
 import { DeleteSnapshotModal } from '@/components/DeleteSnapshotModal'
-import { Camera, Clock, Cpu, Edit2, Grid3X3, Pencil, RotateCcw, Trash2 } from '@/components/icons'
+import { Camera, Clock, Cpu, Edit, Grid3X3, RotateCcw, Trash2 } from '@/components/icons'
 import { NewProjectModal } from '@/components/NewProjectModal'
 import { RestoreSnapshotModal } from '@/components/RestoreSnapshotModal'
 import { Button } from '@/components/ui/button'
@@ -410,7 +410,7 @@ function SnapshotCard({
               className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-secondary rounded transition-colors"
               title="Rename"
             >
-              <Edit2 size={14} />
+              <Edit size={14} />
             </button>
             <button
               onClick={() => onDelete(snapshot)}
@@ -571,7 +571,7 @@ function MobileSnapshotCard({
             aria-label="Rename snapshot"
             onClick={() => onStartRename(snapshot.id, snapshot.name)}
           >
-            <Pencil size={16} />
+            <Edit size={16} />
           </Button>
         )}
         <Button

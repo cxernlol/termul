@@ -2,7 +2,7 @@ import type { DirectoryEntry } from '@shared/types/filesystem.types'
 import {
   ClipboardPaste,
   Copy,
-  Edit2,
+  Edit,
   ExternalLink,
   FilePlus,
   Files,
@@ -118,7 +118,7 @@ function FileTreeContextMenuItems({
       <ContextMenuSeparator />
 
       <ContextMenuItem onSelect={() => onRename(entry)} disabled={selectedCount > 1}>
-        <Edit2 className={ICON_CLASS} /> Rename{selectedCount > 1 ? ' (1 item)' : ''}
+        <Edit className={ICON_CLASS} /> Rename{selectedCount > 1 ? ' (1 item)' : ''}
       </ContextMenuItem>
       <ContextMenuItem onSelect={() => onCopyPath(entry.path)}>
         <Copy className={ICON_CLASS} /> Copy Path

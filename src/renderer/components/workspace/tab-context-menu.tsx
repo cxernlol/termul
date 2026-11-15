@@ -1,6 +1,6 @@
 import type { MouseEvent, ReactNode } from 'react'
 import { ReloadChatMenuItem } from '@/components/chat/ReloadChatMenuItem'
-import { Copy, CopyX, Edit2, Skull, X, XCircle } from '@/components/icons'
+import { Copy, CopyX, Edit, Skull, X, XCircle } from '@/components/icons'
 import {
   ContextMenu,
   ContextMenuContent,
@@ -134,7 +134,7 @@ export function TabContextMenu({
       <ContextMenuContent className="w-max min-w-56">
         {showRename && (
           <ContextMenuItem onSelect={onRename}>
-            <Edit2 className="mr-2 h-4 w-4" /> Rename
+            <Edit className="mr-2 h-4 w-4" /> Rename
           </ContextMenuItem>
         )}
         {reloadChatSessionId && <ReloadChatMenuItem sessionId={reloadChatSessionId} />}

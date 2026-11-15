@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { History, Pencil, RotateCcw, X } from '@/components/icons'
+import { Edit, History, RotateCcw, X } from '@/components/icons'
 import { Input } from '@/components/ui/input'
 import {
   Sheet,
@@ -159,7 +159,7 @@ export function MobileTerminalActionsSheet({
               className={`${SHEET_ROW_CLASS_NAME} hover:bg-accent`}
               onClick={startRename}
             >
-              <Pencil size={16} />
+              <Edit size={16} />
               Rename terminal
             </button>
           ))}

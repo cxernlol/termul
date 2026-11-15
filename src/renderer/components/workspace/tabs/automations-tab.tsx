@@ -1,4 +1,4 @@
-import { Workflow } from '@/components/icons'
+import { CalendarClock } from '@/components/icons'
 import { TabContextMenu } from '../tab-context-menu'
 import { TabChrome } from './tab-chrome'
 import type { TabInlineProps } from './types'
@@ -29,7 +29,7 @@ export function AutomationsTabInline({
         onDragOver={onDragOver}
         onDragLeave={onDragLeave}
         onDrop={onDrop}
-        icon={<Workflow size={12} />}
+        icon={<CalendarClock size={12} />}
         label="Automations"
         pinClose={isActive}
       />

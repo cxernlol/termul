@@ -3,11 +3,11 @@ import {
   ChevronDown,
   ChevronRight,
   Download,
+  Edit,
   File,
   FileText,
   Folder,
   Link2,
-  Pencil,
   Trash2
 } from '@/components/icons'
 import { FOCUS_RING_CLASS, QUIET_ICON_BUTTON_CLASS } from '@/components/ui/panel-styles'
@@ -138,7 +138,7 @@ export function SftpEntryRow({
           aria-label={`Rename ${entry.name}`}
           title="Rename"
         >
-          <Pencil size={12} />
+          <Edit size={12} />
         </button>
         <button
           type="button"

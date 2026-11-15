@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { Check, Copy, Pencil, RotateCcw } from '@/components/icons'
+import { Check, Copy, Edit, RotateCcw } from '@/components/icons'
 import {
   ContextMenu,
   ContextMenuContent,
@@ -164,7 +164,7 @@ export function MessageActions({
             onClick={onEdit}
             className="rounded-md hover:bg-secondary/60 transition-colors duration-150"
           >
-            <Pencil />
+            <Edit />
           </IconActionButton>
         )}
         {onRetry && (
@@ -320,7 +320,7 @@ export function MessageActionsContextMenu({
               onEdit()
             }}
           >
-            <Pencil className="mr-2 h-4 w-4" /> Edit
+            <Edit className="mr-2 h-4 w-4" /> Edit
           </ContextMenuItem>
         )}
         {onRetry && (

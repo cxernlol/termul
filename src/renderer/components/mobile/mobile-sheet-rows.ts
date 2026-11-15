@@ -1,6 +1,6 @@
 import {
   Bug,
-  FolderTree,
+  Folder2,
   GitBranch,
   Search,
   Settings,
@@ -45,7 +45,7 @@ export interface ShellNavigationRow {
 export function visibleNavigationRows(actions: ShellNavigationActions): ShellNavigationRow[] {
   const rows: Array<{ label: string; Icon: TermulIcon; run: (() => void) | undefined }> = [
     { label: 'Git changes', Icon: GitBranch, run: actions.onOpenGitChanges },
-    { label: 'Files', Icon: FolderTree, run: actions.onOpenFiles },
+    { label: 'Files', Icon: Folder2, run: actions.onOpenFiles },
     { label: 'Command palette', Icon: Search, run: actions.onOpenCommandPalette },
     { label: 'New terminal', Icon: TerminalSquare, run: actions.onNewTerminal },
     { label: 'Project settings', Icon: Settings, run: actions.onOpenProjectSettings },

@@ -1,6 +1,6 @@
 import { memo, useCallback, useRef, useState } from 'react'
 import { QueueItemFile, QueueItemImage } from '@/components/ai-elements/queue'
-import { ChevronDown, Edit2, GripVertical, Trash2, X } from '@/components/icons'
+import { ChevronDown, Edit, GripVertical, Trash2, X } from '@/components/icons'
 import { CollapseExpandMotion } from '@/components/ui/collapse-expand-motion'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { useMobileWebShell } from '@/hooks/use-mobile-web-shell'
@@ -157,7 +157,7 @@ const QueueRow = memo(function QueueRow({
           </QueueAction>
           {text !== null && onEdit && (
             <QueueAction label={named('Edit')} hint="Edit" onClick={() => onEdit(item, text)}>
-              <Edit2 size={14} aria-hidden="true" />
+              <Edit size={14} aria-hidden="true" />
             </QueueAction>
           )}
           <QueueAction

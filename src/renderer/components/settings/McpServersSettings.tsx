@@ -2,8 +2,8 @@ import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import {
   ChevronDown,
+  Edit,
   ExternalLink,
-  Pencil,
   Plus,
   RefreshCw,
   Server,
@@ -284,7 +284,7 @@ export function McpServersSettings(): React.JSX.Element {
                           Test connection
                         </DropdownMenuItem>
                         <DropdownMenuItem onSelect={() => mcpDialog.openEdit(server)}>
-                          <Pencil size={14} />
+                          <Edit size={14} />
                           Edit
                         </DropdownMenuItem>
                         <DropdownMenuSeparator />

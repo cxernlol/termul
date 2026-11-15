@@ -4,9 +4,9 @@ import { toast } from 'sonner'
 import {
   Copy,
   Download,
+  Edit,
   Eye,
   EyeOff,
-  Pencil,
   Pin,
   Plus,
   Server,
@@ -278,7 +278,7 @@ export function SSHPanel({
                           title="Edit host"
                           aria-label={`Edit ${profile.name}`}
                         >
-                          <Pencil size={12} />
+                          <Edit size={12} />
                         </button>
                         {desktop && (
                           <button
@@ -305,7 +305,7 @@ export function SSHPanel({
                       </ContextMenuItem>
                     )}
                     <ContextMenuItem onSelect={() => dialogs.openForm(profile)}>
-                      <Pencil className="mr-2 h-4 w-4" /> Edit
+                      <Edit className="mr-2 h-4 w-4" /> Edit
                     </ContextMenuItem>
                     <ContextMenuItem onSelect={() => void handleDuplicate(profile)}>
                       <Copy className="mr-2 h-4 w-4" /> Duplicate

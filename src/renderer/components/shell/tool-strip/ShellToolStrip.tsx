@@ -1,7 +1,7 @@
 import type { ShellInfo } from '@shared/types/ipc.types'
 import { useEffect } from 'react'
 import { ConnectionStatusIndicator } from '@/components/ConnectionStatusIndicator'
-import { FolderTree, GitBranch, Github, Globe, type TermulIcon } from '@/components/icons'
+import { Folder2, GitBranch, Github, Globe, type TermulIcon } from '@/components/icons'
 import { RemoteAccessPopover } from '@/components/RemoteAccessPopover'
 import { toolStripButtonId } from '@/components/shell/column-tab-focus'
 import { logShellEvent } from '@/components/shell/shell-log'
@@ -23,7 +23,7 @@ import { TerminalStripButton } from './TerminalStripButton'
 import { ToolStrip } from './ToolStrip'
 
 const VIEWS: ReadonlyArray<{ id: ShellLastColumnTab; label: string; Icon: TermulIcon }> = [
-  { id: 'explorer', label: 'Explorer', Icon: FolderTree },
+  { id: 'explorer', label: 'Explorer', Icon: Folder2 },
   { id: 'changes', label: 'Changes', Icon: GitBranch },
   { id: 'github', label: 'GitHub', Icon: Github }
 ]

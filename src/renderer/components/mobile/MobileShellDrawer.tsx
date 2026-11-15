@@ -2,20 +2,20 @@ import { useEffect, useId, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { findVisibleQuestionFocusTarget } from '@/components/chat/use-approval-dock'
 import {
+  CalendarClock,
   Camera,
   ChevronDown,
   FileCode,
+  Folder2,
   FolderGit2,
-  FolderTree,
   Github,
   History,
   MessageSquare,
   Plus,
   Search,
   Settings,
-  TerminalSquare,
-  type TermulIcon,
-  Workflow
+  Terminal,
+  type TermulIcon
 } from '@/components/icons'
 import { ProjectIcon } from '@/components/ProjectIcon'
 import { TermulMark } from '@/components/TermulMark'
@@ -88,7 +88,7 @@ const SECTION_NAV: ReadonlyArray<{
   Icon: TermulIcon
 }> = [
   { section: 'chats', label: 'Chats', Icon: MessageSquare },
-  { section: 'terminals', label: 'Terminals', Icon: TerminalSquare },
+  { section: 'terminals', label: 'Terminals', Icon: Terminal },
   { section: 'editors', label: 'Editors', Icon: FileCode },
   { section: 'github', label: 'GitHub', Icon: Github }
 ]
@@ -324,7 +324,7 @@ export function MobileShellDrawer({
         : listSection === 'editors'
           ? {
               label: 'Browse files',
-              Icon: FolderTree,
+              Icon: Folder2,
               disabled: !onOpenFiles,
               onClick: () => {
                 closeForHandoff()
@@ -547,7 +547,7 @@ export function MobileShellDrawer({
                   onOpenAutomations()
                 }}
               >
-                <Workflow size={18} />
+                <CalendarClock size={18} />
               </Button>
             )}
             {primaryAction && (

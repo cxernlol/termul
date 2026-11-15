@@ -4,9 +4,9 @@ import {
   ChevronLeft,
   ChevronRight,
   ChevronUp,
+  Edit,
   MessageQuestion,
   Minus,
-  Pencil,
   Sparkles,
   X
 } from '@/components/icons'
@@ -390,7 +390,7 @@ export const QuestionOtherField = forwardRef<HTMLInputElement, QuestionOtherFiel
         )}
       >
         <RowKey>{shortcut}</RowKey>
-        <Pencil
+        <Edit
           size={13}
           aria-hidden="true"
           className={cn('shrink-0', typed ? 'text-muted-foreground' : 'text-muted-foreground/70')}

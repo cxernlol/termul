@@ -11,7 +11,7 @@
  */
 
 import { useEffect, useState } from 'react'
-import { Edit2, Loader2, Save } from '@/components/icons'
+import { Canvas, Loader2, Save } from '@/components/icons'
 import { Button } from '@/components/ui/button'
 import { useMobileWebShell } from '@/hooks/use-mobile-web-shell'
 import { basename } from '@/lib/path-basename'
@@ -201,7 +201,7 @@ export function CanvasPanel({
       data-canvas-phase={phase.kind}
     >
       <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border bg-card px-3">
-        <Edit2 size={12} className="shrink-0 text-primary" aria-hidden="true" />
+        <Canvas size={12} className="shrink-0 text-primary" aria-hidden="true" />
         <span className="min-w-0 truncate text-2xs font-medium text-foreground">{name}</span>
         {session.dirty && (
           <span

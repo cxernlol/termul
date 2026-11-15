@@ -2,12 +2,12 @@ import { useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { MaterialFileIcon } from '@/components/file-explorer/MaterialFileIcon'
 import { githubItemTabLabel } from '@/components/github/github-status'
 import {
-  Edit2,
+  Canvas,
+  Edit,
   FileDiff,
   GitBranch,
   Github,
   Globe,
-  Pencil,
   TerminalSquare,
   X
 } from '@/components/icons'
@@ -355,7 +355,7 @@ export function MobileDrawerSectionList({
                         data-section-rename={tab.terminalId}
                         onClick={() => startRename(tab.terminalId, terminalName ?? 'Terminal')}
                       >
-                        <Pencil size={14} />
+                        <Edit size={14} />
                       </Button>
                     )
                   )}
@@ -420,7 +420,7 @@ export function MobileDrawerSectionList({
                   {tab.type === 'git' && <GitBranch size={16} />}
                   {(tab.type === 'diff' || tab.type === 'commit-diff') && <FileDiff size={16} />}
                   {tab.type === 'browser' && <Globe size={16} />}
-                  {tab.type === 'canvas' && <Edit2 size={16} />}
+                  {tab.type === 'canvas' && <Canvas size={16} />}
                   {tab.type === 'github-item' && <Github size={16} />}
                   <span className="min-w-0 flex-1 truncate text-left">{rowLabel}</span>
                   {dirty && (

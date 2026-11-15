@@ -1,4 +1,4 @@
-import { Edit2, Search, Workflow } from '@/components/icons'
+import { CalendarClock, Canvas, ChatEdit, SearchList } from '@/components/icons'
 import { ProjectSidebar } from '@/components/ProjectSidebar'
 import { RailFooter } from '@/components/shell/RailFooter'
 import { RailHeader } from '@/components/shell/RailHeader'
@@ -71,7 +71,7 @@ export function RailBody({
       <RailNav>
         <RailNavRow
           label="New chat"
-          icon={<Edit2 />}
+          icon={<ChatEdit />}
           onClick={() => {
             logRailEvent('new chat')
             newChat()
@@ -80,14 +80,14 @@ export function RailBody({
         <RailNavRow
           label="Search"
           shortcut={searchShortcut}
-          icon={<Search />}
+          icon={<SearchList />}
           onClick={onOpenCommandPalette}
         />
         <RailNavRow
           label="Canvas"
           name="Open canvas"
           hint={canOpenCanvas ? undefined : NEED_PROJECT}
-          icon={<Edit2 />}
+          icon={<Canvas />}
           disabled={!canOpenCanvas}
           onClick={onOpenCanvas}
         />
@@ -95,7 +95,7 @@ export function RailBody({
           label="Automations"
           name="Open automations"
           hint={activeProjectId ? undefined : NEED_PROJECT}
-          icon={<Workflow />}
+          icon={<CalendarClock />}
           disabled={!activeProjectId}
           onClick={() => useWorkspaceStore.getState().addAutomationsTab(activeProjectId)}
         />

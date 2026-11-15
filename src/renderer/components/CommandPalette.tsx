@@ -4,7 +4,7 @@ import { CommandPaletteChats } from '@/components/CommandPaletteChats'
 import {
   Bot,
   Bug,
-  Edit2,
+  Canvas,
   FolderPlus,
   Globe,
   History,
@@ -245,7 +245,7 @@ export function CommandPalette({
             {
               id: 'open-canvas',
               category: 'workspace' as const,
-              icon: <Edit2 aria-hidden="true" size={16} />,
+              icon: <Canvas aria-hidden="true" size={16} />,
               label: 'Open Canvas',
               description: "Open the project's .figcraft design document as a canvas tab",
               keywords: ['canvas', 'figcraft', 'design', 'drawing', 'vector'],

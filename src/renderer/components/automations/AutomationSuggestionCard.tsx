@@ -1,5 +1,5 @@
 import type { AutomationSuggestion } from '@shared/types/automation.types'
-import { Workflow } from '@/components/icons'
+import { CalendarClock } from '@/components/icons'
 import { Button } from '@/components/ui/button'
 import { WriteGate } from '@/components/ui/write-gate'
 import { useMobileWebShell } from '@/hooks/use-mobile-web-shell'
@@ -40,7 +40,7 @@ export function AutomationSuggestionCard({
     >
       <div className="flex items-start gap-2.5">
         <span className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-md border border-primary/30 bg-primary/10 text-primary">
-          <Workflow size={13} aria-hidden="true" />
+          <CalendarClock size={13} aria-hidden="true" />
         </span>
         <div className="min-w-0 flex-1">
           <h2 id={titleId} className="text-xs font-semibold leading-5 text-foreground">

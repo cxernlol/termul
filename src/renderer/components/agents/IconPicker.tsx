@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState } from 'react'
-import { Check, Pencil, Upload } from '@/components/icons'
+import { Check, Edit, Upload } from '@/components/icons'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { BUNDLED_ICON_CATALOG, findBundledIconBySvg } from '@/lib/agents/agent-icon-catalog'
 import { sanitizeInlineAgentSvg } from '@/lib/agents/sanitize-agent-icon'
@@ -86,7 +86,7 @@ export function IconPicker({ value, onChange }: IconPickerProps): React.JSX.Elem
     </div>
   ) : (
     <div className="flex h-9 w-9 items-center justify-center rounded-md border border-dashed border-muted-foreground/40 text-muted-foreground hover:bg-secondary/60 transition-colors">
-      <Pencil size={14} />
+      <Edit size={14} />
     </div>
   )
 

@@ -8,10 +8,10 @@ import {
   ChevronLeft,
   ChevronRight,
   Copy,
+  Edit,
   FilePlus,
   FolderPlus,
   MoreHorizontal,
-  Pencil,
   RefreshCw,
   Trash2
 } from '@/components/icons'
@@ -663,7 +663,7 @@ export function MobileFileExplorer({
                     setActionEntry(null)
                   }}
                 >
-                  <Pencil size={16} /> Rename
+                  <Edit size={16} /> Rename
                 </button>
                 <button
                   type="button"

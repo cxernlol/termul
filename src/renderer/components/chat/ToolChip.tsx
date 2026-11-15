@@ -1,12 +1,12 @@
-import { Edit2, Globe, type TermulIcon, Workflow } from '@/components/icons'
+import { CalendarClock, Canvas, Globe, type TermulIcon } from '@/components/icons'
 import type { TermulToolEntry, TermulToolId } from '@/lib/composer/termul-tools'
 import { cn } from '@/lib/utils'
 
 /** The Rail's icons for the same features (Canvas, Automations). */
 export const TERMUL_TOOL_ICONS: Record<TermulToolId, TermulIcon> = {
   browser: Globe,
-  canvas: Edit2,
-  automations: Workflow
+  canvas: Canvas,
+  automations: CalendarClock
 }
 
 /**

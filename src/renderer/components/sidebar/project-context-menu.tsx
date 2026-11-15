@@ -1,7 +1,7 @@
 import type { DetectedShells } from '@shared/types/ipc.types'
 import {
   Archive,
-  Edit2,
+  Edit,
   Folder,
   FolderPlus,
   GitBranch,
@@ -78,7 +78,7 @@ export function ProjectContextMenuContent({
         <Settings className="mr-2 size-3.5" /> Settings
       </ContextMenuItem>
       <ContextMenuItem onSelect={() => onStartRename(project)}>
-        <Edit2 className="mr-2 size-3.5" /> Rename
+        <Edit className="mr-2 size-3.5" /> Rename
       </ContextMenuItem>
       <ContextMenuItem onSelect={() => onOpenColorPicker(project.id, 'project')}>
         <Palette className="mr-2 size-3.5" /> Change color

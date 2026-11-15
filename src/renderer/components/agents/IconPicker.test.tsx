@@ -69,7 +69,7 @@ describe('IconPicker', () => {
 
   it('shows a custom (non-bundled) SVG in the trigger when value is set', () => {
     render(<IconPicker value={VALID_SVG} onChange={() => {}} />)
-    // The trigger button should render (not the Pencil fallback).
+    // The trigger button should render (not the Edit fallback).
     const trigger = screen.getByLabelText('Choose icon')
     expect(trigger).toBeInTheDocument()
     // The trigger contains an inline span with the SVG (sanitized).

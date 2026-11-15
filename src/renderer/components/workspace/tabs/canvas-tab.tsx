@@ -1,4 +1,4 @@
-import { Edit2 } from '@/components/icons'
+import { Canvas } from '@/components/icons'
 import { basename } from '@/lib/path-basename'
 import { useCanvasStore } from '@/stores/canvas-store'
 import { TabContextMenu } from '../tab-context-menu'
@@ -40,7 +40,7 @@ export function CanvasTabInline({
         onDragOver={onDragOver}
         onDragLeave={onDragLeave}
         onDrop={onDrop}
-        icon={<Edit2 size={12} />}
+        icon={<Canvas size={12} />}
         label={basename(tab.docPath)}
         dirty={dirty}
         pinClose={isActive}
