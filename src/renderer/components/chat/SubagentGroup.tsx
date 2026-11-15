@@ -82,7 +82,6 @@ function SubagentGroupComponent({
       className={cn('my-1.5 min-w-0 transition-opacity', !open && !live && 'opacity-60')}
     >
       <CollapsibleTrigger
-        data-press-feedback="off"
         aria-label={`${members.length} subagents: ${subagentCountSummary(counts)}`}
         className="flex min-h-11 w-full cursor-pointer items-center gap-3 rounded-lg px-2.5 py-1.5 text-left outline-none transition-colors hover:bg-foreground/[0.03] focus-visible:ring-2 focus-visible:ring-focus-ring"
       >

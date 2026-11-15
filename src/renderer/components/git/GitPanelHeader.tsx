@@ -1,4 +1,3 @@
-import type React from 'react'
 import { BranchSection } from '@/components/git/BranchSection'
 import { ChangesFilter } from '@/components/git/rows'
 import { Archive } from '@/components/icons'
@@ -8,9 +7,7 @@ import { useServerAdmitsRemoteWrites } from '@/hooks/use-server-admits-remote-wr
 import { cn } from '@/lib/utils'
 
 interface GitPanelHeaderProps {
-  /** `column` is the desktop look inside the shell Changes panel: the branch
-      row, then the `belowBranch` slot (the commit box), then the filter field. */
-  variant: 'desktop' | 'mobile' | 'column'
+  variant: 'desktop' | 'mobile'
   branches: string[]
   currentBranch: string | null | undefined
   /** Commits ahead of upstream; shown next to the branch when > 0. */
@@ -22,8 +19,6 @@ interface GitPanelHeaderProps {
   onCreateBranch: () => void
   onSwitchBranch: (name: string) => void
   onOpenStash: () => void
-  /** `column` only: rendered between the branch row and the filter field. */
-  belowBranch?: React.ReactNode
 }
 
 /**
@@ -33,9 +28,43 @@ interface GitPanelHeaderProps {
  */
 const HEADER_CHROME = {
   desktop: { row: 'h-10 pl-2 pr-1.5', stashButton: 'size-7', stashIcon: 14 },
-  column: { row: 'h-10 pl-2 pr-1.5', stashButton: 'size-7', stashIcon: 14 },
   mobile: { row: 'min-h-14 pl-1 pr-14', stashButton: 'size-11', stashIcon: 16 }
 } as const
+
+/**
+ * "Stash changes" icon button, gated on a read-only server. Shared by the Git
+ * tab header and the right panel Changes header.
+ */
+export function StashChangesButton({
+  size = 'desktop',
+  disabled,
+  onClick
+}: {
+  size?: 'desktop' | 'mobile'
+  disabled: boolean
+  onClick: () => void
+}) {
+  const admitted = useServerAdmitsRemoteWrites()
+  const chrome = HEADER_CHROME[size]
+  return (
+    <WriteGate gated={!admitted} className="shrink-0">
+      <button
+        type="button"
+        className={cn(
+          QUIET_ICON_BUTTON_CLASS,
+          'flex shrink-0 disabled:cursor-not-allowed disabled:opacity-40',
+          chrome.stashButton
+        )}
+        title="Stash changes"
+        aria-label="Stash changes"
+        onClick={onClick}
+        disabled={disabled || !admitted}
+      >
+        <Archive size={chrome.stashIcon} />
+      </button>
+    </WriteGate>
+  )
+}
 
 /** Branch picker + ahead count + Stash button + "Filter changes" field. */
 export function GitPanelHeader({
@@ -49,10 +78,8 @@ export function GitPanelHeader({
   onSearchQueryChange,
   onCreateBranch,
   onSwitchBranch,
-  onOpenStash,
-  belowBranch
+  onOpenStash
 }: GitPanelHeaderProps) {
-  const admitted = useServerAdmitsRemoteWrites()
   const chrome = HEADER_CHROME[variant]
   const isMobile = variant === 'mobile'
 
@@ -76,33 +103,15 @@ export function GitPanelHeader({
             ↑{ahead}
           </span>
         )}
-        <WriteGate gated={!admitted} className="ml-auto shrink-0">
-          <button
-            type="button"
-            className={cn(
-              QUIET_ICON_BUTTON_CLASS,
-              'flex shrink-0 disabled:cursor-not-allowed disabled:opacity-40',
-              admitted && 'ml-auto',
-              chrome.stashButton
-            )}
-            title="Stash changes"
-            aria-label="Stash changes"
-            onClick={onOpenStash}
-            disabled={!hasUncommittedChanges || isGenerating || !admitted}
-          >
-            <Archive size={chrome.stashIcon} />
-          </button>
-        </WriteGate>
+        <span className="flex-1" />
+        <StashChangesButton
+          size={variant}
+          disabled={!hasUncommittedChanges || isGenerating}
+          onClick={onOpenStash}
+        />
       </div>
 
-      {variant === 'column' && belowBranch}
-
-      <div
-        className={cn(
-          'shrink-0 px-2 pb-2',
-          variant === 'column' && belowBranch && 'border-t border-border pt-2'
-        )}
-      >
+      <div className="shrink-0 px-2 pb-2">
         <ChangesFilter
           value={searchQuery}
           onChange={onSearchQueryChange}

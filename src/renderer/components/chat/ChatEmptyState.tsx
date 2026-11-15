@@ -10,9 +10,9 @@ interface ChatEmptyStateProps {
 
 /**
  * An empty chat (no messages yet): the same start screen as the agent
- * launcher. This part is the hero above the composer; it fills the space
- * above, so with the starters below the composer (AgentChatPanel) the
- * composer sits in the middle of the pane.
+ * launcher. This part is the hero above the composer; AgentChatPanel puts it
+ * in the top part of the start block (`ChatTimelineStage`), so the hero and
+ * the composer sit where the launcher puts them.
  */
 export function ChatEmptyState({ sessionId }: ChatEmptyStateProps): React.JSX.Element {
   const isMobileShell = useMobileWebShell()
@@ -22,7 +22,7 @@ export function ChatEmptyState({ sessionId }: ChatEmptyStateProps): React.JSX.El
   )
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col items-center justify-end px-6">
+    <div className="flex min-h-0 flex-1 flex-col items-center justify-end px-5">
       <ChatStartHero
         projectLabel={projectName ?? 'this folder'}
         headingLevel={2}

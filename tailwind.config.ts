@@ -59,6 +59,9 @@ export default {
         overlay: 'oklch(var(--overlay) / <alpha-value>)',
         'row-hover': 'var(--row-hover)',
         'row-hover-solid': 'var(--row-hover-solid)',
+        'popover-edge': 'var(--popover-edge)',
+        'control-fill': 'var(--control-fill)',
+        'control-fill-hover': 'var(--control-fill-hover)',
         warning: {
           DEFAULT: 'oklch(var(--warning) / <alpha-value>)',
           foreground: 'oklch(var(--warning-foreground) / <alpha-value>)'
@@ -130,7 +133,10 @@ export default {
         // (no [size, lineHeight] tuple) so existing `leading-*` still wins.
         '2xs': '0.75rem', // 12px
         '3xs': '0.75rem', // 12px
-        '4xs': '0.75rem' // 12px
+        '4xs': '0.75rem', // 12px
+        // The start screen's one display line ("What should we do in …?",
+        // Paper 2.2). Nothing else uses it.
+        hero: '1.375rem' // 22px
       },
       fontFamily: {
         sans: [...SANS_FONT_FAMILY],
@@ -162,7 +168,9 @@ export default {
         composer: 'var(--composer-shadow)',
         'prompt-panel': 'var(--prompt-panel-shadow)',
         emboss: 'var(--shadow-emboss)',
+        control: 'var(--shadow-control)',
         'emboss-hover': 'var(--shadow-emboss-hover)',
+        'rail-hover-panel': 'var(--rail-hover-panel-shadow)',
         // Alpha kept inline here (single place); the hue components come from
         // the per-theme --glow-* tokens emitted by applyColorTheme.
         'glow-blue': '0 0 15px oklch(var(--glow-blue) / 0.3)',

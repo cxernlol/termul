@@ -2,7 +2,7 @@ import type { DirectoryEntry } from '@shared/types/filesystem.types'
 import { createContext, useContext, useEffect, useRef } from 'react'
 import { FIELD_FOCUS_CLASS } from '@/components/ui/panel-styles'
 import { cn } from '@/lib/utils'
-import { MaterialFileIcon } from './MaterialFileIcon'
+import { TreeEntryIcon } from './tree-entry-icon'
 import { normalizeTreePath } from './tree-paths'
 
 /**
@@ -150,18 +150,11 @@ export function InlineCreateRow({
 
   return (
     <div
-      className="relative flex h-7 min-w-0 items-center rounded-md pr-1 text-xs"
+      className="relative flex h-7 min-w-0 items-center rounded-md pr-1.5 text-xs"
       style={{ paddingLeft: treeRowPaddingLeft(depth) }}
     >
       <span className="mr-0.5 size-3.5 shrink-0" />
-      <MaterialFileIcon
-        name={inlineInput.type === 'folder' ? 'folder' : 'file'}
-        isDirectory={inlineInput.type === 'folder'}
-        isExpanded={false}
-        depth={depth}
-        size={14}
-        className="mr-1"
-      />
+      <TreeEntryIcon name="" isDirectory={inlineInput.type === 'folder'} className="mr-1.5" />
       <InlineNameInput />
     </div>
   )

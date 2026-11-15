@@ -23,7 +23,7 @@ import {
   treeRowPaddingLeft,
   useExplorerInlineInput
 } from './explorer-inline-input'
-import { MaterialFileIcon } from './MaterialFileIcon'
+import { TreeEntryIcon } from './tree-entry-icon'
 import { normalizeTreePath, parentTreePath } from './tree-paths'
 
 /**
@@ -126,7 +126,9 @@ export function FileTreeNode({
     ? 'text-muted-foreground/60'
     : fileStatus
       ? GIT_STATUS_TEXT_CLASS[fileStatus]
-      : undefined
+      : selection === 'none'
+        ? 'text-secondary-foreground'
+        : undefined
 
   const renderChild = (child: DirectoryEntry): React.JSX.Element => (
     <FileTreeNodeWrapper
@@ -166,7 +168,7 @@ export function FileTreeNode({
             data-path={entry.path}
             data-selected={selection !== 'none' || undefined}
             className={cn(
-              'group relative flex h-7 min-w-0 cursor-pointer select-none items-center rounded-md pr-1 text-xs transition-colors duration-150 ease-out',
+              'group relative flex h-7 min-w-0 cursor-pointer select-none items-center rounded-md pr-1.5 text-xs transition-colors duration-150 ease-out',
               FOCUS_RING_CLASS,
               ROW_SELECTION_CLASS[selection]
             )}
@@ -190,27 +192,22 @@ export function FileTreeNode({
                     <ChevronRight size={11} />
                   ))}
               </span>
-              <MaterialFileIcon
+              <TreeEntryIcon
                 name={entry.name}
                 isDirectory={isDir}
-                isExpanded={isExpanded}
-                depth={depth}
-                size={14}
-                className={cn(isIgnored && 'opacity-60', isRenaming && 'mr-1')}
+                className={cn(isIgnored && 'opacity-60', 'mr-1.5')}
               />
               {isRenaming ? (
                 <InlineNameInput />
               ) : (
-                <span className={cn('min-w-0 flex-1 truncate pl-1', nameToneClass)}>
-                  {entry.name}
-                </span>
+                <span className={cn('min-w-0 flex-1 truncate', nameToneClass)}>{entry.name}</span>
               )}
             </div>
 
             {!isRenaming && fileStatus && (
               <span
                 className={cn(
-                  'ml-1 w-4 shrink-0 text-center font-mono text-2xs font-semibold',
+                  'ml-1 w-3.5 shrink-0 text-center font-mono text-2xs',
                   GIT_STATUS_TEXT_CLASS[fileStatus]
                 )}
                 title={GIT_STATUS_LABEL[fileStatus]}
@@ -220,9 +217,9 @@ export function FileTreeNode({
               </span>
             )}
             {!isRenaming && isDir && hasGitChanges && (
-              <span className="ml-1 flex w-4 shrink-0 justify-center">
+              <span className="ml-1 flex w-3.5 shrink-0 justify-center">
                 <span
-                  className="size-[5px] rounded-full bg-diff-modified"
+                  className="size-1.5 rounded-full bg-diff-modified"
                   title="Contains changes"
                   role="img"
                   aria-label="Contains changes"

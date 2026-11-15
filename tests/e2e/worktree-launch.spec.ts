@@ -1,11 +1,12 @@
 import { expect, test } from 'playwright/test'
 import { E2E_TOKEN } from './helpers'
-import { openWorkspace, selectProject } from './ui'
+import { chatStartContextRow, openWorkspace, selectProject, startNewChat } from './ui'
 
 /**
- * Worktree-launch E2E on termul-server: the web launcher's chat composer must
- * offer the same worktree isolation the desktop has ("New worktree"), and
- * launching in that mode creates a real `git worktree` + a chat in it.
+ * Worktree-launch E2E on termul-server: the context row under the empty chat
+ * composer (New chat) must offer the same worktree isolation the desktop has
+ * ("New worktree"), and the first send in that mode creates a real
+ * `git worktree` + a chat in it.
  *
  * Root cause this suite guards (2026-10-06): `ProjectSummary` carries no git
  * fields and the worktree reconciler early-returns on web, so
@@ -26,71 +27,67 @@ test.beforeEach(async ({ page }) => {
   await openWorkspace(page)
 })
 
-test('launcher shows the worktree isolation picker for a git-repo project (web parity with desktop)', async ({
+test('the empty chat shows the worktree isolation picker for a git-repo project (web parity with desktop)', async ({
   page
 }) => {
   await selectProject(page, 'proj-w')
 
-  await page.getByRole('button', { name: 'New chat', exact: true }).first().click()
-  const composer = page.locator('[data-composer-editor="true"][aria-label="Agent prompt"]').first()
-  await composer.waitFor({ state: 'visible', timeout: 10_000 })
-  // The context strip mounts once `canUseWorktree` flips true — the git-branch
-  // probe resolves asynchronously after project load, so poll for it.
-  await page
-    .locator('[data-agent-launcher-context-strip="true"]')
-    .first()
-    .waitFor({ state: 'visible', timeout: 10_000 })
-
-  await expect(page.getByRole('combobox', { name: 'Workspace' })).toBeVisible()
+  await startNewChat(page)
+  // The context row becomes interactive once `canUseWorktree` flips true:
+  // the git-branch probe resolves asynchronously after project load, so
+  // poll for the Workspace select.
+  const row = chatStartContextRow(page)
+  const workspace = row.getByRole('combobox', { name: 'Workspace' })
+  await expect(workspace).toBeVisible({ timeout: 10_000 })
   // Radix Select renders options only while open — assert via the trigger's
   // selected value instead (defaults to Current checkout).
-  await expect(page.getByRole('combobox', { name: 'Workspace' })).toContainText('Current checkout')
+  await expect(workspace).toContainText('Current checkout')
 })
 
-test('launcher shows only the read-only strip for a non-git project', async ({ page }) => {
+test('the empty chat shows only the read-only context row for a non-git project', async ({
+  page
+}) => {
   await selectProject(page, 'proj-b')
 
-  await page.getByRole('button', { name: 'New chat', exact: true }).first().click()
-  const composer = page.locator('[data-composer-editor="true"][aria-label="Agent prompt"]').first()
-  await composer.waitFor({ state: 'visible', timeout: 10_000 })
+  await startNewChat(page)
+  const row = chatStartContextRow(page)
+  await expect(row).toBeVisible()
   // Give the (absent) git probe a beat to settle before asserting absence.
   await page.waitForTimeout(1_500)
 
-  // A non-git project gets the read-only strip: plain "Local" text, no picker.
-  await expect(page.getByRole('combobox', { name: 'Workspace' })).toHaveCount(0)
-  await expect(page.locator('[data-agent-launcher-context-strip="true"]')).toContainText('Local')
+  // A non-git project gets the read-only row: plain "Current checkout"
+  // text, no picker.
+  await expect(row.getByRole('combobox', { name: 'Workspace' })).toHaveCount(0)
+  await expect(row).toContainText('Current checkout')
 })
 
-test('launching a chat in New worktree mode creates the worktree and opens the chat in it', async ({
+test('a first send in New worktree mode creates the worktree and opens the chat in it', async ({
   page
 }) => {
   await selectProject(page, 'proj-w')
 
-  await page.getByRole('button', { name: 'New chat', exact: true }).first().click()
-  const composer = page.locator('[data-composer-editor="true"][aria-label="Agent prompt"]').first()
-  await composer.waitFor({ state: 'visible', timeout: 10_000 })
-  await page
-    .locator('[data-agent-launcher-context-strip="true"]')
-    .first()
-    .waitFor({ state: 'visible', timeout: 10_000 })
+  const composer = await startNewChat(page)
+  const row = chatStartContextRow(page)
+  const workspace = row.getByRole('combobox', { name: 'Workspace' })
+  await expect(workspace).toBeVisible({ timeout: 10_000 })
 
-  // Select worktree isolation. The strip is a radix Select — open and pick
+  // Select worktree isolation. The row is a radix Select — open it and pick
   // the "New worktree" option, then dismiss the dropdown (focus lands back
   // on the trigger; a left-open dropdown would swallow the Enter below as
   // an option pick).
-  await page.getByRole('combobox', { name: 'Workspace' }).click()
+  await workspace.click()
   await page.getByRole('option', { name: 'New worktree' }).click()
   await page.keyboard.press('Escape')
   await page.waitForTimeout(300)
 
   // Base-branch picker appears in worktree mode; the resolved default (main)
   // auto-fills, so it is present and non-empty.
-  const baseBranch = page.locator('[aria-label="Base branch"]').first()
+  const baseBranch = row.getByRole('combobox', { name: 'Base branch' })
   await expect(baseBranch).toBeVisible()
   await expect(baseBranch).toContainText(/\S/)
 
-  // Compose the first message — the launch runs `git worktree add` BEFORE the
-  // agent session starts (the in-timeline progress card covers the wait).
+  // Compose the first message — the first send runs `git worktree add`, then
+  // the chat starts again in the worktree (the in-timeline progress card covers the wait).
   await composer.click()
   await page.keyboard.type(PROMPT_W)
   await page.keyboard.press('Enter')
@@ -103,7 +100,7 @@ test('launching a chat in New worktree mode creates the worktree and opens the c
     timeout: 30_000
   })
   // The chat tab appears (session created in the worktree cwd).
-  const tab = page.locator(`[draggable="true"][aria-label^="${PROMPT_W}"]`).first()
+  const tab = page.getByRole('tab', { name: new RegExp(`^${PROMPT_W}`) }).first()
   await expect(tab).toBeVisible({ timeout: 30_000 })
 
   // The fake agent streams chunks — the turn runs against the worktree cwd.

@@ -233,7 +233,6 @@ function ThoughtGroupComponent({ messages, isLiveTail }: ThoughtGroupProps): Rea
   return (
     <Collapsible open={open} onOpenChange={handleOpenChange} className="pt-2">
       <CollapsibleTrigger
-        data-press-feedback="off"
         className={cn('flex w-full cursor-pointer items-center gap-1 text-left', CHAT_ROW_MIN_H)}
       >
         <Marker

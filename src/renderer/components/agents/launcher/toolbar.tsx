@@ -1,4 +1,5 @@
 import { CODEX_AGENT_CONFIG_ID } from '@shared/types/codex-accounts.types'
+import { useReducedMotion } from 'framer-motion'
 import { toast } from 'sonner'
 import { ModeChip } from '@/components/chat/AgentHeader'
 import {
@@ -14,9 +15,8 @@ import {
   type ComposerAddHandle,
   ComposerAddSheet
 } from '@/components/chat/composer/ComposerAddSheet'
+import { ComposerSendButton } from '@/components/chat/composer/ComposerSendButton'
 import { useTermulTools } from '@/components/chat/composer/use-termul-tools'
-import { ArrowUp } from '@/components/icons'
-import { Button } from '@/components/ui/button'
 import type { StoredAgentConfig } from '@/lib/acp-agents-persistence'
 import type { McpToolInfo, ProbeStatus, SessionConfigOption } from '@/lib/acp-api'
 import type { StoredMcpServer } from '@/lib/acp-mcp-persistence'
@@ -27,6 +27,9 @@ import { type AcpSession, useAcpStore } from '@/stores/acp-store'
 import type { OptionValues } from '@/stores/acp-store/composer-options'
 import { CLAUDE_AGENT_CONFIG_ID } from '@/stores/claude-account-switch'
 import { AgentUpdateCta } from './AgentUpdateCta'
+
+/** The launcher has no turn to stop: its send button never shows Stop. */
+const noop = (): void => {}
 
 /**
  * The composer card's bottom row: the + menu (attachments, mentions,
@@ -123,6 +126,7 @@ export function LauncherToolbar({
    */
   onSelectorCloseAutoFocus?: (event: Event) => void
 }): React.JSX.Element {
+  const reduced = useReducedMotion() ?? false
   const termulTools = useTermulTools(activeProjectId || null)
   const claudeProjectId =
     selectedEntry?.configId === CLAUDE_AGENT_CONFIG_ID && activeProjectId ? activeProjectId : null
@@ -188,19 +192,17 @@ export function LauncherToolbar({
       phone={phone}
     />
   )
+  // The chat composer's send button: 32px on every surface (Paper "2.2 New chat").
   const launchButton = (
-    <Button
-      type="button"
-      variant="composer"
-      size={isMobileShell ? 'touch' : 'icon'}
-      onClick={() => launch()}
-      disabled={!canLaunch}
-      className={cn('shrink-0', isMobileShell ? 'w-11 [&_svg]:size-5' : '[&_svg]:size-[18px]')}
-      aria-label="Start agent chat"
-      title="Start agent chat"
-    >
-      <ArrowUp />
-    </Button>
+    <ComposerSendButton
+      showStop={false}
+      canSend={canLaunch}
+      busy={false}
+      reduced={reduced}
+      onCancel={noop}
+      onSubmit={launch}
+      sendLabel="Start agent chat"
+    />
   )
 
   if (isMobileShell) {

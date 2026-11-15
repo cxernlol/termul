@@ -84,7 +84,6 @@ export function EditDiffBlock({
           type="button"
           aria-label={`Open ${name} at line ${openLine}`}
           onClick={() => onOpenFile(diff.path, openLine)}
-          data-press-feedback="off"
           className={cn(
             headerClass,
             'outline-none transition-colors hover:bg-muted/50 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-focus-ring'
@@ -113,7 +112,6 @@ export function EditDiffBlock({
               type="button"
               aria-label={`Show full diff of ${name}`}
               onClick={() => setExpanded(true)}
-              data-press-feedback="off"
               className="absolute inset-0 cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-focus-ring"
             />
           )}

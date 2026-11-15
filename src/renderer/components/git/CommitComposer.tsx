@@ -15,8 +15,10 @@ import { cn } from '@/lib/utils'
 
 interface CommitComposerProps {
   /** Story 10: `mobile` de-stacks the footer — inline Generate sparkle, larger
-      touch targets, Push/Publish in an overflow menu when no upstream exists. */
-  variant?: 'mobile'
+      touch targets, Push/Publish in an overflow menu when no upstream exists.
+      `panel` is the desktop look at the top of the right panel Changes view:
+      a hairline below it instead of the footer edge above it. */
+  variant?: 'mobile' | 'panel'
   summary: string
   onSummaryChange: (value: string) => void
   description: string
@@ -233,14 +235,24 @@ export function CommitComposer({
     )
   }
 
+  // Desktop (Paper "Commit composer"): Summary, Description, then Amend with
+  // a quiet Generate message on one row, then Commit (the one filled primary)
+  // beside Push. Push carries every sync state: Publish branch, Push N,
+  // Pushing..., Up to date (disabled) and the behind count.
   return (
-    // Commit footer (GitHub Desktop style)
-    <div className="border-t border-border p-3 space-y-2 bg-background/60">
+    <div
+      className={cn(
+        'flex flex-col gap-2 p-3',
+        variant === 'panel'
+          ? 'shrink-0 border-b-[0.5px] border-border'
+          : 'border-t border-border bg-background/60'
+      )}
+    >
       <input
         type="text"
         aria-label="Commit summary"
         placeholder={amend ? 'Update commit message' : 'Summary (required)'}
-        className={cn(PANEL_FIELD_CLASS, 'h-8 w-full px-2.5')}
+        className={cn(PANEL_FIELD_CLASS, 'h-8 w-full px-2.5 text-2xs')}
         value={summary}
         onChange={(e) => onSummaryChange(e.target.value)}
         disabled={isCommitting || isGenerating}
@@ -248,99 +260,105 @@ export function CommitComposer({
       <textarea
         aria-label="Commit description"
         placeholder="Description (optional)"
-        rows={3}
-        className={cn(PANEL_FIELD_CLASS, 'w-full resize-none px-2.5 py-1.5')}
+        className={cn(PANEL_FIELD_CLASS, 'h-14 w-full resize-none px-2.5 py-1.5 text-2xs')}
         value={description}
         onChange={(e) => onDescriptionChange(e.target.value)}
         disabled={isCommitting || isGenerating}
       />
-      <Button
-        type="button"
-        variant="outline"
-        size="sm"
-        className="w-full h-8 rounded-lg text-xs gap-2"
-        onClick={() => void onGenerateMessage()}
-        disabled={!canGenerate}
-        title={
-          stagedCount === 0
-            ? 'Stage files to generate a commit message'
-            : !hasUsableAgent
-              ? 'Configure and select an ACP agent'
-              : 'Generate a commit message from staged changes'
-        }
-      >
-        <Sparkles size={14} className={cn(isGenerating && 'animate-pulse')} />
-        {isGenerating ? 'Generating...' : 'Generate message'}
-      </Button>
-      <label
-        className={cn(
-          'flex items-center gap-2 text-2xs select-none',
-          commitContext?.hasHead
-            ? 'text-muted-foreground cursor-pointer'
-            : 'text-muted-foreground/40 cursor-not-allowed'
-        )}
-        title={
-          commitContext?.hasHead
-            ? 'Amend the last commit instead of creating a new one'
-            : 'No commit to amend yet'
-        }
-      >
-        <input
-          type="checkbox"
-          className="h-3 w-3 accent-foreground"
-          checked={amend}
-          onChange={onToggleAmend}
-          disabled={!commitContext?.hasHead || isCommitting || isGenerating}
-        />
-        Amend last commit
-      </label>
-      <WriteGate gated={!admitted} className="w-full">
-        <Button
-          variant="default"
-          size="sm"
-          className="w-full h-8 rounded-lg text-xs gap-2"
-          onClick={onCommit}
-          disabled={!canCommit || !admitted}
+      <div className="flex items-center justify-between gap-2">
+        <label
+          className={cn(
+            'flex min-w-0 items-center gap-2 text-2xs select-none',
+            commitContext?.hasHead
+              ? 'text-secondary-foreground cursor-pointer'
+              : 'text-muted-foreground cursor-not-allowed'
+          )}
           title={
-            amend
-              ? 'Amend the last commit'
-              : stagedCount === 0
-                ? 'Stage files to commit'
-                : 'Commit staged changes'
+            commitContext?.hasHead
+              ? 'Amend the last commit instead of creating a new one'
+              : 'No commit to amend yet'
           }
         >
-          <GitCommit size={14} />
-          {isCommitting
-            ? 'Committing...'
-            : amend
-              ? 'Amend commit'
-              : commitContext?.branch
-                ? `Commit to ${commitContext.branch}`
-                : 'Commit'}
-        </Button>
-      </WriteGate>
-      <WriteGate gated={!admitted} className="w-full">
-        <Button
-          variant="outline"
-          size="sm"
-          className="w-full h-8 rounded-lg text-xs gap-2"
-          onClick={onPush}
-          disabled={!canPush}
+          <input
+            type="checkbox"
+            className="size-3.5 shrink-0 accent-foreground"
+            checked={amend}
+            onChange={onToggleAmend}
+            disabled={!commitContext?.hasHead || isCommitting || isGenerating}
+          />
+          <span className="truncate">Amend last commit</span>
+        </label>
+        <button
+          type="button"
+          className={cn(
+            QUIET_ICON_BUTTON_CLASS,
+            'h-[26px] shrink-0 gap-1.5 px-2 text-2xs font-medium text-secondary-foreground',
+            'disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent'
+          )}
+          onClick={() => void onGenerateMessage()}
+          disabled={!canGenerate}
           title={
-            !onBranch
-              ? 'Not on a branch (detached HEAD)'
-              : !commitContext?.hasUpstream
-                ? 'Publish this branch to origin'
-                : ahead > 0
-                  ? 'Push commits to the remote'
-                  : 'Nothing to push — up to date with the remote'
+            stagedCount === 0
+              ? 'Stage files to generate a commit message'
+              : !hasUsableAgent
+                ? 'Configure and select an ACP agent'
+                : 'Generate a commit message from staged changes'
           }
         >
-          <ArrowUp size={14} className={cn(isPushing && 'animate-pulse')} />
-          {isPushing ? 'Pushing...' : pushLabel}
-          {behind > 0 && <span className="text-3xs tabular-nums text-warning">↓{behind}</span>}
-        </Button>
-      </WriteGate>
+          <Sparkles size={12} className={cn(isGenerating && 'animate-pulse')} />
+          {isGenerating ? 'Generating...' : 'Generate message'}
+        </button>
+      </div>
+      <div className="flex gap-2">
+        <WriteGate gated={!admitted} className="min-w-0 flex-1">
+          <Button
+            size="xs"
+            className="h-[30px] min-w-0 flex-1 gap-1.5 px-2.5 text-2xs [&_svg]:size-auto"
+            onClick={onCommit}
+            disabled={!canCommit || !admitted}
+            title={
+              amend
+                ? 'Amend the last commit'
+                : stagedCount === 0
+                  ? 'Stage files to commit'
+                  : 'Commit staged changes'
+            }
+          >
+            <GitCommit size={13} />
+            <span className="truncate">
+              {isCommitting
+                ? 'Committing...'
+                : amend
+                  ? 'Amend commit'
+                  : commitContext?.branch
+                    ? `Commit to ${commitContext.branch}`
+                    : 'Commit'}
+            </span>
+          </Button>
+        </WriteGate>
+        <WriteGate gated={!admitted} className="shrink-0">
+          <Button
+            variant="secondary"
+            size="xs"
+            className="h-[30px] shrink-0 gap-1.5 px-2.5 text-2xs [&_svg]:size-auto"
+            onClick={onPush}
+            disabled={!canPush}
+            title={
+              !onBranch
+                ? 'Not on a branch (detached HEAD)'
+                : !commitContext?.hasUpstream
+                  ? 'Publish this branch to origin'
+                  : ahead > 0
+                    ? 'Push commits to the remote'
+                    : 'Nothing to push — up to date with the remote'
+            }
+          >
+            <ArrowUp size={13} className={cn(isPushing && 'animate-pulse')} />
+            {isPushing ? 'Pushing...' : pushLabel}
+            {behind > 0 && <span className="tabular-nums text-warning">↓{behind}</span>}
+          </Button>
+        </WriteGate>
+      </div>
     </div>
   )
 }

@@ -181,7 +181,7 @@ function OptionRow({
         <span className="flex min-w-0 flex-1 flex-col gap-0.5">
           <span className="flex min-w-0 items-center gap-1.5 text-xs font-medium text-foreground">
             <span className="truncate">{label}</span>
-            {badge && <DefaultPill />}
+            {badge && <DefaultPill accountName={label} />}
           </span>
           <span className="truncate text-2xs text-muted-foreground">{sub}</span>
         </span>

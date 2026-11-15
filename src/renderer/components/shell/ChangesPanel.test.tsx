@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const { getLog, addDiffTab, acpState, gitState } = vi.hoisted(() => ({
@@ -124,33 +124,88 @@ describe('ChangesPanel', () => {
     expect(addDiffTab).toHaveBeenCalledWith('/work', 'src/two.ts', false)
   })
 
-  it('stacks branch + Stash, commit box with Push, filter, Change list, Stash list, then the History row', () => {
+  it('draws the 44px panel header: title, branch button with the ahead count, stash menu, Close', () => {
+    render(<ChangesPanel cwd="/work" isVisible />)
+
+    const header = screen.getByTestId('side-panel-header')
+    expect(header).toHaveClass('h-11')
+    const order = [
+      within(header).getByRole('heading', { name: 'Changes' }),
+      within(header).getByRole('button', { name: /dev\s*↑1/ }),
+      within(header).getByRole('button', { name: 'Stashes (1)' }),
+      within(header).getByRole('button', { name: 'Close panel' })
+    ]
+    for (let i = 1; i < order.length; i++) {
+      expect(follows(order[i - 1], order[i])).toBe(true)
+    }
+    // One header row: no second branch row below it.
+    expect(screen.getAllByRole('button', { name: 'Stashes (1)' })).toHaveLength(1)
+  })
+
+  it('puts Amend and Generate message on one row, then Commit beside Push', () => {
+    render(<ChangesPanel cwd="/work" isVisible />)
+
+    const amend = screen.getByText('Amend last commit').closest('label') as HTMLElement
+    const generate = screen.getByRole('button', { name: 'Generate message' })
+    expect(amend.parentElement).toBe(generate.parentElement)
+
+    // The write gate may wrap each button in a span; the row is the nearest div.
+    const commit = screen.getByRole('button', { name: /Commit to dev/ })
+    const push = screen.getByRole('button', { name: /Push 1/ })
+    const actionRow = commit.closest('div') as HTMLElement
+    expect(actionRow).toContainElement(push)
+    expect(actionRow).not.toContainElement(generate)
+    // Commit is the filled primary; Push is the raised secondary.
+    expect(commit.className).toContain('bg-primary-fill')
+    expect(push.className).toContain('bg-control-fill')
+    expect(follows(generate, commit)).toBe(true)
+  })
+
+  it('stacks header, commit box, filter, Change list, then the History section (no Stash list)', () => {
     render(<ChangesPanel cwd="/work" isVisible />)
 
     const order = [
-      screen.getByRole('button', { name: 'Stash changes' }),
+      screen.getByRole('button', { name: 'Stashes (1)' }),
       screen.getByLabelText('Commit summary'),
       screen.getByRole('button', { name: /Push 1/ }),
       screen.getByPlaceholderText('Filter changes'),
       screen.getByText('Changes', { selector: '.label-panel' }),
-      screen.getByText('Stashes', { selector: '.label-panel' }),
       screen.getByRole('button', { name: 'Open History in the main panel' })
     ]
     for (let i = 1; i < order.length; i++) {
       expect(follows(order[i - 1], order[i])).toBe(true)
     }
+    // Paper 3.1: stashes live in the header menu, not in the body.
+    expect(screen.queryByText('Stashes', { selector: '.label-panel' })).toBeNull()
     // The Diff column of the Git tab and the docked graph are not mounted.
     expect(screen.queryByText('Select a file to see changes')).toBeNull()
     expect(screen.queryByRole('region', { name: 'Git graph' })).toBeNull()
   })
 
-  it('scrolls the upper region on its own, apart from the History row', () => {
+  it('lists the stashes in the header menu with Apply, Pop and Drop', async () => {
     render(<ChangesPanel cwd="/work" isVisible />)
 
-    const upper = screen.getByPlaceholderText('Filter changes').closest('.overflow-y-auto')
-    expect(upper).not.toBeNull()
+    const trigger = screen.getByRole('button', { name: 'Stashes (1)' })
+    fireEvent.keyDown(trigger, { key: 'Enter' })
+    const menu = await screen.findByRole('menu')
+    expect(within(menu).getByRole('menuitem', { name: 'Stash changes' })).toBeInTheDocument()
+    const stash = within(menu).getByRole('menuitem', { name: /stash@\{0\}\s*wip/ })
+    act(() => stash.focus())
+    fireEvent.keyDown(stash, { key: 'ArrowRight' })
+    await waitFor(() => expect(screen.getByRole('menuitem', { name: 'Apply' })).toBeInTheDocument())
+    expect(screen.getByRole('menuitem', { name: 'Pop' })).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: 'Drop' })).toBeInTheDocument()
+  })
+
+  it('scrolls the middle region on its own, apart from the header and the History section', () => {
+    render(<ChangesPanel cwd="/work" isVisible />)
+
+    const middle = screen.getByPlaceholderText('Filter changes').closest('.overflow-y-auto')
+    expect(middle).not.toBeNull()
+    expect(middle).toContainElement(screen.getByLabelText('Commit summary'))
+    expect(middle).not.toContainElement(screen.getByTestId('side-panel-header'))
     const history = screen.getByRole('button', { name: 'Open History in the main panel' })
-    expect(upper).not.toContainElement(history)
+    expect(middle).not.toContainElement(history)
   })
 
   it('filters the Change list from the filter field', () => {

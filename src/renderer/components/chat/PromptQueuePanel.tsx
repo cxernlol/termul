@@ -142,7 +142,7 @@ const QueueRow = memo(function QueueRow({
         )}
         <span
           title={summary}
-          className="min-w-0 flex-1 truncate text-[13px] leading-5 text-muted-foreground group-hover/row:text-foreground group-focus-within/row:text-foreground"
+          className="min-w-0 flex-1 truncate text-xs leading-5 text-muted-foreground group-hover/row:text-foreground group-focus-within/row:text-foreground"
         >
           {summary}
         </span>

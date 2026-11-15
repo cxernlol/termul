@@ -75,9 +75,9 @@ describe('shell-layout-store', () => {
       expect(state()).toMatchObject({
         status: 'idle',
         railExpanded: true,
-        railWidth: 200,
-        sidePanelVisible: true,
-        sidePanelWidth: 260,
+        railWidth: 248,
+        sidePanelVisible: false,
+        sidePanelWidth: 340,
         sshSectionVisible: true,
         sshSectionHeight: 140,
         gitHistoryDetailWidth: 400,
@@ -108,19 +108,19 @@ describe('shell-layout-store', () => {
         railExpanded: 'yes',
         sidePanelVisible: 1
       })
-      expect(record.railWidth).toBe(200)
-      expect(record.sidePanelWidth).toBe(260)
+      expect(record.railWidth).toBe(248)
+      expect(record.sidePanelWidth).toBe(340)
       expect(record.railExpanded).toBe(true)
-      expect(record.sidePanelVisible).toBe(true)
+      expect(record.sidePanelVisible).toBe(false)
     })
 
-    it('drops invalid map entries, SSH as a last tab, and unknown fields', () => {
+    it('drops invalid map entries, SSH and the retired chats view, and unknown fields', () => {
       const record = sanitizeShellLayout({
         lastColumnTabByProject: { a: 'chats', b: 'ssh', c: 7, d: 'changes', e: 'github' },
         worktreePickByProject: { a: 'C:/repo/wt', b: 3, c: '' },
         somethingElse: true
       })
-      expect(record.lastColumnTabByProject).toEqual({ a: 'chats', d: 'changes', e: 'github' })
+      expect(record.lastColumnTabByProject).toEqual({ d: 'changes', e: 'github' })
       expect(record.worktreePickByProject).toEqual({ a: 'C:/repo/wt' })
       expect(record).not.toHaveProperty('somethingElse')
     })
@@ -137,7 +137,7 @@ describe('shell-layout-store', () => {
       state().setRailWidth(300)
       state().setLastColumnTab('p1', 'explorer')
       state().setGitHistoryDetailWidth(500)
-      expect(state().railWidth).toBe(200)
+      expect(state().railWidth).toBe(248)
       expect(state().lastColumnTabByProject).toEqual({})
       expect(state().gitHistoryDetailWidth).toBe(400)
       expect(mockWriteDebounced).not.toHaveBeenCalled()
@@ -156,7 +156,7 @@ describe('shell-layout-store', () => {
       const pending = state().hydrate()
       expect(state().status).toBe('hydrating')
       state().setRailWidth(300)
-      expect(state().railWidth).toBe(200)
+      expect(state().railWidth).toBe(248)
       expect(mockWriteDebounced).not.toHaveBeenCalled()
       release({ success: true, data: { railWidth: 250 } })
       await pending
@@ -173,7 +173,7 @@ describe('shell-layout-store', () => {
 
     it('loads an existing record, clamped, and never migrates', async () => {
       await hydrateWithRecord({
-        version: 2,
+        version: 3,
         railExpanded: false,
         railWidth: 5000,
         sidePanelVisible: false,
@@ -210,14 +210,45 @@ describe('shell-layout-store', () => {
         expect(state().gitHistoryDetailWidth).toBe(400)
         expect(mockWriteDebounced).toHaveBeenCalledTimes(1)
         const saved = mockWriteDebounced.mock.calls[0][1] as Record<string, unknown>
-        expect(saved).toMatchObject({ version: 2, railWidth: 250, gitHistoryDetailWidth: 400 })
+        expect(saved).toMatchObject({ version: 3, railWidth: 250, gitHistoryDetailWidth: 400 })
         expect(saved).not.toHaveProperty('graphHeight')
       })
 
       it('does not save a record that is already the current version', async () => {
-        await hydrateWithRecord({ version: 2, railWidth: 250, gitHistoryDetailWidth: 340 })
+        await hydrateWithRecord({ version: 3, railWidth: 250, gitHistoryDetailWidth: 340 })
         expect(state().gitHistoryDetailWidth).toBe(340)
         expect(mockWriteDebounced).not.toHaveBeenCalled()
+      })
+    })
+
+    describe('a saved version 2 record (Sidebar V2 P3 migration)', () => {
+      const V2 = {
+        version: 2,
+        sidePanelVisible: true,
+        sidePanelWidth: 260,
+        lastColumnTabByProject: { p1: 'chats', p2: 'changes', p3: 'github' }
+      }
+
+      it('turns a remembered chats view into explorer and keeps visibility and width', async () => {
+        await hydrateWithRecord(V2)
+        expect(state()).toMatchObject({
+          status: 'ready',
+          sidePanelVisible: true,
+          sidePanelWidth: 260,
+          lastColumnTabByProject: { p1: 'explorer', p2: 'changes', p3: 'github' }
+        })
+        expect(mockWriteDebounced).toHaveBeenCalledTimes(1)
+        expect(mockWriteDebounced.mock.calls[0][1]).toMatchObject({
+          version: 3,
+          sidePanelVisible: true,
+          sidePanelWidth: 260,
+          lastColumnTabByProject: { p1: 'explorer', p2: 'changes', p3: 'github' }
+        })
+      })
+
+      it('keeps a hidden panel hidden', async () => {
+        await hydrateWithRecord({ ...V2, sidePanelVisible: false })
+        expect(state().sidePanelVisible).toBe(false)
       })
     })
 
@@ -245,11 +276,11 @@ describe('shell-layout-store', () => {
     })
 
     it('goes unavailable for a newer version and keeps the saved record untouched', async () => {
-      await hydrateWithRecord({ version: 3, railWidth: 333 })
+      await hydrateWithRecord({ version: 4, railWidth: 333 })
       expect(state().status).toBe('unavailable')
-      expect(state().railWidth).toBe(200)
+      expect(state().railWidth).toBe(248)
       expect(mockLog).toHaveBeenCalledWith(
-        expect.objectContaining({ level: 'warn', message: expect.stringContaining('version 3') })
+        expect.objectContaining({ level: 'warn', message: expect.stringContaining('version 4') })
       )
       state().setRailWidth(250)
       expect(state().railWidth).toBe(250)
@@ -279,16 +310,17 @@ describe('shell-layout-store', () => {
       expect(state().status).toBe('ready')
       expect(mockWrite).toHaveBeenCalledTimes(1)
       expect(mockWrite).toHaveBeenCalledWith(PersistenceKeys.shellLayout, {
-        version: 2,
+        version: 3,
         railExpanded: false,
-        railWidth: 200,
+        railWidth: 248,
         sidePanelVisible: false,
         sidePanelWidth: 400,
         sshSectionVisible: false,
         sshSectionHeight: 200,
         gitHistoryDetailWidth: 400,
         lastColumnTabByProject: {},
-        worktreePickByProject: { p1: 'c:/repo/.termul/worktrees/feat' }
+        worktreePickByProject: { p1: 'c:/repo/.termul/worktrees/feat' },
+        chatsHiddenByProject: {}
       })
       expect(mockWriteDebounced).not.toHaveBeenCalled()
       const message = mockLog.mock.calls.map(([payload]) => payload.message).join('\n')
@@ -337,7 +369,7 @@ describe('shell-layout-store', () => {
       expect(mockWriteDebounced).toHaveBeenLastCalledWith(
         PersistenceKeys.shellLayout,
         expect.objectContaining({
-          version: 2,
+          version: 3,
           railWidth: 360,
           sidePanelWidth: 220,
           sshSectionHeight: 60,
@@ -382,6 +414,17 @@ describe('shell-layout-store', () => {
       expect(state().worktreePickByProject).toEqual({})
     })
 
+    it('collapses and expands a project chat list, storing only the collapsed ones', () => {
+      state().setProjectChatsHidden('p1', true)
+      expect(state().chatsHiddenByProject).toEqual({ p1: true })
+      expect(mockWriteDebounced).toHaveBeenLastCalledWith(
+        PersistenceKeys.shellLayout,
+        expect.objectContaining({ chatsHiddenByProject: { p1: true } })
+      )
+      state().setProjectChatsHidden('p1', false)
+      expect(state().chatsHiddenByProject).toEqual({})
+    })
+
     it('logs a failed persist without throwing', async () => {
       mockWriteDebounced.mockResolvedValueOnce({ success: false, code: 'WRITE_ERROR' })
       state().setRailWidth(250)
@@ -398,7 +441,8 @@ describe('shell-layout-store', () => {
     it('drops map entries, editor state and retained chats', async () => {
       await hydrateWithRecord({
         lastColumnTabByProject: { p1: 'chats', p2: 'explorer' },
-        worktreePickByProject: { p1: 'c:/a', p2: 'c:/b' }
+        worktreePickByProject: { p1: 'c:/a', p2: 'c:/b' },
+        chatsHiddenByProject: { p1: true, p2: true }
       })
       useAgentChatLifetimeStore.setState({
         retainedByProject: { p1: ['s1'], p2: ['s2'] },
@@ -411,6 +455,7 @@ describe('shell-layout-store', () => {
 
       expect(state().lastColumnTabByProject).toEqual({ p2: 'explorer' })
       expect(state().worktreePickByProject).toEqual({ p2: 'c:/b' })
+      expect(state().chatsHiddenByProject).toEqual({ p2: true })
       expect(mockDelete).toHaveBeenCalledWith('workspace/p1')
       const lifetime = useAgentChatLifetimeStore.getState()
       expect(lifetime.retainedByProject).toEqual({ p2: ['s2'] })

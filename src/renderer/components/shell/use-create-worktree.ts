@@ -9,7 +9,7 @@ import { useShellLayoutStore } from '@/stores/shell-layout-store'
 import { useWorktreeProgressStore } from '@/stores/worktree-progress-store'
 import type { Project } from '@/types/project'
 
-const LOG_SOURCE = 'shell-workspace-switcher'
+const LOG_SOURCE = 'shell-worktree-switcher'
 
 /** Windows `MAX_PATH` is 260; leave room for the files inside the worktree. */
 const MAX_TARGET_PATH = 240
@@ -47,7 +47,7 @@ function reportFailure(reason: string): void {
 }
 
 /**
- * Create a worktree (and branch) named `name` from the Workspace switcher: the
+ * Create a worktree (and branch) named `name` from the Rail worktree switcher: the
  * minimal path of `NewWorktreeModal` (no `.worktree-include` copy, no collision
  * retry, no terminal). Success registers it through the reconciler, links the
  * project's symlink dirs and picks it, as the switcher's third pick writer.

@@ -102,9 +102,7 @@ function SelectTrack({
                 {rejected.has(option.value) ? (
                   <span className="flex min-w-0 flex-1 items-center justify-between gap-2">
                     <span className="truncate">{option.name}</span>
-                    <span className="shrink-0 text-[10px] text-muted-foreground">
-                      Not available
-                    </span>
+                    <span className="shrink-0 text-2xs text-muted-foreground">Not available</span>
                   </span>
                 ) : (
                   option.name
@@ -148,13 +146,11 @@ function FastToggle({
         title={fastMode ? (fastMode.description ?? fastMode.name) : label}
         disabled={disabled || !fastMode || !onToggle}
         data-testid="selector-fast"
-        data-press-feedback="off"
         onClick={onToggle ?? undefined}
         className={cn(
           'relative flex items-center justify-center self-stretch rounded-md',
-          'transition-[color,background-color,transform] duration-150 ease-out',
+          'transition-colors duration-150 ease-out',
           'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-focus-ring',
-          'enabled:active:scale-[0.96] motion-reduce:active:scale-100',
           'disabled:cursor-not-allowed disabled:opacity-40',
           touch ? 'min-h-11 w-11' : 'min-h-7 w-7',
           // On: a filled bolt in the warning (yellow) token. Off: an outline

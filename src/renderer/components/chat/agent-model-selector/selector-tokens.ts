@@ -4,7 +4,7 @@
  * inherits nothing from it; sharing the classes is what keeps the two equal.
  */
 export const PICKER_ROW = {
-  text: 'text-sm',
+  text: 'text-xs',
   height: 'h-7',
   heightTouch: 'min-h-11',
   padX: 'px-2',
@@ -34,23 +34,22 @@ export const PICKER_ROW_SELECTED = 'bg-foreground/10'
 
 /**
  * The selected row's outer box: the fill, kept under hover. It goes last in
- * `cn`, so tailwind-merge drops the box's own `hover:bg-row-hover` (and the
- * open flyout's `bg-row-hover`). The hover half stays literal for Tailwind.
+ * `cn`, so tailwind-merge drops the box's own `hover:bg-foreground/[0.06]`
+ * (and the open flyout's `bg-foreground/[0.06]`). The hover half stays literal for Tailwind.
  */
 export const PICKER_ROW_SELECTED_BOX = `${PICKER_ROW_SELECTED} hover:bg-foreground/10`
 
-/** Icon sizes in a row: the agent glyph and the Fast bolt (16), the check (14). */
-export const PICKER_ICON = { glyph: 16, check: 14 } as const
+/** Icon sizes in a row: the agent glyph and the Fast bolt (16). */
+export const PICKER_ICON = { glyph: 16 } as const
 
 /** A group label: Favorites and the agent name in the list, Thinking and Context in the flyout. */
-export const PICKER_LABEL = 'truncate px-2 pb-1 pt-2 text-xs text-muted-foreground'
+export const PICKER_LABEL = 'truncate px-2 pb-1.5 pt-1.5 text-xs text-muted-foreground'
 
 /** The surface both the panel and the flyout sit on. */
 export const PICKER_SURFACE = {
-  radius: 'rounded-xl',
   padding: 'p-1',
   paddingTouch: 'px-3 pb-3',
-  separator: 'border-t border-border'
+  separator: 'border-t-[0.5px] border-border'
 } as const
 
 /**

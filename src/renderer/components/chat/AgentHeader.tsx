@@ -224,7 +224,6 @@ export function ConfigChip({
                 type="button"
                 {...tapSelect(() => handleSelect(v.value))}
                 onPointerDown={keepFocusOnMousePress}
-                data-press-feedback="off"
                 aria-pressed={v.value === displayValue}
                 className={menuOptionRowClass(isMobile)}
               >
@@ -396,7 +395,9 @@ export function ModeChip({
         side="top"
         sideOffset={8}
         collisionPadding={8}
-        className="w-72 rounded-xl border-border p-1"
+        // The model picker's surface, so the two menus match (Paper "Mode menu").
+        surface="panel"
+        className="w-75 p-1"
       >
         {optionsList}
       </AnimatedMenuContent>

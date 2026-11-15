@@ -308,7 +308,7 @@ export function QuestionStepper({
                     type="button"
                     variant="ghost"
                     size="xs"
-                    className="h-8 rounded-full px-3 text-[13px] text-muted-foreground pointer-coarse:min-h-11"
+                    className="h-8 rounded-full px-3 text-xs text-muted-foreground pointer-coarse:min-h-11"
                     disabled={submitting}
                     onClick={onSkip}
                   >

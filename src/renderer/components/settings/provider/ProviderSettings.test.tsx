@@ -259,15 +259,21 @@ describe('ProviderSettings', () => {
     expect(api.setDefault).not.toHaveBeenCalled()
   })
 
-  it('nudges to add a second account when there is only one', async () => {
+  it('with one account: a hint for a second account instead of the switch, one Add account', async () => {
     api.list.mockResolvedValue({
       ...SNAPSHOT,
       accounts: [SNAPSHOT.accounts[0]],
       projectAccounts: {}
     })
     render(<ProviderSettings />)
-    expect(await screen.findByText('Keep work and personal apart')).toBeInTheDocument()
+    expect(await screen.findByTestId('claude-second-account-hint')).toHaveTextContent(
+      'Add a second account to keep work and personal apart.'
+    )
     expect(screen.getByText('1 account')).toBeInTheDocument()
+    expect(
+      screen.queryByRole('switch', { name: 'Switch accounts automatically' })
+    ).not.toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: 'Add account' })).toHaveLength(1)
   })
 
   it('turns automatic switching off on the host and shows the saved state', async () => {

@@ -11,8 +11,8 @@ vi.mock('sonner', () => ({ toast: { error: toastError, success: vi.fn() } }))
 
 const renders = vi.hoisted(() => ({ rows: [] as string[], menus: 0 }))
 
-vi.mock('./MaterialFileIcon', () => ({
-  MaterialFileIcon: ({ name }: { name: string }) => {
+vi.mock('./tree-entry-icon', () => ({
+  TreeEntryIcon: ({ name }: { name: string }) => {
     renders.rows.push(name)
     return null
   }

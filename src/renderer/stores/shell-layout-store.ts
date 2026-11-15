@@ -21,7 +21,8 @@ import { logFrontendError } from '@/lib/log-api'
 import {
   buildMigratedShellLayout,
   countLegacyShellLayoutSources,
-  readLegacyShellLayoutSources
+  readLegacyShellLayoutSources,
+  upgradeShellLayoutRecord
 } from '@/lib/shell-layout-migration'
 import {
   clampToBounds,
@@ -62,6 +63,8 @@ interface ShellLayoutState extends ShellLayoutRecord {
   setLastColumnTab: (projectId: string, tab: ShellLastColumnTab) => void
   /** Stores `normalizePath(path)`; `null` clears the pick. */
   setWorktreePick: (projectId: string, path: string | null) => void
+  /** Collapses or expands the chat list under a project's Rail row. */
+  setProjectChatsHidden: (projectId: string, hidden: boolean) => void
   /** Drops everything remembered for a Project that no longer exists. */
   removeProject: (projectId: string) => Promise<void>
 }
@@ -88,7 +91,8 @@ function snapshotOf(state: ShellLayoutRecord): ShellLayoutRecord {
     sshSectionHeight: state.sshSectionHeight,
     gitHistoryDetailWidth: state.gitHistoryDetailWidth,
     lastColumnTabByProject: { ...state.lastColumnTabByProject },
-    worktreePickByProject: { ...state.worktreePickByProject }
+    worktreePickByProject: { ...state.worktreePickByProject },
+    chatsHiddenByProject: { ...state.chatsHiddenByProject }
   }
 }
 
@@ -134,22 +138,27 @@ function withoutPendingRemovals(record: ShellLayoutRecord): ShellLayoutRecord {
   if (pendingRemovedProjects.size === 0) return record
   const lastColumnTabByProject = { ...record.lastColumnTabByProject }
   const worktreePickByProject = { ...record.worktreePickByProject }
+  const chatsHiddenByProject = { ...record.chatsHiddenByProject }
   for (const projectId of pendingRemovedProjects) {
     delete lastColumnTabByProject[projectId]
     delete worktreePickByProject[projectId]
+    delete chatsHiddenByProject[projectId]
   }
-  return { ...record, lastColumnTabByProject, worktreePickByProject }
+  return { ...record, lastColumnTabByProject, worktreePickByProject, chatsHiddenByProject }
 }
 
 /** Applies queued removals to the live state once hydration has settled;
  * `true` when it saved the result. */
 function flushPendingRemovals(): boolean {
   if (pendingRemovedProjects.size === 0) return false
-  const { lastColumnTabByProject, worktreePickByProject } = withoutPendingRemovals(
-    snapshotOf(useShellLayoutStore.getState())
-  )
+  const { lastColumnTabByProject, worktreePickByProject, chatsHiddenByProject } =
+    withoutPendingRemovals(snapshotOf(useShellLayoutStore.getState()))
   pendingRemovedProjects.clear()
-  useShellLayoutStore.setState({ lastColumnTabByProject, worktreePickByProject })
+  useShellLayoutStore.setState({
+    lastColumnTabByProject,
+    worktreePickByProject,
+    chatsHiddenByProject
+  })
   persistSnapshot()
   return true
 }
@@ -169,7 +178,7 @@ async function runHydration(): Promise<void> {
         log('warn', `[shell] unsupported shell-layout version ${version}; layout is not saved`)
         return
       }
-      const record = sanitizeShellLayout(result.data)
+      const record = sanitizeShellLayout(upgradeShellLayoutRecord(result.data))
       // A record older than the current version is saved as the current one.
       const upgraded = typeof version !== 'number' || version < SHELL_LAYOUT_VERSION
       set({ ...record, status: 'ready' })
@@ -281,6 +290,14 @@ export const useShellLayoutStore = create<ShellLayoutState>((_set, get) => ({
       worktreePickByProject: { ...state.worktreePickByProject, [projectId]: key }
     }))
   },
+  setProjectChatsHidden: (projectId, hidden) => {
+    if (!projectId || projectId === '__proto__') return
+    mutate('setProjectChatsHidden', (state) => ({
+      chatsHiddenByProject: hidden
+        ? { ...state.chatsHiddenByProject, [projectId]: true }
+        : withoutKey(state.chatsHiddenByProject, projectId)
+    }))
+  },
 
   removeProject: async (projectId) => {
     if (!projectId || projectId === '__proto__') return
@@ -293,11 +310,13 @@ export const useShellLayoutStore = create<ShellLayoutState>((_set, get) => ({
       pendingRemovedProjects.add(projectId)
     } else if (
       projectId in state.lastColumnTabByProject ||
-      projectId in state.worktreePickByProject
+      projectId in state.worktreePickByProject ||
+      projectId in state.chatsHiddenByProject
     ) {
       mutate('removeProject', (current) => ({
         lastColumnTabByProject: withoutKey(current.lastColumnTabByProject, projectId),
-        worktreePickByProject: withoutKey(current.worktreePickByProject, projectId)
+        worktreePickByProject: withoutKey(current.worktreePickByProject, projectId),
+        chatsHiddenByProject: withoutKey(current.chatsHiddenByProject, projectId)
       }))
     }
 
@@ -342,3 +361,5 @@ export const useLastColumnTab = (projectId: string): ShellLastColumnTab | undefi
   useShellLayoutStore((state) => state.lastColumnTabByProject[projectId])
 export const useWorktreePick = (projectId: string): string | undefined =>
   useShellLayoutStore((state) => state.worktreePickByProject[projectId])
+export const useProjectChatsHidden = (projectId: string): boolean =>
+  useShellLayoutStore((state) => state.chatsHiddenByProject[projectId] === true)

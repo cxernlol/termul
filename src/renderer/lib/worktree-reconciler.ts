@@ -283,3 +283,23 @@ export function reconcileProjectWorktrees(projectId: string): Promise<ReconcileO
   if (!current.started) return current.done
   return launchFlight(projectId, current.done)
 }
+
+/**
+ * After a branch switch in `cwd`: when `cwd` is a listed worktree, re-list
+ * its project's worktrees so the Rail chip and chat rows show the new branch
+ * now, not on the reconciler's next tick. Returns the project it re-listed.
+ */
+export function reconcileWorktreeOwnerOf(cwd: string): string | null {
+  const key = worktreeKey(cwd)
+  const owner = useProjectStore
+    .getState()
+    .projects.find((p) => p.worktrees?.some((w) => worktreeKey(w.path) === key))
+  if (!owner) return null
+  void logFrontendError({
+    level: 'info',
+    source: 'worktree-reconciler',
+    message: `[worktree-reconciler] branch switch in a worktree of project ${owner.id}: reconcile worktrees`
+  })
+  void reconcileProjectWorktrees(owner.id)
+  return owner.id
+}

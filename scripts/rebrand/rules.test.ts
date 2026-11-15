@@ -292,6 +292,26 @@ describe('font-family keep', () => {
   })
 })
 
+describe('paper design file keep', () => {
+  it.each([
+    'DESIGN.md',
+    'docs/design/sidebar-v2-handoff.md'
+  ])('keeps the Paper file name in %s', (path) => {
+    const text = 'Paper file "Termul Design System", page Troupe Design.'
+    expect(rewrite(path, text, off)).toEqual({
+      output: text,
+      hits: [],
+      kept: { 'paper-design-file': 1 }
+    })
+  })
+
+  it('renames the same phrase in any other file', () => {
+    expect(out('docs/a.md', 'Paper file "Termul Design System"')).toBe(
+      'Paper file "Troupe Design System"'
+    )
+  })
+})
+
 describe('rename-notice keep', () => {
   it.each([
     'src/renderer/lib/rename-notice.ts',

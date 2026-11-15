@@ -20,11 +20,15 @@ import { useServerAdmitsRemoteWrites } from '@/hooks/use-server-admits-remote-wr
 import { cn } from '@/lib/utils'
 
 interface BranchSectionProps {
-  /** Story 10: `mobile` grows the trigger to the 44px touch floor. */
-  variant?: 'mobile'
+  /** Story 10: `mobile` grows the trigger to the 44px touch floor. `panel` is
+      the raised 26px branch button of the right panel header (Paper "Branch
+      button"), with the ahead count inside it. */
+  variant?: 'mobile' | 'panel'
   branches: string[]
   /** Current branch name (`commitContext?.branch`); null shows "Detached HEAD". */
   currentBranch: string | null | undefined
+  /** `panel` only: commits ahead of upstream, shown as `↑N` when > 0. */
+  ahead?: number
   /** Opens the create-branch dialog. */
   onCreateBranch: () => void
   onSwitchBranch: (name: string) => void
@@ -34,6 +38,7 @@ export function BranchSection({
   variant,
   branches,
   currentBranch,
+  ahead = 0,
   onCreateBranch,
   onSwitchBranch
 }: BranchSectionProps) {
@@ -42,18 +47,38 @@ export function BranchSection({
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button
-          variant="ghost"
-          size={isMobile ? 'touch' : 'sm'}
-          className={cn(
-            'px-2 font-medium text-xs flex items-center gap-1.5 max-w-[190px] truncate hover:bg-foreground/[0.03]',
-            isMobile ? 'min-h-11' : 'h-8'
-          )}
-        >
-          <GitBranch size={isMobile ? 14 : 13} className="text-muted-foreground shrink-0" />
-          <span className="truncate">{currentBranch ?? 'Detached HEAD'}</span>
-          <ChevronDown size={12} className="text-muted-foreground opacity-50 shrink-0" />
-        </Button>
+        {variant === 'panel' ? (
+          <Button
+            variant="secondary"
+            size="xs"
+            className="h-[26px] min-w-0 max-w-[160px] shrink gap-1.5 px-2 text-2xs [&_svg]:size-auto"
+          >
+            <GitBranch size={13} className="shrink-0 text-muted-foreground" />
+            <span className="truncate">{currentBranch ?? 'Detached HEAD'}</span>
+            {ahead > 0 && (
+              <span
+                className="shrink-0 font-normal tabular-nums text-muted-foreground"
+                title={`${ahead} commit${ahead === 1 ? '' : 's'} ahead of upstream`}
+              >
+                ↑{ahead}
+              </span>
+            )}
+            <ChevronDown size={11} className="shrink-0 text-muted-foreground" />
+          </Button>
+        ) : (
+          <Button
+            variant="ghost"
+            size={isMobile ? 'touch' : 'sm'}
+            className={cn(
+              'px-2 font-medium text-xs flex items-center gap-1.5 max-w-[190px] truncate hover:bg-foreground/[0.03]',
+              isMobile ? 'min-h-11' : 'h-8'
+            )}
+          >
+            <GitBranch size={isMobile ? 14 : 13} className="text-muted-foreground shrink-0" />
+            <span className="truncate">{currentBranch ?? 'Detached HEAD'}</span>
+            <ChevronDown size={12} className="text-muted-foreground opacity-50 shrink-0" />
+          </Button>
+        )}
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="w-56 max-h-[300px] overflow-y-auto z-50">
         <WriteGate gated={!admitted} focusable={false} className="flex w-full">

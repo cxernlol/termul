@@ -1,60 +1,75 @@
 # Status
 
-Status colour is a role, not a hue. Pair it with a label or icon — never colour alone.
+Status colour is a role, not a hue. Always pair it with a word or an icon. Colour alone fails for colour-blind users and in screenshots.
 
-| Role | Tokens | Meaning |
+| Role | Ink | Tint (badge, banner) | Meaning |
+|---|---|---|---|
+| `success` | `text-success` | `bg-success/10` | Connected lamp, completed, added (outside a diff) |
+| `warning` | `text-warning` | `bg-warning/10` | Needs you, in progress, conflict, caution |
+| `destructive` | `text-destructive` | `bg-destructive/10` | Failed, delete, error, removed diff line |
+| `connection` | `text-connection` | `bg-connection/15` | Remote access and agent connection (lamp, banner) — never "success" |
+| `muted` | `text-muted-foreground` | `bg-muted-foreground/50` (lamp) | Idle, offline, disconnected |
+
+Tints are `/10` (`/15` for `connection`). A banner adds a `border-{role}/20` to `/30` edge. Do not use `/20` or stronger fills: they read as a button.
+
+`diff-modified` marks a changed file in a git list. Do not use `warning` for "this file changed". Diff lines: additions `diff-added` (`diff-added-foreground`, `diff-added-border` for the line chrome), deletions `destructive`.
+
+```
+What is the status?
+ ├── Git diff paint → addition diff-added · deletion destructive · changed file diff-modified
+ ├── A live connection (remote access, agent link) → connection
+ ├── Needs the user, or in progress, or a conflict → warning
+ ├── Failed, deleted, error → destructive
+ ├── Connected / completed → success (lamp or icon), word stays muted
+ └── Idle, offline → muted
+```
+
+## SSH hosts
+
+`components/ssh/ssh-host-status.tsx` (`HOST_STATE`) is the one source for the word, its ink and the lamp. Copy it, not a hue:
+
+| State | Word ink | Lamp |
 |---|---|---|
-| `success` | `text-success`, `bg-success/20` | Connected, completed, added (when not in a diff view) |
-| `warning` | `text-warning`, `bg-warning/20` | In progress, conflict, caution |
-| `destructive` | `text-destructive`, `bg-destructive/20` | Failed, delete, error |
-| `connection` | `text-connection`, `bg-connection` | Live connection lamp only — not success green |
-| `muted` | `text-muted-foreground` | Offline / idle |
+| idle, disconnected | `text-muted-foreground` | `bg-muted-foreground/50` |
+| connecting | `text-muted-foreground` | none: a 9px warning spinner |
+| attention ("Needs input") | `text-warning` | `bg-warning` |
+| connected | `text-muted-foreground` | `bg-success` |
+| failed | `text-destructive` | `bg-destructive` |
 
-`diff-modified` marks changed files in git lists. Do not use `warning` for “this file changed”. Diff line additions use `diff-added`; deletions use `destructive`.
+Do not split reconnecting onto `project-orange`.
 
-SSH (`components/ssh/ssh-host-status.tsx`, the one source for the lamp and the state word): idle and disconnected → muted lamp; connecting → `warning` spinner; needs input → `warning`; connected → `success`; failed → `destructive`. An idle host shows no word. Do not split reconnecting onto `project-orange`.
+## Shell
 
-StatusBar is quiet: `h-7 border-t border-border bg-card text-2xs text-muted-foreground`. Do not use `bg-status-bar*`, `bg-project-*` or `text-primary-foreground` on the bar. The project colour is in the 14px project glyph only.
+The desktop shell has no status bar (Sidebar V2). Its tools sit in the tool strip at the right edge (`components/shell/tool-strip/`): Terminal, Browser and Remote access in the bottom group.
 
-- Use the constants in `components/status-bar-hit.ts`. Do not copy the class strings.
-- Text items: `STATUS_BAR_ITEM_CLASS` (`h-6 rounded-md px-2`) with `STATUS_BAR_HOVER_CLASS` (`hover:bg-foreground/[0.03] hover:text-foreground`). An item with no action (the project label) has no hover and `cursor-default`.
-- Icon buttons and popover triggers: `STATUS_BAR_HIT_TARGET` (`h-5 w-5`, 20px on fine pointers, 44px box on coarse pointers) with the glyph in `STATUS_BAR_HIT_GLYPH`.
-- Open trigger (branch picker, popovers): `STATUS_BAR_OPEN_CLASS` (`bg-foreground/[0.06]`). Focus: `ring-1 ring-focus-ring`.
-- Git counts: `diff-modified` (pencil), `diff-added` (plus), muted (untracked). Numbers use `tabular-nums`.
-- Exit code: `Check` / `X` icon and "Exit N" in bar ink. No status colour.
-- Remote access on: `Monitor` icon in `text-connection`. Web connection lamp: status tone (`connection` / `warning` / `destructive`).
-- A chat that needs you: `rounded-md bg-warning/10 text-warning font-medium` pill with a 6px `bg-warning` dot.
-- No blue (`primary`) on the bar. The bar has no live-work signal.
+- Remote access on: the `Monitor` icon in `text-connection` on the strip button. The web client shows its connection lamp there in a status tone (`connection` / `warning` / `destructive`).
+- Git change count: the blue `CountBadge` on the strip's Changes button. Blue badges are the only status use of `primary`.
+- A chat or project that needs you: a `bg-warning/10 text-warning` pill with a 6px `bg-warning` dot and the word "Needs you" or a count (`sidebar/project-chat-row.tsx`, `sidebar/indicators.tsx`).
+- `components/status-bar-hit.ts` is a leftover hit-area helper used only by `ConnectionStatusIndicator`. Do not copy its class strings into new UI.
 
-```
-Is it git diff line paint?
- ├── Addition → diff-added
- ├── Deletion → destructive
- └── Modified file in a list → diff-modified
-Is it a live lamp (SSH/agent connected)?
- └── connection or success per existing lamp component — do not invent a third green
-Is it in-progress (connecting, conflict banner)?
- └── warning
-Failed / delete → destructive
-```
+## Toasts
+
+Sonner and the Radix toaster use the theme card: `bg-card`, `border-border`, `text-foreground`, description `text-muted-foreground`. Do not enable Sonner `richColors`. Info and default icons use `muted-foreground`; success, warning and error icons use their role. The card stays the same for every type. Never toast a successful copy: change the icon in place.
 
 ## Correct
 
 ```tsx
-connecting: { label: 'Connecting', color: 'bg-warning/20 text-warning' },
-reconnecting: { label: 'Reconnecting', color: 'bg-warning/20 text-warning' },
-connected: { label: 'Connected', color: 'bg-success/20 text-success' },
-failed: { label: 'Failed', color: 'bg-destructive/20 text-destructive' },
+// sidebar/project-chat-row.tsx — a word plus a dot, on the /10 tint
+<span className="flex shrink-0 items-center gap-1 rounded-md bg-warning/10 px-1.5 text-3xs font-medium text-warning">
+  <span aria-hidden="true" className="size-1.5 rounded-full bg-warning" />
+  Needs you
+</span>
+
+// RemoteAccessPopover.tsx — a warning banner
+<div className="flex items-start gap-2 text-xs text-warning bg-warning/10 border border-warning/30 rounded-md px-3 py-2">
 ```
-
-Warning copy on a banner uses `bg-warning/10 text-warning`. `Alert` variants are `default` | `destructive` only (`ui/alert.tsx`) — there is no `warning` Alert.
-
-Toasts (Sonner and the Radix toaster) use the active theme card: `bg-card`, `border-border`, `text-foreground`, description `text-muted-foreground`. They follow light themes and the other families. Do not enable Sonner `richColors`. Info and default icons use `muted-foreground`. Success, warning, and error icons use `success`, `warning`, and `destructive`. The card surface stays the same for every toast type. Dark appearance may add a drop shadow. Troupe Light uses the hairline only.
 
 ## Incorrect
 
 ```tsx
-<span className="bg-green-500/20 text-green-600">Connected</span>
-<div className="h-6 bg-project-yellow text-white" />
+// Palette hues, a heavy fill, and no word
+<span className="bg-green-500/20 text-green-600" />
+<span className="size-2 rounded-full bg-warning" title="Needs input" />
+// There is no Alert component in ui/; a banner is a div with the tint above
 <Alert variant="warning">Workspace changed</Alert>
 ```

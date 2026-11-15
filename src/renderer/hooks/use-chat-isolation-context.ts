@@ -18,7 +18,7 @@ export interface ChatIsolationContext {
 }
 
 /**
- * CAP-6: worktree/branch indicator shared by the composer context strip, the
+ * CAP-6: worktree/branch indicator shared by the empty chat context row, the
  * mobile shell subtitle and the drawer project row. Worktree chats show their
  * `chat/*` branch (the long worktree path stays on the mode tooltip). Local
  * chats fall back to the project's reactive `gitBranch`. A git project with no

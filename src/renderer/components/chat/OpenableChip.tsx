@@ -28,7 +28,6 @@ export function OpenableChip({
   return (
     <button
       type="button"
-      data-press-feedback="off"
       data-skill-open={skillName}
       title={`Open ${skillName} SKILL.md`}
       aria-label={`Open skill ${skillName}`}

@@ -82,7 +82,6 @@ function FileRow({
   return (
     <button
       type="button"
-      data-press-feedback="off"
       title={file.path}
       // `title` is hover-only; the aria-label carries the resolved path and the
       // change kind to touch and screen-reader users.

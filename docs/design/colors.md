@@ -6,8 +6,8 @@ Tokens are OKLCH `"L C H"` on `:root`. Tailwind maps `oklch(var(--token) / <alph
 
 1. Semantic roles: `background`, `foreground`, `card`, `popover`, `primary`, `primary-fill`, `secondary`, `muted`, `accent`, `destructive`, `destructive-fill`, `success`, `success-fill`, `warning`, `connection`, `border`, `input`, `field-border`, `ring`, `focus-ring`, `overlay`.
 2. Product identity: `project-{blue,purple,green,yellow,red,cyan,pink,orange,gray}` — chips, graph lanes, pickers only.
-3. Chrome bar (legacy): `status-bar` and `status-bar-{color}`. The StatusBar does not use them now. The tokens stay for back-compat (`statusBarColors` in `lib/colors.ts`). Do not use them in new UI.
-4. Diff: `diff-added`, `diff-modified` (changed files, not a warning). Deletions use `destructive`.
+3. Legacy: `status-bar` and `status-bar-{color}`. `applyColorTheme` still writes them, but no UI paints them since the status bar left (Sidebar V2). Never use them.
+4. Diff: `diff-added` (with `diff-added-foreground` and `diff-added-border` for line chrome), `diff-modified` (a changed file, not a warning). Deletions use `destructive`.
 5. Terminal grid: `terminal-bg` / `terminal-fg`. `terminal-bg` equals `background`. xterm `theme.background` must use the same hex. Do not leave the xterm viewport at `#000`.
 
 Nothing else exists. `green-500`, `amber-400`, `white`, `black` are bugs.
@@ -45,7 +45,7 @@ The default light theme (`termul-light`) uses Interfere neutrals. The page is `#
 
 ## Component tokens
 
-Full CSS values (not `"L C H"`), set per theme through `ThemeChrome.tokens`. Every theme without chrome tokens gets `COMPONENT_TOKEN_DEFAULTS` in `lib/themes/component-tokens.ts`, which reproduce the pre-token look exactly (`theme-regression.test.ts` pins this).
+Full CSS values (not `"L C H"`), set per theme through `ThemeChrome.tokens`. Every theme without chrome tokens gets `COMPONENT_TOKEN_DEFAULTS` in `lib/themes/component-tokens.ts` (`theme-regression.test.ts` pins them). Troupe Light overrides them in `termul-light-chrome.ts`.
 
 | Tokens | Consumer |
 | --- | --- |
@@ -54,23 +54,30 @@ Full CSS values (not `"L C H"`), set per theme through `ThemeChrome.tokens`. Eve
 | `--switch-track-{on,off}{,-hover,-active,-disabled}`, `--switch-thumb-{on,off}{,-disabled}`, `--switch-thumb-shadow`, `--switch-disabled-opacity` | `.switch-track`, `.switch-thumb` (index.css). Do not put `ring-*` or `shadow-*` utilities on the thumb; they override the token. |
 | `--elevation-{2xs,xs,sm,md,lg,xl,2xl}`, `--elevation-{pill,panel,menu}` | `shadow-*` utilities (tailwind.config.ts) |
 | `--skeleton` | `Skeleton` fill (alpha in Troupe Light, so it reads on page and card) |
-| `--ghost-hover-foreground` | `ghost` / `outline` hover ink. Defaults to `accent-foreground`; Troupe uses `foreground`. |
+| `--ghost-hover-foreground` | `ghost` hover ink. Defaults to `accent-foreground`; Troupe uses `foreground`. |
+| `--control-fill`, `--control-fill-hover`, `--shadow-control` | The raised secondary control: `secondary` / `outline` buttons (`bg-control-fill shadow-control hover:bg-control-fill-hover`). Dark: a 0.5px `popover-edge` outline and a black 1px drop. Light: a 1px ink ring at 8% and a 1px drop at 12%. |
+| `--popover-edge` | The 0.5px edge of popovers and panels: `popover` mixed with 19.5% `foreground` (`outline-popover-edge`). |
+| `--rail-hover-panel-shadow` | `shadow-rail-hover-panel`: the drop of the V2 panel surface (model picker, mode menu, rail hover panels). |
+| `--keycap-fill`, `--keycap-shadow`, `--rail-keycap-fill`, `--rail-keycap-shadow` | The `.keycap` surface, and its Rail variant inside `[data-rail-surface]`. |
 
-Terminal ANSI colors and selection do not follow `--primary`. Troupe pins them in `termul-terminal.ts` (`palette.terminal`), so a brand change never alters terminal output. The status bar tint may follow primary.
+Terminal ANSI colors and selection do not follow `--primary`. Troupe pins them in `termul-terminal.ts` (`palette.terminal`), so a brand change never alters terminal output.
 
 ## State
 
-| State | On `background` / `card` | On `popover` |
+| State | On `background` / `card` | On `popover` (menus, pickers, panels) |
 | --- | --- | --- |
 | Hover | `bg-foreground/[0.03]` | `bg-foreground/[0.06]` |
-| Rail row hover (hover and focus-within) | `bg-row-hover`; a fade that ends in it uses `from-row-hover-solid` | n/a |
-| Selected / you are here | `.keycap` (index.css) | `Check` icon, no fill |
+| Rail row hover (hover and focus-within) | `bg-row-hover` (3%); a fade that ends in it uses `from-row-hover-solid`. Icon-only rows on the collapsed Rail use `bg-foreground/[0.06]`. | n/a |
+| Picked / you are here | `.keycap` (index.css) | `bg-foreground/10`, no tick (`PICKER_ROW_SELECTED`, `MENU_PICKED_CLASS`) |
+| A chosen card in a list | `bg-foreground/[0.03] ring-1 ring-foreground/[0.12]` | n/a |
 | Active segment in a track | `.keycap` | `bg-foreground/10` |
 | Focus | `focus-ring` (dim, 4:1) | `focus-ring` (dim, 4:1) |
 
-The Rail paints `bg-sidebar`. Keycaps inside it (`[data-rail-surface]`) fill with `--rail-keycap`: `muted` in dark themes, `muted` plus 6% `foreground` in light themes. `--row-hover-solid` is flattened over `--sidebar-background`.
+Picked (10%) is always stronger than hover (6%), so the two never look alike. A tick belongs only to a checkbox item, where several rows can be on at once (`DropdownMenuCheckboxItem`, `ContextMenuCheckboxItem`, `Select`). A pick-one row never shows a tick: the fill says it.
 
-Blue (`primary`, `primary-fill`) has three jobs only: live work (a running agent, a working spinner, a drop target), the one primary button in a view, and count badges that ask for attention (`CountBadge` in `components/ui/count-badge.tsx`: the Git change count on the activity rail and the Git Changes tab, `bg-primary-fill text-primary-foreground`). Focus, selection and hover stay neutral.
+The Rail paints `bg-background`, like the main area, the right panel and the tool strip (Sidebar V2, Paper 2.2); 0.5px `border` hairlines split the columns. Keycaps inside it (`[data-rail-surface]`) fill with `--rail-keycap`: `muted` in dark themes, `muted` plus 6% `foreground` in light themes. `--row-hover-solid` is flattened over `--background`. The open project row is plain; only the open chat row under it takes the keycap.
+
+Blue (`primary`, `primary-fill`) has three jobs only: live work (a running agent, a working spinner, a drop target), the one primary button in a view, and count badges that ask for attention (`CountBadge` in `components/ui/count-badge.tsx`: the Git change count on the tool strip Changes button and the Git Changes tab, `bg-primary-fill text-primary-foreground`). Focus, selection and hover stay neutral.
 
 ## Background
 
@@ -80,7 +87,9 @@ Is it the page or the Terminal grid?
  └── No
       ├── Raised panel / modal card → bg-card
       ├── Menu / select list → bg-popover
-      ├── Recessed well / hover wash → bg-secondary or bg-muted
+      ├── Raised control (secondary button) → bg-control-fill + shadow-control
+      ├── Recessed well → bg-muted
+      ├── Hover wash → bg-foreground/[0.03] or /[0.06] (see State). Never bg-secondary on a menu row: it equals popover in Troupe Dark.
       └── Scrim behind a modal → bg-overlay/{40–90} (see overlays.md)
 ```
 
@@ -93,8 +102,6 @@ On background / card / popover?
  ├── Disabled copy (custom chrome) → text-disabled-foreground
  └── On a solid primary / destructive / success fill → matching *-foreground
 ```
-
-The StatusBar is quiet: `bg-card`, `border-t border-border`, ink `text-muted-foreground`. Labels use `text-secondary-foreground`. The project colour is in the project glyph (`ProjectIcon`), not in the bar fill. Never `text-white` or `text-primary-foreground` on the bar.
 
 ## Syntax
 

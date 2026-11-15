@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import type { Locator, Page } from 'playwright/test'
 import { expect, request, test } from 'playwright/test'
 import { E2E_BASE_URL, E2E_TOKEN, storeKey, wsRequest } from './helpers'
+import { emptyChatComposer, sendFromEmptyChat } from './ui'
 
 /**
  * Mobile approval edge states E2E (spec-mobile-approval-edge-states): a
@@ -140,7 +141,7 @@ async function startFromLauncher(
   }
   const launcher = page.getByRole('textbox', { name: 'Agent prompt' })
   const start = page.getByRole('button', { name: 'Start agent chat' })
-  // On a launcher opened with "New chat", Start has been seen enabled and yet doing
+  // On the launcher, Start has been seen enabled and yet doing
   // nothing when pressed at once: the launcher stays up with the text in it. So the
   // press is part of the retried step, and a launcher that closed is the proof.
   await expect(async () => {
@@ -154,9 +155,9 @@ async function startFromLauncher(
 }
 
 /**
- * Start a chat on the mobile shell: from the empty pane (the first chat) or via
- * the header "New chat". Resolves once the header names the chat (its title is
- * the prompt text).
+ * Start a chat on the mobile shell: from the empty-pane launcher (the first
+ * chat), or via the header "New chat", which opens a new empty chat. Resolves
+ * once the header names the chat (its title is the prompt text).
  */
 async function startChat(
   page: Page,
@@ -166,8 +167,11 @@ async function startChat(
   if (options.viaNewChat) {
     await expectStreaming(page)
     await page.getByRole('button', { name: 'New chat', exact: true }).tap()
+    await expect(emptyChatComposer(page)).toBeVisible()
+    await sendFromEmptyChat(page, prompt, { tap: true })
+  } else {
+    await startFromLauncher(page, prompt)
   }
-  await startFromLauncher(page, prompt)
   await expect(page.getByRole('heading', { level: 1, name: prompt, exact: true })).toBeVisible()
 }
 
@@ -334,11 +338,10 @@ test('an elicitation in another chat reads Needs you in the drawer row and the h
   await expect(pill).toBeVisible()
   await expect(pill).toHaveText('1')
 
-  // The drawer row says so, beside the live turn.
+  // The drawer row says so (one live state, as on the desktop Rail: Needs
+  // you wins over the live turn).
   const drawer = await openDrawer(page)
-  await expect(chatRow(drawer, background)).toHaveAccessibleName(
-    `${background}, Needs you, Working`
-  )
+  await expect(chatRow(drawer, background)).toHaveAccessibleName(`${background}, Needs you`)
 
   // Landing in that chat takes it out of the count: it is the chat on screen now.
   await chatRow(drawer, background).tap()
@@ -367,7 +370,7 @@ test('the active chat with an elicitation is announced as Approval needed and is
 
   // The drawer still reads the chat's own state.
   const drawer = await openDrawer(page)
-  await expect(chatRow(drawer, prompt)).toHaveAccessibleName(`${prompt}, Needs you, Working`)
+  await expect(chatRow(drawer, prompt)).toHaveAccessibleName(`${prompt}, Needs you`)
 })
 
 // ---------------------------------------------------------------------------
@@ -553,7 +556,7 @@ test.describe('desktop browser', () => {
 
   const click = (target: Locator): Promise<void> => target.click()
 
-  test('a chat with an elicitation reads Needs you in the tab and the status bar, and its heading takes no focus', async ({
+  test('a chat with an elicitation reads Needs you in the tab and the Rail chat row, and its heading takes no focus', async ({
     page
   }) => {
     const project = await registerProject()
@@ -565,10 +568,12 @@ test.describe('desktop browser', () => {
     await expect(heading).toBeVisible()
     // The tab chrome names the status beside the title.
     await expect(
-      page.locator(`[draggable="true"][aria-label="${prompt}, Needs you"]`).first()
+      page.getByRole('tab', { name: `${prompt}, Needs you`, exact: true }).first()
     ).toBeVisible()
-    // So does the status bar's needs-you pill for the active project.
-    await expect(page.getByRole('button', { name: `${prompt} needs you` })).toBeVisible()
+    // So does its Rail chat row under the open project (the trail pill).
+    await expect(
+      page.getByTestId('rail-project-chats').getByRole('button', { name: `${prompt}, Needs you` })
+    ).toBeVisible()
     // Desktop never moves focus into the form or makes its heading focusable.
     await expect(heading).not.toHaveAttribute('tabindex', /.*/)
     await expect(heading).not.toBeFocused()

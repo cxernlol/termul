@@ -11,7 +11,6 @@ import { SKILL_PAD_DEFAULT } from '@/lib/composer/doc-to-prompt'
 import { selectionContextToken } from '@/lib/composer/selection-context'
 import { parseConversationEnvelope } from '@/lib/conversation-envelope'
 import { commandToken, conversationToken, fileToken, skillToken } from '@/lib/skill-tokens'
-import { useProjectStore } from '@/stores/project-store'
 import { ChatInputBar } from './ChatInputBar'
 import {
   getComposerValue,
@@ -174,8 +173,7 @@ const {
 
 vi.mock('@/lib/tauri-runtime', () => ({ isTauriContext: mockIsTauri }))
 
-// The context strip's branch picker gates its write controls on the server's
-// write admission; covered in `ChatContextStrip.test.tsx`.
+// Composer controls gate their write actions on the server's write admission.
 vi.mock('@/hooks/use-server-admits-remote-writes', () => ({
   useServerAdmitsRemoteWrites: () => true
 }))
@@ -460,8 +458,9 @@ describe('ChatInputBar config controls', () => {
     vi.clearAllMocks()
   })
 
-  it('renders worktree context below the composer without keyboard helper text', () => {
-    renderInputBar({
+  it('start screen: no keyboard helper text and no row inside the composer (the panel owns it)', () => {
+    const { container } = renderInputBar({
+      startScreen: true,
       session: {
         ...session(),
         cwd: '/work/.termul/worktrees/abcd1234',
@@ -470,57 +469,59 @@ describe('ChatInputBar config controls', () => {
       }
     })
 
-    const composer = document.querySelector('[data-chat-composer="true"]')
-    const contextStrip = document.querySelector('[data-chat-composer-context-strip="true"]')
-
-    expect(composer).toBeInTheDocument()
-    expect(contextStrip).toBeInTheDocument()
-    expect(composer).not.toContainElement(contextStrip)
-    expect(screen.getByText('Worktree')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Switch git branch' })).toHaveTextContent(
-      'chat/abcd1234'
-    )
+    expect(document.querySelector('[data-chat-composer="true"]')).toBeInTheDocument()
+    // The context row exits in place on the first send, so it lives in
+    // AgentChatPanel (ChatStartFooter), outside the moving composer.
+    expect(container.querySelector('[data-chat-start-context-row]')).toBeNull()
     expect(screen.queryByText(/Shift\+Enter/i)).not.toBeInTheDocument()
     expect(screen.queryByText(/to send|to queue|newline/i)).not.toBeInTheDocument()
   })
 
-  describe('local context strip', () => {
-    const initialProjects = useProjectStore.getState().projects
-    afterEach(() => {
-      useProjectStore.setState({ projects: initialProjects })
+  it('start screen: the launcher input area (40px text area, Paper padding) and a 32px send', () => {
+    const { container } = renderInputBar({ startScreen: true })
+    const row = container.querySelector('[data-composer-row]') as HTMLElement
+    // Paper "2.2 New chat": pt 12, pr 8, pb 4, pl 14, gap 4.
+    expect(row).toHaveClass('pt-3', 'pr-2', 'pb-1', 'pl-3.5', 'gap-1')
+    const scroll = row.querySelector('[data-composer-scroll]') as HTMLElement
+    expect(scroll.style.getPropertyValue('--composer-min-h')).toBe('40px')
+    expect(screen.getByRole('button', { name: 'Send message' })).toHaveClass('h-8', 'w-8')
+    // On desktop the start block places the composer: no gutter padding.
+    const root = container.firstElementChild as HTMLElement
+    expect(root).not.toHaveClass('pt-3')
+    expect(root).not.toHaveClass('pb-6')
+  })
+
+  it('working chat: the one-line text area and the dock padding', () => {
+    const { container } = renderInputBar({})
+    const row = container.querySelector('[data-composer-row]') as HTMLElement
+    expect(row).toHaveClass('px-4', 'pb-1.5', 'pt-3.5')
+    const scroll = row.querySelector('[data-composer-scroll]') as HTMLElement
+    expect(scroll.style.getPropertyValue('--composer-min-h')).toBe('26px')
+    expect(container.firstElementChild).toHaveClass('pb-6', 'pt-3')
+  })
+
+  it('has nothing under the composer in a working chat (Paper 1.1) and a 768px column', () => {
+    const { container } = renderInputBar({
+      session: {
+        ...session(),
+        cwd: '/work/.termul/worktrees/abcd1234',
+        worktreePath: '/work/.termul/worktrees/abcd1234',
+        worktreeBranch: 'chat/abcd1234'
+      }
     })
 
-    function seedProject(fields: { gitBranch?: string; isGitRepo?: boolean }): void {
-      useProjectStore.setState({
-        projects: [{ id: 'p1', name: 'Project', color: 'blue', path: '/work', ...fields }]
-      })
-    }
+    expect(container.querySelector('[data-chat-start-context-row]')).toBeNull()
+    expect(screen.queryByText('Worktree')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Switch git branch' })).not.toBeInTheDocument()
+    const column = document.querySelector('[data-chat-composer="true"]')?.closest('.max-w-3xl')
+    expect(column).not.toBeNull()
+  })
 
-    it('shows the project branch in the branch picker for a current-checkout chat', () => {
-      seedProject({ gitBranch: 'main', isGitRepo: true })
-      renderInputBar()
-
-      expect(screen.getByText('Current checkout')).toBeInTheDocument()
-      expect(screen.getByRole('button', { name: 'Switch git branch' })).toHaveTextContent('main')
-    })
-
-    it('shows Detached HEAD when a git project has no branch', () => {
-      seedProject({ isGitRepo: true })
-      renderInputBar()
-
-      expect(screen.getByRole('button', { name: 'Switch git branch' })).toHaveTextContent(
-        'Detached HEAD'
-      )
-    })
-
-    it('keeps the plain read-only strip for a project that is not a git repo', () => {
-      seedProject({ isGitRepo: false })
-      renderInputBar()
-
-      expect(screen.getByText('Current checkout')).toBeInTheDocument()
-      expect(screen.queryByText('Detached HEAD')).not.toBeInTheDocument()
-      expect(screen.queryByRole('button', { name: 'Switch git branch' })).not.toBeInTheDocument()
-    })
+  it('narrows the start-screen composer to 680px (Paper 2.2)', () => {
+    renderInputBar({ startScreen: true })
+    const column = document.querySelector('[data-chat-composer="true"]')?.closest('.mx-auto')
+    expect(column).toHaveClass('max-w-[680px]')
+    expect(column).not.toHaveClass('max-w-3xl')
   })
 
   it('uses model config and native Agent/mode picker without duplicate Agent chips', async () => {
@@ -1822,6 +1823,18 @@ describe('ChatInputBar draft persistence', () => {
       // The composer emptied (clear-on-send) → the persisted draft was deleted.
       expect(persistenceStore.has('chat-draft/p1/session-1')).toBe(false)
     })
+  })
+
+  it('keeps the draft when the send reports that nothing was sent', async () => {
+    persistenceStore.set('chat-draft/p1/session-1', 'not yet')
+    const onSend = vi.fn(() => false as const)
+    renderInputBar({ onSend })
+    await waitFor(() => expect(getComposerValue()).toBe('not yet'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+
+    await waitFor(() => expect(onSend).toHaveBeenCalledWith('not yet'))
+    expect(getComposerValue()).toBe('not yet')
   })
 
   it('does not crash when storage is empty', () => {

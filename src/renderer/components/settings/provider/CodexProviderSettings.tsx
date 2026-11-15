@@ -2,28 +2,32 @@ import type { CodexAccountView } from '@shared/types/codex-accounts.types'
 import { useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
-import { Info, KeyRound, Monitor, Plus, RotateCcw, WifiOff } from '@/components/icons'
+import { Monitor, Plus, RotateCcw, WifiOff } from '@/components/icons'
 import { Button } from '@/components/ui/button'
-import { Switch } from '@/components/ui/switch'
 import { useCodexAccounts } from '@/hooks/use-codex-accounts'
 import { useServerAdmitsRemoteWrites } from '@/hooks/use-server-admits-remote-writes'
 import { codexAccountsApi } from '@/lib/codex-accounts-api'
+import { planLabel } from '@/lib/codex-usage-format'
 import { getColorClasses } from '@/lib/colors'
 import { cn } from '@/lib/utils'
 import { READ_ONLY_SERVER_REASON } from '@/lib/write-gate'
 import { applyProjectCodexAccount } from '@/stores/codex-account-switch'
 import { useProjectStore } from '@/stores/project-store'
 import type { ProjectColor } from '@/types/project'
-import { SettingsCard } from '../SettingsGroup'
-import { SettingsRow, settingsDescriptionId } from '../SettingsRow'
+import { AccountGroupFooter } from './AccountGroupFooter'
 import { AccountNameDialog } from './AccountNameDialog'
 import { toastAccountChoiceError } from './account-choice-error'
+import { StatusDot } from './account-status'
 import { AccountAvatar, DefaultPill } from './ClaudeAccountRow'
 import { CodexAccountActions } from './CodexAccountActions'
 import { CodexAddAccountDialog } from './CodexAddAccountDialog'
 import { CodexSignInDialog } from './CodexSignInDialog'
 import { CodexUsageMeters } from './CodexUsageMeters'
-import { CODEX_NOT_READY_REASON, codexAccountReadiness } from './codex-account-status'
+import {
+  CODEX_NOT_READY_REASON,
+  CODEX_STATUS_TONE,
+  codexAccountReadiness
+} from './codex-account-status'
 import { ProviderGroupHeader } from './ProviderGroupHeader'
 
 const errorText = (error: unknown): string =>
@@ -171,20 +175,28 @@ export function CodexProviderSettings(): React.JSX.Element {
               <div
                 key={account.id}
                 data-testid={`codex-account-${account.id}`}
-                className="flex items-start gap-3 border-b border-border/60 py-3 last:border-b-0"
+                className="flex items-start gap-2.5 border-b border-border/60 py-3.5 last:border-b-0"
               >
                 <AccountAvatar name={account.name} />
-                <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                <div className="flex min-w-0 flex-1 flex-col gap-1">
                   <span className="flex min-w-0 items-center gap-1.5 text-xs font-medium text-foreground">
                     <span className="truncate">{account.name}</span>
-                    {account.id === snapshot.defaultAccountId && <DefaultPill />}
+                    {account.id === snapshot.defaultAccountId && (
+                      <DefaultPill accountName={account.name} />
+                    )}
                   </span>
-                  <span className="truncate text-2xs text-muted-foreground">
-                    {projectNames.length > 0
-                      ? `${readiness === 'ready' ? 'Signed in' : CODEX_NOT_READY_REASON[readiness]} · ${projectNames.join(', ')}`
-                      : readiness === 'ready'
-                        ? 'Signed in'
-                        : CODEX_NOT_READY_REASON[readiness]}
+                  <span className="flex min-w-0 items-center gap-1.5">
+                    <StatusDot tone={CODEX_STATUS_TONE[readiness]} />
+                    <span className="truncate text-2xs text-muted-foreground">
+                      {[
+                        readiness === 'ready'
+                          ? (planLabel(read?.planType ?? null) ?? 'Signed in')
+                          : CODEX_NOT_READY_REASON[readiness],
+                        projectNames.join(', ')
+                      ]
+                        .filter(Boolean)
+                        .join(' · ')}
+                    </span>
                   </span>
                   <CodexUsageMeters windows={windows} />
                 </div>
@@ -210,60 +222,24 @@ export function CodexProviderSettings(): React.JSX.Element {
       )}
 
       {!loading && !failed && snapshot && (
-        <SettingsCard className="mt-3">
-          <SettingsRow
-            htmlFor="codex-auto-switch"
-            label="Switch accounts automatically"
-            description="When a chat reaches its account's limit, continue it on the signed-in account with the most room."
-            layout="inline"
-          >
-            <Switch
-              id="codex-auto-switch"
-              aria-describedby={settingsDescriptionId('codex-auto-switch')}
-              checked={snapshot.autoSwitch}
-              disabled={savingAutoSwitch || !canManage}
-              onCheckedChange={(enabled) => void setAutoSwitch(enabled)}
-            />
-          </SettingsRow>
-        </SettingsCard>
+        <AccountGroupFooter
+          id="codex"
+          accountCount={accounts.length}
+          canManage={canManage}
+          autoSwitch={snapshot.autoSwitch}
+          saving={savingAutoSwitch}
+          onAutoSwitchChange={(enabled) => void setAutoSwitch(enabled)}
+        />
       )}
 
-      {!loading && !failed && canManage && accounts.length === 1 && (
-        <div className="mt-2 flex items-center gap-3 rounded-lg border border-border/60 bg-foreground/[0.02] p-3.5">
-          <span
-            aria-hidden="true"
-            className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-secondary-foreground"
-          >
-            <KeyRound size={14} />
-          </span>
-          <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-            <span className="text-xs font-medium text-foreground">
-              Keep work and personal apart
-            </span>
-            <span className="text-2xs leading-relaxed text-muted-foreground">
-              Add another Codex account and choose it per project. Each one is a ChatGPT login.
-            </span>
-          </div>
-        </div>
-      )}
-
-      {!loading && !failed && (
+      {!loading && !failed && !canManage && (
         <p className="flex flex-wrap items-center gap-1.5 pt-2 text-2xs text-muted-foreground">
-          {canManage ? (
-            <>
-              <Info size={12} className="shrink-0" />
-              Choose an account per project in Project settings → Accounts.
-            </>
-          ) : (
-            <>
-              <Monitor size={12} className="shrink-0" />
-              {READ_ONLY_SERVER_REASON} To add or sign in to an account, use the desktop app, or run
-              <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-3xs text-secondary-foreground">
-                troupe-server codex account
-              </code>
-              on the host.
-            </>
-          )}
+          <Monitor size={12} className="shrink-0" />
+          {READ_ONLY_SERVER_REASON} To add or sign in to an account, use the desktop app, or run
+          <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-3xs text-secondary-foreground">
+            troupe-server codex account
+          </code>
+          on the host.
         </p>
       )}
 
@@ -272,16 +248,11 @@ export function CodexProviderSettings(): React.JSX.Element {
           <CodexAddAccountDialog
             open={addOpen}
             onOpenChange={setAddOpen}
-            onAdded={async (created) => {
-              await reload()
-              toast.success(`${created.name} was added`)
-              setSigningIn({
-                id: created.id,
-                name: created.name,
-                builtin: false,
-                signedIn: false
-              })
-            }}
+            existingNames={accounts.map((a) => a.name)}
+            defaultAccountName={defaultAccount?.name ?? null}
+            usage={usage}
+            onChanged={reload}
+            onSignedIn={() => refreshUsage(true)}
           />
           <CodexSignInDialog
             account={signingIn}

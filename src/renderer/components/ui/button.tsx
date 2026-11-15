@@ -5,14 +5,29 @@ import * as React from 'react'
 import { cn } from '@/lib/utils'
 
 /**
+ * The press of a main button (primary, secondary, outline, destructive): a
+ * light .97 squeeze on the strong ease-out, back on release. Nothing else in
+ * the app scales on press: rows, menu items, chips, tabs and icon buttons
+ * answer with their fill.
+ */
+const PRESS =
+  'active:scale-[0.97] motion-reduce:active:scale-100 transition-[scale,background-color,box-shadow] duration-150 ease-[cubic-bezier(0.23,1,0.32,1)]'
+
+/**
  * Filled primary chrome for `default` and `composer`.
  * Per-theme emboss and hover/pressed fills (component-tokens.ts), muted
  * disabled fill.
  * Send, stop, and launch use `composer`. Other primary actions use `default`.
  * One filled primary per view. The glyph is the only difference at the call site.
  */
-const primaryEmboss =
-  'bg-primary-fill text-primary-foreground active:scale-[0.96] motion-reduce:active:scale-100 transition-[scale,background-color,box-shadow] duration-150 ease-out hover:bg-primary-fill-hover active:bg-primary-fill-active disabled:bg-muted disabled:text-disabled-foreground disabled:opacity-100 disabled:hover:bg-muted disabled:shadow-none shadow-emboss hover:shadow-emboss-hover'
+const primaryEmboss = `bg-primary-fill text-primary-foreground ${PRESS} hover:bg-primary-fill-hover active:bg-primary-fill-active disabled:bg-muted disabled:text-disabled-foreground disabled:opacity-100 disabled:hover:bg-muted disabled:shadow-none shadow-emboss hover:shadow-emboss-hover`
+
+/**
+ * Secondary chrome for `secondary` and `outline`: a raised control one step
+ * above its surface, a 0.5px edge and a tight drop (light: white, a 1px ink
+ * ring and a soft drop). Per-theme values in component-tokens.ts.
+ */
+const secondaryControl = `bg-control-fill text-foreground shadow-control hover:bg-control-fill-hover ${PRESS} disabled:opacity-60`
 
 const buttonVariants = cva(
   'inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-lg text-sm font-medium ring-offset-background transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0',
@@ -20,10 +35,9 @@ const buttonVariants = cva(
     variants: {
       variant: {
         default: primaryEmboss,
-        destructive: 'bg-destructive-fill text-destructive-foreground hover:bg-destructive-fill/90',
-        outline:
-          'border border-input bg-background hover:bg-secondary hover:text-ghost-hover-foreground',
-        secondary: 'bg-secondary text-secondary-foreground hover:bg-secondary/80',
+        destructive: `bg-destructive-fill text-destructive-foreground hover:bg-destructive-fill/90 ${PRESS}`,
+        outline: secondaryControl,
+        secondary: secondaryControl,
         ghost: 'hover:bg-secondary hover:text-ghost-hover-foreground',
         link: 'text-primary underline-offset-4 hover:underline',
         composer: primaryEmboss
@@ -54,25 +68,13 @@ export interface ButtonProps
   extends React.ButtonHTMLAttributes<HTMLButtonElement>,
     VariantProps<typeof buttonVariants> {
   asChild?: boolean
-  'data-press-feedback'?: string
 }
 
 const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
-  (
-    { className, variant, size, asChild = false, 'data-press-feedback': pressFeedback, ...props },
-    ref
-  ) => {
+  ({ className, variant, size, asChild = false, ...props }, ref) => {
     const Comp = asChild ? Slot : 'button'
-    // Primary chrome scales itself to 0.96. The document press rule also
-    // sets transform: scale(0.96). Both together land near 0.92.
-    const ownsPressScale = variant == null || variant === 'default' || variant === 'composer'
     return (
-      <Comp
-        className={cn(buttonVariants({ variant, size, className }))}
-        ref={ref}
-        {...props}
-        data-press-feedback={pressFeedback ?? (ownsPressScale ? 'off' : undefined)}
-      />
+      <Comp className={cn(buttonVariants({ variant, size, className }))} ref={ref} {...props} />
     )
   }
 )

@@ -70,7 +70,6 @@ export function AgentSwitchSeparator({
           the row's edges; the identity chip sits optically centered. When
           there is no summary the trigger is disabled — no dead toggle. */}
       <CollapsibleTrigger
-        data-press-feedback="off"
         disabled={!hasSummary}
         aria-label={`Handoff: ${fromLabel} to ${toLabel}`}
         className="flex min-h-8 w-full cursor-pointer items-center gap-3 text-muted-foreground disabled:cursor-default"

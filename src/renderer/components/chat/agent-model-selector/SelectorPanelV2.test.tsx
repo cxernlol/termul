@@ -28,8 +28,7 @@ import {
   PICKER_ROW_NAME_PULL,
   PICKER_ROW_SELECTED,
   PICKER_ROW_SELECTED_BOX,
-  PICKER_STAR_MOTION,
-  PICKER_SURFACE
+  PICKER_STAR_MOTION
 } from './selector-tokens'
 
 // jsdom omits `document.elementFromPoint`; floating-ui calls it.
@@ -406,21 +405,27 @@ describe('SelectorPanelV2 sizes: flyout matches the list', () => {
     const thinking = within(flyout).getByText('Thinking')
     expect(thinking.className).toBe(PICKER_LABEL)
     expect(screen.getByText('Favorites').className).toBe(PICKER_LABEL)
-    // The check is the list's 14px; the switch is the small 28x16 one.
-    expect(
-      within(flyout).getByRole('menuitemradio', { name: 'High' }).querySelector('svg')
-    ).toHaveAttribute('width', '14')
+    // No tick on a choice: the picked one has the selected row fill.
+    for (const radio of within(flyout).getAllByRole('menuitemradio')) {
+      expect(radio.querySelector('svg')).toBeNull()
+      if (radio.getAttribute('aria-checked') === 'true') {
+        expect(classes(radio)).toContain(PICKER_ROW_SELECTED)
+      } else {
+        expect(classes(radio)).not.toContain(PICKER_ROW_SELECTED)
+      }
+    }
+    // The switch is the small 28x16 one.
     const mark = within(flyout)
       .getByRole('menuitemcheckbox', { name: 'Fast mode' })
       .querySelector('[data-switch-size]')
     expect(mark).toHaveAttribute('data-switch-size', 'sm')
     expect(classes(mark)).toEqual(expect.arrayContaining(['h-4', 'w-7']))
     // The toggle sits under a full-width separator, not a bordered row.
-    expect(within(flyout).getByRole('separator')).toHaveClass('border-t', 'border-border')
+    expect(within(flyout).getByRole('separator')).toHaveClass('border-t-[0.5px]', 'border-border')
     // Same radius as the panel; hugs its content with a 180px floor.
     // (The test id sits on the positioned shell; the surface is its animated child.)
     const surface = classes(flyout.firstElementChild)
-    expect(surface).toEqual(expect.arrayContaining([PICKER_SURFACE.radius, 'min-w-45']))
+    expect(surface).toEqual(expect.arrayContaining(['rounded-[10px]', 'min-w-45']))
     expect(surface).not.toContain('w-44')
   })
 })
@@ -435,7 +440,7 @@ describe('SelectorPanelV2 no horizontal overflow', () => {
     const names = list.querySelectorAll('[data-row-name]')
     expect(names.length).toBeGreaterThan(0)
     for (const name of names) {
-      expect(classes(name)).toEqual(expect.arrayContaining(['min-w-0', 'flex-1', 'truncate']))
+      expect(classes(name)).toEqual(expect.arrayContaining(['min-w-0', 'flex-1', 'fade-end']))
     }
   })
 
@@ -467,7 +472,7 @@ describe('SelectorPanelV2 no horizontal overflow', () => {
     expect(row.lastElementChild).toBe(slot)
     expect(classes(row)).toContain('pr-0')
     const name = row.querySelector('[data-row-name]')
-    expect(classes(name)).toEqual(expect.arrayContaining(['min-w-0', 'truncate']))
+    expect(classes(name)).toEqual(expect.arrayContaining(['min-w-0', 'fade-end']))
     const edit = screen.getByTestId('selector-edit')
     expect(edit).toHaveAccessibleName(`Edit ${long}, thinking High`)
     // The Thinking level on Edit stays whole beside the truncating name.
@@ -635,7 +640,7 @@ describe('SelectorPanelV2 selected-row check', () => {
     expect(screen.getByTestId('selector-edit')).toHaveTextContent('High')
     expect(checkOf(row)).toBeNull()
     const sonnet = screen.getByRole('button', { name: 'Claude Sonnet' })
-    expect(checkOf(sonnet)?.getAttribute('class')).toContain('opacity-0')
+    expect(checkOf(sonnet)?.childElementCount).toBe(0)
   })
 
   it('the Favorites copy of the selected row shows the level on its own Edit, no check', () => {
@@ -654,13 +659,14 @@ describe('SelectorPanelV2 selected-row check', () => {
     }
   })
 
-  it('a selected row without a level on Edit keeps its visible check', () => {
+  it('a selected row without a level on Edit keeps the empty slot, no tick', () => {
     render(<Panel {...props({ thoughtLevel: null, effortValue: null })} />)
     const row = activeRow()
     expect(
       screen.queryByTestId('selector-edit')?.querySelector('[data-edit-thinking]') ?? null
     ).toBeNull()
-    expect(checkOf(row)?.getAttribute('class')).toContain('opacity-100')
+    expect(checkOf(row)).not.toBeNull()
+    expect(checkOf(row)?.childElementCount).toBe(0)
   })
 
   it('the name sits 2px closer to the agent glyph than the row gap', () => {
@@ -777,15 +783,15 @@ describe('SelectorPanelV2 selected-row fill', () => {
     }
   })
 
-  it('hover and the open flyout never replace the fill; other rows hover at 3%', async () => {
+  it('hover and the open flyout never replace the fill; other rows hover at 6%', async () => {
     render(<Panel {...props({ favoritesStore: storeOf([[CURSOR.id, 'opus']]) })} />)
     const check = (): void => {
       for (const box of marked()) {
         const names = classes(box)
         expect(names).toContain(PICKER_ROW_SELECTED)
         expect(names).toContain(`hover:${PICKER_ROW_SELECTED}`)
-        expect(names).not.toContain('bg-row-hover')
-        expect(names).not.toContain('hover:bg-row-hover')
+        expect(names).not.toContain('bg-foreground/[0.06]')
+        expect(names).not.toContain('hover:bg-foreground/[0.06]')
       }
     }
     check()
@@ -794,10 +800,10 @@ describe('SelectorPanelV2 selected-row fill', () => {
     await screen.findByTestId('selector-edit-flyout')
     expect(edit).toHaveAttribute('aria-expanded', 'true')
     check()
-    // An unselected row keeps the plain 3% hover and no fill.
+    // An unselected row keeps the plain 6% hover (the menus' highlight) and no fill.
     const sonnet = rowsNamed('Claude Sonnet')[0] as HTMLElement
     const box = sonnet.closest('.group\\/fav') as HTMLElement
-    expect(classes(box)).toContain('hover:bg-row-hover')
+    expect(classes(box)).toContain('hover:bg-foreground/[0.06]')
     expect(classes(box)).not.toContain(PICKER_ROW_SELECTED)
   })
 
@@ -850,10 +856,10 @@ describe('SelectorPanelV2 selected-row fill', () => {
     ])
     // Exactly the aria-pressed rows sit in a filled box.
     for (const row of rows) expect(boxOf(row) !== null).toBe(pressed.includes(row))
-    // Hover (unselected): the 3% wash, never the fill.
+    // Hover (unselected): the 6% wash, never the fill.
     const plain = rowsNamed('Claude Haiku')[0] as HTMLElement
     const plainBox = plain.closest('.group\\/fav') ?? plain
-    expect(classes(plainBox as HTMLElement)).toContain('hover:bg-row-hover')
+    expect(classes(plainBox as HTMLElement)).toContain('hover:bg-foreground/[0.06]')
     expect(classes(plainBox as HTMLElement)).not.toContain(PICKER_ROW_SELECTED)
     // Keyboard focus: the focus ring only, no fill, on selected and plain rows alike.
     for (const row of [plain, ...pressed]) {
@@ -1632,7 +1638,7 @@ describe('SelectorPanelV2 Edit motion on a pick', () => {
     // The old rows are the plain unselected row, check slot and all.
     for (const row of screen.getAllByRole('button', { name: 'Claude Opus' })) {
       expect(row).toHaveAttribute('aria-pressed', 'false')
-      expect(row.querySelector('[data-row-check]')?.getAttribute('class')).toContain('opacity-0')
+      expect(row.querySelector('[data-row-check]')?.childElementCount).toBe(0)
     }
     expect(pressed()).toEqual(['Claude Sonnet', 'Claude Sonnet'])
 
@@ -1990,7 +1996,7 @@ function deferred(): {
 }
 
 describe('SelectorPanelV2 with no active row', () => {
-  it('with no models, Thinking and Fast mode move into the footer', () => {
+  it('with no models, the agent is pinned as the current model and Fast mode opens from its Edit', async () => {
     const onEffort = vi.fn()
     const onToggleFast = vi.fn()
     render(
@@ -2006,25 +2012,28 @@ describe('SelectorPanelV2 with no active row', () => {
       />
     )
     expect(screen.getByText('This agent gives no model choice.')).toBeInTheDocument()
-    expect(screen.queryByTestId('selector-edit')).toBeNull()
-    const footer = screen.getByTestId('selector-options')
-    expect(within(footer).getByTestId('selector-option-thinking')).toHaveAccessibleName(
-      'Thinking: High'
-    )
-    const fast = within(footer).getByRole('switch', { name: 'Fast mode' })
-    // Under prefers-reduced-motion the thumb jumps instead of sliding.
-    expect(fast.querySelector('.switch-thumb')).toHaveClass('motion-reduce:transition-none')
-    fireEvent.click(fast)
+    const pinned = screen.getByTestId('selector-pinned-model')
+    expect(within(pinned).getByText('Current model')).toBeInTheDocument()
+    // Thinking and Fast mode never move into the footer.
+    expect(screen.queryByTestId('selector-option-thinking')).toBeNull()
+    expect(screen.queryByRole('switch', { name: 'Fast mode' })).toBeNull()
+    // The pinned row carries no star: it is not a list entry.
+    expect(within(pinned).queryByTestId('selector-favorite')).toBeNull()
+    const flyout = await openEdit()
+    fireEvent.click(within(flyout).getByRole('menuitemcheckbox', { name: 'Fast mode' }))
     expect(onToggleFast).toHaveBeenCalledTimes(1)
   })
 
-  it('with a model value outside the list, Context is in the footer', () => {
+  it('with a model value outside the list, the model is pinned and Context opens from its Edit', async () => {
     render(<Panel {...props({ modelValue: 'retired', thoughtLevel: null })} />)
-    expect(screen.queryByTestId('selector-edit')).toBeNull()
-    expect(screen.getByTestId('selector-option-context')).toHaveAccessibleName('Context: 300K')
+    expect(screen.getByTestId('selector-pinned-model')).toBeInTheDocument()
+    expect(screen.queryByTestId('selector-option-context')).toBeNull()
+    const flyout = await openEdit()
+    const context = within(flyout).getByRole('menuitemradio', { name: '300K' })
+    expect(context).toHaveAttribute('aria-checked', 'true')
   })
 
-  it('shows Default, not "undefined", for a context with no current value', async () => {
+  it('shows no picked value, not "undefined", for a context with no current value', async () => {
     const unset = { ...WIDE, currentValue: undefined } as unknown as SessionConfigOption
     const { rerender } = render(<Panel {...props({ genericOptions: [unset] })} />)
     const flyout = await openEdit()
@@ -2033,7 +2042,7 @@ describe('SelectorPanelV2 with no active row', () => {
       expect(item).toHaveAttribute('aria-checked', 'false')
     }
     rerender(<Panel {...props({ modelValue: 'retired', genericOptions: [unset] })} />)
-    expect(screen.getByTestId('selector-option-context')).toHaveAccessibleName('Context: Default')
+    expect(screen.getByTestId('selector-pinned-model')).not.toHaveTextContent('undefined')
   })
 })
 

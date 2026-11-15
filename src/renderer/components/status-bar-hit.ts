@@ -20,17 +20,9 @@ import { cn } from '@/lib/utils'
 const STATUS_BAR_TOUCH_HIT =
   'pointer-coarse:size-11 pointer-coarse:-my-2.5 pointer-coarse:-translate-y-2.5 pointer-coarse:after:inset-0'
 
-/** Open-popover tint shared by every status-bar popover trigger. */
-export const STATUS_BAR_OPEN_CLASS =
+/** Open-popover tint of a status-bar popover trigger. */
+const STATUS_BAR_OPEN_CLASS =
   'data-[state=open]:bg-foreground/[0.06] data-[state=open]:text-foreground'
-
-/** Neutral hover wash for status-bar text items (quiet bar). */
-export const STATUS_BAR_HOVER_CLASS =
-  'transition-colors duration-150 ease-out hover:bg-foreground/[0.03] hover:text-foreground'
-
-/** 24px status-bar text item: icon + label row. Hover stays at the call site. */
-export const STATUS_BAR_ITEM_CLASS =
-  'flex h-6 min-w-0 shrink-0 items-center gap-1.5 rounded-md px-2'
 
 /**
  * Status-bar icon button (quiet bar): 24px slot, neutral hover wash and

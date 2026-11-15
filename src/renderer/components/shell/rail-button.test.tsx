@@ -7,7 +7,13 @@ function renderButton(props: Partial<React.ComponentProps<typeof RailButton>> = 
   const onClick = vi.fn()
   render(
     <TooltipProvider>
-      <RailButton label="Open canvas" aria-label="Open canvas" onClick={onClick} {...props}>
+      <RailButton
+        label="Open canvas"
+        aria-label="Open canvas"
+        size="base"
+        onClick={onClick}
+        {...props}
+      >
         <span>icon</span>
       </RailButton>
     </TooltipProvider>
@@ -43,7 +49,7 @@ describe('RailButton', () => {
 
     expect(button).toHaveAttribute('aria-pressed', 'true')
     expect(button.className).toContain('keycap')
-    expect(button.className).toContain('size-9')
+    expect(button.className).toContain('size-8')
     expect(button.className).not.toMatch(/bg-(secondary|accent|primary)/)
   })
 
@@ -63,7 +69,7 @@ describe('RailButton', () => {
 
 describe('railButtonClass', () => {
   it('adds the keycap surface only when active', () => {
-    expect(railButtonClass(true)).toContain('keycap')
-    expect(railButtonClass(false)).not.toContain('keycap')
+    expect(railButtonClass(true, 'base')).toContain('keycap')
+    expect(railButtonClass(false, 'base')).not.toContain('keycap')
   })
 })

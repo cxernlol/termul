@@ -77,7 +77,10 @@ vi.mock('@/hooks/use-mobile-web-shell', async () => {
   return { ...actual, useMobileWebShell: () => mockShell.current }
 })
 
-vi.mock('@/lib/tauri-runtime', () => ({ isTauriContext: () => false }))
+vi.mock('@/lib/tauri-runtime', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/tauri-runtime')>()),
+  isTauriContext: () => false
+}))
 
 vi.mock('sonner', () => ({
   toast: { error: mockToastError, success: vi.fn() }
@@ -411,7 +414,7 @@ function holdClosingSheetMounted(): () => void {
 
 describe('mobile composer: one-row toolbar', () => {
   it('renders exactly one row: Add to chat, model, context ring, send', () => {
-    const { container } = renderBar()
+    const { container } = renderBar({ startScreen: true })
     const row = mobileRow(container)
 
     expect(row.closest('[data-chat-composer="true"]')).not.toBeNull()
@@ -424,7 +427,8 @@ describe('mobile composer: one-row toolbar', () => {
     for (const stale of ['1', '2', 'single']) {
       expect(container.querySelector(`[data-composer-toolbar-row="${stale}"]`)).toBeNull()
     }
-    expect(container.querySelector('[data-chat-composer-context-strip]')).toBeNull()
+    // The phone keeps the composer alone, even on the start screen.
+    expect(container.querySelector('[data-chat-start-context-row]')).toBeNull()
   })
 
   it('keeps Attach and MCP out of the toolbar (they live in the sheet) and shows the effort on the pill', () => {
@@ -557,11 +561,12 @@ describe('mobile composer: one-row toolbar', () => {
 
   it('renders no mobile row and keeps the desktop toolbar when the shell is not mobile', () => {
     mockShell.current = false
-    const { container } = renderBar()
+    const { container } = renderBar({ startScreen: true })
 
     expect(container.querySelector('[data-composer-toolbar-row="mobile"]')).toBeNull()
     expect(container.querySelector('[data-composer-toolbar-row="single"]')).not.toBeNull()
-    expect(container.querySelector('[data-chat-composer-context-strip]')).not.toBeNull()
+    // The desktop start row lives under the composer in AgentChatPanel.
+    expect(container.querySelector('[data-chat-start-context-row]')).toBeNull()
     // The desktop + opens a menu; the phone + opens a sheet.
     expect(screen.getByRole('button', { name: 'Add to chat' })).toHaveAttribute(
       'aria-haspopup',

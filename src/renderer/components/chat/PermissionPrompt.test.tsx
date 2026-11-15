@@ -69,7 +69,7 @@ describe('PermissionPrompt', () => {
       expect(section.querySelector('fieldset')).not.toHaveClass('gap-3')
 
       const footnote = screen.getByText(/Choose an option to resume the agent/)
-      expect(footnote.className).toContain('text-[11px]')
+      expect(footnote).toHaveClass('text-2xs')
       expect(footnote.className).toContain('text-muted-foreground/70')
     })
 
@@ -135,7 +135,6 @@ describe('PermissionPrompt', () => {
       const footnote = screen.getByText(/Choose an option to resume the agent/)
       expect(footnote).toHaveClass('text-2xs', 'text-muted-foreground')
       expect(footnote.className).not.toContain('/70')
-      expect(footnote.className).not.toContain('text-[11px]')
     })
 
     it('does not take focus when it appears', () => {

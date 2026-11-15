@@ -62,7 +62,7 @@ function renderPalette(overrides: Partial<React.ComponentProps<typeof CommandPal
     projects,
     onSwitchProject: vi.fn(),
     onAddTerminal: vi.fn(),
-    onShowAgentLauncher: vi.fn(),
+    onNewChat: vi.fn(),
     onSaveSnapshot: vi.fn(),
     onNewBrowserTab: vi.fn(),
     onOpenProjectSettings: vi.fn(),
@@ -101,17 +101,13 @@ describe('CommandPalette', () => {
   it('renders a compact command-center layout with metadata, categories, shortcuts, and footer hints', () => {
     renderPalette()
 
-    expect(
-      screen.getByPlaceholderText('Search commands, projects, settings...')
-    ).toBeInTheDocument()
+    expect(screen.getByPlaceholderText('Search commands, projects, settings…')).toBeInTheDocument()
     expect(screen.getByText('Workspace')).toBeInTheDocument()
     expect(screen.getByText('Navigation')).toBeInTheDocument()
     expect(screen.getByText('Projects')).toBeInTheDocument()
     expect(screen.getByText('Tools')).toBeInTheDocument()
     expect(screen.getByText('Open a new shell in the active pane')).toBeInTheDocument()
-    expect(
-      screen.getByText('Show the agent launcher prompt in the active pane')
-    ).toBeInTheDocument()
+    expect(screen.getByText('Start a new chat in the active pane')).toBeInTheDocument()
     expect(screen.getByText('Ctrl+T')).toBeInTheDocument()
     expect(screen.getByText('Move')).toBeInTheDocument()
     expect(screen.getByText('Run')).toBeInTheDocument()
@@ -172,7 +168,7 @@ describe('CommandPalette', () => {
 
   it('searches settings, prefs, and history keywords', async () => {
     renderPalette()
-    const input = screen.getByPlaceholderText('Search commands, projects, settings...')
+    const input = screen.getByPlaceholderText('Search commands, projects, settings…')
 
     fireEvent.change(input, { target: { value: 'settings' } })
     await waitFor(() => {
@@ -221,9 +217,9 @@ describe('CommandPalette', () => {
     }> = [
       { label: 'New Terminal', commandId: 'new-terminal', callback: 'onAddTerminal' },
       {
-        label: 'Agent Launcher',
-        commandId: 'show-agent-launcher',
-        callback: 'onShowAgentLauncher'
+        label: 'New chat',
+        commandId: 'new-chat',
+        callback: 'onNewChat'
       },
       { label: 'New Browser Tab', commandId: 'new-browser-tab', callback: 'onNewBrowserTab' },
       { label: 'Save Workspace Snapshot', commandId: 'save-snapshot', callback: 'onSaveSnapshot' },
@@ -273,7 +269,7 @@ describe('CommandPalette', () => {
   it('omits optional commands when callbacks are unavailable', () => {
     renderPalette({
       onAddTerminal: undefined,
-      onShowAgentLauncher: undefined,
+      onNewChat: undefined,
       onSaveSnapshot: undefined,
       onNewBrowserTab: undefined,
       onOpenProjectSettings: undefined,
@@ -284,7 +280,7 @@ describe('CommandPalette', () => {
     })
 
     expect(screen.queryByText('New Terminal')).not.toBeInTheDocument()
-    expect(screen.queryByText('Agent Launcher')).not.toBeInTheDocument()
+    expect(screen.queryByText('New chat')).not.toBeInTheDocument()
     expect(screen.queryByText('New Browser Tab')).not.toBeInTheDocument()
     expect(screen.queryByText('Save Workspace Snapshot')).not.toBeInTheDocument()
     expect(screen.queryByText('Project Settings')).not.toBeInTheDocument()

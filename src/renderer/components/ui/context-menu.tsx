@@ -10,6 +10,7 @@ import {
   MENU_ITEM_CLASS,
   MENU_LABEL_CLASS,
   MENU_MOTION_CLASS,
+  MENU_PICKED_CLASS,
   MENU_SEPARATOR_CLASS,
   MENU_SHORTCUT_CLASS,
   MENU_SUB_TRIGGER_OPEN_CLASS
@@ -150,14 +151,9 @@ const ContextMenuRadioItem = React.forwardRef<
 >(({ className, children, ...props }, ref) => (
   <ContextMenuPrimitive.RadioItem
     ref={ref}
-    className={cn(MENU_ITEM_CLASS, MENU_TOUCH_ROW_CLASS, 'pl-8', className)}
+    className={cn(MENU_ITEM_CLASS, MENU_TOUCH_ROW_CLASS, MENU_PICKED_CLASS, className)}
     {...props}
   >
-    <span className={MENU_INDICATOR_CLASS}>
-      <ContextMenuPrimitive.ItemIndicator>
-        <Check className="h-3.5 w-3.5" />
-      </ContextMenuPrimitive.ItemIndicator>
-    </span>
     {children}
   </ContextMenuPrimitive.RadioItem>
 ))

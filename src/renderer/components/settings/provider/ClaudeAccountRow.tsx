@@ -41,7 +41,13 @@ export function AccountAvatar({ name }: { name: string }): React.JSX.Element {
   )
 }
 
-export function DefaultPill(): React.JSX.Element {
+/**
+ * "Default" beside the default account's name. Not drawn when the name
+ * already says it (the built-in "Default" account), so it never reads
+ * "Default Default".
+ */
+export function DefaultPill({ accountName }: { accountName: string }): React.JSX.Element | null {
+  if (accountName.trim().toLowerCase() === 'default') return null
   return (
     <span className="rounded bg-muted px-1.5 py-0.5 text-3xs font-medium leading-none text-secondary-foreground">
       Default
@@ -302,7 +308,7 @@ export function ClaudeAccountRow({
           <div className="flex min-w-0 flex-col gap-1">
             <div className="flex min-w-0 items-center gap-1.5">
               <span className="truncate text-xs font-medium text-foreground">{account.name}</span>
-              {isDefault && <DefaultPill />}
+              {isDefault && <DefaultPill accountName={account.name} />}
             </div>
             <div className="flex min-w-0 items-center gap-1.5">
               <StatusDot tone={status.tone} />

@@ -6,10 +6,11 @@ Use primitives in `src/renderer/components/ui`. Wire `Label htmlFor` to the cont
 |---|---|---|
 | `Input` | `input.tsx` | Single-line text. Height 40px (`h-10`); dense dialogs use `h-9` (`CustomAgentDialog`). |
 | `Textarea` | `textarea.tsx` | Multi-line (`min-h-[80px]`). |
-| `Switch` | `switch.tsx` | Boolean on/off. Label the state it turns on. Colors come from the per-theme `--switch-*` tokens (see colors.md). |
-| `Select` | `select.tsx` | Exclusive pick from a known list. |
+| `Switch` | `switch.tsx` | Boolean on/off. Label the state it turns on. `size`: `default` (20×36 track) or `sm` (16×28) beside 12px rows. Colors come from the per-theme `--switch-*` tokens (see colors.md). |
+| `Select` | `select.tsx` | Exclusive pick from a known list. Trigger 40px (`h-10`), `h-9` in dense dialogs. |
+| `Label` | `label.tsx` | Every field. `htmlFor` the control `id`. |
 
-`Checkbox`, `RadioGroup`, and `Form` exist under `ui/` and have **no** product call sites. Do not start a second boolean pattern — use `Switch`. Do not start a radio pattern — use `Select`. One exception: a pick-one list whose options carry live data to compare (Project Settings → Provider, where each account shows its usage) is a `role="listbox"` of `role="option"` rows with a `Check` on the chosen row, like menu rows, with arrow-key focus and Enter/Space to choose. Do not add `react-hook-form` `Form` unless the task is to adopt that primitive across settings.
+There is no `Checkbox`, `RadioGroup` or `Form` in `ui/`. Nothing else exists: a boolean is a `Switch` (`size="sm"` beside 12px text, as in `NewProjectModal`'s "Initialize Git repository"), a pick-one is a `Select`. One exception: a pick-one list whose options carry live data to compare (Project settings → Accounts, where each account shows its status) is a `role="listbox"` of `role="option"` cards on the page; the chosen card takes `bg-foreground/[0.03] ring-1 ring-foreground/[0.12]` and a `Check`, with arrow-key focus and Enter/Space to choose. Do not add `react-hook-form`.
 
 Preferences and Project settings are one page per category (`SettingsLayout`). A setting is a `SettingsRow` (label and description left, control right) inside a `SettingsGroup` + `SettingsCard`. Lists use `SettingsSelect` (a sized `Select`), booleans use `Switch`, numbers with limits use `SettingsStepper`, status uses `StatusWord` (a dot and a word, never the dot alone). Give the control an `id`, pass it as the row's `htmlFor`, and point `aria-describedby` at `settingsDescriptionId(id)`.
 
@@ -28,6 +29,7 @@ Every text field, select and control shows keyboard focus in the `focus-ring` to
 | Bordered or underlined | `FIELD_FOCUS_CLASS` | The hairline turns `focus-ring` |
 | Borderless with a fill | `FOCUS_RING_CLASS` | A 2px `focus-ring` edge |
 | Inside a search band | `INNER_FIELD_FOCUS_CLASS` on the field, `BAND_FOCUS_CLASS` on the band | The band's hairline turns `focus-ring`; no box around the input |
+| On a clipping parent (tabs) | `FOCUS_RING_OVERLAY_CLASS` | The 2px edge drawn inside, so `overflow-hidden` does not cut it |
 
 All three use `focus-visible` with `outline-hidden`, so Windows forced-colors mode still draws a system outline. Never `focus:ring-primary`, `ring-ring` on focus, a bare `focus:` ring, `ring-offset-2` on a field, or `outline-none` with no replacement. `ui/text-field-focus.test.tsx` fails on a raw `<input>`, `<textarea>` or `<select>` that breaks this.
 
@@ -69,8 +71,8 @@ Many lines?
 ```
 
 ```tsx
-// ContextBarSettingsPopover.tsx
-<Switch checked={checked} onCheckedChange={onCheckedChange} />
+// RemoteAccessPopover.tsx
+<Switch checked={isRunning} disabled={remoteBusy} onCheckedChange={onToggle} />
 ```
 
 ## Incorrect

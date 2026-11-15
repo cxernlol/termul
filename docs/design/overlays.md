@@ -4,12 +4,13 @@ Pick one shell. Do not stack a second overlay library.
 
 | Shell | File | When |
 |---|---|---|
-| `Dialog` | `ui/dialog.tsx` | Centered form or detail (max-w-lg). Overlay `bg-overlay/90`. |
+| `Dialog` | `ui/dialog.tsx` | Centered form or detail. `max-w-lg`, `bg-card rounded-2xl`. Overlay `bg-overlay/90`. |
 | `Sheet` | `ui/sheet.tsx` | Slide-over. `side`: `top` \| `bottom` \| `left` \| `right` (default `right`). Overlay `bg-overlay/80`. Mobile bottom sheets use `side="bottom"`. |
-| `ConfirmDialog` | `ConfirmDialog.tsx` | Desktop yes/no. Variants: `default` \| `danger` (not `destructive`). Overlay `bg-overlay/60`. |
-| `AlertDialog` | `ui/alert-dialog.tsx` | Confirm already inside chat/mobile Radix trees (`ChatMessage`, `MobileFileExplorer`). Overlay `bg-overlay/80`. |
+| `ConfirmDialog` | `ConfirmDialog.tsx` | Desktop yes/no. Variants: `default` \| `danger` (not `destructive`). 400px, `bg-card`. Overlay `bg-overlay/60` with `backdrop-blur-sm`. |
+| `AlertDialog` | `ui/alert-dialog.tsx` | Confirm already inside chat/mobile Radix trees (`ChatMessage`, `MobileFileExplorer`). `max-w-lg`. Overlay `bg-overlay/80`. The confirm is `AlertDialogAction` (primary chrome), Cancel is the outline secondary. |
 | `SettingsModal` | `settings/SettingsModal.tsx` | Wide settings shell only. Do not replace with `Dialog`. Overlay `bg-overlay/60`. |
-| `Popover` | `ui/popover.tsx` | Non-blocking extra UI (`ContextBarSettingsPopover`). |
+| `Popover` | `ui/popover.tsx` | Non-blocking extra UI (`RemoteAccessPopover`, the Rail worktree switcher). |
+| `AnimatedMenuContent` | `ui/animated-menu-content.tsx` | A popover that opens and closes with the menu motion. `surface="panel"` for the V2 panel (model picker, mode menu): see [menus.md](menus.md). |
 
 `Drawer` (`ui/drawer.tsx`, vaul) has no product call site. Do not add a second bottom-sheet stack — use `Sheet` `side="bottom"`.
 
@@ -33,13 +34,7 @@ Default → Dialog
 
 ## Menus
 
-`DropdownMenu`, `ContextMenu` and `Select` share `components/ui/menu-styles.ts`. Do not restyle rows at the call site.
-
-- Shell: `rounded-xl border bg-popover p-1`. Rows: `min-h-8 rounded-lg px-2 text-xs`.
-- Highlight (pointer or keyboard): `bg-foreground/[0.06]`. Never `bg-secondary` — in Troupe Dark it equals `bg-popover`, so the highlight disappears.
-- Selected or checked: a `Check` icon. No fill. Radio items also use `Check`.
-- Group label: `.label-panel` (12px, medium, sentence case, no tracking, `text-muted-foreground`).
-- Destructive item: last, after a separator. `ContextMenuItem` accepts `variant="destructive"`. `DropdownMenuItem` does not.
+Menus, pickers, panels and their rows: [menus.md](menus.md).
 
 ## Correct
 

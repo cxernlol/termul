@@ -334,7 +334,7 @@ test('palette lists New Project, never Open Shortcut Menu, and New Project opens
       .locator('#mobile-header-more-sheet')
       .getByRole('button', { name: 'Command palette', exact: true })
       .tap()
-    const search = page.getByPlaceholder('Search commands, projects, settings...')
+    const search = page.getByPlaceholder('Search commands, projects, settings…')
     await expect(search).toBeVisible()
 
     // The groups are rendered with the surviving command in them, so the
@@ -809,7 +809,7 @@ test.describe('desktop layout is unchanged', () => {
 
       // The palette keeps "Open Shortcut Menu" and has no "New Project".
       await page.keyboard.press('ControlOrMeta+k')
-      await expect(page.getByPlaceholder('Search commands, projects, settings...')).toBeVisible()
+      await expect(page.getByPlaceholder('Search commands, projects, settings…')).toBeVisible()
       await expect(page.getByRole('option', { name: /^New Terminal/ })).toBeVisible()
       await expect(page.getByRole('option', { name: /^Open Shortcut Menu/ })).toBeVisible()
       await expect(page.getByRole('option', { name: /^New Project/ })).toHaveCount(0)

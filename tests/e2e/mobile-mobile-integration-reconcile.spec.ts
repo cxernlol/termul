@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import type { Locator, Page } from 'playwright/test'
 import { expect, request, test } from 'playwright/test'
 import { E2E_BASE_URL, E2E_TOKEN, storeKey, wsRequest } from './helpers'
+import { emptyChatComposer, sendFromEmptyChat, startNewChat } from './ui'
 
 /**
  * Mobile integration reconcile E2E (spec-mobile-integration-reconcile): a
@@ -203,11 +204,18 @@ async function chooseIsolation(
 
 /**
  * Start a chat from the mobile shell: the empty pane shows the launcher
- * composer directly, an open chat needs the header "New chat" first. Resolves
- * once the header names the new chat (the title is the prompt text).
+ * composer directly. In an open chat, the header "New chat" opens a new
+ * empty chat, and the prompt goes in its composer. Resolves once the header
+ * names the new chat (the title is the prompt text).
  */
 async function startChat(page: Page, prompt: string, options: { viaNewChat?: boolean } = {}) {
-  if (options.viaNewChat) await page.getByRole('button', { name: 'New chat', exact: true }).tap()
+  if (options.viaNewChat) {
+    await page.getByRole('button', { name: 'New chat', exact: true }).tap()
+    await expect(emptyChatComposer(page)).toBeVisible()
+    await sendFromEmptyChat(page, prompt, { tap: true })
+    await expect(page.getByRole('heading', { level: 1, name: prompt, exact: true })).toBeVisible()
+    return
+  }
   const launcher = page.getByRole('textbox', { name: 'Agent prompt' })
   const start = page.getByRole('button', { name: 'Start agent chat' })
   // The launcher re-renders once its git probe settles, which drops focus and
@@ -808,16 +816,14 @@ test.describe('toast offset', () => {
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
     })
 
-    /** Boot the desktop shell on a fresh project and start a chat from its launcher. */
+    /** Boot the desktop shell on a fresh project and start a chat with the Rail New chat. */
     async function startDesktopChat(page: Page, prompt: string): Promise<void> {
       const project = await registerProject()
       await openApp(page, project)
       await expect(page.locator(`[aria-label^="Project: ${project.name}"]`).first()).toBeVisible()
-      // The Side panel's New chat button opens the launcher.
-      await page.getByRole('button', { name: 'New chat', exact: true }).first().click()
-      const composer = page
-        .locator('[data-composer-editor="true"][aria-label="Agent prompt"]')
-        .first()
+      // The Rail's New chat row opens a new empty chat (or, as a fallback,
+      // the launcher). The helper returns the composer that starts the chat.
+      const composer = await startNewChat(page)
       await composer.click()
       await page.keyboard.type(prompt)
       await page.keyboard.press('Enter')

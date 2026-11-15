@@ -1,9 +1,9 @@
-import { fireEvent, render, screen, within } from '@testing-library/react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { render, screen } from '@testing-library/react'
+import { beforeEach, describe, expect, it } from 'vitest'
 import { useAcpStore } from '@/stores/acp-store'
 import { useProjectStore } from '@/stores/project-store'
 import { ChatEmptyState } from './ChatEmptyState'
-import { CHAT_STARTERS, ChatStarters, ChatStartHero } from './chat-start'
+import { ChatStartHero } from './chat-start'
 
 describe('ChatStartHero (shared by the launcher and the empty chat)', () => {
   it('shows the Troupe mark and the project question', () => {
@@ -12,21 +12,26 @@ describe('ChatStartHero (shared by the launcher and the empty chat)', () => {
       'What should we do in termul-new?'
     )
   })
-})
 
-describe('ChatStarters', () => {
-  it('lists the four starters as quiet chips and seeds the prompt on pick', () => {
-    const onPick = vi.fn()
-    render(<ChatStarters onPick={onPick} />)
+  it('uses the Paper type and spacing: 56px mark, 20px gap, 22/28 heading', () => {
+    render(<ChatStartHero projectLabel="termul-new" />)
+    const heading = screen.getByRole('heading', { level: 1 })
+    expect(heading).toHaveClass(
+      'text-hero',
+      'leading-7',
+      'tracking-[-0.015em]',
+      'font-normal',
+      'text-foreground'
+    )
+    const mark = screen.getByRole('img', { name: 'Troupe' })
+    expect(mark).toHaveAttribute('width', '56')
+    expect(heading.parentElement).toHaveClass('gap-5', 'mb-6')
+  })
 
-    const group = screen.getByRole('group', { name: 'Starters' })
-    expect(
-      within(group)
-        .getAllByRole('button')
-        .map((b) => b.textContent)
-    ).toEqual(['Explain this project', 'Find a bug', 'Write tests', 'Summarize changes'])
-    fireEvent.click(within(group).getByRole('button', { name: 'Find a bug' }))
-    expect(onPick).toHaveBeenCalledWith(CHAT_STARTERS[1].prompt)
+  it('keeps the smaller mobile hero', () => {
+    render(<ChatStartHero projectLabel="termul-new" isMobileShell />)
+    expect(screen.getByRole('img', { name: 'Troupe' })).toHaveAttribute('width', '32')
+    expect(screen.getByRole('heading', { level: 1 })).toHaveClass('text-xl')
   })
 })
 

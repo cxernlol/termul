@@ -1,99 +1,58 @@
-import { useEffect, useId, useState } from 'react'
-import { Button } from '@/components/ui/button'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle
-} from '@/components/ui/dialog'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
+import type { CodexAccountUsage, CodexAccountView } from '@shared/types/codex-accounts.types'
 import { codexAccountsApi } from '@/lib/codex-accounts-api'
+import { codexWindowLabel, planLabel, primaryCodexWindow } from '@/lib/codex-usage-format'
+import { AddAccountDialogShell, type AddAccountProvider } from './AddAccountFlow'
+import { CodexSignInRun } from './CodexSignInStep'
 
-const MAX_NAME_CHARS = 40
-
-/** Add a signed-out Codex Account. Sign-in is a separate step. */
-export function CodexAddAccountDialog({
-  open,
-  onOpenChange,
-  onAdded
-}: {
+interface CodexAddAccountDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
-  onAdded: (account: { id: string; name: string }) => Promise<void>
-}): React.JSX.Element {
-  const inputId = useId()
-  const [name, setName] = useState('')
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  /** Names already in use, so suggestions skip them. */
+  existingNames: string[]
+  defaultAccountName: string | null
+  /** Latest usage reads, to summarise the new Account when it is ready. */
+  usage: Record<string, CodexAccountUsage>
+  /** Called after the Account list changed (created, signed in, default). */
+  onChanged: () => Promise<void>
+  /** Read the new Account's usage after it signed in. */
+  onSignedIn: (account: CodexAccountView) => Promise<void>
+}
 
-  useEffect(() => {
-    if (open) {
-      setName('')
-      setError(null)
-    }
-  }, [open])
-
-  const submit = async (): Promise<void> => {
-    const trimmed = name.trim()
-    if (!trimmed) {
-      setError('Enter a name.')
-      return
-    }
-    setSaving(true)
-    setError(null)
-    try {
-      const created = await codexAccountsApi.add(trimmed)
-      await onAdded(created)
-      onOpenChange(false)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setSaving(false)
-    }
+/**
+ * "Add account" for Codex: the Sign in step picks ChatGPT in the browser or a
+ * device code. A running sign-in cannot be stopped from here, so the dialog
+ * stays open until it ends (the host sign-in window has its own Cancel).
+ */
+export function CodexAddAccountDialog({
+  usage,
+  ...props
+}: CodexAddAccountDialogProps): React.JSX.Element {
+  const provider: AddAccountProvider<CodexAccountView> = {
+    name: 'Codex',
+    create: async (name) => {
+      const created = await codexAccountsApi.add(name)
+      return { id: created.id, name: created.name, builtin: false, signedIn: false }
+    },
+    setDefault: (id) => codexAccountsApi.setDefault(id),
+    summary: (account) => {
+      const read = usage[account.id]
+      const primary = primaryCodexWindow(read)
+      return {
+        plan: planLabel(read?.planType ?? null),
+        usageLabel: primary ? codexWindowLabel(primary) : 'Usage',
+        usageValue: primary ? `${Math.round(primary.percent)}% used` : 'not started'
+      }
+    },
+    renderSignIn: ({ account, onSignedIn, onFailed, onCancel, setLocked }) => (
+      <CodexSignInRun
+        account={account}
+        onRunningChange={setLocked}
+        onSignedIn={onSignedIn}
+        onFailed={onFailed}
+        onCancel={onCancel}
+      />
+    ),
+    failedReason: 'The sign-in window closed or timed out.'
   }
-
-  return (
-    <Dialog open={open} onOpenChange={(next) => !saving && onOpenChange(next)}>
-      <DialogContent className="sm:max-w-[420px]">
-        <DialogHeader>
-          <DialogTitle>Add Codex account</DialogTitle>
-          <DialogDescription>
-            The account starts signed out. You sign it in with ChatGPT next.
-          </DialogDescription>
-        </DialogHeader>
-        <form
-          className="grid gap-1.5 py-2"
-          onSubmit={(event) => {
-            event.preventDefault()
-            void submit()
-          }}
-        >
-          <Label htmlFor={inputId} className="text-xs">
-            Name
-          </Label>
-          <Input
-            id={inputId}
-            value={name}
-            maxLength={MAX_NAME_CHARS}
-            autoFocus
-            placeholder="e.g. Work, Personal"
-            onChange={(event) => setName(event.target.value)}
-            className="h-9"
-          />
-          {error && <p className="text-xs text-destructive">{error}</p>}
-        </form>
-        <DialogFooter>
-          <Button variant="outline" size="sm" onClick={() => onOpenChange(false)} disabled={saving}>
-            Cancel
-          </Button>
-          <Button size="sm" onClick={() => void submit()} disabled={saving}>
-            {saving ? 'Adding…' : 'Add account'}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  )
+  return <AddAccountDialogShell provider={provider} {...props} />
 }

@@ -30,17 +30,17 @@ function buttonClass(props: Partial<ButtonProps> = {}): string {
 // are the density lock.
 const PRE_EXISTING_SIZES: Record<string, string> = {
   default:
-    'inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-lg text-sm font-medium ring-offset-background focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:ring-offset-2 disabled:pointer-events-none [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0 bg-primary-fill text-primary-foreground active:scale-[0.96] motion-reduce:active:scale-100 transition-[scale,background-color,box-shadow] duration-150 ease-out hover:bg-primary-fill-hover active:bg-primary-fill-active disabled:bg-muted disabled:text-disabled-foreground disabled:opacity-100 disabled:hover:bg-muted disabled:shadow-none shadow-emboss hover:shadow-emboss-hover h-10 px-4 py-2',
-  xs: 'inline-flex items-center justify-center gap-2 whitespace-nowrap font-medium ring-offset-background focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:ring-offset-2 disabled:pointer-events-none [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0 bg-primary-fill text-primary-foreground active:scale-[0.96] motion-reduce:active:scale-100 transition-[scale,background-color,box-shadow] duration-150 ease-out hover:bg-primary-fill-hover active:bg-primary-fill-active disabled:bg-muted disabled:text-disabled-foreground disabled:opacity-100 disabled:hover:bg-muted disabled:shadow-none shadow-emboss hover:shadow-emboss-hover h-7 rounded-md px-2 text-xs',
-  sm: 'inline-flex items-center justify-center gap-2 whitespace-nowrap text-sm font-medium ring-offset-background focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:ring-offset-2 disabled:pointer-events-none [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0 bg-primary-fill text-primary-foreground active:scale-[0.96] motion-reduce:active:scale-100 transition-[scale,background-color,box-shadow] duration-150 ease-out hover:bg-primary-fill-hover active:bg-primary-fill-active disabled:bg-muted disabled:text-disabled-foreground disabled:opacity-100 disabled:hover:bg-muted disabled:shadow-none shadow-emboss hover:shadow-emboss-hover h-9 rounded-lg px-3',
-  lg: 'inline-flex items-center justify-center gap-2 whitespace-nowrap text-sm font-medium ring-offset-background focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:ring-offset-2 disabled:pointer-events-none [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0 bg-primary-fill text-primary-foreground active:scale-[0.96] motion-reduce:active:scale-100 transition-[scale,background-color,box-shadow] duration-150 ease-out hover:bg-primary-fill-hover active:bg-primary-fill-active disabled:bg-muted disabled:text-disabled-foreground disabled:opacity-100 disabled:hover:bg-muted disabled:shadow-none shadow-emboss hover:shadow-emboss-hover h-11 rounded-lg px-8',
-  icon: 'inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-lg text-sm font-medium ring-offset-background focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:ring-offset-2 disabled:pointer-events-none [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0 bg-primary-fill text-primary-foreground active:scale-[0.96] motion-reduce:active:scale-100 transition-[scale,background-color,box-shadow] duration-150 ease-out hover:bg-primary-fill-hover active:bg-primary-fill-active disabled:bg-muted disabled:text-disabled-foreground disabled:opacity-100 disabled:hover:bg-muted disabled:shadow-none shadow-emboss hover:shadow-emboss-hover h-10 w-10',
+    'inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-lg text-sm font-medium ring-offset-background focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:ring-offset-2 disabled:pointer-events-none [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0 bg-primary-fill text-primary-foreground active:scale-[0.97] motion-reduce:active:scale-100 transition-[scale,background-color,box-shadow] duration-150 ease-[cubic-bezier(0.23,1,0.32,1)] hover:bg-primary-fill-hover active:bg-primary-fill-active disabled:bg-muted disabled:text-disabled-foreground disabled:opacity-100 disabled:hover:bg-muted disabled:shadow-none shadow-emboss hover:shadow-emboss-hover h-10 px-4 py-2',
+  xs: 'inline-flex items-center justify-center gap-2 whitespace-nowrap font-medium ring-offset-background focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:ring-offset-2 disabled:pointer-events-none [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0 bg-primary-fill text-primary-foreground active:scale-[0.97] motion-reduce:active:scale-100 transition-[scale,background-color,box-shadow] duration-150 ease-[cubic-bezier(0.23,1,0.32,1)] hover:bg-primary-fill-hover active:bg-primary-fill-active disabled:bg-muted disabled:text-disabled-foreground disabled:opacity-100 disabled:hover:bg-muted disabled:shadow-none shadow-emboss hover:shadow-emboss-hover h-7 rounded-md px-2 text-xs',
+  sm: 'inline-flex items-center justify-center gap-2 whitespace-nowrap text-sm font-medium ring-offset-background focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:ring-offset-2 disabled:pointer-events-none [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0 bg-primary-fill text-primary-foreground active:scale-[0.97] motion-reduce:active:scale-100 transition-[scale,background-color,box-shadow] duration-150 ease-[cubic-bezier(0.23,1,0.32,1)] hover:bg-primary-fill-hover active:bg-primary-fill-active disabled:bg-muted disabled:text-disabled-foreground disabled:opacity-100 disabled:hover:bg-muted disabled:shadow-none shadow-emboss hover:shadow-emboss-hover h-9 rounded-lg px-3',
+  lg: 'inline-flex items-center justify-center gap-2 whitespace-nowrap text-sm font-medium ring-offset-background focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:ring-offset-2 disabled:pointer-events-none [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0 bg-primary-fill text-primary-foreground active:scale-[0.97] motion-reduce:active:scale-100 transition-[scale,background-color,box-shadow] duration-150 ease-[cubic-bezier(0.23,1,0.32,1)] hover:bg-primary-fill-hover active:bg-primary-fill-active disabled:bg-muted disabled:text-disabled-foreground disabled:opacity-100 disabled:hover:bg-muted disabled:shadow-none shadow-emboss hover:shadow-emboss-hover h-11 rounded-lg px-8',
+  icon: 'inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-lg text-sm font-medium ring-offset-background focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:ring-offset-2 disabled:pointer-events-none [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0 bg-primary-fill text-primary-foreground active:scale-[0.97] motion-reduce:active:scale-100 transition-[scale,background-color,box-shadow] duration-150 ease-[cubic-bezier(0.23,1,0.32,1)] hover:bg-primary-fill-hover active:bg-primary-fill-active disabled:bg-muted disabled:text-disabled-foreground disabled:opacity-100 disabled:hover:bg-muted disabled:shadow-none shadow-emboss hover:shadow-emboss-hover h-10 w-10',
   'icon-xs':
-    'inline-flex items-center justify-center gap-2 whitespace-nowrap text-sm font-medium ring-offset-background focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:ring-offset-2 disabled:pointer-events-none [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0 bg-primary-fill text-primary-foreground active:scale-[0.96] motion-reduce:active:scale-100 transition-[scale,background-color,box-shadow] duration-150 ease-out hover:bg-primary-fill-hover active:bg-primary-fill-active disabled:bg-muted disabled:text-disabled-foreground disabled:opacity-100 disabled:hover:bg-muted disabled:shadow-none shadow-emboss hover:shadow-emboss-hover h-6 w-6 rounded-md',
+    'inline-flex items-center justify-center gap-2 whitespace-nowrap text-sm font-medium ring-offset-background focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:ring-offset-2 disabled:pointer-events-none [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0 bg-primary-fill text-primary-foreground active:scale-[0.97] motion-reduce:active:scale-100 transition-[scale,background-color,box-shadow] duration-150 ease-[cubic-bezier(0.23,1,0.32,1)] hover:bg-primary-fill-hover active:bg-primary-fill-active disabled:bg-muted disabled:text-disabled-foreground disabled:opacity-100 disabled:hover:bg-muted disabled:shadow-none shadow-emboss hover:shadow-emboss-hover h-6 w-6 rounded-md',
   'icon-sm':
-    'inline-flex items-center justify-center gap-2 whitespace-nowrap text-sm font-medium ring-offset-background focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:ring-offset-2 disabled:pointer-events-none [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0 bg-primary-fill text-primary-foreground active:scale-[0.96] motion-reduce:active:scale-100 transition-[scale,background-color,box-shadow] duration-150 ease-out hover:bg-primary-fill-hover active:bg-primary-fill-active disabled:bg-muted disabled:text-disabled-foreground disabled:opacity-100 disabled:hover:bg-muted disabled:shadow-none shadow-emboss hover:shadow-emboss-hover h-8 w-8 rounded-lg',
+    'inline-flex items-center justify-center gap-2 whitespace-nowrap text-sm font-medium ring-offset-background focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:ring-offset-2 disabled:pointer-events-none [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0 bg-primary-fill text-primary-foreground active:scale-[0.97] motion-reduce:active:scale-100 transition-[scale,background-color,box-shadow] duration-150 ease-[cubic-bezier(0.23,1,0.32,1)] hover:bg-primary-fill-hover active:bg-primary-fill-active disabled:bg-muted disabled:text-disabled-foreground disabled:opacity-100 disabled:hover:bg-muted disabled:shadow-none shadow-emboss hover:shadow-emboss-hover h-8 w-8 rounded-lg',
   'icon-lg':
-    'inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-lg text-sm font-medium ring-offset-background focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:ring-offset-2 disabled:pointer-events-none [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0 bg-primary-fill text-primary-foreground active:scale-[0.96] motion-reduce:active:scale-100 transition-[scale,background-color,box-shadow] duration-150 ease-out hover:bg-primary-fill-hover active:bg-primary-fill-active disabled:bg-muted disabled:text-disabled-foreground disabled:opacity-100 disabled:hover:bg-muted disabled:shadow-none shadow-emboss hover:shadow-emboss-hover h-10 w-10'
+    'inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-lg text-sm font-medium ring-offset-background focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:ring-offset-2 disabled:pointer-events-none [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0 bg-primary-fill text-primary-foreground active:scale-[0.97] motion-reduce:active:scale-100 transition-[scale,background-color,box-shadow] duration-150 ease-[cubic-bezier(0.23,1,0.32,1)] hover:bg-primary-fill-hover active:bg-primary-fill-active disabled:bg-muted disabled:text-disabled-foreground disabled:opacity-100 disabled:hover:bg-muted disabled:shadow-none shadow-emboss hover:shadow-emboss-hover h-10 w-10'
 }
 
 // The touch-only classes that must never leak into another size.
@@ -98,8 +98,8 @@ describe('Button size="touch" (44px touch-target floor)', () => {
     const variantClasses: Record<string, string> = {
       default: 'bg-primary-fill text-primary-foreground',
       destructive: 'bg-destructive-fill text-destructive-foreground',
-      outline: 'border border-input bg-background',
-      secondary: 'bg-secondary text-secondary-foreground',
+      outline: 'bg-control-fill text-foreground shadow-control',
+      secondary: 'bg-control-fill text-foreground shadow-control',
       ghost: 'hover:bg-secondary',
       link: 'text-primary underline-offset-4',
       composer: 'bg-primary-fill text-primary-foreground'
@@ -107,18 +107,16 @@ describe('Button size="touch" (44px touch-target floor)', () => {
     expect(className).toContain(variantClasses[variant])
   })
 
-  it('primary press scale is 0.96 once, and ghost keeps the document press rule', () => {
-    const primary = buttonClass()
-    expect(primary).toContain('active:scale-[0.96]')
-    expect(primary).toContain('transition-[scale,background-color,box-shadow]')
-    expect(primary).not.toContain('transition-[transform')
-    expect(screen.queryByRole('button')).toBeNull()
-    const { unmount } = render(<Button>Save</Button>)
-    expect(screen.getByRole('button')).toHaveAttribute('data-press-feedback', 'off')
-    unmount()
-    const ghost = render(<Button variant="ghost">Cancel</Button>)
-    expect(screen.getByRole('button')).not.toHaveAttribute('data-press-feedback')
-    ghost.unmount()
+  it('only the main buttons press: one .97 squeeze, eased, none on ghost and link', () => {
+    for (const variant of ['default', 'composer', 'secondary', 'outline', 'destructive'] as const) {
+      const className = buttonVariants({ variant })
+      expect(className).toContain('active:scale-[0.97]')
+      expect(className).toContain('motion-reduce:active:scale-100')
+      expect(className).toContain('transition-[scale,background-color,box-shadow]')
+    }
+    for (const variant of ['ghost', 'link'] as const) {
+      expect(buttonVariants({ variant })).not.toContain('active:scale')
+    }
   })
 
   it('keeps the emboss classes when rendered as a link', () => {
@@ -179,12 +177,26 @@ describe('Button size="touch" (44px touch-target floor)', () => {
     unmount()
   })
 
-  it('ghost and outline hover text reads the per-theme token, not accent-foreground', () => {
-    for (const variant of ['ghost', 'outline'] as const) {
+  it('ghost hover text reads the per-theme token, not accent-foreground', () => {
+    render(<Button variant="ghost">Label</Button>)
+    const className = screen.getByRole('button').className
+    expect(className).toContain('hover:text-ghost-hover-foreground')
+    expect(className).not.toContain('hover:text-accent-foreground')
+  })
+
+  it('secondary and outline share the raised control recipe: no border, a 0.5px edge and drop', () => {
+    for (const variant of ['secondary', 'outline'] as const) {
       const { unmount } = render(<Button variant={variant}>Label</Button>)
-      const className = screen.getByRole('button').className
-      expect(className).toContain('hover:text-ghost-hover-foreground')
-      expect(className).not.toContain('hover:text-accent-foreground')
+      const button = screen.getByRole('button')
+      expect(button).toHaveClass(
+        'bg-control-fill',
+        'hover:bg-control-fill-hover',
+        'text-foreground',
+        'shadow-control',
+        'active:scale-[0.97]',
+        'disabled:opacity-60'
+      )
+      expect(button.className).not.toMatch(/(^|\s)border(\s|$)/)
       unmount()
     }
   })

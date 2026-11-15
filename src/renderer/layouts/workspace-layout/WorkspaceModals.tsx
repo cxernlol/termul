@@ -1,6 +1,7 @@
 import type { ShellInfo } from '@shared/types/ipc.types'
 import { lazy, Suspense } from 'react'
 import { CreateSnapshotModal } from '@/components/CreateSnapshotModal'
+import { openNewChat } from '@/components/chat/new-chat/open-new-chat'
 import { NewProjectModal } from '@/components/NewProjectModal'
 import { ProjectBusyDialog } from '@/components/ProjectBusyDialog'
 import type { useCommandPaletteData } from '@/layouts/workspace-layout/use-command-palette-data'
@@ -16,7 +17,6 @@ import { useAppSettingsStore } from '@/stores/app-settings-store'
 import { useReportBugOpen, useReportBugStore } from '@/stores/report-bug-store'
 import { useSettingsModalView } from '@/stores/settings-modal-store'
 import { useThemePickerOpen } from '@/stores/theme-picker-store'
-import { useWorkspaceStore } from '@/stores/workspace-store'
 import type { Project } from '@/types/project'
 import type { TerminalProfile } from '@/types/settings'
 
@@ -150,12 +150,7 @@ export function WorkspaceModals({
             onAddTerminal={() => handleAddTerminal(undefined)}
             terminalProfiles={terminalProfiles}
             onOpenTerminalProfile={handleOpenTerminalProfile}
-            onShowAgentLauncher={() => {
-              const paneId = useWorkspaceStore.getState().activePaneId
-              if (paneId) {
-                useWorkspaceStore.getState().showAgentLauncher(paneId)
-              }
-            }}
+            onNewChat={() => void openNewChat({ reason: 'command-palette' })}
             onLaunchAgent={handleLaunchAgent}
             onNewBrowserTab={handleNewBrowserTab}
             onOpenCanvas={handleOpenCanvas}
@@ -176,6 +171,9 @@ export function WorkspaceModals({
             }))}
             getShortcutLabel={getShortcutLabel}
             getProjectShortcutLabel={getProjectShortcutLabel}
+            chatsProject={
+              isMobileWebShell ? undefined : projects.find((p) => p.id === activeProjectId)
+            }
           />
         </Suspense>
       )}

@@ -2,6 +2,9 @@ import { motion, useReducedMotion } from 'framer-motion'
 import { type ComponentPropsWithoutRef, useState } from 'react'
 import { PopoverContent } from '@/components/ui/popover'
 import { cn } from '@/lib/utils'
+import { OVERLAY_PANEL_SURFACE_CLASS } from './menu-styles'
+
+const MENU_SURFACE_CLASS = 'rounded-md border bg-popover text-popover-foreground shadow-md'
 
 type CubicBezier = [number, number, number, number]
 
@@ -120,6 +123,7 @@ export function AnimatedMenuContent({
   children,
   contentClassName,
   motionPreset = 'dropdown',
+  surface = 'menu',
   ...props
 }: ComponentPropsWithoutRef<typeof PopoverContent> & {
   /** The popover's open state. */
@@ -128,6 +132,12 @@ export function AnimatedMenuContent({
   motionPreset?: 'dropdown' | 'flyout'
   /** Classes for the positioned Radix shell (for example a z-index). */
   contentClassName?: string
+  /**
+   * `menu`: the shared menu surface. `panel`: the V2 overlay panel (radius 10,
+   * a 0.5px `popover-edge` outline, the two-step black drop), as on the Rail
+   * hover panels and the model picker.
+   */
+  surface?: 'menu' | 'panel'
 }): React.JSX.Element | null {
   const reduced = useReducedMotion() ?? false
   const [mounted, setMounted] = useState(open)
@@ -160,7 +170,7 @@ export function AnimatedMenuContent({
           if (!open) setMounted(false)
         }}
         className={cn(
-          'rounded-md border bg-popover text-popover-foreground shadow-md',
+          surface === 'panel' ? OVERLAY_PANEL_SURFACE_CLASS : MENU_SURFACE_CLASS,
           className,
           !open && 'pointer-events-none'
         )}

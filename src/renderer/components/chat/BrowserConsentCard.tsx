@@ -149,8 +149,8 @@ export function BrowserConsentCard({ consent }: BrowserConsentCardProps): React.
             onClick={() => respond(consent.requestId, optionId)}
             className={
               optionId === 'deny'
-                ? 'h-8 min-w-0 rounded-lg border-transparent px-3 text-xs font-medium text-muted-foreground whitespace-nowrap transition-[transform,color,background-color,border-color] duration-150 hover:border-destructive/25 hover:bg-destructive/10 hover:text-destructive active:scale-[0.96]'
-                : 'h-8 min-w-0 rounded-lg px-3 text-xs font-medium whitespace-nowrap transition-[transform,color,background-color,border-color] duration-150 active:scale-[0.96]'
+                ? 'h-8 min-w-0 rounded-lg border-transparent px-3 text-xs font-medium text-muted-foreground whitespace-nowrap transition-colors duration-150 hover:border-destructive/25 hover:bg-destructive/10 hover:text-destructive'
+                : 'h-8 min-w-0 rounded-lg px-3 text-xs font-medium whitespace-nowrap transition-[scale,color,background-color,border-color] duration-150 ease-[cubic-bezier(0.23,1,0.32,1)] active:scale-[0.97] motion-reduce:active:scale-100'
             }
           >
             {optionId === 'deny' ? (

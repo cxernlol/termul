@@ -206,6 +206,11 @@ const {
   }
 }))
 
+const { mockOpenNewChat } = vi.hoisted(() => ({
+  mockOpenNewChat: vi.fn(async () => ({ kind: 'skipped' as const }))
+}))
+vi.mock('./new-chat/open-new-chat', () => ({ openNewChat: mockOpenNewChat }))
+
 vi.mock('@/components/automations/ChatAutomationSuggestion', () => ({
   ChatAutomationSuggestion: () => null
 }))
@@ -446,6 +451,9 @@ vi.mock('./ChatInputBar', () => ({
       </div>
     )
   }
+}))
+vi.mock('./ChatStartContextRow', () => ({
+  ChatStartContextRow: () => <div data-testid="start-row-stub" />
 }))
 vi.mock('./ChatMessageList', () => ({
   ChatMessageList: (props: { onRetry?: () => void; items?: unknown[] }) => {
@@ -698,6 +706,17 @@ describe('AgentChatPanel restored-tab rehydration', () => {
     render(<AgentChatPanel sessionId="s1" isVisible />)
     fireEvent.click(screen.getByRole('button', { name: 'Resume chat' }))
     expect(mockOpen).toHaveBeenCalledWith('s1')
+  })
+
+  it('opens a new empty chat from a stopped chat (not the launcher)', () => {
+    seedLiveSession('s1', 'Resume failed: boom')
+    indexRef.current = [{ id: 's1' }]
+    render(<AgentChatPanel sessionId="s1" isVisible />)
+    fireEvent.click(screen.getByRole('button', { name: 'New chat' }))
+    expect(mockOpenNewChat).toHaveBeenCalledWith(
+      expect.objectContaining({ paneId: 'pane-1', reason: 'stopped-chat' })
+    )
+    expect(mockShowAgentLauncher).not.toHaveBeenCalled()
   })
 
   it('asks for sign-in when the Codex CLI logged out', () => {
@@ -2269,6 +2288,70 @@ describe('AgentChatPanel live model picks', () => {
 
     expect(mockPickModel).toHaveBeenCalledWith('s1', 'm2', undefined)
     expect(mockSetConfigOption).not.toHaveBeenCalled()
+  })
+})
+
+describe('AgentChatPanel first-send morph (start screen → working chat)', () => {
+  beforeEach(() => {
+    sessionRef.current = null
+    indexRef.current = []
+    openingRef.current = {}
+    restoringRef.current = {}
+    launchingRef.current = {}
+    oskRef.current = { isOskOpen: false, keyboardHeight: 0, height: 0, offsetTop: 0 }
+    transportReconnectingRef.current = false
+    discoveredContextRef.current = {}
+    messagesRef.current = []
+    toolCallsRef.current = {}
+    agentSwitchesRef.current = {}
+    chatMessageListPropsRef.current = null
+    chatInputBarPropsRef.current = []
+    // The start block is the desktop layout; the phone keeps the composer docked.
+    mobileRef.current = false
+  })
+  afterEach(() => {
+    mobileRef.current = true
+  })
+
+  it('lays out the start block: hero on top, composer, row and the bottom spacer', () => {
+    sessionRef.current = mockAcpSession({ id: 's1', cwd: '/w' })
+    const { container } = render(<AgentChatPanel sessionId="s1" isVisible />)
+
+    const stage = container.querySelector('[data-chat-timeline-stage]') as HTMLElement
+    expect(stage).toHaveAttribute('data-chat-timeline-stage', 'start')
+    expect(stage).toHaveClass('flex-[1_1_auto]', 'justify-end')
+    expect(screen.getByRole('heading', { level: 2 })).toHaveTextContent(/What should we do in/)
+    expect(lastComposerProps()).toMatchObject({ startScreen: true })
+    expect(screen.getByTestId('start-row-stub')).toBeInTheDocument()
+    expect(container.querySelector('[data-chat-start-spacer]')).toHaveClass('flex-[1_1_0px]')
+    // The transcript mounts on the first send.
+    expect(chatMessageListPropsRef.current).toBeNull()
+  })
+
+  it('keeps the same composer node across the first send; the start parts leave', () => {
+    sessionRef.current = mockAcpSession({ id: 's1', cwd: '/w' })
+    const { container, rerender } = render(<AgentChatPanel sessionId="s1" isVisible />)
+    const composer = screen.getByTestId('composer-stub')
+
+    messagesRef.current = [{ id: 'u1', role: 'user', blocks: [{ type: 'text', text: 'hi' }] }]
+    rerender(<AgentChatPanel sessionId="s1" isVisible />)
+
+    // The shared element: the same DOM node moves to the dock.
+    expect(screen.getByTestId('composer-stub')).toBe(composer)
+    expect(lastComposerProps()).toMatchObject({ startScreen: false })
+    expect(container.querySelector('[data-chat-timeline-stage]')).toHaveAttribute(
+      'data-chat-timeline-stage',
+      'timeline'
+    )
+    expect(chatMessageListPropsRef.current?.items).toHaveLength(1)
+    expect(container.querySelector('[data-chat-start-spacer]')).toBeNull()
+    // The hero and the row exit in place: out of the flow and inert.
+    const parts = container.querySelectorAll('[data-chat-start-part]')
+    expect(parts).toHaveLength(2)
+    for (const part of parts) {
+      expect(part).toHaveAttribute('data-chat-start-part', 'exiting')
+      expect(part).toHaveAttribute('inert')
+    }
   })
 })
 

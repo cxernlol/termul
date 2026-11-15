@@ -42,10 +42,11 @@ const launcherEditor = (page: Page) =>
 const menu = (page: Page) => page.getByRole('listbox')
 const option = (page: Page, name: string | RegExp) => menu(page).getByRole('option', { name })
 
+/**
+ * Wait for the empty-pane launcher of a new project (no tabs). Do not press
+ * New chat: it opens an empty chat tab, not the launcher.
+ */
 async function openLauncher(page: Page): Promise<void> {
-  if (!(await launcherEditor(page).isVisible())) {
-    await page.getByRole('button', { name: 'New chat', exact: true }).first().click()
-  }
   await expect(launcherEditor(page)).toHaveAttribute('contenteditable', 'true')
 }
 

@@ -97,7 +97,7 @@ export function PermissionPrompt({
         variant={primary ? 'default' : 'outline'}
         size={isMobileShell ? 'touch' : 'sm'}
         className={cn(
-          'min-w-0 rounded-lg px-3 font-medium whitespace-nowrap transition-[transform,color,background-color,border-color] duration-150 active:scale-[0.96]',
+          'min-w-0 rounded-lg px-3 font-medium whitespace-nowrap transition-[scale,color,background-color,border-color] duration-150 ease-[cubic-bezier(0.23,1,0.32,1)] active:scale-[0.97] motion-reduce:active:scale-100',
           !isMobileShell && 'h-8 text-xs',
           primary && 'shadow-2xs',
           !primary &&
@@ -177,7 +177,7 @@ export function PermissionPrompt({
             variant="ghost"
             size={isMobileShell ? 'touch' : 'sm'}
             className={cn(
-              'rounded-lg px-2.5 text-muted-foreground transition-[transform,color,background-color] duration-150 hover:bg-destructive/10 hover:text-destructive active:scale-[0.96]',
+              'rounded-lg px-2.5 text-muted-foreground transition-colors duration-150 hover:bg-destructive/10 hover:text-destructive',
               !isMobileShell && 'h-8 text-xs'
             )}
             onClick={() => choose(undefined)}
@@ -190,10 +190,8 @@ export function PermissionPrompt({
       {rejectOnCancel && (
         <p
           className={cn(
-            'mt-2 leading-tight',
-            isMobileShell
-              ? 'text-2xs text-muted-foreground'
-              : 'text-[11px] text-muted-foreground/70'
+            'mt-2 text-2xs leading-tight',
+            isMobileShell ? 'text-muted-foreground' : 'text-muted-foreground/70'
           )}
         >
           Choose an option to resume the agent. This request stays here until you respond.

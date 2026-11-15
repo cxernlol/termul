@@ -10,7 +10,7 @@ import {
 } from '../alert-dialog'
 
 describe('AlertDialogAction press scale', () => {
-  it('opts the default confirm action out of the document press transform', () => {
+  it('renders the confirm as the primary and Cancel as the outline secondary', () => {
     render(
       <AlertDialog open>
         <AlertDialogContent>
@@ -22,27 +22,8 @@ describe('AlertDialogAction press scale', () => {
       </AlertDialog>
     )
 
-    expect(screen.getByRole('button', { name: 'Delete' })).toHaveAttribute(
-      'data-press-feedback',
-      'off'
-    )
-    // Outline cancel keeps the document transform press.
-    expect(screen.getByRole('button', { name: 'Cancel' })).not.toHaveAttribute(
-      'data-press-feedback'
-    )
-  })
-
-  it('keeps a caller press-feedback override', () => {
-    render(
-      <AlertDialog open>
-        <AlertDialogContent>
-          <AlertDialogTitle>Confirm</AlertDialogTitle>
-          <AlertDialogDescription>Continue.</AlertDialogDescription>
-          <AlertDialogAction data-press-feedback="on">OK</AlertDialogAction>
-        </AlertDialogContent>
-      </AlertDialog>
-    )
-
-    expect(screen.getByRole('button', { name: 'OK' })).toHaveAttribute('data-press-feedback', 'on')
+    // The confirm is the primary chrome; Cancel is the outline secondary.
+    expect(screen.getByRole('button', { name: 'Delete' })).toHaveClass('bg-primary-fill')
+    expect(screen.getByRole('button', { name: 'Cancel' })).toHaveClass('bg-control-fill')
   })
 })

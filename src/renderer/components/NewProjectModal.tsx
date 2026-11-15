@@ -6,8 +6,9 @@ import { toast } from 'sonner'
 import { ChevronDown, ChevronRight, X } from '@/components/icons'
 import { Button } from '@/components/ui/button'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
-import { FIELD_FOCUS_CLASS, FOCUS_RING_CLASS } from '@/components/ui/panel-styles'
+import { FIELD_FOCUS_CLASS } from '@/components/ui/panel-styles'
 import { Skeleton } from '@/components/ui/skeleton'
+import { Switch } from '@/components/ui/switch'
 import { NativeWebviewOccluder } from '@/hooks/use-native-webview-occlusion'
 import { dialogApi, filesystemApi, gitApi, shellApi } from '@/lib/api'
 import { availableColors, getColorClasses } from '@/lib/colors'
@@ -598,12 +599,11 @@ export function NewProjectModal({ isOpen, onClose, onCreateProject }: NewProject
 
                   {isFolderEmpty && (
                     <div className="flex items-center gap-2">
-                      <input
-                        type="checkbox"
+                      <Switch
                         id="init-git"
+                        size="sm"
                         checked={initGit}
-                        onChange={(e) => setInitGit(e.target.checked)}
-                        className={`rounded border-border text-primary bg-secondary h-3.5 w-3.5 ${FOCUS_RING_CLASS}`}
+                        onCheckedChange={setInitGit}
                       />
                       <label
                         htmlFor="init-git"

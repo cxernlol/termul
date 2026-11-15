@@ -346,3 +346,23 @@ export function extractFastModeOption(options: SessionConfigOption[]): {
   const rest = options.filter((_, i) => i !== index)
   return { fastMode, rest }
 }
+
+/**
+ * Pull the Fast Mode switch out of the options the composer shows, wherever the
+ * agent sends it: the general options, or its model settings (`model_config`,
+ * as Claude does). The picker then shows it with the picked model, never as a
+ * footer row.
+ */
+export function splitFastModeOption(
+  modelConfig: SessionConfigOption[],
+  generic: SessionConfigOption[]
+): {
+  fastMode: SessionConfigOption | null
+  modelConfig: SessionConfigOption[]
+  rest: SessionConfigOption[]
+} {
+  const fromGeneric = extractFastModeOption(generic)
+  if (fromGeneric.fastMode) return { ...fromGeneric, modelConfig }
+  const fromModel = extractFastModeOption(modelConfig)
+  return { fastMode: fromModel.fastMode, modelConfig: fromModel.rest, rest: generic }
+}

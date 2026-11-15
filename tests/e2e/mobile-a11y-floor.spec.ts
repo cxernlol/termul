@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import type { Locator, Page } from 'playwright/test'
 import { expect, request, test } from 'playwright/test'
 import { E2E_BASE_URL, E2E_TOKEN, storeKey, wsRequest } from './helpers'
-import { launchChat } from './ui'
+import { emptyChatComposer, launchChat, sendFromEmptyChat } from './ui'
 
 /**
  * Mobile shell accessibility floor E2E (spec-mobile-a11y-floor): a phone-sized
@@ -187,15 +187,21 @@ async function announceBarrier(page: Page): Promise<void> {
 
 /**
  * Start a chat from the mobile shell: the empty pane shows the launcher
- * composer directly, an open chat needs the header "New chat" first. Resolves
- * once the header names the new chat (the title is the prompt text).
+ * composer directly. In an open chat, the header "New chat" opens a new
+ * empty chat, and the prompt goes in its composer. Resolves once the header
+ * names the new chat (the title is the prompt text).
  */
 async function startChat(page: Page, prompt: string, options: { viaNewChat?: boolean } = {}) {
-  if (options.viaNewChat) await page.getByRole('button', { name: 'New chat' }).tap()
-  const composer = page.getByRole('textbox', { name: 'Agent prompt' })
-  await composer.click()
-  await page.keyboard.type(prompt)
-  await page.getByRole('button', { name: 'Start agent chat' }).tap()
+  if (options.viaNewChat) {
+    await page.getByRole('button', { name: 'New chat' }).tap()
+    await expect(emptyChatComposer(page)).toBeVisible()
+    await sendFromEmptyChat(page, prompt, { tap: true })
+  } else {
+    const composer = page.getByRole('textbox', { name: 'Agent prompt' })
+    await composer.click()
+    await page.keyboard.type(prompt)
+    await page.getByRole('button', { name: 'Start agent chat' }).tap()
+  }
   await expect(page.getByRole('heading', { level: 1, name: prompt, exact: true })).toBeVisible()
 }
 

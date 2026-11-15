@@ -34,14 +34,14 @@ export function GroupContextMenuContent({
   return (
     <ContextMenuContent className="w-56">
       <ContextMenuItem onSelect={() => onStartRename(group)}>
-        <Edit2 className="mr-2 h-4 w-4" /> Rename Group
+        <Edit2 className="mr-2 size-3.5" /> Rename group
       </ContextMenuItem>
       <ContextMenuItem onSelect={() => onOpenColorPicker(group.id, 'group')}>
-        <Palette className="mr-2 h-4 w-4" /> Change Color
+        <Palette className="mr-2 size-3.5" /> Change color
       </ContextMenuItem>
       <ContextMenuSub>
         <ContextMenuSubTrigger>
-          <Plus className="mr-2 h-4 w-4" /> Add Project
+          <Plus className="mr-2 size-3.5" /> Add project
         </ContextMenuSubTrigger>
         <ContextMenuSubContent
           data-testid="add-project-submenu"
@@ -66,16 +66,16 @@ export function GroupContextMenuContent({
           ))}
           <ContextMenuSeparator />
           <ContextMenuItem onSelect={() => onImportProject(group.id)}>
-            <FolderPlus className="mr-2 h-4 w-4" /> Import Project...
+            <FolderPlus className="mr-2 size-3.5" /> Import project…
           </ContextMenuItem>
         </ContextMenuSubContent>
       </ContextMenuSub>
       <ContextMenuSeparator />
       <ContextMenuItem onSelect={() => onConfirmDelete(group, false)}>
-        <Trash2 className="mr-2 h-4 w-4" /> Delete Group (Keep Projects)
+        <Trash2 className="mr-2 size-3.5" /> Delete group (keep projects)
       </ContextMenuItem>
       <ContextMenuItem variant="destructive" onSelect={() => onConfirmDelete(group, true)}>
-        <Trash2 className="mr-2 h-4 w-4" /> Delete Group &amp; All Projects
+        <Trash2 className="mr-2 size-3.5" /> Delete group and all projects
       </ContextMenuItem>
     </ContextMenuContent>
   )

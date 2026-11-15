@@ -15,6 +15,14 @@ export const MENU_CONTENT_CLASS =
   'z-50 min-w-[8rem] overflow-hidden rounded-xl border bg-popover p-1 text-popover-foreground shadow-md'
 
 /**
+ * V2 overlay panel surface: radius 10, a 0.5px `popover-edge` outline (lighter
+ * than the fill, the same colour all round) and the two-step black drop. The
+ * Rail hover panels and the model picker use it.
+ */
+export const OVERLAY_PANEL_SURFACE_CLASS =
+  'rounded-[10px] bg-popover text-popover-foreground outline-[0.5px] outline-solid outline-popover-edge shadow-rail-hover-panel'
+
+/**
  * Radix menu shell motion: grows from the trigger (`--scale-medium` to 1, the
  * origin comes from Radix) and closes with a fade only. Timing is in
  * `index.css` (`[data-radix-popper-content-wrapper] > *`).
@@ -28,6 +36,13 @@ export const MENU_HIGHLIGHT_CLASS = 'focus:bg-foreground/[0.06] focus:text-foreg
 /** One row for every menu kind. Height 32, text 12, radius 8. */
 export const MENU_ITEM_CLASS = `relative flex min-h-8 cursor-default select-none items-center rounded-lg px-2 py-1.5 text-xs outline-none transition-colors duration-150 ease-out data-[disabled]:pointer-events-none data-[disabled]:opacity-50 ${MENU_HIGHLIGHT_CLASS}`
 
+/**
+ * Picked radio row: no tick. It keeps a fill one step stronger than the
+ * highlight, with full-ink text, also while it has the pointer.
+ */
+export const MENU_PICKED_CLASS =
+  'data-[state=checked]:bg-foreground/[0.1] data-[state=checked]:focus:bg-foreground/[0.1] data-[state=checked]:text-foreground'
+
 /** Sub-menu trigger stays highlighted while its sub-menu is open. */
 export const MENU_SUB_TRIGGER_OPEN_CLASS = 'data-[state=open]:bg-foreground/[0.06]'
 
@@ -38,7 +53,7 @@ export const MENU_INDICATOR_CLASS = 'absolute left-2 flex h-3.5 w-3.5 items-cent
 export const MENU_LABEL_CLASS = 'label-panel px-2 pb-1 pt-2'
 
 /** Hairline between groups, edge to edge inside the 4px shell padding. */
-export const MENU_SEPARATOR_CLASS = '-mx-1 my-1 h-px bg-border'
+export const MENU_SEPARATOR_CLASS = '-mx-1 my-1 h-[0.5px] bg-border'
 
 /** Keyboard shortcut hint at the row end. */
 export const MENU_SHORTCUT_CLASS = 'ml-auto pl-4 text-2xs text-muted-foreground'

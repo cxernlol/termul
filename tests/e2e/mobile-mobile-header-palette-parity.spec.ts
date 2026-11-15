@@ -254,7 +254,7 @@ async function watchProjectSwitches(page: Page): Promise<ProjectSwitchWire> {
   return { requested: () => [...requested] }
 }
 
-const PALETTE_SEARCH_PLACEHOLDER = 'Search commands, projects, settings...'
+const PALETTE_SEARCH_PLACEHOLDER = 'Search commands, projects, settings…'
 
 function closePaletteButton(page: Page): Locator {
   return page.getByRole('button', { name: 'Close command palette' })

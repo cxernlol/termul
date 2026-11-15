@@ -2,9 +2,8 @@ import type { ClaudeAccountView } from '@shared/types/claude-accounts.types'
 import { useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
-import { Info, KeyRound, Monitor, Plus, RotateCcw, WifiOff } from '@/components/icons'
+import { Monitor, Plus, RotateCcw, WifiOff } from '@/components/icons'
 import { Button } from '@/components/ui/button'
-import { Switch } from '@/components/ui/switch'
 import { useClaudeAccounts } from '@/hooks/use-claude-accounts'
 import { useServerAdmitsRemoteWrites } from '@/hooks/use-server-admits-remote-writes'
 import { claudeAccountsApi, isClaudeLoginCancelled } from '@/lib/claude-accounts-api'
@@ -14,8 +13,7 @@ import { READ_ONLY_SERVER_REASON } from '@/lib/write-gate'
 import { applyProjectClaudeAccount } from '@/stores/claude-account-switch'
 import { useProjectStore } from '@/stores/project-store'
 import type { ProjectColor } from '@/types/project'
-import { SettingsCard } from '../SettingsGroup'
-import { SettingsRow, settingsDescriptionId } from '../SettingsRow'
+import { AccountGroupFooter } from './AccountGroupFooter'
 import { AccountNameDialog } from './AccountNameDialog'
 import { AddAccountDialog } from './AddAccountDialog'
 import { toastAccountChoiceError } from './account-choice-error'
@@ -240,69 +238,28 @@ export function ProviderSettings(): React.JSX.Element {
       )}
 
       {!loading && !failed && snapshot && (
-        <SettingsCard className="mt-3">
-          <SettingsRow
-            htmlFor="claude-auto-switch"
-            label="Switch accounts automatically"
-            description="When a chat reaches its account's limit, continue it on the signed-in account with the most room."
-            layout="inline"
-          >
-            <Switch
-              id="claude-auto-switch"
-              aria-describedby={settingsDescriptionId('claude-auto-switch')}
-              checked={snapshot.autoSwitch}
-              disabled={savingAutoSwitch}
-              onCheckedChange={(enabled) => void setAutoSwitch(enabled)}
-            />
-          </SettingsRow>
-        </SettingsCard>
+        <AccountGroupFooter
+          id="claude"
+          accountCount={accounts.length}
+          canManage={canManage}
+          autoSwitch={snapshot.autoSwitch}
+          saving={savingAutoSwitch}
+          onAutoSwitchChange={(enabled) => void setAutoSwitch(enabled)}
+        />
       )}
 
-      {!loading && !failed && canManage && accounts.length === 1 && (
-        <div className="mt-2 flex items-center gap-3 rounded-lg border border-border/60 bg-foreground/[0.02] p-3.5">
-          <span
-            aria-hidden="true"
-            className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-secondary-foreground"
-          >
-            <KeyRound size={14} />
-          </span>
-          <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-            <span className="text-xs font-medium text-foreground">
-              Keep work and personal apart
-            </span>
-            <span className="text-2xs leading-relaxed text-muted-foreground">
-              Add another Claude account and choose it per project. When one hits its limit, Troupe
-              can continue on the other.
-            </span>
-          </div>
-          <Button type="button" size="xs" variant="outline" onClick={() => setAddOpen(true)}>
-            <Plus />
-            Add account
-          </Button>
-        </div>
-      )}
-
-      {!loading && !failed && (
+      {!loading && !failed && !canManage && (
         <p className="flex flex-wrap items-center gap-1.5 pt-2 text-2xs text-muted-foreground">
-          {canManage ? (
-            <>
-              <Info size={12} className="shrink-0" />
-              Choose an account per project in Project settings → Accounts.
-            </>
-          ) : (
-            <>
-              <Monitor size={12} className="shrink-0" />
-              {READ_ONLY_SERVER_REASON} To add or sign in to an account, use the desktop app, or run
-              <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-3xs text-secondary-foreground">
-                troupe-server claude account
-              </code>
-              on the host (
-              <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-3xs text-secondary-foreground">
-                termul-server claude account
-              </code>
-              on a server installed before 0.5).
-            </>
-          )}
+          <Monitor size={12} className="shrink-0" />
+          {READ_ONLY_SERVER_REASON} To add or sign in to an account, use the desktop app, or run
+          <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-3xs text-secondary-foreground">
+            troupe-server claude account
+          </code>
+          on the host (
+          <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-3xs text-secondary-foreground">
+            termul-server claude account
+          </code>
+          on a server installed before 0.5).
         </p>
       )}
 

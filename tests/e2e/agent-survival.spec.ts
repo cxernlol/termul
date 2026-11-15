@@ -1,11 +1,11 @@
 import { expect, type Page, test } from 'playwright/test'
 import {
-  chatCard,
   chatTab,
   launchChat,
   openWorkspace,
-  selectColumnTab,
+  railChat,
   selectProject,
+  showAllRailChats,
   visibleChunkCount
 } from './ui'
 
@@ -66,11 +66,11 @@ test('closing a chat mid-turn only detaches it: the host keeps the turn and a re
 
   // Let the host stream for DETACHED_MS while no tab shows the chat, then
   // reopen it from the project's history index (the session is still recorded
-  // server-side). Use the Side panel's Chats card — body-first matching could
-  // hit the tab bar's title span instead of the history card.
+  // server-side). Use the Rail chat row under the project — body-first
+  // matching could hit the tab bar's title span instead of the history row.
   await page.waitForTimeout(DETACHED_MS)
-  await selectColumnTab(page, 'Chats')
-  await chatCard(page, PROMPT_A).click()
+  await showAllRailChats(page)
+  await railChat(page, PROMPT_A).click()
   await expect(chatTab(page, PROMPT_A)).toBeVisible()
 
   // The reopened transcript shows chunks that streamed while the chat was
@@ -231,7 +231,7 @@ test('three projects run concurrently with isolated transcripts', async ({ page 
   // its own pane tree mounted but hidden, so count only visible tabs: a leaked
   // tab would render another project's chat in the active project.
   const tabsTitled = (title: string) =>
-    page.locator(`[draggable="true"][aria-label^="${title}"]`).filter({ visible: true })
+    page.getByRole('tab', { name: new RegExp(`^${title}`) }).filter({ visible: true })
   await expect(tabsTitled(ISO_B)).toHaveCount(0)
   await selectProject(page, 'proj-b')
   await expect(chatTab(page, ISO_B)).toBeVisible()

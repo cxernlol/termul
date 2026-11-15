@@ -11,6 +11,7 @@ import {
   oppositeFastModeValue,
   partitionConfigOptions,
   sessionModelSnapshot,
+  splitFastModeOption,
   storedConfigValue,
   wireConfigValue
 } from './chat-input-bar-config'
@@ -237,6 +238,29 @@ describe('fast mode helpers', () => {
       rest: [custom]
     })
     expect(extractFastModeOption([custom])).toEqual({ fastMode: null, rest: [custom] })
+  })
+  it('finds Fast Mode in the general options or in the model settings', () => {
+    const custom = opt('custom', 'other')
+    const effort = opt('effort', 'model_config')
+    const fm = { ...fastMode('off'), category: 'model_config' }
+    // Claude sends it with the model settings: it leaves that list, not the footer list.
+    expect(splitFastModeOption([effort, fm], [custom])).toEqual({
+      fastMode: fm,
+      modelConfig: [effort],
+      rest: [custom]
+    })
+    // A general option wins, and the model settings stay as they are.
+    const general = fastMode('on')
+    expect(splitFastModeOption([effort], [custom, general])).toEqual({
+      fastMode: general,
+      modelConfig: [effort],
+      rest: [custom]
+    })
+    expect(splitFastModeOption([effort], [custom])).toEqual({
+      fastMode: null,
+      modelConfig: [effort],
+      rest: [custom]
+    })
   })
 })
 

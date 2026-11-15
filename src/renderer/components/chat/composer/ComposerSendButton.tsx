@@ -13,11 +13,14 @@ interface ComposerSendButtonProps {
   reduced: boolean
   onCancel: () => void
   onSubmit: () => void | Promise<void>
+  /** Label of the send state (the launcher reads "Start agent chat"). */
+  sendLabel?: string
 }
 
 /**
- * The composer's send / queue / stop morph. Moved verbatim out of `ChatInputBar`
- * so the desktop toolbar and the mobile one-row toolbar share one source.
+ * The composer's send / queue / stop morph: 32px, with a 44px (narrow pane)
+ * or 40px hit area. One source for the chat composer (desktop and mobile
+ * toolbars) and the agent launcher.
  */
 export function ComposerSendButton({
   showStop,
@@ -25,7 +28,8 @@ export function ComposerSendButton({
   busy,
   reduced,
   onCancel,
-  onSubmit
+  onSubmit,
+  sendLabel
 }: ComposerSendButtonProps): React.JSX.Element {
   const iconMotion = iconPop(reduced)
   return (
@@ -35,7 +39,6 @@ export function ComposerSendButton({
           <motion.button
             key="stop"
             type="button"
-            data-press-feedback="off"
             onClick={onCancel}
             title="Cancel turn"
             aria-label="Cancel turn"
@@ -55,11 +58,10 @@ export function ComposerSendButton({
           <motion.button
             key="send"
             type="button"
-            data-press-feedback="off"
             onClick={() => void onSubmit()}
             disabled={!canSend}
-            title={busy ? 'Queue message' : 'Send'}
-            aria-label={busy ? 'Queue message' : 'Send message'}
+            title={busy ? 'Queue message' : (sendLabel ?? 'Send')}
+            aria-label={busy ? 'Queue message' : (sendLabel ?? 'Send message')}
             initial={iconMotion.initial}
             animate={iconMotion.animate}
             exit={iconMotion.exit}

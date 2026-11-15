@@ -126,7 +126,6 @@ export function WorktreeCreationCard({ progressId }: WorktreeCreationCardProps):
             onClick={toggleOpen}
             aria-expanded={open}
             aria-controls={detailId}
-            data-press-feedback="off"
             className={cn(
               'flex min-w-0 flex-1 items-center gap-2 text-left text-xs outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-focus-ring',
               CHAT_ROW_MIN_H
@@ -189,7 +188,7 @@ export function WorktreeCreationCard({ progressId }: WorktreeCreationCardProps):
               <div
                 ref={logRef}
                 onScroll={handleLogScroll}
-                className="scroller-thin max-h-[160px] overflow-y-auto rounded-md bg-background/60 px-2 py-1.5 font-mono text-[11px] leading-relaxed text-muted-foreground"
+                className="scroller-thin max-h-[160px] overflow-y-auto rounded-md bg-background/60 px-2 py-1.5 font-mono text-2xs leading-relaxed text-muted-foreground"
               >
                 {op && op.dropped > 0 ? (
                   <div>

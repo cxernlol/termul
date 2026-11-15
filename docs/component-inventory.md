@@ -17,9 +17,10 @@ Supporting these are shared layout, navigation, modal, and design-system compone
 
 ### Layout and Shell
 
-- `shell/ShellFrame.tsx` — the desktop frame: Rail, Side panel and main area, with one top row carrying the Rail and Side panel toggles and the native window controls
-- `StatusBar.tsx` — active project/terminal context bar showing git branch, git status, working directory, exit code, and updater state; rendered on the desktop layout only (the desktop app and the desktop-width web client), not on the mobile web shell, where connection health lives in the `MobileShellDrawer` footer
-- `ProjectSidebar.tsx` — project switcher, reorderable workspace list, archive/restore flows, rename/color operations, shell discovery hooks
+- `shell/ShellFrame.tsx` — the desktop frame, edge to edge: Rail, main area, the right Side panel and the tool strip, with one 44px top row carrying the Rail toggle. On Windows and Linux it draws the window controls (`TopRowChrome.tsx` `WindowControls`) once, in the top-right corner above the tool strip; the top row surface on their left ends with `WindowControlsInset`
+- `shell/tool-strip/` — `ToolStrip` (compound: `ToolStrip.Group`, `.Button`, `.Spacer`) and `ShellToolStrip`: Explorer, Changes and GitHub open the Side panel on that view; Terminal (`TerminalStripButton`: a click opens the default shell, right-click / Shift+F10 lists the detected shells) and Browser open a new tab; Remote access (desktop) or the connection lamp (web)
+- `shell/rail/worktree-switcher.tsx` — the Rail worktree switcher: `RailWorktreeSwitcherProvider`, the working copies popover anchored on a project row (opened from the project row menu, "Switch worktree…"), and `RailWorktreeChip` under the project name when a worktree is picked
+- `ProjectSidebar.tsx` — project switcher, reorderable workspace list, archive/restore flows, rename/color operations, shell discovery hooks. The project row menu (`sidebar/project-context-menu.tsx`; right-click, Shift+F10 or the row "…" button) has "Switch worktree…"; the Projects `+` menu (`sidebar/add-project-menu.tsx`) has New project, New folder group and Import chats
 - `WorkspaceLayout.tsx` — top-level application shell coordinating the Rail, Side panel, pane area, modals, keyboard shortcuts, and close workflows
 
 ### Workspace / Pane System
@@ -70,8 +71,11 @@ Supporting these are shared layout, navigation, modal, and design-system compone
 - `chat/use-chat-history-entries.ts` — the chat history derivation both lists share: ADR 0002 scoping, query filter on the displayed title, settled-count announcement, lazy window, recency groups, open and delete (the caller names the delete log source)
 - `chat/chat-agent-prose.tsx` — markdown renderer for agent replies (`AgentProse`) with the Streamdown plugin set, external-link confirm modal, inline `termul-image` and `termul-file-path` renderers; split out of `ChatMessage.tsx` to keep it under the file-size limit
 - `chat/ChatInputBar.tsx` — composer with slash commands, `@`-file mentions, config/mode chips, and staged-attachment badges
+- `chat/new-chat/open-new-chat.ts` — `openNewChat`: the one way to start a chat (a new empty chat on the last picked agent and its saved options; focuses an empty chat the pane already shows; opens the launcher only when no agent can start or a sign-in is needed)
+- `chat/new-chat/send-from-chat-start.ts` — applies an empty chat's context-row pick (another folder or a new worktree) on its first send through `launchChat`
+- `chat/ChatStartContextRow.tsx` — the empty chat's context row: the launcher's interactive workspace and base-branch row in a git project (`use-chat-start-pick.ts`), else read-only
 - `chat/AttachmentPreviewGroup.tsx` — staged-attachment badges above the composer using AI Elements `Attachments` inline variant with hover-card image previews and click-to-open for path-backed refs
-- `chat/use-composer-attachments.ts` — hybrid transport hook (OS picker → `resource_link`, drag/paste → inline image or embedded text) shared by the chat input and the new-thread launcher
+- `chat/use-composer-attachments.ts` — hybrid transport hook (OS picker → `resource_link`, drag/paste → inline image or embedded text) shared by the chat input and the agent launcher (the fallback for no agent and sign-in)
 - `chat/chat-attachments.ts` — attachment helpers: MIME guessing, name humanization, ACP block mapping, and `pendingToAttachmentData`/`blockToAttachmentData` adapters into AI Elements `AttachmentData`
 - `ai-elements/attachments.tsx` — vendored [AI SDK Elements Attachments](https://elements.ai-sdk.dev/components/attachments) component (grid/inline/list variants) adapted to the repo's shadcn primitives and `ai` package types
 
@@ -96,7 +100,7 @@ Supporting these are shared layout, navigation, modal, and design-system compone
 
 ### Workspace Actions / Modal Components
 
-- `CommandPalette.tsx` — global command launcher for project switching and workspace actions
+- `CommandPalette.tsx` — global command launcher for project switching and workspace actions; while there is a query, `CommandPaletteChats.tsx` adds a Chats group with the open project's chats
 - `CommandHistoryModal.tsx` — per-project and aggregate command history viewer
 - `NewProjectModal.tsx` — create project workflow
 - `CreateSnapshotModal.tsx` / `RestoreSnapshotModal.tsx` / `DeleteSnapshotModal.tsx` — snapshot lifecycle UI
@@ -104,7 +108,7 @@ Supporting these are shared layout, navigation, modal, and design-system compone
 - `ContextMenu.tsx` — reusable custom context menu shell
 - `ShellSelector.tsx` — shell selection UX
 - `ShortcutRecorder.tsx` — keyboard shortcut recording
-- `ColorPickerPopover.tsx` / `ContextBarSettingsPopover.tsx` — settings micro-interactions
+- `ColorPickerPopover.tsx` — settings micro-interaction
 - `UpdateAvailableToast.tsx` / `UpdateReadyModal.tsx` — updater UX
 
 ### Error Handling
@@ -128,7 +132,6 @@ These components are coordinated by dedicated Zustand stores:
 - `annotation-store.ts` — annotation data model and export concerns
 - `snapshot-store.ts` — workspace snapshots
 - `app-settings-store.ts` — terminal/UI preferences
-- `context-bar-settings-store.ts` — status bar visibility preferences
 - `updater-store.ts` — updater lifecycle and download/install state
 
 ## Design Patterns

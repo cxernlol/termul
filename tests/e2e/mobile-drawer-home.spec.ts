@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import type { Locator, Page, WebSocketRoute } from 'playwright/test'
 import { expect, request, test } from 'playwright/test'
 import { E2E_BASE_URL, E2E_TOKEN, storeKey, wsRequest } from './helpers'
+import { emptyChatComposer, sendFromEmptyChat } from './ui'
 
 /**
  * Mobile drawer E2E (spec-mobile-drawer-home, restyled by
@@ -14,8 +15,8 @@ import { E2E_BASE_URL, E2E_TOKEN, storeKey, wsRequest } from './helpers'
  * the merged Recents list with live chat status fed by real agent turns (the
  * fake long-run agent), the unread flag banking across a closed drawer and a
  * project switch, the long-press row actions and the delete confirm, the
- * focus hand-offs, a degraded connection in the footer, and that the desktop
- * StatusBar is gone from the shell (and still there on desktop).
+ * focus hand-offs, a degraded connection in the footer, and that the shell
+ * mounts no desktop chrome (no StatusBar, Rail or tool strip).
  *
  * Every test registers its own project (a fresh workspace layout and a
  * History list scoped to that project), so no state is shared with other
@@ -185,14 +186,14 @@ async function bootFreshProject(
   return project
 }
 
-/** Start a NEW chat from the header button and wait for the shell to show it. */
+/**
+ * Start a NEW chat from the header button and wait for the shell to show it.
+ * New chat opens a new empty chat; its first message starts the chat.
+ */
 async function launchChat(page: Page, prompt: string): Promise<string> {
   await page.getByRole('button', { name: 'New chat', exact: true }).tap()
-  const composer = page.getByRole('textbox', { name: 'Agent prompt' })
-  await expect(composer).toBeVisible()
-  await composer.click()
-  await page.keyboard.type(prompt)
-  await page.keyboard.press('Enter')
+  await expect(emptyChatComposer(page)).toBeVisible()
+  await sendFromEmptyChat(page, prompt, { tap: true })
   // The chat's title is its first prompt (the server shortens a long one with
   // an ellipsis), and the header shows the active chat's title.
   const heading = page.getByRole('heading', {
@@ -351,10 +352,13 @@ test('the drawer is a full-screen Claude-style navigator: project row beside the
 }) => {
   const project = await bootFreshProject(page)
 
-  // The desktop StatusBar is gone from the mobile shell, and there is no
+  // No desktop chrome (StatusBar, Rail, tool strip, right panel) and no
   // bottom bar: the main screen is the header and the content.
   await expect(page.locator('[data-status-bar]')).toHaveCount(0)
   await expect(page.getByRole('navigation')).toHaveCount(0)
+  await expect(page.getByTestId('shell-rail')).toHaveCount(0)
+  await expect(page.getByRole('toolbar', { name: 'Tools' })).toHaveCount(0)
+  await expect(page.getByTestId('right-panel')).toHaveCount(0)
 
   await expect(menuButton(page)).toHaveAttribute('aria-expanded', 'false')
   await expect(menuButton(page)).not.toHaveAttribute('aria-controls', /.+/)
@@ -503,9 +507,9 @@ test('Recents rows: an open chat is listed once with a status glyph, holds the 4
   const row = chatRow(drawer, title)
   // Listed once, though it is both an open tab and in the session index.
   await expect(row).toHaveCount(1)
-  // A live turn: the spinner glyph, with its word only for assistive tech.
-  await expect(row).toHaveAccessibleName(`${title}, Working`)
-  await expect(row.locator('[title="Working"]')).toBeVisible()
+  // A live turn: the Rail chat trail spinner, its word in the accessible name.
+  await expect(row).toHaveAccessibleName(`${title}, Running`)
+  await expect(row.getByRole('status', { name: 'Running' })).toBeVisible()
   await expect(row.locator('span.text-2xs')).toHaveCount(0)
   await expect(row).toHaveAttribute('aria-current', 'page')
   // Focus lands on the active row, never on the search.
@@ -520,18 +524,18 @@ test('Recents rows: an open chat is listed once with a status glyph, holds the 4
   await expect(drawer.getByRole('button', { name: `Close ${title}`, exact: true })).toHaveCount(0)
   // The long title truncates: the glyph stays inside the drawer, nothing scrolls sideways.
   const drawerBox = await boxOf(drawer)
-  const glyph = await boxOf(row.locator('[title="Working"]'))
+  const glyph = await boxOf(row.getByRole('status', { name: 'Running' }))
   expect(glyph.x + glyph.width).toBeLessThanOrEqual(drawerBox.x + drawerBox.width)
   await expectNoHorizontalScroll(drawer, 'drawer')
 
   // The turn finishes while this chat is the active one: no "New activity".
   await expect.poll(() => turns.count(), { timeout: 45_000 }).toBeGreaterThan(0)
   await expect(row).toHaveAccessibleName(title)
-  await expect(row.locator('[title="Working"]')).toHaveCount(0)
+  await expect(row.getByRole('status', { name: 'Running' })).toHaveCount(0)
   await expect(row.locator('[title="New activity"]')).toHaveCount(0)
 })
 
-test('a pending approval shows the Needs you glyph beside Working, and only Needs you takes the warning colour', async ({
+test('a pending approval shows the Needs you pill of the Rail trail, which wins over Running', async ({
   page
 }) => {
   await bootFreshProject(page)
@@ -540,16 +544,15 @@ test('a pending approval shows the Needs you glyph beside Working, and only Need
 
   const drawer = await openDrawer(page)
   const row = chatRow(drawer, prompt)
-  await expect(row).toHaveAccessibleName(`${prompt}, Needs you, Working`)
-  const needsYou = row.locator('[title="Needs you"]')
-  const working = row.locator('[title="Working"]')
+  // One live state, as on the desktop Rail: Needs you, not Running.
+  await expect(row).toHaveAccessibleName(`${prompt}, Needs you`)
+  const needsYou = row.getByText('Needs you', { exact: true })
   await expect(needsYou).toBeVisible()
-  await expect(working).toBeVisible()
-  // "Needs you" leads, and it alone is in the warning colour.
-  expect((await boxOf(needsYou)).x).toBeLessThan((await boxOf(working)).x)
-  const colourOf = (glyph: Locator): Promise<string> =>
-    glyph.evaluate((el) => getComputedStyle(el).color)
-  expect(await colourOf(needsYou)).not.toBe(await colourOf(working))
+  await expect(row.getByRole('status', { name: 'Running' })).toHaveCount(0)
+  // The pill is in the warning colour, not the title's.
+  const colourOf = (element: Locator): Promise<string> =>
+    element.evaluate((el) => getComputedStyle(el).color)
+  expect(await colourOf(needsYou)).not.toBe(await colourOf(row))
   // A chat that needs you is never a failure.
   await expect(row).not.toContainText('Failed')
 
@@ -575,9 +578,9 @@ test('a background turn banks New activity behind a closed drawer and opening th
   const backgroundRow = chatRow(drawer, background)
   const foregroundRow = chatRow(drawer, foreground)
   await expect(backgroundRow).toHaveAccessibleName(`${background}, New activity`)
-  await expect(backgroundRow).toContainText('New activity')
-  // The active chat is still working; it has no unread cue of its own.
-  await expect(foregroundRow).toHaveAccessibleName(`${foreground}, Working`)
+  await expect(backgroundRow.locator('[title="New activity"]')).toBeVisible()
+  // The active chat is still running; it has no unread cue of its own.
+  await expect(foregroundRow).toHaveAccessibleName(`${foreground}, Running`)
   await expect(foregroundRow).toHaveAttribute('aria-current', 'page')
   await expect(backgroundRow).not.toHaveAttribute('aria-current', 'page')
 
@@ -588,8 +591,8 @@ test('a background turn banks New activity behind a closed drawer and opening th
   drawer = await openDrawer(page)
   await expect(chatRow(drawer, background)).toHaveAccessibleName(background)
   await expect(chatRow(drawer, background)).toHaveAttribute('aria-current', 'page')
-  await expect(chatRow(drawer, background)).not.toContainText('New activity')
-  await expect(chatRow(drawer, foreground)).toHaveAccessibleName(`${foreground}, Working`)
+  await expect(chatRow(drawer, background).locator('[title="New activity"]')).toHaveCount(0)
+  await expect(chatRow(drawer, foreground)).toHaveAccessibleName(`${foreground}, Running`)
 })
 
 test('New activity survives a project switch and back', async ({ page }) => {
@@ -639,7 +642,7 @@ test('closing a chat mid-turn from its long-press sheet closes it at once, and t
   await launchChat(page, prompt)
 
   const drawer = await openDrawer(page)
-  await expect(chatRow(drawer, prompt)).toHaveAccessibleName(`${prompt}, Working`)
+  await expect(chatRow(drawer, prompt)).toHaveAccessibleName(`${prompt}, Running`)
   // An open chat that is in history offers Close and Delete.
   const sheet = await openRowActions(page, chatRow(drawer, prompt), prompt)
   await expect(sheet.getByRole('button', { name: 'Delete chat' })).toBeVisible()
@@ -914,19 +917,21 @@ test('Settings hands the drawer off: it closes and the settings dialog keeps foc
   await expect(menuButton(page)).not.toBeFocused()
 })
 
-test('New chat opens the launcher and Snapshots keeps the shell and its menu', async ({ page }) => {
+test('New chat opens an empty chat and Snapshots keeps the shell and its menu', async ({
+  page
+}) => {
   await bootFreshProject(page)
   const prompt = 'mike hand-off [DURATION:2]'
   await launchChat(page, prompt)
 
-  // New chat: from inside a chat (whose composer is not the launcher's) the
-  // drawer closes on the launcher's "Agent prompt" composer. No other dialog
-  // took focus, so it returns to the opener.
+  // New chat: from inside a chat the drawer closes on a new empty chat (no
+  // launcher). No dialog took focus, so it returns to the opener.
   let drawer = await openDrawer(page)
-  await expect(page.getByRole('textbox', { name: 'Agent prompt' })).toHaveCount(0)
+  await expect(emptyChatComposer(page)).toHaveCount(0)
   await drawer.getByRole('button', { name: 'New chat', exact: true }).tap()
   await expect(drawer).toBeHidden()
-  await expect(page.getByRole('textbox', { name: 'Agent prompt' })).toBeVisible()
+  await expect(emptyChatComposer(page)).toBeVisible()
+  await expect(page.getByRole('textbox', { name: 'Agent prompt' })).toHaveCount(0)
   await expect(menuButton(page)).toBeFocused()
 
   // Snapshots: a route change inside the same shell, so ☰ and the drawer stay.
@@ -982,16 +987,16 @@ test.describe('desktop layout', () => {
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
   })
 
-  test('the desktop-width web client still renders the StatusBar and has no mobile menu', async ({
+  test('the desktop-width web client renders the tool strip lamp and has no mobile menu', async ({
     page
   }) => {
     const project = await registerProject()
     await setActiveProject(project)
     await signIn(page)
 
-    const statusBar = page.locator('[data-status-bar]')
-    await expect(statusBar).toBeVisible()
-    await expect(statusBar.getByRole('status')).toBeVisible()
+    const toolStrip = page.getByRole('toolbar', { name: 'Tools' })
+    await expect(toolStrip).toBeVisible()
+    await expect(toolStrip.getByRole('status')).toBeVisible()
     await expect(page.getByRole('button', { name: 'Open menu' })).toHaveCount(0)
   })
 })

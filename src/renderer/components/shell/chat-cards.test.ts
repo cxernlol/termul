@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { mockSessionIndexEntry } from '@/lib/test-utils/acp'
 import type { Worktree } from '@/types/project'
-import { branchLineOf, buildChatCards, filterChatCards } from './chat-cards'
+import { branchLineOf, buildChatCards, filterChatCards, hasChatCards } from './chat-cards'
 
 const worktree = (overrides: Partial<Worktree> = {}): Worktree => ({
   id: 'w1',
@@ -25,6 +25,23 @@ const entry = (id: string, overrides = {}) =>
   mockSessionIndexEntry({ id, title: `Chat ${id}`, cwd: '/repo', projectId: 'p1', ...overrides })
 
 const agentNames = new Map([['cfg-1', 'Claude Code']])
+
+describe('hasChatCards', () => {
+  it('agrees with buildChatCards: discovered and other projects do not count, the pick narrows', () => {
+    const sessionIndex = [
+      entry('d', { discovered: true }),
+      entry('e', { projectId: 'p2' }),
+      entry('root', { cwd: '/repo' })
+    ]
+    expect(hasChatCards({ sessionIndex, project: project(), pick: undefined })).toBe(true)
+    expect(
+      hasChatCards({ sessionIndex: sessionIndex.slice(0, 2), project: project(), pick: undefined })
+    ).toBe(false)
+    expect(
+      hasChatCards({ sessionIndex, project: project(), pick: '/repo/.termul/worktrees/feature' })
+    ).toBe(false)
+  })
+})
 
 describe('buildChatCards', () => {
   it('lists Workspace chats of the project newest first, id as tie-break, excluding discovered', () => {

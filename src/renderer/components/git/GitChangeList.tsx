@@ -9,6 +9,7 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { useServerAdmitsRemoteWrites } from '@/hooks/use-server-admits-remote-writes'
 import { cn } from '@/lib/utils'
 
+const NO_STASHES: GitStashInfo[] = []
 interface GitChangeListProps {
   /** `column` is the desktop look at full width without its own scroll area:
       the shell Changes panel scrolls the whole upper region instead. */
@@ -18,7 +19,8 @@ interface GitChangeListProps {
   /** Why the last `git status` failed; replaces the empty state, which would
       otherwise read as a clean tree. */
   statusError?: string
-  stashes: GitStashInfo[]
+  /** The stash list under the changes; omitted where stashes live elsewhere (the Changes header menu). */
+  stashes?: GitStashInfo[]
   selectedFile: string | null
   selectedStaged: boolean
   selectionSection: GitSelectionSection | null
@@ -54,7 +56,7 @@ export function GitChangeList({
   stagedFiles,
   unstagedFiles,
   statusError,
-  stashes,
+  stashes = NO_STASHES,
   selectedFile,
   selectedStaged,
   selectionSection,

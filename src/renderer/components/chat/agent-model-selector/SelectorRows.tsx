@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 import { EntryGlyph } from '@/components/agents/launcher/pickers'
 import { ArrowRightLeft, Check, Download } from '@/components/icons'
+import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/spinner'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import type { SessionUsage } from '@/lib/acp-api'
@@ -11,12 +12,12 @@ import {
   formatTokenCount,
   isMeaningfulReportedCost
 } from '../context-usage-utils'
-import { SegmentedTrack } from './SegmentedTrack'
 import type { AgentTab } from './selector-model'
 import type { SelectorModelStatus } from './selector-source'
+import { pickerRowHeight } from './selector-tokens'
 
 export const ROW =
-  'group flex w-full items-center gap-2 rounded-lg px-2 text-left text-sm text-foreground transition-[background-color,color,transform] duration-150 ease-out hover:bg-foreground/10 focus-visible:bg-foreground/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-focus-ring enabled:active:scale-[0.96] motion-reduce:active:scale-100 disabled:cursor-not-allowed disabled:opacity-60'
+  'group flex w-full items-center gap-2 rounded-md px-2 text-left text-xs text-foreground transition-colors duration-150 ease-out hover:bg-foreground/[0.06] focus-visible:bg-foreground/[0.06] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-focus-ring disabled:cursor-not-allowed disabled:opacity-60'
 
 export function rowSize(touch: boolean): string {
   return touch ? 'min-h-11 py-2.5' : 'min-h-8 py-1.5'
@@ -69,12 +70,11 @@ export function ModelRow({
       data-selector-row=""
       aria-pressed={selected}
       disabled={disabled}
-      data-press-feedback="off"
       onClick={onPick}
       className={cn(ROW, rowSize(touch))}
     >
       {glyph ? <span className="inline-flex shrink-0">{glyph}</span> : null}
-      <span className="min-w-0 flex-1 truncate">{name}</span>
+      <span className="fade-end min-w-0 flex-1">{name}</span>
       {meta ? <span className="shrink-0 text-xs text-muted-foreground">{meta}</span> : null}
       <Check
         size={14}
@@ -116,16 +116,15 @@ export function AgentRow({
       type="button"
       data-selector-row=""
       disabled={disabled}
-      data-press-feedback="off"
       data-testid={`selector-agent-${tab.configId}`}
       data-search-highlight={highlighted ? '' : undefined}
       onClick={onPick}
-      className={cn(ROW, rowSize(touch), highlighted && 'bg-row-hover')}
+      className={cn(ROW, pickerRowHeight(touch), highlighted && 'bg-foreground/[0.06]')}
     >
       <TabGlyph tab={tab} />
-      <span className="min-w-0 flex-1 truncate">{tab.name}</span>
+      <span className="fade-end min-w-0 flex-1">{tab.name}</span>
       {badge ? (
-        <span className="shrink-0 rounded bg-foreground/[0.08] px-1.5 py-0.5 text-3xs text-muted-foreground">
+        <span className="inline-flex h-5 shrink-0 items-center rounded-full bg-muted px-2 text-xs text-muted-foreground shadow-control">
           {badge}
         </span>
       ) : null}
@@ -154,13 +153,54 @@ export function ListMessage({
 }): React.JSX.Element {
   return (
     <div role="status" className="flex min-h-16 flex-col justify-center gap-0.5 px-2 py-1.5">
-      <p className="flex items-center gap-1.5 text-sm text-foreground">
-        {loading ? <Spinner size={12} decorative /> : null}
+      <p className="flex items-center gap-1.5 text-xs text-foreground">
+        {loading ? <Spinner size={14} decorative /> : null}
         {title}
       </p>
       {detail ? (
         <p className="whitespace-pre-line text-xs text-muted-foreground">{detail}</p>
       ) : null}
+    </div>
+  )
+}
+
+interface ActionItem {
+  key: string
+  label: ReactNode
+  /** The one action that moves on: the filled primary. */
+  primary?: boolean
+  /** Share of the row's width (a flex grow factor). */
+  grow: number
+  disabled?: boolean
+  onSelect: () => void
+  testId?: string
+}
+
+/** A row of real buttons under a message: one primary at most, the rest secondary. */
+function ActionButtons({
+  items,
+  touch
+}: {
+  items: ActionItem[]
+  touch: boolean
+}): React.JSX.Element {
+  return (
+    <div className="flex gap-2 px-1">
+      {items.map((item) => (
+        <Button
+          key={item.key}
+          type="button"
+          variant={item.primary ? 'default' : 'secondary'}
+          size={touch ? 'touch' : 'xs'}
+          disabled={item.disabled}
+          data-testid={item.testId}
+          onClick={item.onSelect}
+          style={{ flexGrow: item.grow, flexBasis: 0 }}
+          className="min-w-0 gap-1.5 [&_svg]:size-3"
+        >
+          {item.label}
+        </Button>
+      ))}
     </div>
   )
 }
@@ -182,24 +222,22 @@ export function BusyBlock({
   return (
     <div data-testid="agent-switch-busy" className="flex flex-col gap-2 pt-1.5">
       <p role="status" className="flex items-center gap-1.5 px-2 text-xs text-muted-foreground">
-        <Spinner size={12} decorative />
+        <Spinner size={14} decorative />
         {canCancel
           ? `${agentName} is working on a turn.`
           : 'This chat is busy. Wait for the queued prompts or the open request to finish.'}
       </p>
-      <SegmentedTrack
-        id="busy-actions"
-        label="Switch actions"
+      <ActionButtons
         touch={touch}
         items={[
-          { key: 'wait', label: 'Wait', span: canCancel ? 2 : 5, onSelect: onWait },
+          { key: 'wait', label: 'Wait', grow: canCancel ? 2 : 5, onSelect: onWait },
           ...(canCancel
             ? [
                 {
                   key: 'cancel',
                   label: 'Cancel turn and switch',
-                  span: 3,
-                  tone: 'primary' as const,
+                  grow: 3,
+                  primary: true,
                   onSelect: onCancelAndSwitch,
                   testId: 'agent-switch-cancel-then-switch'
                 }
@@ -241,15 +279,13 @@ export function InstallState({
         title={`${tab.name} is not installed`}
         detail="Install it to use its models in this chat."
       />
-      <SegmentedTrack
-        id="install-action"
-        label="Install"
+      <ActionButtons
         touch={touch}
         items={[
           {
             key: 'install',
-            span: 5,
-            selected: true,
+            grow: 1,
+            primary: true,
             disabled: installing || installBlocked,
             label: installing ? (
               <>
@@ -289,14 +325,14 @@ export function StatusActions({
   touch: boolean
   compact?: boolean
 }): React.JSX.Element {
-  const items = [
+  const items: ActionItem[] = [
     ...(status.onSignIn
       ? [
           {
             key: 'sign-in',
             label: status.signInLabel ?? 'Sign in',
-            span: status.onRetry ? 3 : 5,
-            tone: 'primary' as const,
+            grow: 1,
+            primary: true,
             onSelect: status.onSignIn,
             testId: 'selector-sign-in'
           }
@@ -307,8 +343,7 @@ export function StatusActions({
           {
             key: 'retry',
             label: 'Try again',
-            span: status.onSignIn ? 2 : 5,
-            selected: !status.onSignIn,
+            grow: 1,
             onSelect: status.onRetry,
             testId: 'selector-retry'
           }
@@ -327,14 +362,7 @@ export function StatusActions({
       ) : (
         <ListMessage title={title} detail={detail} />
       )}
-      {items.length > 0 ? (
-        <SegmentedTrack
-          id="model-status-actions"
-          label="Model list actions"
-          touch={touch}
-          items={items}
-        />
-      ) : null}
+      {items.length > 0 ? <ActionButtons touch={touch} items={items} /> : null}
     </div>
   )
 }
@@ -361,7 +389,7 @@ export function ContextSummary({
   return (
     <div
       className={cn(
-        'flex items-center justify-between gap-2 px-2 text-sm tabular-nums',
+        'flex items-center justify-between gap-2 px-3 text-xs tabular-nums',
         rowSize(touch)
       )}
       title={`Context window: ${formatTokenCount(metrics.totalSize)} tokens. ${formatTokenCount(metrics.remaining)} remaining.${costTitle}`}

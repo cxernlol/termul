@@ -6,6 +6,7 @@ import { TitleBarShortcutsPopover } from '@/components/TitleBarShortcutsPopover'
 import { cn } from '@/lib/utils'
 import { useReportBugStore } from '@/stores/report-bug-store'
 import { useSettingsModalStore, useSettingsModalView } from '@/stores/settings-modal-store'
+import { useRailCollapsed } from './rail/rail-density'
 
 interface RailFooterProps {
   isShortcutsOpen: boolean
@@ -19,7 +20,6 @@ interface RailUtilityButtonsProps {
   onShortcutsOpenChange: (open: boolean) => void
   isThemePickerOpen: boolean
   onToggleThemePicker?: () => void
-  /** `sm` (28px) in the expanded footer row, `md` (36px) in the collapsed Rail. */
   size: RailButtonSize
   className?: string
 }
@@ -60,7 +60,7 @@ export function RailUtilityButtons({
     <div ref={buttonsRef} className={cn('flex shrink-0 items-center', className)}>
       <RailButton
         label="Color themes"
-        size={size}
+        size="base"
         aria-label="Color themes"
         pressed={onToggleThemePicker ? isThemePickerOpen : undefined}
         disabled={!onToggleThemePicker}
@@ -80,9 +80,11 @@ export function RailUtilityButtons({
 }
 
 /**
- * Expanded Rail footer, one row of 28px icon buttons: Settings at the left
- * (centered on the Rail icon column, x = 24), then the Theme picker and
- * Shortcuts grouped at the right.
+ * Rail footer (Paper 2.2 "Rail footer"). Expanded: one row of 32px icon
+ * buttons at the left, 2px apart: Settings, Report a bug, Theme picker,
+ * Shortcuts. Collapsed: the same buttons stack upward from the bottom
+ * (column-reverse, 4px apart, 6px top and bottom), so Settings keeps its
+ * place at the bottom.
  */
 export function RailFooter({
   isShortcutsOpen,
@@ -90,17 +92,22 @@ export function RailFooter({
   isThemePickerOpen,
   onToggleThemePicker
 }: RailFooterProps): React.JSX.Element {
+  const collapsed = useRailCollapsed()
   const settingsView = useSettingsModalView()
   const settingsShortcut = useShortcutLabel('settings')
 
   return (
-    // `pl-2.5` puts the 28px Settings button's center at x = 24 (the icon
-    // column); `pr-1.5` lines Shortcuts up with the header's Rail toggle.
-    <div className="flex shrink-0 items-center gap-0.5 pb-2 pl-2.5 pr-1.5 pt-1">
+    <div
+      className={cn(
+        'flex shrink-0 items-center',
+        collapsed ? 'flex-col-reverse gap-1 py-1.5' : 'gap-0.5 pb-2 pl-2.5 pr-1.5 pt-1'
+      )}
+      data-testid="rail-footer"
+    >
       <RailButton
         label="Settings"
-        hint={settingsShortcut}
-        size="sm"
+        shortcut={settingsShortcut}
+        size="base"
         aria-label="Settings"
         pressed={settingsView === 'app'}
         onClick={() => useSettingsModalStore.getState().openApp()}
@@ -109,21 +116,19 @@ export function RailFooter({
       </RailButton>
       <RailButton
         label="Report a bug"
-        size="sm"
+        size="base"
         aria-label="Report a bug"
         onClick={() => useReportBugStore.getState().openReport()}
       >
         <Bug size={16} />
       </RailButton>
-      <div className="min-w-0 flex-1" />
-
       <RailUtilityButtons
         isShortcutsOpen={isShortcutsOpen}
         onShortcutsOpenChange={onShortcutsOpenChange}
         isThemePickerOpen={isThemePickerOpen}
         onToggleThemePicker={onToggleThemePicker}
-        size="sm"
-        className="gap-0.5"
+        size="base"
+        className={collapsed ? 'flex-col-reverse gap-1' : 'gap-0.5'}
       />
     </div>
   )

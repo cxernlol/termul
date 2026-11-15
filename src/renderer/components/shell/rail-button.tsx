@@ -1,28 +1,40 @@
 import { QUIET_ICON_BUTTON_CLASS } from '@/components/ui/panel-styles'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
+import { useRailCollapsed } from './rail/rail-density'
+import { RailHoverTooltipContent } from './rail/rail-hover-panel'
 
-/** `md` = 36px (the default rail action), `sm` = 28px (secondary footer actions). */
-export type RailButtonSize = 'md' | 'sm'
+/**
+ * `base` = 32px (the collapsed Rail footer), `sm` = 28px (the expanded footer
+ * row and top-row toggles).
+ */
+export type RailButtonSize = 'base' | 'sm'
+
+const RAIL_BUTTON_SIZE_CLASS: Record<RailButtonSize, string> = {
+  base: 'size-8',
+  sm: 'size-7'
+}
 
 /**
  * Rail action. Rest = muted icon; hover = 3% foreground wash; the pressed /
  * open view takes the `.keycap` surface. Disabled icons sit at 40% with no
  * hover.
  */
-export function railButtonClass(active: boolean, size: RailButtonSize = 'md'): string {
+export function railButtonClass(active: boolean, size: RailButtonSize): string {
   return cn(
     QUIET_ICON_BUTTON_CLASS,
     'relative flex shrink-0 rounded-lg disabled:pointer-events-none disabled:opacity-40',
-    size === 'md' ? 'size-9' : 'size-7',
+    RAIL_BUTTON_SIZE_CLASS[size],
     active && 'keycap text-foreground'
   )
 }
 
 interface RailTooltipProps {
   label: string
-  /** Muted second line (a shortcut, or why the action is off). */
+  /** Muted second line (why the action is off). */
   hint?: string
+  /** Keyboard shortcut: a muted line when expanded, a keycap on the collapsed Rail. */
+  shortcut?: string
   /** Defaults to `right`, away from the Rail. */
   side?: 'top' | 'right' | 'bottom' | 'left'
   /** The trigger: one focusable element that accepts a ref. */
@@ -31,21 +43,29 @@ interface RailTooltipProps {
 
 /**
  * The one tooltip for every Rail control: the name, and an optional muted
- * hint under it. Use it instead of a native `title`.
+ * hint and shortcut under it. Use it instead of a native `title`. On the
+ * collapsed Rail it is the hover panel tooltip (label + shortcut keycap) at
+ * x = 52.
  */
 export function RailTooltip({
   label,
   hint,
+  shortcut,
   side = 'right',
   children
 }: RailTooltipProps): React.JSX.Element {
+  const collapsed = useRailCollapsed()
   return (
     <Tooltip>
       <TooltipTrigger asChild>{children}</TooltipTrigger>
-      <TooltipContent side={side} className="flex flex-col gap-0.5 px-2.5 py-1.5 text-xs">
-        <span className="text-popover-foreground">{label}</span>
-        {hint && <span className="text-muted-foreground">{hint}</span>}
-      </TooltipContent>
+      {collapsed ? (
+        <RailHoverTooltipContent label={label} hint={hint} shortcut={shortcut} />
+      ) : (
+        <TooltipContent side={side} className="flex flex-col gap-0.5 px-2.5 py-1.5 text-xs">
+          <span className="text-popover-foreground">{label}</span>
+          {(hint ?? shortcut) && <span className="text-muted-foreground">{hint ?? shortcut}</span>}
+        </TooltipContent>
+      )}
     </Tooltip>
   )
 }
@@ -54,6 +74,8 @@ interface RailButtonProps {
   label: string
   /** Muted second line in the tooltip (e.g. why the action is disabled). */
   hint?: string
+  /** Keyboard shortcut shown in the tooltip. */
+  shortcut?: string
   'aria-label': string
   /** Accessible description: status that is not part of the name (the click does not act on it). */
   description?: string
@@ -61,8 +83,7 @@ interface RailButtonProps {
   /** Sets `aria-pressed` and the keycap "you are here" surface. */
   pressed?: boolean
   badge?: React.ReactNode
-  /** Defaults to `md` (36px). */
-  size?: RailButtonSize
+  size: RailButtonSize
   /** Runs after the click stops propagating. */
   onClick: (event: React.MouseEvent<HTMLButtonElement>) => void
   children: React.ReactNode
@@ -71,12 +92,13 @@ interface RailButtonProps {
 export function RailButton({
   label,
   hint,
+  shortcut,
   'aria-label': ariaLabel,
   description,
   disabled = false,
   pressed,
   badge,
-  size = 'md',
+  size,
   onClick,
   children
 }: RailButtonProps): React.JSX.Element {
@@ -100,7 +122,7 @@ export function RailButton({
   )
 
   return (
-    <RailTooltip label={label} hint={hint}>
+    <RailTooltip label={label} hint={hint} shortcut={shortcut}>
       {/* A disabled button gets no pointer events, so the wrapper carries
           the tooltip that explains why the action is off. */}
       {disabled ? <span className="inline-flex">{button}</span> : button}

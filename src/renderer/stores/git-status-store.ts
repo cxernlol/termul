@@ -13,6 +13,7 @@ import { gitApi } from '@/lib/git-api'
 import { logFrontendError } from '@/lib/log-api'
 import { platform } from '@/lib/tauri-os'
 import { normalizePath } from '@/lib/working-copy'
+import { reconcileWorktreeOwnerOf } from '@/lib/worktree-reconciler'
 import { useProjectStore } from './project-store'
 import { useTerminalStore } from './terminal-store'
 
@@ -559,6 +560,7 @@ export const useGitStatusStore = create<GitStatusState>((set, get) => ({
     set({ selectedFile: null })
     await refreshAfterMutation(get, cwd)
     await updateStoresWithBranch(cwd, name)
+    reconcileWorktreeOwnerOf(cwd)
   },
 
   branchCreate: async (cwd, name) => {

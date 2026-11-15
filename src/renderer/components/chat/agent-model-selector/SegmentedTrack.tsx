@@ -106,12 +106,7 @@ export function SegmentedTrack({
         title={item.title}
         disabled={item.disabled}
         data-testid={item.testId}
-        data-press-feedback="off"
         onClick={item.onSelect}
-        // Press feedback lives here, not in a CSS :active scale: framer's
-        // layout animations leave an inline `transform` on the element, which
-        // would permanently override a class-based active scale.
-        whileTap={reduced ? undefined : { scale: 0.96 }}
         className={cn(
           'relative flex min-w-0 items-center justify-center gap-1.5 rounded-md px-1',
           'transition-[color,background-color] duration-150 ease-out',

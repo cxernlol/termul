@@ -102,7 +102,7 @@ export function SSHResizableSection({
   // can be expanded again from the same place.
   if (!isVisible) {
     return (
-      <div className="flex-shrink-0 border-t border-border">
+      <div className="flex-shrink-0 border-t-[0.5px] border-border">
         <div className={cn(PANEL_HEADER_CLASS, 'h-9 justify-start gap-1')}>
           <SSHSectionChevron expanded={false} />
           <span className="label-panel">SSH</span>

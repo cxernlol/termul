@@ -10,7 +10,12 @@ vi.mock('sonner', () => ({ toast: { error: vi.fn() } }))
 vi.mock('@/lib/git-api', () => ({ gitApi: { getLog, getCommitDetail } }))
 vi.mock('@/lib/log-api', () => ({ logFrontendError: vi.fn() }))
 
-import { commitDetailKey, GIT_LOG_LIMIT, useGitHistoryStore } from './git-history-store'
+import {
+  commitDetailKey,
+  GIT_LOG_LIMIT,
+  HEAD_RECENT_LIMIT,
+  useGitHistoryStore
+} from './git-history-store'
 
 const CWD = '/repo'
 const hash = (n: number): string => String(n).padStart(40, '0')
@@ -73,10 +78,22 @@ describe('git-history-store', () => {
       getLog.mockResolvedValue([{ hash: hash(2) }, { hash: hash(1) }])
       await state().refreshHeadSummary(CWD)
       expect(getLog).toHaveBeenCalledWith(CWD, GIT_LOG_LIMIT, false)
-      expect(state().headSummary[CWD]).toEqual({ last: { hash: hash(2) }, count: 2 })
+      expect(state().headSummary[CWD]).toEqual({
+        recent: [{ hash: hash(2) }, { hash: hash(1) }],
+        count: 2
+      })
       expect(state().commits[CWD]).toBeUndefined()
       expect(state().loading[CWD]).toBeUndefined()
       expect(state().scope[CWD]).toBe('all')
+    })
+
+    it('keeps the newest HEAD_RECENT_LIMIT commits and counts the whole read', async () => {
+      getLog.mockResolvedValue(Array.from({ length: 12 }, (_, i) => ({ hash: hash(12 - i) })))
+      await state().refreshHeadSummary(CWD)
+      const summary = state().headSummary[CWD]
+      expect(summary?.count).toBe(12)
+      expect(summary?.recent).toHaveLength(HEAD_RECENT_LIMIT)
+      expect(summary?.recent[0]).toEqual({ hash: hash(12) })
     })
 
     it('keeps the previous summary when a later read fails', async () => {

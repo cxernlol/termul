@@ -2,11 +2,9 @@ import type { SSHWorkspaceState } from '@/layouts/workspace-layout/use-ssh-works
 import type { Project } from '@/types/project'
 
 /**
- * Whether the Side panel column shows its project block (the Side panel with
- * its tab bar). The collapsed Rail reads it too: it shows its own tab icons
- * only while this is `false`.
+ * Whether the right panel shows its project body (`SidePanelColumn`).
  */
-export function showsFileColumn({
+function showsFileColumn({
   isExplorerVisible,
   activeProject,
   workspaceOpen,

@@ -243,7 +243,7 @@ async function dismiss(page: Page, gone: Locator): Promise<void> {
 // drawer and header PRs. Today the header's ⋯ sheet reaches the palette, the
 // Files sheet and the Git changes sheet.
 
-const PALETTE_INPUT = 'Search commands, projects, settings...'
+const PALETTE_INPUT = 'Search commands, projects, settings…'
 const MORE_SHEET = '#mobile-header-more-sheet'
 
 /** Open the header ⋯ sheet and press one of its rows; the sheet closes with it. */

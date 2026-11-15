@@ -95,8 +95,6 @@ export function SftpEntryRow({
         onFocus={onFocus}
         aria-expanded={isDir ? expanded : undefined}
         title={isDir ? entry.path : `Open ${entry.name}`}
-        // A full-width row shrinking on press reads as the layout jumping.
-        data-press-feedback="off"
       >
         <span className="flex w-3.5 shrink-0 justify-center" aria-hidden="true">
           {isDir &&

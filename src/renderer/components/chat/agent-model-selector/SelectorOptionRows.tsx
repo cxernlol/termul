@@ -8,7 +8,7 @@ import {
   useRef,
   useState
 } from 'react'
-import { Check, ChevronRight } from '@/components/icons'
+import { ChevronRight } from '@/components/icons'
 import { AnimatedMenuContent } from '@/components/ui/animated-menu-content'
 import { Popover, PopoverAnchor, PopoverTrigger } from '@/components/ui/popover'
 import {
@@ -23,7 +23,6 @@ import { cn } from '@/lib/utils'
 import { editButtonAccessibleName } from './selector-model'
 import {
   PICKER_EDIT_MOTION,
-  PICKER_ICON,
   PICKER_LABEL,
   PICKER_ROW,
   PICKER_ROW_SELECTED_BOX,
@@ -47,17 +46,17 @@ export const DENSE_ROW = cn(
   PICKER_ROW.gap,
   PICKER_ROW.padX,
   PICKER_ROW.radius,
-  'transition-colors duration-150 ease-out hover:bg-row-hover disabled:cursor-not-allowed disabled:opacity-60',
+  'transition-colors duration-150 ease-out hover:bg-foreground/[0.06] disabled:cursor-not-allowed disabled:opacity-60',
   ROW_FOCUS
 )
 
 export const denseRowSize = pickerRowHeight
 
 /**
- * A flyout's surface: the panel's radius, border and shadow, as wide as its
- * longest choice but never under 180px.
+ * A flyout's width: as wide as its longest choice but never under 180px. The
+ * `panel` surface gives it the panel's radius, edge and shadow.
  */
-const FLYOUT_SURFACE = cn('min-w-45 max-w-64 border-border', PICKER_SURFACE.radius)
+const FLYOUT_SURFACE = 'min-w-45 max-w-64'
 
 export interface OptionChoice {
   value: string
@@ -208,17 +207,13 @@ export function ChoiceList({
               data-option-choice=""
               title={choice.unavailable ? REJECTED_TITLE : choice.description}
               onClick={() => section.onPick(choice.value)}
-              className={cn(DENSE_ROW, denseRowSize(touch))}
+              // The picked choice takes the selected fill, as in the menus.
+              className={cn(DENSE_ROW, denseRowSize(touch), selected && PICKER_ROW_SELECTED_BOX)}
             >
-              <span className="min-w-0 flex-1 truncate tabular-nums">{choice.name}</span>
+              <span className="fade-end min-w-0 flex-1 tabular-nums">{choice.name}</span>
               {choice.unavailable ? (
-                <span className="shrink-0 text-[10px] text-muted-foreground">Not available</span>
+                <span className="shrink-0 text-2xs text-muted-foreground">Not available</span>
               ) : null}
-              <Check
-                size={PICKER_ICON.check}
-                aria-hidden="true"
-                className={cn('shrink-0', selected ? 'opacity-100' : 'opacity-0')}
-              />
             </button>
           )
         })
@@ -326,7 +321,7 @@ export function OptionRow({
         event.preventDefault()
         setOpen(true)
       }}
-      className={cn(DENSE_ROW, denseRowSize(touch), open && 'bg-row-hover')}
+      className={cn(DENSE_ROW, denseRowSize(touch), open && 'bg-foreground/[0.06]')}
     >
       <span className="min-w-0 flex-1 truncate">
         <span className="text-muted-foreground">{label}</span>
@@ -382,6 +377,7 @@ export function OptionRow({
         onOpenAutoFocus={(event) => event.preventDefault()}
         data-testid={`selector-flyout-${id}`}
         contentClassName="z-[110]"
+        surface="panel"
         className={FLYOUT_SURFACE}
       >
         {list}
@@ -425,7 +421,7 @@ export function OptionSwitchRow({
     >
       <label
         htmlFor={`selector-switch-${id}`}
-        className="min-w-0 flex-1 cursor-pointer truncate text-muted-foreground"
+        className="min-w-0 flex-1 cursor-pointer truncate text-foreground"
       >
         {label}
       </label>
@@ -444,7 +440,7 @@ export function OptionSwitchRow({
 
 /** The box around a row and its Edit; the row's hover fills both. */
 export const EDIT_ROW_BOX =
-  'flex min-w-0 items-center rounded-md transition-colors duration-150 ease-out hover:bg-row-hover'
+  'flex min-w-0 items-center rounded-md transition-colors duration-150 ease-out hover:bg-foreground/[0.06]'
 
 /** Edit's own box, shared by the button and the copy a pick leaves behind. */
 function editBox(touch: boolean): string {
@@ -601,8 +597,9 @@ export function EditableRow({
         entering ? PICKER_EDIT_MOTION.enter : 'transition-colors duration-150 ease-out',
         'disabled:cursor-not-allowed disabled:opacity-60',
         // On the selected fill muted ink drops under 4.5:1 (dark); secondary keeps it.
+        // Open: raised like the open chat row and the open tab (keycap).
         open
-          ? 'text-foreground'
+          ? 'keycap text-foreground'
           : cn(
               selected ? 'text-secondary-foreground' : 'text-muted-foreground',
               'hover:text-foreground'
@@ -635,7 +632,7 @@ export function EditableRow({
       className={cn(
         'group/fav',
         EDIT_ROW_BOX,
-        open && 'bg-row-hover',
+        open && 'bg-foreground/[0.06]',
         selected && PICKER_ROW_SELECTED_BOX
       )}
     >
@@ -699,6 +696,7 @@ export function EditableRow({
         }}
         data-testid="selector-edit-flyout"
         contentClassName="z-[110]"
+        surface="panel"
         className={FLYOUT_SURFACE}
       >
         {list}

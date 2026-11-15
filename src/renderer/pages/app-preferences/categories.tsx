@@ -87,7 +87,8 @@ const ALL_APP_PREF_CATEGORIES: SettingsCategory[] = [
     id: 'provider',
     group: 'Agents',
     label: 'Accounts',
-    description: 'Claude accounts that Claude Agent chats use, and how much of each limit is used.',
+    description:
+      'The Claude and Codex accounts that agent chats use, and how much of each limit is used.',
     icon: <KeyRound size={16} />
   },
   {

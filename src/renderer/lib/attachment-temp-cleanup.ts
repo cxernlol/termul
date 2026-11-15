@@ -42,3 +42,15 @@ export async function deleteSessionTempFiles(sessionId: string): Promise<void> {
   sessionTempFiles.delete(sessionId)
   await Promise.all(Array.from(set).map((p) => deleteTempFile(p)))
 }
+
+/**
+ * Hand the temp paths staged for one session to another (an empty chat that
+ * started again elsewhere on its first send), so closing the old session does
+ * not delete files the new one still reads.
+ */
+export function moveSessionTempFiles(fromSessionId: string, toSessionId: string): void {
+  const set = sessionTempFiles.get(fromSessionId)
+  if (!set || fromSessionId === toSessionId) return
+  sessionTempFiles.delete(fromSessionId)
+  registerSessionTempFiles(toSessionId, Array.from(set))
+}

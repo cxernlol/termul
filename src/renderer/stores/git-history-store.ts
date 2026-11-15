@@ -8,15 +8,19 @@ import { logFrontendError } from '@/lib/log-api'
 export type GitHistoryScope = 'all' | 'head'
 
 /** Commits one history read returns. The host default for `git_get_log`, passed
- * explicitly so the renderer owns the number it shows (`200+` in the History row). */
+ * explicitly so the renderer owns the number it shows (`200+` in the Changes panel History section). */
 export const GIT_LOG_LIMIT = 200
 
 /** Commit details kept per session; the least recently used entry leaves first. */
 const MAX_CACHED_DETAILS = 50
 
-/** The HEAD commit and the length of the HEAD-scoped history (up to {@link GIT_LOG_LIMIT}). */
+/** Newest HEAD commits the Changes panel History section lists. */
+export const HEAD_RECENT_LIMIT = 8
+
+/** The newest HEAD commits and the length of the HEAD-scoped history (up to {@link GIT_LOG_LIMIT}). */
 export interface HeadSummary {
-  last: GitCommit | null
+  /** Up to {@link HEAD_RECENT_LIMIT} commits, newest (HEAD) first. */
+  recent: GitCommit[]
   count: number
 }
 
@@ -42,7 +46,7 @@ export interface GitHistoryState {
   headSummary: Record<string, HeadSummary>
 
   refreshLog: (cwd: string, limit?: number) => Promise<void>
-  /** Read the HEAD commit and the HEAD-scoped count; leaves `commits`, `scope`
+  /** Read the newest HEAD commits and the HEAD-scoped count; leaves `commits`, `scope`
    * and the History tab's loading state alone. Failures are logged, not toasted. */
   refreshHeadSummary: (cwd: string) => Promise<void>
   /** Change the refs the history walks, then reload it. */
@@ -121,7 +125,7 @@ export const useGitHistoryStore = create<GitHistoryState>((set, get) => ({
       set((state) => ({
         headSummary: {
           ...state.headSummary,
-          [cwd]: { last: commits[0] ?? null, count: commits.length }
+          [cwd]: { recent: commits.slice(0, HEAD_RECENT_LIMIT), count: commits.length }
         }
       }))
     } catch (err) {
@@ -134,7 +138,7 @@ export const useGitHistoryStore = create<GitHistoryState>((set, get) => ({
       // A non-git folder or a failed read settles to "no commits" instead of a
       // spinner; a previous summary stays.
       set((state) => ({
-        headSummary: { [cwd]: { last: null, count: 0 }, ...state.headSummary }
+        headSummary: { [cwd]: { recent: [], count: 0 }, ...state.headSummary }
       }))
     }
   },

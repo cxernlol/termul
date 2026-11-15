@@ -1,14 +1,17 @@
 import type { GitStatusDetail } from '@shared/types/ipc.types'
 import type React from 'react'
 import { useCallback } from 'react'
+import { BranchSection } from '@/components/git/BranchSection'
 import { CommitComposer } from '@/components/git/CommitComposer'
 import { GitChangeList } from '@/components/git/GitChangeList'
 import { GitPanelDialogs } from '@/components/git/GitPanelDialogs'
-import { GitPanelHeader } from '@/components/git/GitPanelHeader'
+import { ChangesFilter } from '@/components/git/rows'
+import { StashMenu } from '@/components/git/StashMenu'
 import { useGitActions } from '@/components/git/use-git-actions'
 import { useGitPanelModel } from '@/components/git/use-git-panel-model'
 import { useGitSelection } from '@/components/git/use-git-selection'
-import { HistoryRow } from '@/components/shell/HistoryRow'
+import { HistorySection } from '@/components/shell/HistorySection'
+import { SidePanelHeader } from '@/components/shell/SidePanelHeader'
 import { useWorkspaceActions } from '@/stores/workspace-store/selectors'
 
 interface ChangesPanelProps {
@@ -18,11 +21,13 @@ interface ChangesPanelProps {
 }
 
 /**
- * Shell Changes panel (CAP-8): the Git tab's parts in one narrow column with
- * a History row at the bottom. The upper region (branch + Stash, commit box,
- * filter, Change list, Stash list) scrolls on its own above the row, which
- * opens Git History in the main panel. A plain file click opens the Diff tab;
- * the diff itself is not shown here.
+ * Shell Changes panel (CAP-8, Paper "Side panel · Changes"): the 44px panel
+ * header with the branch button and the stash menu (stashes live there, not
+ * in the body), then the Git tab's parts in one narrow column, then the History
+ * section at the bottom. The middle region (commit box, filter, Change list)
+ * scrolls on its own. A plain
+ * file click opens the Diff tab; the diff itself is not shown here. Draws its
+ * own header, like the Explorer, because the header actions need its state.
  */
 export function ChangesPanel({ cwd, isVisible }: ChangesPanelProps): React.JSX.Element {
   const { addDiffTab } = useWorkspaceActions()
@@ -101,47 +106,57 @@ export function ChangesPanel({ cwd, isVisible }: ChangesPanelProps): React.JSX.E
 
   return (
     <div className="flex h-full w-full min-h-0 flex-col bg-background overflow-hidden">
-      <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
-        <GitPanelHeader
-          variant="column"
+      <SidePanelHeader title="Changes">
+        <BranchSection
+          variant="panel"
           branches={branches}
           currentBranch={commitContext?.branch}
-          hasUncommittedChanges={hasUncommittedChanges}
-          isGenerating={isGenerating}
-          searchQuery={searchQuery}
-          onSearchQueryChange={setSearchQuery}
+          ahead={commitContext?.ahead ?? 0}
           onCreateBranch={() => setIsCreateBranchOpen(true)}
           onSwitchBranch={handleSwitchBranch}
-          onOpenStash={() => setIsStashOpen(true)}
-          belowBranch={
-            <CommitComposer
-              summary={summary}
-              onSummaryChange={setSummary}
-              description={description}
-              onDescriptionChange={setDescription}
-              amend={amend}
-              onToggleAmend={handleToggleAmend}
-              isCommitting={isCommitting}
-              isGenerating={isGenerating}
-              isPushing={isPushing}
-              commitContext={commitContext}
-              stagedCount={stagedCount}
-              hasUsableAgent={hasUsableAgent}
-              canGenerate={canGenerate}
-              canCommit={canCommit}
-              onGenerateMessage={handleGenerateMessage}
-              onCommit={handleCommit}
-              onPush={handlePush}
-            />
-          }
         />
+        <StashMenu
+          stashes={stashes}
+          canStash={hasUncommittedChanges && !isGenerating}
+          isMutating={isMutating}
+          onStash={() => setIsStashOpen(true)}
+          onApply={handleApplyStash}
+          onPop={handlePopStash}
+          onDrop={handleDropStash}
+        />
+      </SidePanelHeader>
+
+      <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
+        <CommitComposer
+          variant="panel"
+          summary={summary}
+          onSummaryChange={setSummary}
+          description={description}
+          onDescriptionChange={setDescription}
+          amend={amend}
+          onToggleAmend={handleToggleAmend}
+          isCommitting={isCommitting}
+          isGenerating={isGenerating}
+          isPushing={isPushing}
+          commitContext={commitContext}
+          stagedCount={stagedCount}
+          hasUsableAgent={hasUsableAgent}
+          canGenerate={canGenerate}
+          canCommit={canCommit}
+          onGenerateMessage={handleGenerateMessage}
+          onCommit={handleCommit}
+          onPush={handlePush}
+        />
+
+        <div className="px-2 pt-2 pb-0.5">
+          <ChangesFilter value={searchQuery} onChange={setSearchQuery} />
+        </div>
 
         <GitChangeList
           variant="column"
           stagedFiles={stagedFiles}
           unstagedFiles={unstagedFiles}
           statusError={statusError}
-          stashes={stashes}
           selectedFile={selectedFile}
           selectedStaged={selectedStaged}
           selectionSection={selectionSection}
@@ -161,7 +176,7 @@ export function ChangesPanel({ cwd, isVisible }: ChangesPanelProps): React.JSX.E
         />
       </div>
 
-      <HistoryRow cwd={cwd} isVisible={isVisible} />
+      <HistorySection cwd={cwd} isVisible={isVisible} />
 
       <GitPanelDialogs actions={actions} />
     </div>

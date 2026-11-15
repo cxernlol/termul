@@ -80,7 +80,6 @@ function WorkRunGroupComponent({
   return (
     <Collapsible open={open} onOpenChange={setOpen} className="min-w-0">
       <CollapsibleTrigger
-        data-press-feedback="off"
         className={cn(
           'flex w-full cursor-pointer items-center gap-1.5 text-left text-xs text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
           CHAT_ROW_MIN_H,

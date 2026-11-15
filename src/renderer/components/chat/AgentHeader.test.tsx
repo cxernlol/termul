@@ -527,13 +527,17 @@ describe('ModeChip mode menu (icons and risk groups)', () => {
     })
   })
 
-  it('marks the selected mode with a check only (the fill means hover or focus)', () => {
+  it('marks the picked mode with the model picker fill and no tick; hover is lighter', () => {
     render(<ModeChip session={claudeSession()} disabled={false} onSelect={vi.fn()} label="Agent" />)
     fireEvent.click(pill(/^Manual$/))
 
     const manual = screen.getByRole('button', { name: /^Manual/, pressed: true })
-    expect(manual).not.toHaveClass('bg-foreground/10')
-    expect(manual.querySelector('[data-termul-icon="Check"]')).toHaveClass('opacity-100')
+    expect(manual).toHaveClass('bg-foreground/10')
+    expect(manual.querySelector('[data-termul-icon="Check"]')).toBeNull()
+    const plan = screen.getByRole('button', { name: /^Plan/, pressed: false })
+    expect(plan).not.toHaveClass('bg-foreground/10')
+    expect(plan).toHaveClass('hover:bg-foreground/[0.06]', 'py-1.5', 'text-left')
+    expect(plan.textContent).toContain('Plan')
   })
 
   it('shows the current mode icon on the chip, in yellow for a risky mode', () => {

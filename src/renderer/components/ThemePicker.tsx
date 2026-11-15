@@ -228,7 +228,7 @@ export function ThemePicker(): React.JSX.Element | null {
           <button
             type="button"
             onClick={handleCancel}
-            className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors duration-150 ease-[var(--ease-out)] active:scale-[0.97]"
+            className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors duration-150 ease-[var(--ease-out)]"
             aria-label="Close theme picker"
           >
             <X size={14} />
@@ -288,7 +288,7 @@ export function ThemePicker(): React.JSX.Element | null {
                         data-theme-row
                         aria-selected={isHighlighted}
                         className={cn(
-                          'flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-sm transition-colors duration-100 ease-[var(--ease-out)] active:scale-[0.98]',
+                          'flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-sm transition-colors duration-100 ease-[var(--ease-out)]',
                           isHighlighted || isFocused
                             ? 'bg-foreground/[0.06] text-foreground'
                             : 'text-foreground/90 hover:bg-foreground/[0.06]'

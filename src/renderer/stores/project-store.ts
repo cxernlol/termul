@@ -166,7 +166,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       // gitBranch intentionally omitted: a stale hardcoded 'main' here was
       // shown in the status bar before the real branch was detected.
       // `useProjectGitBranch` auto-detects the actual HEAD branch on project
-      // activation; the manual GitBranchPicker switch still updates it.
+      // activation; a branch switch (Changes header) still updates it.
     }
     // Remembered first: the watch state that lists the project can land before
     // the reply does, and must find the shell and env vars waiting.

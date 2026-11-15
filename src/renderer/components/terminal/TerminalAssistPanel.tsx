@@ -136,7 +136,7 @@ export function TerminalAssistPanel({
               onClick={() => onInsertCommand(command)}
               title={command}
               aria-label={`Insert suggested command ${i + 1}`}
-              className="mb-1 flex w-full items-center gap-2 rounded border border-border/60 px-2 py-1 text-left font-mono text-[11px] text-foreground hover:bg-accent hover:text-accent-foreground"
+              className="mb-1 flex w-full items-center gap-2 rounded border border-border/60 px-2 py-1 text-left font-mono text-2xs text-foreground hover:bg-accent hover:text-accent-foreground"
             >
               <span className="truncate">{command}</span>
             </button>

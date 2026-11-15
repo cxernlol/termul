@@ -151,7 +151,7 @@ export function MessageActions({
           size="sm"
           label={copied ? 'Copied' : 'Copy'}
           onClick={() => void copy()}
-          className="rounded-md hover:bg-secondary/60 active:scale-[0.96] transition-[transform,color,background-color] duration-150"
+          className="rounded-md hover:bg-secondary/60 transition-colors duration-150"
         >
           <IconSwap iconKey={copied}>
             {copied ? <Check className="text-success" /> : <Copy />}
@@ -162,7 +162,7 @@ export function MessageActions({
             size="sm"
             label="Edit"
             onClick={onEdit}
-            className="rounded-md hover:bg-secondary/60 active:scale-[0.96] transition-[transform,color,background-color] duration-150"
+            className="rounded-md hover:bg-secondary/60 transition-colors duration-150"
           >
             <Pencil />
           </IconActionButton>
@@ -172,7 +172,7 @@ export function MessageActions({
             size="sm"
             label="Retry"
             onClick={onRetry}
-            className="rounded-md hover:bg-secondary/60 active:scale-[0.96] transition-[transform,color,background-color] duration-150"
+            className="rounded-md hover:bg-secondary/60 transition-colors duration-150"
           >
             <RotateCcw />
           </IconActionButton>

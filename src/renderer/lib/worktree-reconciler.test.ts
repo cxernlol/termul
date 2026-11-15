@@ -5,6 +5,7 @@ import type { Project, Worktree } from '@/types/project'
 import {
   mergeWorktrees,
   reconcileProjectWorktrees,
+  reconcileWorktreeOwnerOf,
   worktreeIdForPath,
   worktreeKey
 } from './worktree-reconciler'
@@ -153,6 +154,28 @@ describe('mergeWorktrees', () => {
     const ids = result.worktrees.map((w) => w.id)
     expect(new Set(ids).size).toBe(2)
     expect(ids[0]).toBe(collidingId)
+  })
+})
+
+describe('reconcileWorktreeOwnerOf', () => {
+  it('re-lists the project that owns the worktree a branch switched in, and logs it', () => {
+    seed({ worktrees: [wt({ path: WT_A })] })
+    mocks.list.mockResolvedValue(ok(info(ROOT, 'main', 'repo'), info(WT_A, 'dev', 'a')))
+
+    expect(reconcileWorktreeOwnerOf(WT_A)).toBe('p1')
+    expect(mocks.list).toHaveBeenCalled()
+    expect(mocks.logFrontendError).toHaveBeenCalledWith(
+      expect.objectContaining({
+        level: 'info',
+        message: expect.stringContaining('branch switch in a worktree of project p1')
+      })
+    )
+  })
+
+  it('does nothing for the project folder itself', () => {
+    seed({ worktrees: [wt({ path: WT_A })] })
+    expect(reconcileWorktreeOwnerOf(ROOT)).toBeNull()
+    expect(mocks.list).not.toHaveBeenCalled()
   })
 })
 

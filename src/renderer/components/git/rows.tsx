@@ -2,7 +2,7 @@ import type { GitFileStatus } from '@shared/types/ipc.types'
 import type React from 'react'
 import { MaterialFileIcon } from '@/components/file-explorer/MaterialFileIcon'
 import { GIT_STATUS_LABELS } from '@/components/git/git-status-badge'
-import { ChevronDown, Search } from '@/components/icons'
+import { ChevronDown, File, Search } from '@/components/icons'
 import {
   FOCUS_RING_CLASS,
   PANEL_FIELD_CLASS,
@@ -58,7 +58,7 @@ export function ChangesFilter({
         className={cn(
           PANEL_FIELD_CLASS,
           'w-full pl-7 pr-2.5',
-          variant === 'mobile' ? 'h-11' : 'h-8'
+          variant === 'mobile' ? 'h-11' : 'h-7'
         )}
         value={value}
         onChange={(e) => onChange(e.target.value)}
@@ -192,7 +192,7 @@ export function GitStatusLetter({
       title={label}
       aria-label={label}
       className={cn(
-        'w-3 shrink-0 text-center font-mono text-2xs font-semibold',
+        'w-3.5 shrink-0 text-center font-mono text-2xs',
         GIT_STATUS_TEXT_CLASS[letterStatus],
         className
       )}
@@ -204,8 +204,8 @@ export function GitStatusLetter({
 
 /** File row look per state; the name inherits the row's text colour. */
 const ROW_STATE_CLASS: Record<'active' | 'selected' | 'idle', string> = {
-  /** The row whose diff is open: the "you are here" keycap. */
-  active: 'keycap text-foreground',
+  /** The row whose diff is open: the solid row fill (Paper "File row"). */
+  active: 'bg-row-hover-solid text-foreground',
   selected: 'bg-foreground/[0.06] text-foreground',
   idle: 'text-secondary-foreground hover:bg-foreground/[0.03]'
 }
@@ -219,7 +219,7 @@ export function FileItem({
   children
 }: {
   file: { path: string; status: GitFileStatus }
-  /** The row whose diff is open — the "you are here" keycap. */
+  /** The row whose diff is open — the solid row fill. */
   isActive: boolean
   /** Part of the multi-selection. */
   isSelected: boolean
@@ -250,14 +250,15 @@ export function FileItem({
       onKeyDown={handleKeyDown}
       aria-selected={isActive || isSelected}
       className={cn(
-        'group/row flex w-full min-w-0 items-center gap-2 rounded-md pl-2 pr-1 text-left text-xs cursor-pointer select-none transition-colors duration-150 ease-out',
+        'group/row flex w-full min-w-0 items-center gap-2 rounded-md px-2 text-left text-xs cursor-pointer select-none transition-colors duration-150 ease-out',
         FOCUS_RING_CLASS,
         isMobile ? 'min-h-11 py-1' : 'h-7',
         ROW_STATE_CLASS[isActive ? 'active' : isSelected ? 'selected' : 'idle']
       )}
     >
-      <GitFileIcon fileName={fileName} />
-      <div className="flex min-w-0 flex-1 items-baseline gap-1.5 overflow-hidden">
+      {/* Paper "File row": a plain outline file glyph, not the file-type icon. */}
+      <File size={14} aria-hidden className="shrink-0 text-project-blue" />
+      <div className="flex min-w-0 flex-1 items-baseline gap-2 overflow-hidden">
         <span className="shrink-0 truncate max-w-full text-xs">{fileName}</span>
         {dirName && (
           <span

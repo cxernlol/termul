@@ -65,6 +65,10 @@ function termulLightChrome(): ThemeChrome {
       '--composer-shadow': S_DEFAULT,
       /** Prompt panels replace the composer, so they take the same lift. */
       '--prompt-panel-shadow': S_DEFAULT,
+      /** Secondary and outline buttons: white, a 1px ink ring at 8% and a 12% drop. */
+      '--control-fill': CONTAINER,
+      '--control-fill-hover': `color-mix(in oklab, ${CONTAINER}, ${INK} 4%)`,
+      '--shadow-control': `0 0 0 1px ${INK}14, 0 1px 2px ${INK}1f`,
       /** Tabs and other raised items: a white container with s-default, as in Interfere. */
       '--keycap-fill': CONTAINER,
       '--keycap-shadow': S_DEFAULT,

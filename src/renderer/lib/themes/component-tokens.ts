@@ -61,6 +61,15 @@ export const COMPONENT_TOKEN_DEFAULTS = {
    * Defaults to the panel elevation; a theme can tie it to the composer's lift.
    */
   '--prompt-panel-shadow': 'var(--elevation-panel)',
+  /**
+   * Secondary and outline button fill: one step above the popover or card
+   * the button sits on (tactile dark control).
+   */
+  '--control-fill': 'oklch(var(--muted))',
+  /** Secondary and outline button fill on hover: 5% toward the ink. */
+  '--control-fill-hover': 'color-mix(in oklab, oklch(var(--muted)), oklch(var(--foreground)) 5%)',
+  /** Secondary and outline button edge and drop: a 0.5px edge and a tight black drop. */
+  '--shadow-control': '0 0 0 0.5px var(--popover-edge), 0 1px 2px rgb(0 0 0 / 0.5)',
   /** Raised "you are here" fill (active tab, row, segment), read by .keycap. */
   '--keycap-fill': 'oklch(var(--muted))',
   /** Raised "you are here" depth, read by .keycap and the Rail keycap default. */

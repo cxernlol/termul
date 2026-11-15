@@ -56,6 +56,11 @@ export interface ChatLaunchRequest {
   onWorktreeCreating?: (creating: boolean) => void
   /** The new worktree failed. The tab is already closed and the placeholder discarded; the error is rethrown. */
   onWorktreeFailed?: (err: unknown) => void
+  /**
+   * Runs before a failed or called-off launch closes its tab. A caller that
+   * moves the tab to another chat here keeps the tab open.
+   */
+  onRollback?: (placeholderId: SessionId) => void
   /** The placeholder became the real session (before the first turn is sent). */
   onAdopt?: (placeholderId: SessionId, sessionId: SessionId) => void
 }
@@ -153,6 +158,7 @@ export function launchChat(request: ChatLaunchRequest): ChatLaunch {
           progressId
         })
       } catch (err) {
+        request.onRollback?.(placeholderId)
         rollbackLaunchPlaceholder(placeholderId, progressId)
         request.onWorktreeFailed?.(err)
         throw err
@@ -165,6 +171,7 @@ export function launchChat(request: ChatLaunchRequest): ChatLaunch {
       firstTurn = (await request.beforeStart?.(checkout)) ?? {}
     } catch (err) {
       if (err instanceof LaunchAbort) {
+        request.onRollback?.(placeholderId)
         rollbackLaunchPlaceholder(placeholderId, progressId)
         if (newWorktree && checkout.worktreePath) {
           await removeLaunchWorktree(projectId, newWorktree.projectRoot, checkout.worktreePath)

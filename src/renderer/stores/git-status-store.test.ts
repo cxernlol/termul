@@ -60,6 +60,12 @@ vi.mock('sonner', () => ({
   toast: { error: vi.fn(), success: vi.fn() }
 }))
 
+const { mockReconcileOwner } = vi.hoisted(() => ({ mockReconcileOwner: vi.fn() }))
+
+vi.mock('@/lib/worktree-reconciler', () => ({
+  reconcileWorktreeOwnerOf: mockReconcileOwner
+}))
+
 const { gitApi } = gitApiModule as unknown as {
   gitApi: {
     getStatus: ReturnType<typeof vi.fn>
@@ -485,6 +491,18 @@ describe('git-status-store branch sync cross-store', () => {
 
     expect(useProjectStore.getState().projects[0].gitBranch).toBe('new-branch')
     expect(useTerminalStore.getState().terminals[0].gitBranch).toBe('new-branch')
+  })
+
+  it('asks the reconciler to re-list worktrees after a branch switch', async () => {
+    vi.mocked(platform).mockReturnValue('macos')
+    useProjectStore.setState({
+      projects: [{ id: 'proj-1', path: '/Users/Test/Project', gitBranch: 'main' } as any]
+    })
+
+    await useGitStatusStore.getState().branchSwitch('/Users/Test/Project', 'dev')
+
+    expect(mockReconcileOwner).toHaveBeenCalledWith('/Users/Test/Project')
+    expect(useProjectStore.getState().projects[0].gitBranch).toBe('dev')
   })
 
   it('preserves case sensitivity on non-Windows platforms', async () => {

@@ -80,7 +80,7 @@ export function ComposerDockMessage({
       <span className="flex h-5 shrink-0 items-center">
         <span aria-hidden className={cn('size-[7px] rounded-full', DOT_CLASS[tone])} />
       </span>
-      <p className="min-w-0 flex-1 whitespace-pre-wrap break-words text-[13px] leading-5 text-muted-foreground">
+      <p className="min-w-0 flex-1 whitespace-pre-wrap break-words text-xs leading-5 text-muted-foreground">
         <span className="font-medium text-foreground">{title}</span>
         {children ? <> {children}</> : null}
       </p>

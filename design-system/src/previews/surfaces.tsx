@@ -2,12 +2,7 @@ import type { ReactNode } from 'react'
 import { Check, Download, GitBranch, Terminal, Wifi } from '@/components/icons'
 import { ProjectIcon } from '@/components/ProjectIcon'
 import { type ProjectRowStatus, ProjectStatusMarks } from '@/components/sidebar/indicators'
-import {
-  STATUS_BAR_HIT_GLYPH,
-  STATUS_BAR_HIT_TARGET,
-  STATUS_BAR_HOVER_CLASS,
-  STATUS_BAR_ITEM_CLASS
-} from '@/components/status-bar-hit'
+import { STATUS_BAR_HIT_GLYPH, STATUS_BAR_HIT_TARGET } from '@/components/status-bar-hit'
 import { TermulMark } from '@/components/TermulMark'
 import { cn } from '@/lib/utils'
 import type { Project } from '@/types/project'
@@ -100,6 +95,15 @@ export function SidebarRows() {
     </div>
   )
 }
+
+/**
+ * The status bar's text slots left with the bar. The replica keeps the last
+ * recipe so the canvas still shows the anatomy: a 24px icon-and-label row,
+ * and the quiet hover wash.
+ */
+const STATUS_BAR_ITEM_CLASS = 'flex h-6 min-w-0 shrink-0 items-center gap-1.5 rounded-md px-2'
+const STATUS_BAR_HOVER_CLASS =
+  'transition-colors duration-150 ease-out hover:bg-foreground/[0.03] hover:text-foreground'
 
 function BarItem({
   icon,

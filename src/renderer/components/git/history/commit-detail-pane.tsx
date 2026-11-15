@@ -132,7 +132,7 @@ export function CommitDetailPane({
               )}
             </div>
           )}
-          <h2 className="select-text break-words text-[15px] font-medium leading-snug text-foreground">
+          <h2 className="select-text break-words text-base font-medium leading-snug text-foreground">
             {commit.subject || '(no message)'}
           </h2>
           {body && (

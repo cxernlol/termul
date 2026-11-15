@@ -2,6 +2,7 @@ import type { ShellInfo } from '@shared/types/ipc.types'
 import { useCallback, useEffect } from 'react'
 import type { NavigateFunction } from 'react-router-dom'
 import { toast } from 'sonner'
+import { openNewChatOnWorkspace } from '@/components/shell/use-new-chat'
 import { WORKTREE_EVENTS } from '@/hooks/use-worktree-shortcuts'
 import { getActiveWorkingCopy, reportUnresolvedWorkingCopy } from '@/lib/active-working-copy'
 import { launchAgentInPane } from '@/lib/agent-launch'
@@ -155,21 +156,11 @@ export function useTabOpeners({
     }
   }, [])
 
-  const handleOpenAgentChat = useCallback(() => {
-    if (!activeProject?.path) return
-    const open = (): void => {
-      const paneId = useWorkspaceStore.getState().activePaneId
-      if (paneId) useWorkspaceStore.getState().showAgentLauncher(paneId)
-    }
-    // The launcher overlay only renders on the workspace route; navigate there
-    // first when invoked from a child route (e.g. preferences/settings).
-    if (pathname !== '/') {
-      navigate('/')
-      requestAnimationFrame(open)
-    } else {
-      open()
-    }
-  }, [activeProject?.path, pathname, navigate])
+  // New chat (menus, the phone header and drawer).
+  const handleOpenAgentChat = useCallback(
+    () => openNewChatOnWorkspace(pathname, navigate, 'menu'),
+    [pathname, navigate]
+  )
 
   const handleAddGitTab = useCallback(
     (paneId?: string) => {

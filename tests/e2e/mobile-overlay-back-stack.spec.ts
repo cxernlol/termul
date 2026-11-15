@@ -4,7 +4,13 @@ import { join } from 'node:path'
 import type { Locator, Page, WebSocket } from 'playwright/test'
 import { expect, request, test } from 'playwright/test'
 import { E2E_BASE_URL, E2E_TOKEN, storeKey, wsRequest } from './helpers'
-import { launchChat, openRailNewProjectModal, openWorkspace } from './ui'
+import {
+  emptyChatComposer,
+  launchChat,
+  openRailNewProjectModal,
+  openWorkspace,
+  sendFromEmptyChat
+} from './ui'
 
 /**
  * Mobile overlay back stack E2E (spec-mobile-overlay-back-stack): a phone-sized
@@ -303,7 +309,7 @@ async function launchRichChat(page: Page, label: string): Promise<HistoryPositio
   return position
 }
 
-/** A real shell in the pane, so the pane has a tab and the launcher becomes an overlay. */
+/** A real shell in the pane, so the pane has a tab and the empty-pane launcher goes away. */
 async function openTerminalTab(page: Page, warmedUp: Promise<void>): Promise<void> {
   await warmedUp
   await openDrawer(page)
@@ -456,18 +462,22 @@ test('command palette to Change Color Theme and to Command History each swap one
 // The agent launcher and its agent and model sheet
 // ---------------------------------------------------------------------------
 
-test('an empty pane shows the launcher as the pane body, not as an overlay: no history entry', async ({
+test('an empty pane shows the launcher as the pane body; New chat opens an empty chat, not an overlay', async ({
   page
 }) => {
-  const { base } = await bootMobileShell(page)
+  await bootMobileShell(page)
   const composer = page.getByRole('textbox', { name: 'Agent prompt' })
   await expect(composer).toBeVisible()
 
+  // New chat replaces the empty-pane launcher with a new empty chat tab. It
+  // opens no launcher dialog, so the back stack gets no overlay entry.
   await page.getByRole('button', { name: 'New chat' }).tap()
 
-  await expect(composer).toBeVisible()
+  await expect(emptyChatComposer(page)).toBeVisible()
+  await expect(composer).toHaveCount(0)
+  await expect(page.getByRole('dialog', { name: 'Agent launcher' })).toHaveCount(0)
   await settleBackStack(page)
-  await expectHistory(page, { index: base.index, hash: '#/', sentinelDepth: 0 })
+  await expectHistory(page, { sentinelDepth: 0 })
 })
 
 test('the agent selector sheet closes on back and on Esc, and focus returns to its pill', async ({
@@ -513,73 +523,6 @@ test.describe('with a terminal tab open', () => {
     }
   })
 
-  test('the launcher is an overlay over a tab: back closes it, and Esc closes it with focus outside the editor', async ({
-    page
-  }) => {
-    const warmedUp = watchAgentWarmup(page)
-    const { base } = await bootMobileShell(page)
-    await openTerminalTab(page, warmedUp)
-    // The drawer's own entry was consumed when it closed.
-    await expectHistory(page, { index: base.index, hash: '#/', sentinelDepth: 0 })
-    const launcher = page.getByRole('dialog', { name: 'Agent launcher' })
-
-    // Drawer to launcher is a swap in one tap: still one entry.
-    await openDrawerOnChats(page)
-    await page.getByRole('button', { name: 'New chat', exact: true }).tap()
-    await expect(launcher).toBeVisible()
-    await settleBackStack(page)
-    await expectHistory(page, { index: base.index + 1, hash: '#/', sentinelDepth: 1 })
-
-    await pressSystemBack(page)
-    await expect(launcher).toBeHidden()
-    await expectHistory(page, { index: base.index, hash: '#/', sentinelDepth: 0 })
-
-    // Open it again; nothing in the launcher has focus (the editor does not
-    // autofocus), so Esc reaches no handler of its own and the back stack
-    // closes it.
-    await openDrawerOnChats(page)
-    await page.getByRole('button', { name: 'New chat', exact: true }).tap()
-    await expect(launcher).toBeVisible()
-    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur())
-    await page.keyboard.press('Escape')
-    await expect(launcher).toBeHidden()
-    await expectHistory(page, { index: base.index, hash: '#/', sentinelDepth: 0 })
-  })
-
-  test('the agent selector sheet over the launcher: back closes the sheet, then the launcher, then it is a real back', async ({
-    page
-  }) => {
-    const warmedUp = watchAgentWarmup(page)
-    const { base } = await bootMobileShell(page)
-    await openTerminalTab(page, warmedUp)
-    await expectHistory(page, { index: base.index, hash: '#/', sentinelDepth: 0 })
-    const launcher = page.getByRole('dialog', { name: 'Agent launcher' })
-    const chip = page.getByRole('button', { name: AGENT_SELECTOR_PILL })
-    const modal = page.getByRole('dialog', { name: AGENT_SELECTOR_SHEET })
-
-    await openDrawerOnChats(page)
-    await page.getByRole('button', { name: 'New chat', exact: true }).tap()
-    await expect(launcher).toBeVisible()
-    await chip.tap()
-    await expect(modal).toBeVisible()
-    // Two overlays, two entries.
-    await expectHistory(page, { index: base.index + 2, sentinelDepth: 2 })
-
-    await pressSystemBack(page)
-    await expect(modal).toBeHidden()
-    await expect(launcher).toBeVisible()
-    await expect(chip).toBeFocused()
-    await expectHistory(page, { index: base.index + 1, hash: '#/', sentinelDepth: 1 })
-
-    await pressSystemBack(page)
-    await expect(launcher).toBeHidden()
-    await expectHistory(page, { index: base.index, hash: '#/', sentinelDepth: 0 })
-
-    // No overlay is left: the third back is the browser's, not ours.
-    await pressSystemBack(page)
-    await expectHistory(page, { index: base.index - 1 })
-  })
-
   test('the close-terminal confirm is on the stack: back keeps the terminal, Cancel consumes the entry', async ({
     page
   }) => {
@@ -616,40 +559,42 @@ test.describe('with a terminal tab open', () => {
 })
 
 // ---------------------------------------------------------------------------
-// A chat: launching one from the launcher overlay, and the overlays in a message
+// A chat: New chat from a chat, and the overlays in a message
 // ---------------------------------------------------------------------------
 
-test('launching a chat from the launcher overlay leaves no dead back press on the way back', async ({
+test('New chat from a chat opens one empty chat with no overlay entry; a second New chat focuses it', async ({
   page
 }) => {
   const warmedUp = watchAgentWarmup(page)
   await bootMobileShell(page)
   await warmedUp
-  // A first chat gives the pane a tab, so the launcher is an overlay from now on.
-  const first = await launchRichChat(page, 'first chat')
+  // A first chat gives the pane a tab, so the empty-pane launcher is gone.
+  await launchRichChat(page, 'first chat')
+  const chatTabs = page.locator('[data-chat-tab-state]')
+  await expect(chatTabs).toHaveCount(1)
 
+  // The header New chat opens a new empty chat tab, not the launcher dialog.
   await page.getByRole('button', { name: 'New chat' }).tap()
-  const launcher = page.getByRole('dialog', { name: 'Agent launcher' })
-  await expect(launcher).toBeVisible()
+  await expect(emptyChatComposer(page)).toBeVisible()
+  await expect(page.getByRole('dialog', { name: 'Agent launcher' })).toHaveCount(0)
+  await expect(chatTabs).toHaveCount(2)
   await settleBackStack(page)
-  // The header's New chat takes the app to the home route first, so the overlay's
-  // entry sits on top of a route entry of its own.
-  const opened = await historyPosition(page)
-  expect(opened.sentinelDepth).toBe(1)
-  expect(opened.index).toBeGreaterThan(first.index)
+  await expectHistory(page, { sentinelDepth: 0 })
 
-  // Launching closes the overlay and pushes the second chat's route entry on
-  // top of the overlay's entry. No traversal may run: it would revert the route.
-  const second = await launchRichChat(page, 'second chat')
-  await expect(launcher).toBeHidden()
-  expect(second.index).toBe(opened.index + 1)
+  // The drawer New chat while the empty chat shows focuses that chat: no
+  // second empty chat opens.
+  await openDrawerOnChats(page)
+  await page.getByRole('button', { name: 'New chat', exact: true }).tap()
+  await expect(emptyChatComposer(page)).toBeVisible()
+  await expect(chatTabs).toHaveCount(2)
+  await settleBackStack(page)
+  await expectHistory(page, { sentinelDepth: 0 })
 
-  // One back press leaves the second chat: the closed launcher's leftover entry
-  // is passed over instead of swallowing the press, so history lands on the
-  // route entry beneath it, not on a stale overlay entry.
-  await pressSystemBack(page)
-  await expectHistory(page, { index: opened.index - 1, hash: opened.hash, sentinelDepth: 0 })
-  await expect(launcher).toBeHidden()
+  // The first message starts the chat; the header names it.
+  const prompt = '[RICH] second chat'
+  await sendFromEmptyChat(page, prompt, { tap: true })
+  await expect(page.getByRole('heading', { level: 1, name: prompt, exact: true })).toBeVisible()
+  await expect(chatTabs).toHaveCount(2)
 })
 
 test.describe('overlays inside a chat message', () => {

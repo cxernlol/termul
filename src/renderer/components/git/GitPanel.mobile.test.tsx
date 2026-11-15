@@ -375,7 +375,7 @@ describe('GitPanel desktop branch (regression — byte-identical layout)', () =>
     expect(drop.parentElement?.className).toContain('opacity-0')
     expect(drop.className).toContain('hover:bg-destructive/10')
 
-    // Desktop amend label keeps text-2xs; Generate stays a stacked button.
+    // Desktop amend label keeps text-2xs; Generate is a text button, not the inline sparkle.
     expect(screen.getByText('Amend last commit').closest('label')?.className).toContain('text-2xs')
     expect(screen.getByRole('button', { name: /Generate message/ })).toBeInTheDocument()
     expect(screen.queryByLabelText('Generate commit message')).not.toBeInTheDocument()

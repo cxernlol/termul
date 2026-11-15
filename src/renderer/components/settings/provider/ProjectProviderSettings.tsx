@@ -344,7 +344,9 @@ export function ProjectProviderSettings({
               title={
                 <>
                   <span className="truncate">{account.name}</span>
-                  {account.id === snapshot.defaultAccountId && <DefaultPill />}
+                  {account.id === snapshot.defaultAccountId && (
+                    <DefaultPill accountName={account.name} />
+                  )}
                 </>
               }
               sub={

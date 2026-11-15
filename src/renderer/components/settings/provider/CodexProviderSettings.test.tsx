@@ -124,6 +124,22 @@ describe('CodexProviderSettings', () => {
     )
   })
 
+  it('shows one status dot line per row and no Default pill on an account named Default', async () => {
+    api.list.mockResolvedValue({
+      ...SNAPSHOT,
+      accounts: [{ id: 'default', name: 'Default', builtin: true, signedIn: undefined }],
+      projectAccounts: {}
+    })
+    render(<CodexProviderSettings />)
+    const row = await screen.findByTestId('codex-account-default')
+    expect(row).toHaveTextContent('Could not check sign-in')
+    expect(row.textContent?.match(/Default/g)).toHaveLength(1)
+    expect(screen.getByTestId('codex-second-account-hint')).toBeInTheDocument()
+    expect(
+      screen.queryByRole('switch', { name: 'Switch accounts automatically' })
+    ).not.toBeInTheDocument()
+  })
+
   it('stores the automatic-switching flag without switching chats', async () => {
     render(<CodexProviderSettings />)
     fireEvent.click(await screen.findByLabelText('Switch accounts automatically'))
@@ -131,18 +147,62 @@ describe('CodexProviderSettings', () => {
     expect(applyProjectCodexAccount).not.toHaveBeenCalled()
   })
 
-  it('adds an account and offers ChatGPT sign-in', async () => {
+  it('adds an account in the same steps as Claude: name, sign in, ready', async () => {
+    signInCodexAccount.mockResolvedValue(undefined)
     render(<CodexProviderSettings />)
     fireEvent.click(await screen.findByRole('button', { name: 'Add account' }))
-    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Side' } })
-    const addButtons = screen.getAllByRole('button', { name: 'Add account' })
-    fireEvent.click(addButtons[addButtons.length - 1])
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByText('Add a Codex account')).toBeInTheDocument()
+    expect(within(dialog).getByLabelText('Steps')).toHaveTextContent('1Name2Sign in3Done')
+    // "Work" and "Personal" are in use, so only "Team" is suggested.
+    expect(within(dialog).queryByRole('button', { name: 'Work' })).not.toBeInTheDocument()
+    expect(within(dialog).getByRole('button', { name: 'Team' })).toBeInTheDocument()
+    fireEvent.change(within(dialog).getByLabelText('Name'), { target: { value: 'Side' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Continue' }))
     await waitFor(() => expect(api.add).toHaveBeenCalledWith('Side'))
-    expect(await screen.findByRole('button', { name: 'Sign in with ChatGPT' })).toBeInTheDocument()
+    expect(await screen.findByText('Sign in to Side')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Sign in with ChatGPT' })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Use a device code' }))
     await waitFor(() =>
       expect(signInCodexAccount).toHaveBeenCalledWith('cd34', 'chat-gpt-device-code')
     )
+    expect(await screen.findByText('Side is ready')).toBeInTheDocument()
+    expect(screen.getByText('No — Personal stays default')).toBeInTheDocument()
+  })
+
+  it('stays open while a sign-in runs: Escape and Cancel do not close it', async () => {
+    let finish: () => void = () => undefined
+    signInCodexAccount.mockReturnValue(
+      new Promise<void>((resolve) => {
+        finish = resolve
+      })
+    )
+    render(<CodexProviderSettings />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Add account' }))
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Side' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Sign in with ChatGPT' }))
+    expect(await screen.findByText('Waiting for the sign-in…')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled()
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' })
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    finish()
+    expect(await screen.findByText('Side is ready')).toBeInTheDocument()
+  })
+
+  it('shows the failed step with Try again when the sign-in does not finish', async () => {
+    signInCodexAccount.mockRejectedValue(new Error('The sign-in timed out.'))
+    render(<CodexProviderSettings />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Add account' }))
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Side' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Sign in with ChatGPT' }))
+    expect(await screen.findByText('Sign-in did not finish')).toBeInTheDocument()
+    expect(
+      screen.getByText(/The sign-in timed out\. Side stays in your list, signed out\./)
+    ).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+    expect(await screen.findByRole('button', { name: 'Use a device code' })).toBeInTheDocument()
   })
 
   it('renames, sets the default, and removes with a project move', async () => {

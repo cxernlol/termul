@@ -405,7 +405,6 @@ function ToolCallCardComponent({
                 type="button"
                 onClick={() => setOpen((v) => !v)}
                 aria-expanded={open}
-                data-press-feedback="off"
                 className={cn(
                   'flex min-w-0 flex-1 items-center gap-2 text-left text-xs outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-focus-ring',
                   CHAT_ROW_MIN_H

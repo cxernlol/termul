@@ -21,7 +21,7 @@ interface IconActionButtonProps {
 
 /**
  * Compact chat/streamdown-style icon control: color-only hover, shared
- * tooltip, press scale from global button feedback. Layout slot is 44×44
+ * tooltip, no press scale (only main buttons press). Layout slot is 44×44
  * (WCAG touch) with a centered Streamdown-sized glyph so adjacent actions
  * never share overlapping hit regions. Pass `size="sm"` for dense chrome
  * (code-block actions, table toolbar) where 44px is visually too heavy — the

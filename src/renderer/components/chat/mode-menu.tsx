@@ -1,7 +1,6 @@
 import { type KeyboardEvent, useId, useRef } from 'react'
 import {
   Bot,
-  Check,
   Eye,
   FileEdit,
   FolderEdit,
@@ -14,6 +13,7 @@ import {
 } from '@/components/icons'
 import type { SessionMode } from '@/lib/acp-api'
 import { cn } from '@/lib/utils'
+import { PICKER_LABEL, PICKER_ROW_SELECTED_BOX } from './agent-model-selector/selector-tokens'
 
 /** How much a mode lets the agent do without asking. */
 export type ModeRisk = 'ask' | 'act' | 'danger' | 'other'
@@ -87,10 +87,12 @@ export function ModeIcon({
 }
 
 /**
- * The mode menu (design "Mode menu · V4 Icons and groups"): every mode has an
- * icon; modes are grouped by risk ("Ask first", "Let <agent> act"); risky
- * modes are set apart below a hairline with a yellow icon. The selected mode
- * has a check only: the fill means hover or focus. Up and Down move the focus.
+ * The mode menu (Paper "Mode menu", the model picker's values): every mode
+ * has an icon, a 12/16 name and a one-line description; modes are grouped by
+ * risk ("Ask first", "Let <agent> act") under the picker's labels; risky
+ * modes sit below a 0.5px hairline with a yellow icon. The picked mode has
+ * the picker's 10% fill and no tick; hover and focus are 6%. Up and Down
+ * move the focus.
  */
 export function ModeMenuList({
   modes,
@@ -141,15 +143,11 @@ export function ModeMenuList({
         return (
           <fieldset key={risk} aria-labelledby={labelId} className="min-w-0">
             {risk === 'danger' && groupIndex > 0 ? (
-              <div aria-hidden="true" className="mx-1.5 my-1 h-px bg-border" />
+              <div aria-hidden="true" className="mx-1 my-1 h-[0.5px] bg-border" />
             ) : null}
             <div
               id={labelId}
-              className={cn(
-                'px-2.5 pb-0.5 text-2xs font-medium text-muted-foreground',
-                groupIndex === 0 ? 'pt-1.5' : 'pt-2',
-                (!showLabels || risk === 'danger') && 'sr-only'
-              )}
+              className={cn(PICKER_LABEL, (!showLabels || risk === 'danger') && 'sr-only')}
             >
               {groupLabel(risk, agentName)}
             </div>
@@ -163,43 +161,30 @@ export function ModeMenuList({
                   key={mode.id}
                   type="button"
                   data-mode-id={mode.id}
-                  data-press-feedback="off"
                   aria-pressed={selected}
                   onClick={() => onPick(mode.id)}
                   onKeyDown={onKeyDown}
                   {...rowHandlers?.(mode.id)}
                   className={cn(
-                    'flex w-full items-start gap-2.5 rounded-lg px-2.5 text-left',
-                    'transition-[background-color,transform] duration-150 ease-out',
-                    'hover:bg-foreground/10 focus-visible:bg-foreground/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-focus-ring',
-                    'active:scale-[0.96] motion-reduce:active:scale-100',
-                    touch ? 'min-h-11 py-2.5' : 'py-2'
+                    'flex w-full items-start gap-2 rounded-md px-2 text-left',
+                    'transition-colors duration-150 ease-out',
+                    'hover:bg-foreground/[0.06] focus-visible:bg-foreground/[0.06] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-focus-ring',
+                    touch ? 'min-h-11 py-2.5' : 'py-1.5',
+                    selected && PICKER_ROW_SELECTED_BOX
                   )}
                 >
                   <Icon
                     size={16}
                     aria-hidden="true"
                     className={cn(
-                      'mt-0.5 shrink-0',
+                      'shrink-0',
                       risk === 'danger' ? 'text-warning' : 'text-muted-foreground'
                     )}
                   />
-                  <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                    <span className="flex items-center gap-2">
-                      <span className="min-w-0 flex-1 truncate text-sm text-foreground">
-                        {mode.name}
-                      </span>
-                      <Check
-                        size={14}
-                        aria-hidden="true"
-                        className={cn(
-                          'shrink-0 text-foreground',
-                          selected ? 'opacity-100' : 'opacity-0'
-                        )}
-                      />
-                    </span>
+                  <span className="flex min-w-0 flex-1 flex-col text-xs leading-4">
+                    <span className="truncate text-foreground">{mode.name}</span>
                     {description ? (
-                      <span className="text-xs text-muted-foreground">{description}</span>
+                      <span className="text-muted-foreground">{description}</span>
                     ) : null}
                   </span>
                 </button>

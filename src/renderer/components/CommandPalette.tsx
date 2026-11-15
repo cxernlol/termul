@@ -1,5 +1,6 @@
 import { AnimatePresence, motion } from 'framer-motion'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { CommandPaletteChats } from '@/components/CommandPaletteChats'
 import {
   Bot,
   Bug,
@@ -47,7 +48,8 @@ interface CommandPaletteProps {
   onAddTerminal?: () => void
   terminalProfiles?: TerminalProfile[]
   onOpenTerminalProfile?: (profile: TerminalProfile) => void
-  onShowAgentLauncher?: () => void
+  /** A new empty chat in the active pane. */
+  onNewChat?: () => void
   onLaunchAgent?: () => void
   onSaveSnapshot?: () => void
   onNewBrowserTab?: () => void
@@ -67,6 +69,8 @@ interface CommandPaletteProps {
   sshProfiles?: Array<{ id: string; name: string; host: string; username: string }>
   getShortcutLabel?: (id: CommandShortcutId) => string | undefined
   getProjectShortcutLabel?: (index: number) => string | undefined
+  /** Project whose chats the "Chats" group searches (shown while there is a query). */
+  chatsProject?: Project
 }
 
 type CommandCategory = 'workspace' | 'navigation' | 'projects' | 'tools'
@@ -112,7 +116,7 @@ export function CommandPalette({
   onAddTerminal,
   terminalProfiles,
   onOpenTerminalProfile,
-  onShowAgentLauncher,
+  onNewChat,
   onLaunchAgent,
   onSaveSnapshot,
   onNewBrowserTab,
@@ -127,7 +131,8 @@ export function CommandPalette({
   onSSHConnect,
   sshProfiles,
   getShortcutLabel,
-  getProjectShortcutLabel
+  getProjectShortcutLabel,
+  chatsProject
 }: CommandPaletteProps): React.JSX.Element {
   const [query, setQuery] = useState('')
   const recentCommandIds = useRecentCommandIds()
@@ -178,17 +183,17 @@ export function CommandPalette({
             }
           ]
         : []),
-      ...(onShowAgentLauncher
+      ...(onNewChat
         ? [
             {
-              id: 'show-agent-launcher',
+              id: 'new-chat',
               category: 'workspace' as const,
               icon: <Bot aria-hidden="true" size={16} />,
-              label: 'Agent Launcher',
-              description: 'Show the agent launcher prompt in the active pane',
-              keywords: ['agent', 'ai', 'claude', 'codex', 'prompt', 'launcher'],
+              label: 'New chat',
+              description: 'Start a new chat in the active pane',
+              keywords: ['agent', 'ai', 'claude', 'codex', 'prompt', 'chat', 'new'],
               shortcut: getShortcutLabel?.('newTerminal'),
-              execute: onShowAgentLauncher
+              execute: onNewChat
             }
           ]
         : []),
@@ -362,7 +367,7 @@ export function CommandPalette({
       onAddTerminal,
       terminalProfiles,
       onOpenTerminalProfile,
-      onShowAgentLauncher,
+      onNewChat,
       onLaunchAgent,
       onSaveSnapshot,
       onNewBrowserTab,
@@ -563,7 +568,11 @@ export function CommandPalette({
               <div className="relative">
                 <CommandInput
                   ref={inputRef}
-                  placeholder="Search commands, projects, settings..."
+                  placeholder={
+                    chatsProject
+                      ? 'Search commands, projects, chats, settings…'
+                      : 'Search commands, projects, settings…'
+                  }
                   value={query}
                   onValueChange={setQuery}
                   className="h-12 py-2 text-sm"
@@ -606,6 +615,10 @@ export function CommandPalette({
                     {categoryCommands.map((cmd) => renderCommandItem(cmd))}
                   </CommandGroup>
                 ))}
+
+                {chatsProject && query.trim() !== '' && (
+                  <CommandPaletteChats project={chatsProject} query={query} onDone={onClose} />
+                )}
               </CommandList>
 
               {/* Story 11 (QA F9): ↑↓/↵/Esc kbd hints are dead affordances

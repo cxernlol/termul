@@ -314,9 +314,6 @@ export const QuestionOption = forwardRef<HTMLButtonElement, QuestionOptionProps>
         ref={ref}
         type="button"
         aria-pressed={selected}
-        // A full-width row scales too far under the document press rule; the
-        // fill and indicator already show the pick.
-        data-press-feedback="off"
         data-question-row=""
         className={cn(
           'flex min-h-9 w-full items-start gap-3 rounded-lg py-2 pl-2.5 pr-3 text-left transition-colors duration-150 ease-out pointer-coarse:min-h-11',
@@ -499,7 +496,7 @@ export function QuestionMinimizedBar({
     <div className="flex h-12 items-center gap-2.5 pl-4 pr-2 pointer-coarse:h-14">
       <QuestionPanelTitle />
       <QuestionProgress />
-      <h2 id={headingId} className="min-w-0 flex-1 truncate text-[13px] text-secondary-foreground">
+      <h2 id={headingId} className="min-w-0 flex-1 truncate text-xs text-secondary-foreground">
         {heading}
       </h2>
       {total > 1 ? <StepCount className="shrink-0 text-muted-foreground/70" /> : null}
@@ -509,7 +506,7 @@ export function QuestionMinimizedBar({
         variant="secondary"
         size="xs"
         onClick={onResume}
-        className="h-8 gap-1.5 rounded-lg pl-3 pr-2.5 text-[13px] pointer-coarse:min-h-11"
+        className="h-8 gap-1.5 rounded-lg pl-3 pr-2.5 text-xs pointer-coarse:min-h-11"
       >
         Resume
         <ChevronUp size={14} aria-hidden="true" className="text-muted-foreground" />

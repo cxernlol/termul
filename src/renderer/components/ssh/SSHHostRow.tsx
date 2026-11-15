@@ -128,8 +128,6 @@ export function SSHHostRow({
               }
             }}
             data-ssh-host-button=""
-            // A full-width row shrinking on press reads as the layout jumping.
-            data-press-feedback="off"
             aria-label={`${canConnect ? 'Connect to' : 'Edit'} ${profile.name}, ${showAddress ? `${addressLabel(profile)}, ` : ''}${authMethodLabel(profile.authMethod)}${status ? `, ${status}` : ''}`}
           >
             <span

@@ -41,10 +41,9 @@ test('a click below one line of text focuses the composer with the caret at the 
   await openWorkspace(page)
   await selectProject(page, projectName)
 
+  // A new project has no tabs, so its pane shows the empty-pane launcher.
+  // Do not press New chat: it opens an empty chat tab, not the launcher.
   const editor = page.locator('[data-composer-editor="true"][aria-label="Agent prompt"]')
-  if (!(await editor.isVisible())) {
-    await page.getByRole('button', { name: 'New chat', exact: true }).first().click()
-  }
   await expect(editor).toBeVisible()
 
   await editor.click()

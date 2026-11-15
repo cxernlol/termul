@@ -177,6 +177,14 @@ export const KEEP_PATTERNS: readonly KeepPattern[] = [
     pattern: /\bTermul Symbols\b/g
   },
   {
+    id: 'paper-design-file',
+    reason:
+      'The Paper file is still named "Termul Design System". The design docs cite that file name.',
+    owner: 'keep until the Paper file is renamed',
+    pattern: /\bTermul Design System\b/g,
+    include: ['DESIGN.md', 'docs/design/sidebar-v2-handoff.md']
+  },
+  {
     id: 'rename-notice',
     reason:
       'The one-time notice tells people who update that the app was renamed; it has to name the old product.',

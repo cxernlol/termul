@@ -11,21 +11,15 @@ import {
   unassignedSessions
 } from '@/lib/acp-history-persistence'
 import { activeWorktreeOf } from '@/lib/active-worktree'
-import { logFrontendError } from '@/lib/log-api'
-import {
-  conversationDeleteIds,
-  foldEntries,
-  sessionChainIndex,
-  UNTITLED_PATTERN
-} from '@/lib/session-chain'
+import { foldEntries, sessionChainIndex, UNTITLED_PATTERN } from '@/lib/session-chain'
 import { chatsMatchAnnouncement } from '@/lib/shell-announcements'
 import { useAcpStore } from '@/stores/acp-store'
-import { liveSwitchSources } from '@/stores/acp-store/shared-state'
 import { useActiveProject } from '@/stores/project-store'
 import { useShellAnnouncerStore } from '@/stores/shell-announcer-store'
 import { useWorktreePick } from '@/stores/shell-layout-store'
 import { useWorkspaceStore } from '@/stores/workspace-store'
 import type { ChatHistorySidebarEntry } from './ChatHistoryEntryRow'
+import { deleteConversation } from './delete-conversation'
 
 /** How many sidebar rows to render per lazy-load page. */
 export const SIDEBAR_PAGE_SIZE = 50
@@ -97,7 +91,6 @@ export function useChatHistoryEntries({
   const sessionIndex = useAcpStore((s) => s.sessionIndex)
   const openHistorySession = useAcpStore((s) => s.openHistorySession)
   const openDiscoveredSession = useAcpStore((s) => s.openDiscoveredSession)
-  const deleteHistorySession = useAcpStore((s) => s.deleteHistorySession)
   const addAgentChatTab = useWorkspaceStore((s) => s.addAgentChatTab)
   // Subscribe to the full active-project record and the switcher pick so the
   // sidebar re-scopes when the active worktree changes (not just when the
@@ -329,32 +322,7 @@ export function useChatHistoryEntries({
     [addAgentChatTab, openHistorySession, openDiscoveredSession, activeProjectId, onSessionOpened]
   )
 
-  // Deleting a folded row deletes the WHOLE conversation: membership resolves
-  // against the FULL index (not the scoped one) so a chain member outside the
-  // current worktree scope is removed too — it would otherwise resurface as a
-  // standalone row in another scope's view.
-  const deleteEntry = useCallback(
-    (id: string) => {
-      // Read at call time: a switch completing after render must not leave
-      // the newest continuation behind (membership from the FULL index —
-      // a member outside the current scope would otherwise resurface as a
-      // standalone row in another scope's view). Project scoping keeps a
-      // malformed cross-project edge from deleting another project's
-      // transcript; in-flight switch targets of a member are swept too.
-      const { sessionIndex: fullIndex } = useAcpStore.getState()
-      for (const memberId of conversationDeleteIds(fullIndex, id, liveSwitchSources)) {
-        void deleteHistorySession(memberId).catch(() => {
-          toast.error('Could not delete that chat. Try again.')
-          void logFrontendError({
-            level: 'warn',
-            source: logSource,
-            message: `Failed to delete chat history session ${memberId}`
-          })
-        })
-      }
-    },
-    [deleteHistorySession, logSource]
-  )
+  const deleteEntry = useCallback((id: string) => deleteConversation(id, logSource), [logSource])
 
   return {
     mergedEntries,

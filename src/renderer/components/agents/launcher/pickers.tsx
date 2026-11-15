@@ -102,7 +102,6 @@ export function AcpAgentPicker({
               })}
               onPointerDown={keepFocusOnMousePress}
               aria-pressed={selected}
-              data-press-feedback="off"
               className={menuOptionRowClass(isMobile)}
             >
               <span className="mt-0.5 inline-flex shrink-0">
@@ -298,7 +297,6 @@ export function AcpModelPicker({
                   type="button"
                   {...tapSelect(() => handleSelectModel(value.value))}
                   onPointerDown={keepFocusOnMousePress}
-                  data-press-feedback="off"
                   aria-pressed={value.value === displayValue}
                   className={menuOptionRowClass(isMobile)}
                 >

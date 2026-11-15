@@ -20,6 +20,7 @@ mod claude_accounts;
 pub use claude_accounts::*;
 
 mod codex_accounts;
+mod codex_login_file;
 pub use codex_accounts::*;
 
 /// Whether the host OS keychain currently holds a Factory Droid API key.
@@ -61,6 +62,7 @@ pub async fn codex_cli_auth_status(codex_home: Option<String>) -> CodexCliAuthSt
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CodexLoginProbe {
     SignedIn,
     SignedOut,
@@ -116,6 +118,7 @@ pub(crate) async fn codex_login_status(
     codex_bin: Option<&str>,
     project_path: Option<&str>,
 ) -> CodexLoginProbe {
+    let home_for_file = codex_home.clone();
     let mut command = codex_command(&["login", "status"], codex_home, codex_bin, project_path);
     command
         .kill_on_drop(true)
@@ -134,8 +137,10 @@ pub(crate) async fn codex_login_status(
             );
             CodexLoginProbe::Unavailable
         }
+        // No `codex` CLI (the agent can run as `npx codex-acp`): read the
+        // account's login file instead.
         Ok(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => {
-            CodexLoginProbe::Unavailable
+            codex_login_file::codex_login_from_file(home_for_file.as_deref())
         }
         Ok(Err(error)) => {
             log::warn!("[acp] codex login status could not start: {error}");

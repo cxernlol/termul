@@ -37,6 +37,8 @@ export interface ProjectContextMenuContentProps {
   moveProjectToGroup: (projectId: string, targetGroupId: string | null) => void
   onCreateGroupForProject: (projectId: string) => void
   onNewWorktree: (projectId: string) => void
+  /** Opens the Rail worktree switcher on this project's row. */
+  onSwitchWorktree: (projectId: string) => void
   onArchiveProject: (id: string) => void
   onConfirmDelete: (project: Project) => void
 }
@@ -52,6 +54,7 @@ export function ProjectContextMenuContent({
   moveProjectToGroup,
   onCreateGroupForProject,
   onNewWorktree,
+  onSwitchWorktree,
   onArchiveProject,
   onConfirmDelete
 }: ProjectContextMenuContentProps): React.JSX.Element {
@@ -72,19 +75,19 @@ export function ProjectContextMenuContent({
       <ContextMenuItem
         onSelect={() => useSettingsModalStore.getState().openProject(undefined, project.id)}
       >
-        <Settings className="mr-2 h-4 w-4" /> Settings
+        <Settings className="mr-2 size-3.5" /> Settings
       </ContextMenuItem>
       <ContextMenuItem onSelect={() => onStartRename(project)}>
-        <Edit2 className="mr-2 h-4 w-4" /> Rename
+        <Edit2 className="mr-2 size-3.5" /> Rename
       </ContextMenuItem>
       <ContextMenuItem onSelect={() => onOpenColorPicker(project.id, 'project')}>
-        <Palette className="mr-2 h-4 w-4" /> Change Color
+        <Palette className="mr-2 size-3.5" /> Change color
       </ContextMenuItem>
 
       {availableShells && availableShells.available.length > 0 && (
         <ContextMenuSub>
           <ContextMenuSubTrigger>
-            <Terminal className="mr-2 h-4 w-4" /> Default Shell
+            <Terminal className="mr-2 size-3.5" /> Default shell
           </ContextMenuSubTrigger>
           <ContextMenuSubContent className="w-48">
             <ContextMenuRadioGroup
@@ -105,7 +108,7 @@ export function ProjectContextMenuContent({
 
       <ContextMenuSub>
         <ContextMenuSubTrigger>
-          <Folder className="mr-2 h-4 w-4" /> Move to Group
+          <Folder className="mr-2 size-3.5" /> Move to group
         </ContextMenuSubTrigger>
         <ContextMenuSubContent className="w-48">
           <ContextMenuRadioGroup
@@ -114,7 +117,7 @@ export function ProjectContextMenuContent({
               moveProjectToGroup(project.id, targetGroupId === 'root' ? null : targetGroupId)
             }
           >
-            <ContextMenuRadioItem value="root">No Group (Root)</ContextMenuRadioItem>
+            <ContextMenuRadioItem value="root">No group (root)</ContextMenuRadioItem>
             {groups.map((g) => (
               <ContextMenuRadioItem key={g.id} value={g.id}>
                 {g.name}
@@ -123,12 +126,15 @@ export function ProjectContextMenuContent({
           </ContextMenuRadioGroup>
           <ContextMenuSeparator />
           <ContextMenuItem onSelect={() => onCreateGroupForProject(project.id)}>
-            <FolderPlus className="mr-2 h-4 w-4" /> Create New Group...
+            <FolderPlus className="mr-2 size-3.5" /> Create new group…
           </ContextMenuItem>
         </ContextMenuSubContent>
       </ContextMenuSub>
 
       <ContextMenuSeparator />
+      <ContextMenuItem disabled={!isGitRepo} onSelect={() => onSwitchWorktree(project.id)}>
+        <GitBranch className="mr-2 size-3.5" /> Switch worktree…
+      </ContextMenuItem>
       <WriteGate gated={worktreeGated} focusable={false} className="flex w-full">
         <ContextMenuItem
           disabled={!isGitRepo || !admitted}
@@ -136,16 +142,16 @@ export function ProjectContextMenuContent({
             if (isGitRepo && admitted) onNewWorktree(project.id)
           }}
         >
-          <GitBranch className="mr-2 h-4 w-4" />{' '}
-          {isGitRepo ? 'New Worktree' : 'New Worktree (no git repo)'}
+          <GitBranch className="mr-2 size-3.5" />{' '}
+          {isGitRepo ? 'New worktree' : 'New worktree (no git repo)'}
           {worktreeGated && <WriteGateReason />}
         </ContextMenuItem>
       </WriteGate>
       <ContextMenuItem onSelect={() => onArchiveProject(project.id)}>
-        <Archive className="mr-2 h-4 w-4" /> Archive
+        <Archive className="mr-2 size-3.5" /> Archive
       </ContextMenuItem>
       <ContextMenuItem variant="destructive" onSelect={() => onConfirmDelete(project)}>
-        <Trash2 className="mr-2 h-4 w-4" /> Delete
+        <Trash2 className="mr-2 size-3.5" /> Delete
       </ContextMenuItem>
     </ContextMenuContent>
   )
@@ -164,10 +170,10 @@ export function ArchivedProjectContextMenuContent({
   return (
     <ContextMenuContent className="w-48">
       <ContextMenuItem onSelect={() => onRestoreProject(project.id)}>
-        <RotateCcw className="mr-2 h-4 w-4" /> Restore
+        <RotateCcw className="mr-2 size-3.5" /> Restore
       </ContextMenuItem>
       <ContextMenuItem variant="destructive" onSelect={() => onConfirmDelete(project)}>
-        <Trash2 className="mr-2 h-4 w-4" /> Delete
+        <Trash2 className="mr-2 size-3.5" /> Delete
       </ContextMenuItem>
     </ContextMenuContent>
   )

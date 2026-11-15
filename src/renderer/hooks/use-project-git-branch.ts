@@ -30,7 +30,7 @@ import type { Project } from '@/types/project'
  * and the branch must still land from whichever fetch wins.
  *
  * Best-effort: a fetch failure leaves the existing (or absent) value alone;
- * the manual GitBranchPicker switch path still updates `gitBranch`, and the
+ * a branch switch (Changes header) still updates `gitBranch`, and the
  * per-terminal git branch events (useGitBranch) take precedence in the status
  * bar once a terminal reports its branch.
  */

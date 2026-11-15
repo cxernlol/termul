@@ -47,19 +47,19 @@ describe('ProjectContextMenuContent write gate', () => {
     admits.value = false
   })
 
-  it('New Worktree is disabled with the read-only reason on a read-only server', async () => {
+  it('New worktree is disabled with the read-only reason on a read-only server', async () => {
     renderMenu(gitProject)
-    const item = await screen.findByRole('menuitem', { name: /New Worktree/ })
+    const item = await screen.findByRole('menuitem', { name: /New worktree/ })
     expectWriteGated(item)
     expect(item).toHaveTextContent(READ_ONLY_SERVER_REASON)
     fireEvent.click(item)
     expect(onNewWorktree).not.toHaveBeenCalled()
   })
 
-  it('New Worktree stays enabled and unwrapped when writes are admitted', async () => {
+  it('New worktree stays enabled and unwrapped when writes are admitted', async () => {
     admits.value = true
     renderMenu(gitProject)
-    const item = await screen.findByRole('menuitem', { name: /New Worktree/ })
+    const item = await screen.findByRole('menuitem', { name: /New worktree/ })
     expectNotWriteGated(item)
     fireEvent.click(item)
     expect(onNewWorktree).toHaveBeenCalledWith('p1')

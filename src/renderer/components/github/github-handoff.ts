@@ -13,6 +13,7 @@ import {
   type LaunchFirstTurn,
   launchChat
 } from '@/components/agents/launcher/launch-chat'
+import { openNewChat } from '@/components/chat/new-chat/open-new-chat'
 import { seedComposerDraft } from '@/components/chat/use-composer-draft'
 import type { ContentBlock } from '@/lib/acp-api'
 import { persistenceApi } from '@/lib/api'
@@ -34,7 +35,6 @@ import {
   useGithubChatLinksStore
 } from '@/stores/github-chat-links-store'
 import type { GithubItemRef } from '@/stores/github-store'
-import { useWorkspaceStore } from '@/stores/workspace-store'
 
 /** One hand-off, with what that action needs beyond the item. */
 export type GithubHandoffRequest =
@@ -203,10 +203,10 @@ async function handOff(
   const configId = await handoffAgentConfigId()
   if (!configId) {
     toast.error('Set up an agent first', {
-      description: 'Pick an agent in the new chat launcher, then try again.'
+      description: 'Pick an agent for a new chat, then try again.'
     })
-    const workspace = useWorkspaceStore.getState()
-    if (workspace.activePaneId) workspace.showAgentLauncher(workspace.activePaneId)
+    // With no agent to start, the new chat falls back to the launcher's agent setup.
+    void openNewChat({ projectId, reason: 'github-handoff' })
     log('warn', action, `Hand-off of ${itemId} has no configured agent`)
     return
   }

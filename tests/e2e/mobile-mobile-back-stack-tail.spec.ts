@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import type { Locator, Page, WebSocket, WebSocketRoute } from 'playwright/test'
 import { expect, request, test } from 'playwright/test'
 import { E2E_BASE_URL, E2E_TOKEN, storeKey, wsRequest } from './helpers'
-import { launchChat, openRailNewProjectModal, openWorkspace } from './ui'
+import { launcherComposer, openRailNewProjectModal, openWorkspace } from './ui'
 
 /**
  * Mobile back-stack tail E2E (spec-mobile-back-stack-tail, G11, L-31 to L-34):
@@ -16,9 +16,8 @@ import { launchChat, openRailNewProjectModal, openWorkspace } from './ui'
  *   while a restore or delete is in flight, back leaves the modal open and a fresh
  *   entry is armed (the page's own guard vetoes the close);
  * - Esc closes one layer at a time: the directory picker over the New project
- *   modal, and the agent selector over the agent launcher overlay (on the phone
- *   and, because the guards are shell-independent, on the desktop shell too),
- *   while an Esc pressed as the project sheet animates out still closes New project;
+ *   modal, and the agent selector popover over the empty-pane launcher (desktop
+ *   shell), while an Esc pressed as the project sheet animates out still closes New project;
  * - a route push while an overlay stays open re-arms the overlay's history
  *   entry, so ONE back press closes the overlay and keeps the route;
  * - crossing the mobile to desktop breakpoint with overlays open consumes the
@@ -57,9 +56,8 @@ test.use({
 
 test.setTimeout(90_000)
 
-/** The launcher's agent and model pill: a bottom sheet on the phone shell, a popover on desktop. */
+/** The launcher's agent and model pill: a popover on the desktop shell. */
 const AGENT_SELECTOR_PILL = 'Agent and model. Currently Fake Longrun'
-const AGENT_SELECTOR_SHEET = 'Model and agent'
 
 /** A viewport the desktop shell takes over at (the phone breakpoint is 767px wide). */
 const DESKTOP_VIEWPORT = { width: 1024, height: 768 } as const
@@ -201,19 +199,6 @@ async function openDrawer(page: Page): Promise<void> {
 }
 
 /**
- * Open the drawer on its Chats section (it opens on the active tab's section,
- * Terminals from a terminal), where the New chat pill lives.
- */
-async function openDrawerOnChats(page: Page): Promise<void> {
-  await openDrawer(page)
-  await page
-    .locator('#mobile-shell-drawer')
-    .getByRole('navigation', { name: 'Sections' })
-    .getByRole('button', { name: /^Chats/ })
-    .tap()
-}
-
-/**
  * The header subtitle button (project, branch, Local or Worktree): it names the
  * active project and opens the project sheet. Its accessible name ends in
  * "switch project".
@@ -340,7 +325,7 @@ function isSnapshotStoreFrame(frame: RelayFrame, type: 'store_read' | 'store_wri
 }
 
 // ---------------------------------------------------------------------------
-// The launcher tests: wait for the boot warm-up, open a terminal tab
+// The boot warm-up of the empty-pane launcher
 // ---------------------------------------------------------------------------
 
 const WARMUP_TIMEOUT_MS = 45_000
@@ -403,21 +388,6 @@ function watchAgentWarmup(page: Page): Promise<void> {
   // into an unhandled rejection; the `await` still sees the rejection.
   warmup.catch(() => undefined)
   return warmup
-}
-
-/** A real shell in the pane, so the pane has a tab and the launcher becomes an overlay. */
-async function openTerminalTab(page: Page, warmedUp: Promise<void>): Promise<void> {
-  await warmedUp
-  await openDrawer(page)
-  // New terminal is the drawer's Terminals pill: switch the drawer to Terminals first.
-  const drawer = page.locator('#mobile-shell-drawer')
-  await drawer
-    .getByRole('navigation', { name: 'Sections' })
-    .getByRole('button', { name: /^Terminals/ })
-    .tap()
-  await drawer.getByRole('button', { name: 'New terminal' }).tap()
-  await expect(page.getByRole('button', { name: 'Terminal actions', exact: true })).toBeVisible()
-  await expect(page.getByRole('textbox', { name: 'Terminal input' })).toBeVisible()
 }
 
 // ---------------------------------------------------------------------------
@@ -571,84 +541,6 @@ test('Esc right after the project sheet hands off to New project still closes it
 
   await expect(modal).toBeHidden()
   await expectHistory(page, { index: base.index, hash: '#/', sentinelDepth: 0 })
-})
-
-test.describe('with a terminal tab open', () => {
-  // Every test here opens a shell, and the server caps live PTYs (30 per
-  // process). Close ours so this file never starves later specs of slots.
-  test.afterEach(async ({ page }) => {
-    try {
-      const actions = page.getByRole('button', { name: 'Terminal actions', exact: true })
-      if ((await actions.count()) === 0) return
-      await page.getByRole('button', { name: 'Terminal actions', exact: true }).tap()
-      await page.getByRole('button', { name: 'Close terminal', exact: true }).tap()
-      await page
-        .locator('[data-sibling-dialog]')
-        .getByRole('button', { name: 'Close', exact: true })
-        .tap()
-      await expect(actions).toBeHidden()
-    } catch {
-      // The test already failed on this page; do not mask its error.
-    }
-  })
-
-  test('Esc over the agent selector sheet closes only the sheet; Esc in the launcher hides the launcher', async ({
-    page
-  }) => {
-    const warmedUp = watchAgentWarmup(page)
-    const { base } = await bootMobileShell(page)
-    await openTerminalTab(page, warmedUp)
-    await expectHistory(page, { index: base.index, hash: '#/', sentinelDepth: 0 })
-    const launcher = page.getByRole('dialog', { name: 'Agent launcher' })
-    const chip = page.getByRole('button', { name: AGENT_SELECTOR_PILL })
-    const sheet = page.getByRole('dialog', { name: AGENT_SELECTOR_SHEET })
-
-    await openDrawerOnChats(page)
-    await page.getByRole('button', { name: 'New chat', exact: true }).tap()
-    await expect(launcher).toBeVisible()
-    await chip.tap()
-    await expect(sheet).toBeVisible()
-    await expectHistory(page, { index: base.index + 2, sentinelDepth: 2 })
-
-    // The sheet is a portaled layer: its Esc must not reach the launcher below it.
-    await page.keyboard.press('Escape')
-
-    await expect(sheet).toBeHidden()
-    await expect(launcher).toBeVisible()
-    await expect(chip).toBeFocused()
-    await expectHistory(page, { index: base.index + 1, hash: '#/', sentinelDepth: 1 })
-
-    // Focus is on the pill, inside the launcher: a plain Esc hides the launcher, once.
-    await page.keyboard.press('Escape')
-
-    await expect(launcher).toBeHidden()
-    await expectHistory(page, { index: base.index, hash: '#/', sentinelDepth: 0 })
-    // No overlay is left: the next back is the browser's.
-    await pressSystemBack(page)
-    await expectHistory(page, { index: base.index - 1 })
-  })
-
-  test('Esc in the launcher composer hides the launcher once and gives its entry back', async ({
-    page
-  }) => {
-    const warmedUp = watchAgentWarmup(page)
-    const { base } = await bootMobileShell(page)
-    await openTerminalTab(page, warmedUp)
-    const launcher = page.getByRole('dialog', { name: 'Agent launcher' })
-
-    await openDrawerOnChats(page)
-    await page.getByRole('button', { name: 'New chat', exact: true }).tap()
-    await expect(launcher).toBeVisible()
-    await settleBackStack(page)
-    await expectHistory(page, { index: base.index + 1, hash: '#/', sentinelDepth: 1 })
-
-    // Focus in the composer: the launcher's own key handler takes this Esc.
-    await launcher.getByRole('textbox', { name: 'Agent prompt' }).tap()
-    await page.keyboard.press('Escape')
-
-    await expect(launcher).toBeHidden()
-    await expectHistory(page, { index: base.index, hash: '#/', sentinelDepth: 0 })
-  })
 })
 
 // ---------------------------------------------------------------------------
@@ -946,20 +838,18 @@ test.describe('desktop shell', () => {
   test('Esc over the agent selector popover closes only the popover, the launcher stays open', async ({
     page
   }) => {
+    // The fresh project's pane has no tabs, so the pane shows the launcher.
     await openFreshDesktopWorkspace(page)
-    // A first chat gives the pane a tab, so the launcher is an overlay from now on.
-    await launchChat(page, '[RICH] desktop esc')
-    const launcher = page.getByRole('dialog', { name: 'Agent launcher' })
+    const composer = launcherComposer(page)
     const panel = page.getByTestId('agent-model-selector-panel')
 
-    await page.getByRole('button', { name: 'New chat', exact: true }).first().click()
-    await expect(launcher).toBeVisible()
+    await expect(composer).toBeVisible()
     await page.getByRole('button', { name: AGENT_SELECTOR_PILL }).click()
     await expect(panel).toBeVisible()
 
     await page.keyboard.press('Escape')
 
     await expect(panel).toBeHidden()
-    await expect(launcher).toBeVisible()
+    await expect(composer).toBeVisible()
   })
 })
