@@ -199,6 +199,7 @@ export function useCodexLimit(sessionId: string): CodexLimit | null {
   const reloadAccounts = ctx.accounts.reload
   const atLimit = limit.status === 'rejected'
   async function switchTo(target: CodexAccountChoice): Promise<void> {
+    if (useCodexSwitchingStore.getState()[sessionId]) return
     setSwitchingTo(sessionId, target.account.name)
     cancelResume(sessionId)
     try {

@@ -90,10 +90,10 @@ beforeEach(() => {
 describe('CodexLimitWarning', () => {
   it('warns in yellow when the 5-hour window is near 80%', async () => {
     api.usage.mockResolvedValue([read('default', 82), read('ab12', 10), read('cd34', 40)])
-    render(<CodexLimitWarning sessionId="s1" atTop />)
+    render(<CodexLimitWarning sessionId="s1" />)
     const warning = await screen.findByTestId('codex-limit-warning')
     expect(warning).toHaveTextContent('Personal has used 82% of its 5-hour limit')
-    expect(warning.className).toContain('text-warning')
+    expect(warning).toHaveAttribute('data-composer-dock', 'warning')
     fireEvent.click(screen.getByRole('button', { name: 'Switch to Work' }))
     await vi.waitFor(() =>
       expect(switcher.switchProjectCodexAccount).toHaveBeenCalledWith('office', 'ab12', {
@@ -105,7 +105,7 @@ describe('CodexLimitWarning', () => {
 
   it('stays hidden under 80%', async () => {
     api.usage.mockResolvedValue([read('default', 79)])
-    const { container } = render(<CodexLimitWarning sessionId="s1" atTop />)
+    const { container } = render(<CodexLimitWarning sessionId="s1" />)
     await vi.waitFor(() => expect(api.usage).toHaveBeenCalled())
     expect(container).toBeEmptyDOMElement()
   })

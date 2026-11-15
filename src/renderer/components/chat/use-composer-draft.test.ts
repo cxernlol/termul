@@ -61,3 +61,21 @@ describe('seedComposerDraft', () => {
     await waitFor(() => expect(result.current[0]).toBe('Fix the crash'))
   })
 })
+
+describe('draft hydration state', () => {
+  it('reports not hydrated until the stored draft has loaded', async () => {
+    let resolveRead: (value: { success: boolean; data: string }) => void = () => {}
+    persistence.read.mockReturnValue(
+      new Promise((resolve) => {
+        resolveRead = resolve
+      })
+    )
+    const { result } = renderHook(() =>
+      useComposerDraft({ projectId: 'p1', sessionId: 'chat-4', seedNonce: undefined })
+    )
+    expect(result.current[2]).toBe(false)
+    await act(async () => resolveRead({ success: true, data: 'older draft' }))
+    expect(result.current[0]).toBe('older draft')
+    expect(result.current[2]).toBe(true)
+  })
+})

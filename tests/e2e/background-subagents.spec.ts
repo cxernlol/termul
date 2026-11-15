@@ -28,9 +28,9 @@ test('the status pill waits on background subagents after the turn ends', async 
   // invisible, behind this tab. The role query skips it.
   await expect(pane.getByRole('log').getByText('I am waiting for them.')).toBeVisible()
 
-  const pill = pane.getByRole('button', { name: /^Session status: subagents/ })
+  const pill = pane.getByRole('button', { name: /^Subagents:/ })
   await expect(pill).toHaveAccessibleName(
-    /^Session status: subagents 2 working; waiting on 2 background subagents/
+    /^Subagents: 2 working; waiting on 2 background subagents/
   )
   await pill.click()
   await expect(
@@ -38,7 +38,7 @@ test('the status pill waits on background subagents after the turn ends', async 
   ).toBeVisible()
   await page.keyboard.press('Escape')
 
-  await expect(pill).toHaveAccessibleName(/^Session status: subagents 2 done(;|$)/, {
+  await expect(pill).toHaveAccessibleName(/^Subagents: 2 done(;|$)/, {
     timeout: 20_000
   })
 })

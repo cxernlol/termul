@@ -574,7 +574,7 @@ test('a chat hidden behind an editor tab releases the clearance and it returns w
 
   // A changed-files row (status pill sheet) opens the file in an editor tab:
   // the chat stays mounted but is no longer visible, so it stops reporting its dock.
-  await page.getByRole('button', { name: 'Session status: 3 changed files', exact: true }).tap()
+  await page.getByRole('button', { name: 'Changes: 3 changed files', exact: true }).tap()
   await page.getByRole('button', { name: /src\/auth\.ts/ }).tap()
   await expect(page.getByText('e2e-auth-file')).toBeVisible()
   await expect.poll(() => publishedClearance(page)).toBeNull()

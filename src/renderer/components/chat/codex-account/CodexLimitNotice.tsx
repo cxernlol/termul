@@ -1,4 +1,4 @@
-import { AlertCircle, ChevronDown, Clock, Shuffle, X } from '@/components/icons'
+import { ChevronDown, Clock, Shuffle } from '@/components/icons'
 import { Button } from '@/components/ui/button'
 import {
   DropdownMenu,
@@ -9,6 +9,13 @@ import {
 import { Spinner } from '@/components/ui/spinner'
 import { useServerAdmitsRemoteWrites } from '@/hooks/use-server-admits-remote-writes'
 import { useSettingsModalStore } from '@/stores/settings-modal-store'
+import {
+  COMPOSER_DOCK_TEXT_ACTION_CLASS,
+  ComposerDock,
+  ComposerDockActions,
+  ComposerDockMessage,
+  ComposerDockRow
+} from '../composer/ComposerDock'
 import {
   formatClock,
   isAtLimit,
@@ -31,41 +38,22 @@ export function CodexLimitNotice({ sessionId }: { sessionId: string }): React.JS
   const canAddAccount = useServerAdmitsRemoteWrites()
   if (!state || !isAtLimit(state.limit)) return null
 
-  const { ctx, limit, name, reset, switchTo, switchingTo: switching, dismiss } = state
+  const { ctx, limit, name, reset, switchTo, switchingTo: switching } = state
   const [best, ...others] = ctx.alternatives
 
   return (
-    <div
-      role="alert"
-      data-testid="codex-limit-notice"
-      className="mb-2 flex flex-col gap-2.5 rounded-lg border border-destructive/25 bg-destructive/[0.06] p-3"
-    >
-      <div className="flex items-start gap-2.5">
-        <AlertCircle size={15} className="mt-0.5 shrink-0 text-destructive" />
-        <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-          <span className="text-xs font-medium text-destructive">
-            {name} reached its {windowName(limit)} limit
-          </span>
-          <span className="text-2xs text-muted-foreground">
-            {reset ? `${reset[0].toUpperCase()}${reset.slice(1)}.` : 'It resets soon.'}{' '}
-            {best
-              ? `Switch to ${best.account.name}${best.window ? ` (${Math.round(best.window.percent)}% used)` : ''} and continue?`
-              : 'No other account has room left right now.'}
-          </span>
-        </div>
-        <button
-          type="button"
-          onClick={dismiss}
-          aria-label="Not now"
-          className="shrink-0 rounded text-muted-foreground hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-focus-ring"
-        >
-          <X size={13} />
-        </button>
-      </div>
-
-      <div className="flex flex-wrap items-center gap-2 pl-[1.5625rem]">
+    <ComposerDock tone="warning" role="alert" data-testid="codex-limit-notice">
+      <ComposerDockRow>
+        <ComposerDockMessage title={`${name} reached its ${windowName(limit)} limit.`}>
+          {reset ? `${reset[0].toUpperCase()}${reset.slice(1)}.` : 'It resets soon.'}{' '}
+          {best
+            ? `Switch to ${best.account.name}${best.window ? ` (${Math.round(best.window.percent)}% used)` : ''} and continue?`
+            : 'No other account has room left right now.'}
+        </ComposerDockMessage>
+      </ComposerDockRow>
+      <ComposerDockRow className="pl-[17px]">
         {scheduledAt && (
-          <span className="flex items-center gap-2 text-2xs text-secondary-foreground">
+          <span className="flex items-center gap-2 text-xs text-secondary-foreground">
             <Clock size={12} />
             Continues at {formatClock(scheduledAt)}
             <button
@@ -78,25 +66,26 @@ export function CodexLimitNotice({ sessionId }: { sessionId: string }): React.JS
           </span>
         )}
         {switching ? (
-          <span className="flex items-center gap-2 text-2xs text-secondary-foreground">
+          <span className="flex items-center gap-2 text-xs text-secondary-foreground">
             <Spinner size={12} decorative />
             Switching to {switching} and continuing…
           </span>
         ) : best ? (
-          <>
-            <Button type="button" size="xs" onClick={() => void switchTo(best)}>
-              <Shuffle />
-              Switch to {best.account.name} and continue
-            </Button>
+          <ComposerDockActions className="ml-0">
             {others.length > 0 && (
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
-                  <Button type="button" size="xs" variant="ghost">
+                  <Button
+                    type="button"
+                    size="xs"
+                    variant="ghost"
+                    className={COMPOSER_DOCK_TEXT_ACTION_CLASS}
+                  >
                     Other account
                     <ChevronDown size={12} />
                   </Button>
                 </DropdownMenuTrigger>
-                <DropdownMenuContent align="start">
+                <DropdownMenuContent align="start" side="top" sideOffset={4}>
                   {others.map((option) => (
                     <DropdownMenuItem
                       key={option.account.id}
@@ -109,33 +98,38 @@ export function CodexLimitNotice({ sessionId }: { sessionId: string }): React.JS
                 </DropdownMenuContent>
               </DropdownMenu>
             )}
-          </>
+            <Button type="button" size="xs" className="px-3" onClick={() => void switchTo(best)}>
+              <Shuffle />
+              Switch to {best.account.name} and continue
+            </Button>
+          </ComposerDockActions>
         ) : scheduledAt ? null : (
-          <>
-            {limit.resetsAt !== null && (
-              <Button
-                type="button"
-                size="xs"
-                variant="outline"
-                onClick={() => schedule(sessionId, (limit.resetsAt ?? 0) * 1000)}
-              >
-                <Clock />
-                Continue when it resets
-              </Button>
-            )}
+          <ComposerDockActions className="ml-0">
             {canAddAccount && (
               <Button
                 type="button"
                 size="xs"
                 variant="ghost"
                 onClick={() => openAppSettings('provider')}
+                className={COMPOSER_DOCK_TEXT_ACTION_CLASS}
               >
                 Add account
               </Button>
             )}
-          </>
+            {limit.resetsAt !== null && (
+              <Button
+                type="button"
+                size="xs"
+                className="px-3"
+                onClick={() => schedule(sessionId, (limit.resetsAt ?? 0) * 1000)}
+              >
+                <Clock />
+                Continue when it resets
+              </Button>
+            )}
+          </ComposerDockActions>
         )}
-      </div>
-    </div>
+      </ComposerDockRow>
+    </ComposerDock>
   )
 }

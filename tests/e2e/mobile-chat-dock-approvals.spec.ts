@@ -371,7 +371,7 @@ test('plan bar starts collapsed as "Plan 3/5" above the chat and expands in plac
   expect(Math.round((await boxOf(plan)).height)).toBeGreaterThanOrEqual(44)
   await expect(entry).toBeHidden()
   // Above the thread, whose top-right corner holds the status pill.
-  const status = page.getByRole('button', { name: 'Session status: 3 changed files', exact: true })
+  const status = page.getByRole('button', { name: 'Changes: 3 changed files', exact: true })
   await expect(status).toBeVisible()
   expect((await boxOf(plan)).y).toBeLessThan((await boxOf(status)).y)
 
@@ -392,7 +392,7 @@ test('the status pill lists the changed files in a sheet and opens a row in the 
       files: { 'src/auth.ts': "export const authMarker = 'e2e-auth-file'" }
     })
   })
-  const status = page.getByRole('button', { name: 'Session status: 3 changed files', exact: true })
+  const status = page.getByRole('button', { name: 'Changes: 3 changed files', exact: true })
   const sheet = page.getByRole('dialog', { name: 'Changed files' })
 
   // The pill floats over the thread and its sheet starts closed.
@@ -419,9 +419,9 @@ test('the status pill lists the changed files in a sheet and opens a row in the 
 
 test('the Git action in the changed-files sheet reaches a 44px hit area', async ({ page }) => {
   await launchChat(page, `[DOCK] ${LONG} git hit area`)
-  await page.getByRole('button', { name: 'Session status: 3 changed files', exact: true }).tap()
+  await page.getByRole('button', { name: 'Changes: 3 changed files', exact: true }).tap()
   const sheet = page.getByRole('dialog', { name: 'Changed files' })
-  const git = sheet.getByRole('button', { name: 'Open Git changes', exact: true })
+  const git = sheet.getByRole('button', { name: 'Review changes', exact: true })
   await expect(git).toBeVisible()
   await expect(git).toHaveText('Git')
   await expect.poll(async () => (await hitArea(git)).height).toBeGreaterThanOrEqual(44)
@@ -482,9 +482,9 @@ test('the Git action opens the sheet on the chat worktree, not the project root'
   await writeFile(join(worktree, 'worktree-only.txt'), 'only in the worktree\n')
 
   // The Git action lives in the status pill's changed-files sheet.
-  const status = page.getByRole('button', { name: /^Session status: .*changed file/ })
+  const status = page.getByRole('button', { name: /^Changes: .*changed file/ })
   await status.tap()
-  await page.getByRole('button', { name: 'Open Git changes', exact: true }).tap()
+  await page.getByRole('button', { name: 'Review changes', exact: true }).tap()
 
   const sheet = page.getByRole('dialog', { name: 'Git changes' })
   await expect(sheet).toBeVisible()
@@ -831,7 +831,7 @@ test('with the keyboard up and an approval pending the plan bar collapses, then 
   await installFakeKeyboard(page)
   await launchChat(page, `[DOCK] [ASK:permission] ${LONG} keyboard`)
   const plan = page.getByRole('button', { name: /^Plan, 3 of 5 tasks/ })
-  const status = page.getByRole('button', { name: 'Session status: 3 changed files', exact: true })
+  const status = page.getByRole('button', { name: 'Changes: 3 changed files', exact: true })
   await expect(permissionPrompt(page)).toBeVisible()
   await expect(status).toBeVisible()
 
@@ -889,9 +889,9 @@ test.describe('desktop browser', () => {
     )
     await expect(page.getByText('Cover login with tests')).toBeVisible()
     await expect(
-      page.getByRole('button', { name: 'Session status: 3 changed files', exact: true })
+      page.getByRole('button', { name: 'Changes: 3 changed files', exact: true })
     ).toBeVisible()
-    await expect(page.getByRole('button', { name: 'Open Git changes', exact: true })).toHaveCount(0)
+    await expect(page.getByRole('button', { name: 'Review changes', exact: true })).toHaveCount(0)
 
     // Permission prompt: baseline size, live region and no focus move.
     const prompt = permissionPrompt(page)

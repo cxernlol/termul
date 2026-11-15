@@ -36,6 +36,7 @@ import {
   isAgentDeadError,
   isPromptTurnInProgressError,
   type QueuedPrompt,
+  reorderQueuedPrompt,
   sessionTurnBusy,
   waitForTurnClear
 } from '../../prompt-queue-orchestration'
@@ -803,6 +804,8 @@ type PromptSliceState = Pick<
   | 'cancelPrompt'
   | 'recheckPromptCommand'
   | 'removeQueuedPrompt'
+  | 'moveQueuedPrompt'
+  | 'clearQueuedPrompts'
   | 'sendQueuedPromptNow'
   | 'setConfigOption'
   | 'setMode'
@@ -935,6 +938,30 @@ export const createPromptSlice: StateCreator<AcpState, [], [], PromptSliceState>
     if ((get().promptQueues[sessionId] ?? []).length === 0) {
       clearBusyQueueRetry(sessionId)
     }
+  },
+
+  moveQueuedPrompt: (sessionId, queueId, toIndex) => {
+    const before = get().promptQueues
+    const after = reorderQueuedPrompt(before, sessionId, queueId, toIndex)
+    if (after === before) return
+    set({ promptQueues: after })
+    void logFrontendError({
+      level: 'info',
+      message: `Chat ${sessionId} moved a queued prompt to place ${toIndex + 1}`,
+      source: 'acp-store:prompt-queue'
+    })
+  },
+
+  clearQueuedPrompts: (sessionId) => {
+    const count = (get().promptQueues[sessionId] ?? []).length
+    if (count === 0) return
+    set((s) => ({ promptQueues: { ...s.promptQueues, [sessionId]: [] } }))
+    clearBusyQueueRetry(sessionId)
+    void logFrontendError({
+      level: 'info',
+      message: `Chat ${sessionId} cleared ${count} queued prompt${count === 1 ? '' : 's'}`,
+      source: 'acp-store:prompt-queue'
+    })
   },
 
   sendQueuedPromptNow: async (sessionId, queueId) => {

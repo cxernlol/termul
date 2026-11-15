@@ -79,11 +79,9 @@ test('RFD subagents stay in the transcript after the turn, a reload and a reopen
   await expect(
     pane.getByRole('button', { name: /^2 subagents:/ }).filter({ visible: true })
   ).toHaveCount(1)
-  await expect(pane.getByRole('button', { name: /^Session status: subagents 2 done/ })).toBeVisible(
-    {
-      timeout: 20_000
-    }
-  )
+  await expect(pane.getByRole('button', { name: /^Subagents: 2 done/ })).toBeVisible({
+    timeout: 20_000
+  })
   await expectGroupAndPanel(page, title, /Result.*Checked src\//s)
 
   await page.reload()

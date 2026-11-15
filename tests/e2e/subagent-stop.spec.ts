@@ -34,12 +34,12 @@ test.describe('desktop', () => {
     const title = 'stop one subagent'
     await launchChat(page, `${title} ${PROMPT_MARKERS}`)
     const pane = page.locator('[data-pane-content]').filter({ has: chatTab(page, title) })
-    const pill = pane.getByRole('button', { name: /^Session status: subagents/ })
+    const pill = pane.getByRole('button', { name: /^Subagents:/ })
     // Earlier proj-c chats (background-subagents, subagent-history, an earlier
     // run of this test) end with the same sentence and stay mounted, invisible,
     // behind this tab. The role query skips them.
     const transcript = pane.getByRole('log')
-    await expect(pill).toHaveAccessibleName(/subagents 2 working/)
+    await expect(pill).toHaveAccessibleName(/2 working/)
 
     await pill.click()
     await rowIn(
@@ -52,11 +52,11 @@ test.describe('desktop', () => {
 
     await expect(panel.getByText('Stopped', { exact: true })).toBeVisible()
     await expect(panel.getByRole('button', { name: /^Stop/ })).toHaveCount(0)
-    await expect(pill).toHaveAccessibleName(/subagents 1 working, 1 stopped/)
+    await expect(pill).toHaveAccessibleName(/1 working, 1 stopped/)
 
     await expect(transcript.getByText(TURN_END)).toBeVisible({ timeout: 20_000 })
     await expect(transcript.getByText(/\[CANCELLED after/)).toHaveCount(0)
-    await expect(pill).toHaveAccessibleName(/subagents 1 working, 1 stopped/)
+    await expect(pill).toHaveAccessibleName(/1 working, 1 stopped/)
   })
 })
 
@@ -113,8 +113,8 @@ test.describe('phone', () => {
     }).toPass({ timeout: 40_000 })
     await start.tap()
 
-    const pill = page.getByRole('button', { name: /^Session status: subagents/ })
-    await expect(pill).toHaveAccessibleName(/subagents 2 working/)
+    const pill = page.getByRole('button', { name: /^Subagents:/ })
+    await expect(pill).toHaveAccessibleName(/2 working/)
     await pill.tap()
     const sheet = page.getByRole('dialog', { name: 'Subagents' })
     const stop = sheet.getByRole('button', { name: 'Stop Review the store' })

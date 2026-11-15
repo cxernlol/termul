@@ -303,12 +303,12 @@ async function describeFocus(page: Page): Promise<string> {
 
 /** The chat status pill, and a helper that opens the Git sheet through its Changed files sheet. */
 function statusPill(page: Page): { pill: Locator; openGit: () => Promise<void> } {
-  const pill = page.getByRole('button', { name: /^Session status:/ })
+  const pill = page.getByRole('button', { name: /^Changes:/ })
   return {
     pill,
     openGit: async () => {
       await pill.tap()
-      await page.getByRole('button', { name: 'Open Git changes', exact: true }).tap()
+      await page.getByRole('button', { name: 'Review changes', exact: true }).tap()
       await expect(page.getByRole('dialog', { name: 'Git changes' })).toBeVisible()
     }
   }
@@ -343,7 +343,7 @@ test.describe('Git sheet focus return', () => {
     await startChat(page, `[DOCK] ${LONG} git action`)
     const { pill, openGit } = statusPill(page)
     const sheet = page.getByRole('dialog', { name: 'Git changes' })
-    await expect(pill).toHaveAccessibleName('Session status: 2 changed files')
+    await expect(pill).toHaveAccessibleName('Changes: 2 changed files')
     await pill.tap()
     const files = page.getByRole('dialog', { name: 'Changed files' })
     await expect(files.getByRole('button', { name: /src\/auth\.ts, Untracked$/ })).toBeVisible()
@@ -844,14 +844,14 @@ test.describe('toast offset', () => {
         .toBe(20)
     })
 
-    test('the changed-files popover renders no Git action', async ({ page }) => {
+    test('the changed-files popover offers Review changes for the Changes tab', async ({
+      page
+    }) => {
       await startDesktopChat(page, `[DOCK] ${LONG} desktop bar`)
-      // Only the mobile shell wires `onOpenGitChanges`.
-      await page.getByRole('button', { name: /^Session status:/ }).click()
+      // The desktop shell hands "Review changes" to the Side panel's Changes tab.
+      await page.getByRole('button', { name: /^Changes:/ }).click()
       await expect(page.getByRole('dialog', { name: 'Changed files' })).toBeVisible()
-      await expect(page.getByRole('button', { name: 'Open Git changes', exact: true })).toHaveCount(
-        0
-      )
+      await expect(page.getByRole('button', { name: 'Review changes', exact: true })).toBeVisible()
     })
   })
 })

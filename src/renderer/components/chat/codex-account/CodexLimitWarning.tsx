@@ -1,55 +1,57 @@
-import { AlertCircle, X } from '@/components/icons'
-import { cn } from '@/lib/utils'
+import { X } from '@/components/icons'
+import { Button } from '@/components/ui/button'
+import {
+  COMPOSER_DOCK_TEXT_ACTION_CLASS,
+  ComposerDock,
+  ComposerDockActions,
+  ComposerDockMessage,
+  ComposerDockRow
+} from '../composer/ComposerDock'
 import { isNearLimit, useCodexLimit, windowName } from './use-codex-limit'
 
 /**
- * Strip inside the composer card for a Codex chat near its Account's limit
- * (from 80%), with the offer to switch to the Account with the most room.
- * `atTop` rounds the strip to the card's top corners when nothing sits above it.
+ * Composer dock for a Codex chat near its Account's limit (from 80%), with the
+ * offer to switch to the Account with the most room. Only a warning: the
+ * composer stays usable.
  */
-export function CodexLimitWarning({
-  sessionId,
-  atTop
-}: {
-  sessionId: string
-  atTop: boolean
-}): React.JSX.Element | null {
+export function CodexLimitWarning({ sessionId }: { sessionId: string }): React.JSX.Element | null {
   const state = useCodexLimit(sessionId)
   if (!state || !isNearLimit(state.limit)) return null
 
   const { limit, name, reset, switchTo, dismiss } = state
   const best = state.ctx.alternatives[0]
   return (
-    <div
-      role="status"
-      data-testid="codex-limit-warning"
-      className={cn(
-        'flex items-center gap-2 border-b border-warning/20 bg-warning/10 px-3.5 py-1.5 text-2xs text-warning',
-        atTop && 'rounded-t-[15px]'
-      )}
-    >
-      <AlertCircle size={13} className="shrink-0" />
-      <span className="min-w-0 flex-1 truncate">
-        {name} has used {Math.round(limit.percent ?? 80)}% of its {windowName(limit)} limit
-        {reset ? ` · ${reset}` : ''}.
-      </span>
-      {best && (
-        <button
-          type="button"
-          onClick={() => void switchTo(best)}
-          className="shrink-0 font-medium underline-offset-2 hover:underline focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-focus-ring"
+    <ComposerDock tone="warning" role="status" data-testid="codex-limit-warning">
+      <ComposerDockRow>
+        <ComposerDockMessage
+          title={`${name} has used ${Math.round(limit.percent ?? 80)}% of its ${windowName(limit)} limit.`}
         >
-          Switch to {best.account.name}
-        </button>
-      )}
-      <button
-        type="button"
-        onClick={dismiss}
-        aria-label="Dismiss"
-        className="shrink-0 rounded text-warning/80 hover:text-warning focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-focus-ring"
-      >
-        <X size={12} />
-      </button>
-    </div>
+          {reset ? `${reset[0].toUpperCase()}${reset.slice(1)}.` : null}
+        </ComposerDockMessage>
+        <ComposerDockActions>
+          {best && (
+            <Button
+              type="button"
+              size="xs"
+              variant="ghost"
+              onClick={() => void switchTo(best)}
+              className={COMPOSER_DOCK_TEXT_ACTION_CLASS}
+            >
+              Switch to {best.account.name}
+            </Button>
+          )}
+          <Button
+            type="button"
+            size="icon-xs"
+            variant="ghost"
+            onClick={dismiss}
+            aria-label="Dismiss"
+            className="text-muted-foreground hover:bg-foreground/[0.06] hover:text-foreground [&_svg]:size-3"
+          >
+            <X />
+          </Button>
+        </ComposerDockActions>
+      </ComposerDockRow>
+    </ComposerDock>
   )
 }

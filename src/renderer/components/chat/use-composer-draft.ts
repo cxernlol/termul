@@ -32,8 +32,11 @@ export function useComposerDraft({
   projectId,
   sessionId,
   seedNonce
-}: UseComposerDraftArgs): [string, Dispatch<SetStateAction<string>>] {
+}: UseComposerDraftArgs): [string, Dispatch<SetStateAction<string>>, boolean] {
   const [value, setValue] = useState('')
+  // `false` while the persisted draft read is pending: text set then would be
+  // replaced by the older stored draft.
+  const [hydrated, setHydrated] = useState(false)
   // Persist the in-progress composer draft per session (project + session id)
   // so an unsent message survives a web reload. useState stays the source of
   // truth; the persisted copy is a recovery fallback only — hydrate on mount,
@@ -53,12 +56,14 @@ export function useComposerDraft({
     if (seedNonce !== undefined) {
       // Editing/seeding a message — don't restore a stale draft over the seed.
       hydratedRef.current = true
+      setHydrated(true)
       return
     }
     if (!canPersistDraft) {
       // projectId/sessionId missing — can't key a draft; treat as hydrated so
       // the write effect's hydration gate doesn't block (it also guards).
       hydratedRef.current = true
+      setHydrated(true)
       return
     }
     const seeded = draftSeeds.get(draftKey)
@@ -67,10 +72,12 @@ export function useComposerDraft({
       hydratedRef.current = false
       pendingSeedRef.current = seeded
       setValue(seeded)
+      setHydrated(true)
       return
     }
     let cancelled = false
     hydratedRef.current = false
+    setHydrated(false)
     void persistenceApi
       .read<string>(draftKey)
       .then((result) => {
@@ -83,7 +90,9 @@ export function useComposerDraft({
         // Storage unavailable/corrupt — degrade to empty (no UI crash).
       })
       .finally(() => {
-        if (!cancelled) hydratedRef.current = true
+        if (cancelled) return
+        hydratedRef.current = true
+        setHydrated(true)
       })
     return () => {
       cancelled = true
@@ -128,5 +137,5 @@ export function useComposerDraft({
     }
   }, [draftKey, seedNonce, canPersistDraft])
 
-  return [value, setValue]
+  return [value, setValue, hydrated]
 }

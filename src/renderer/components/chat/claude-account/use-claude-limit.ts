@@ -122,6 +122,7 @@ export function useClaudeLimit(sessionId: string): ClaudeLimit | null {
   const projectId = ctx.projectId
   const reloadAccounts = ctx.accounts.reload
   async function switchTo(target: AccountChoice): Promise<void> {
+    if (useClaudeSwitchingStore.getState()[sessionId]) return
     setSwitchingTo(sessionId, target.account.name)
     cancelResume(sessionId)
     try {
