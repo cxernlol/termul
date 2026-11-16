@@ -59,6 +59,8 @@ export type NodeSpec =
       timeout_ms: number
       max_attempts: number
       tools: AgentTool[]
+      /** Server ids its session starts with when `tools` has `other`: null for every enabled server, [] for none. */
+      mcp_servers: string[] | null
     }
   | { kind: 'transform'; fields: NamedTemplate[] }
   | { kind: 'condition'; left: Template; op: ConditionOp; right: Template | null }
@@ -149,6 +151,7 @@ export type IssueCode =
   | 'invalid_output_schema'
   | 'agent_timeout_out_of_range'
   | 'agent_max_attempts_out_of_range'
+  | 'mcp_servers_without_other'
   | 'missing_condition_operand'
   | 'invalid_schedule'
   | 'untrusted_agent_outbound_tool'
@@ -229,7 +232,12 @@ export type AgentPolicy = {
   timeout_ms: number
   /** Sorted and deduplicated; empty means no tools. */
   tools: AgentTool[]
+  /** The enabled MCP servers its session starts with, in Settings order; empty unless `tools` has `other`. */
+  mcp_servers: AgentMcpServer[]
 }
+
+/** An MCP server an agent node's session starts with. */
+export type AgentMcpServer = { server_id: string; name: string }
 
 /** An `mcp_tool` node; `server_name` is null when the server is not configured. */
 export type McpToolPolicy = {

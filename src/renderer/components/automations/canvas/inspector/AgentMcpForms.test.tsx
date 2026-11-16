@@ -427,6 +427,104 @@ describe('AgentForm', () => {
     })
   })
 
+  describe('MCP servers', () => {
+    const switchOf = (panel: HTMLElement, label: string) =>
+      within(panel).getByRole('switch', { name: label })
+    const trusted = 'Summarize {{ trigger.kind }}'
+    /** `[label, checked]` of each switch in the MCP servers group. */
+    const scopeRows = (panel: HTMLElement) =>
+      within(within(panel).getByRole('group', { name: 'MCP servers' }))
+        .getAllByRole('switch')
+        .map((s) => [
+          panel.querySelector(`label[for="${s.id}"]`)?.textContent,
+          s.getAttribute('aria-checked')
+        ])
+
+    it('shows only when the agent may use MCP and other tools, starting with every server', async () => {
+      open(graphWith({ prompt: trusted, tools: [] }))
+      const panel = inspect('extract', 'Extract')
+      expect(within(panel).queryByRole('group', { name: 'MCP servers' })).toBeNull()
+
+      fireEvent.click(switchOf(panel, 'MCP and other tools'))
+
+      await expectPending([
+        updated('extract', { ...extractSpec, prompt: trusted, tools: ['other'], mcp_servers: null })
+      ])
+      expect(switchOf(panel, 'All enabled servers')).toBeChecked()
+      expect(within(panel).queryByRole('switch', { name: 'github' })).toBeNull()
+    })
+
+    it('turning All off commits every configured server, then one switch drops one', async () => {
+      open(graphWith({ prompt: trusted, tools: ['other'], mcp_servers: null }))
+      const panel = inspect('extract', 'Extract')
+      const spec = { ...extractSpec, prompt: trusted, tools: ['other'] as AgentTool[] }
+
+      fireEvent.click(switchOf(panel, 'All enabled servers'))
+      expect(switchOf(panel, 'github')).toBeChecked()
+      expect(switchOf(panel, 'files')).toBeChecked()
+      fireEvent.click(switchOf(panel, 'github'))
+
+      await expectPending([
+        updated('extract', { ...spec, mcp_servers: ['gh', 'fs'] }),
+        updated('extract', { ...spec, mcp_servers: ['fs'] })
+      ])
+      expect(switchOf(panel, 'github')).not.toBeChecked()
+    })
+
+    it('keeps All on and disabled until the MCP server list loads', () => {
+      useAcpStore.setState({ mcpServers: [], mcpServersLoaded: false })
+      open(graphWith({ prompt: trusted, tools: ['other'], mcp_servers: null }))
+      const panel = inspect('extract', 'Extract')
+
+      expect(switchOf(panel, 'All enabled servers')).toBeChecked()
+      expect(switchOf(panel, 'All enabled servers')).toBeDisabled()
+    })
+
+    it('keeps a listed server that is not configured as a row that turns off', async () => {
+      open(graphWith({ prompt: trusted, tools: ['other'], mcp_servers: ['gone', 'fs'] }))
+      const panel = inspect('extract', 'Extract')
+      expect(scopeRows(panel)).toEqual([
+        ['All enabled servers', 'false'],
+        ['github', 'false'],
+        ['files', 'true'],
+        ['gone (not configured)', 'true']
+      ])
+
+      fireEvent.click(switchOf(panel, 'gone (not configured)'))
+
+      await expectPending([
+        updated('extract', {
+          ...extractSpec,
+          prompt: trusted,
+          tools: ['other'],
+          mcp_servers: ['fs']
+        })
+      ])
+      expect(within(panel).queryByRole('switch', { name: 'gone (not configured)' })).toBeNull()
+    })
+
+    it('turning MCP and other tools off clears the server list in the same update', async () => {
+      open(graphWith({ prompt: trusted, tools: ['other'], mcp_servers: ['gh'] }))
+      const panel = inspect('extract', 'Extract')
+
+      fireEvent.click(switchOf(panel, 'MCP and other tools'))
+
+      await expectPending([
+        updated('extract', { ...extractSpec, prompt: trusted, tools: [], mcp_servers: null })
+      ])
+      expect(within(panel).queryByRole('group', { name: 'MCP servers' })).toBeNull()
+    })
+
+    it('with no servers configured, points at the MCP settings', () => {
+      useAcpStore.setState({ mcpServers: [], mcpServersLoaded: true })
+      open(graphWith({ prompt: trusted, tools: ['other'], mcp_servers: null }))
+      const panel = inspect('extract', 'Extract')
+      expect(
+        within(panel).getByText('No MCP servers yet. Add one in the MCP settings.')
+      ).toBeVisible()
+    })
+  })
+
   it('on the phone, the form sits in the sheet with touch-height rows', () => {
     open(graphWith({}), true)
     const panel = inspect('extract', 'Extract')

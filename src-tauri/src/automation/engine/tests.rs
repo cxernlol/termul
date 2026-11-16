@@ -20,11 +20,12 @@ use super::agent::extract_json;
 use super::{HttpConfig, OVERLAP_REASON};
 use crate::acp::config::AgentConfig;
 use crate::acp::manager::real_loop_tests::{find_python, SKIP_ENV, TIMEOUT_TEST_LOCK};
+use crate::automation::mcp::test_support::{registry, server, FakeMcp};
 use crate::automation::model::{
     Automation, AutomationId, Graph, Run, RunId, RunStatus, RunTrigger, StepStatus, Trigger,
 };
 use crate::automation::store::AutomationStore;
-use crate::automation::test_support::{test_engine, MemoryVault, TestEngine};
+use crate::automation::test_support::{test_engine, test_engine_with_mcp, MemoryVault, TestEngine};
 
 const API_KEY: &str = "sk-live-123";
 
@@ -254,6 +255,8 @@ for line in sys.stdin:
             "protocolVersion": 1, "agentCapabilities": {}, "authMethods": []}})
     elif method == "session/new":
         cwd = msg["params"]["cwd"]
+        with open(os.environ["SESSION_LOG"], "a") as f:
+            f.write(json.dumps([s["name"] for s in msg["params"]["mcpServers"]]) + "\n")
         send({"jsonrpc": "2.0", "id": rid, "result": {"sessionId": "s1"}})
     elif method == "session/prompt":
         text = msg["params"]["prompt"][0]["text"]
@@ -308,13 +311,14 @@ impl MockAgent {
             name: "Mock".to_string(),
             command: python.to_string(),
             args: vec!["-u".to_string(), script.to_string_lossy().into_owned()],
-            env: [(
-                "PROMPT_LOG".to_string(),
-                dir.path()
-                    .join("prompts.log")
-                    .to_string_lossy()
-                    .into_owned(),
-            )]
+            env: [
+                ("PROMPT_LOG", "prompts.log"),
+                ("SESSION_LOG", "sessions.log"),
+            ]
+            .map(|(name, file)| {
+                let path = dir.path().join(file).to_string_lossy().into_owned();
+                (name.to_string(), path)
+            })
             .into(),
             allow_terminal: false,
         });
@@ -322,6 +326,15 @@ impl MockAgent {
             dir,
             _serial: serial,
         })
+    }
+
+    /// The MCP server names of each `session/new`, in order.
+    fn session_mcp_servers(&self) -> Vec<Vec<String>> {
+        std::fs::read_to_string(self.dir.path().join("sessions.log"))
+            .unwrap_or_default()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect()
     }
 
     fn prompts(&self) -> Vec<String> {
@@ -388,6 +401,59 @@ async fn fetch_extract_shape_and_post_delivers_the_expected_body() {
     assert!(prompts[0].starts_with(
         "MODE=ok Summarize [\"a\",\"b\"]\n\nAnswer with exactly one JSON value that matches this JSON Schema"
     ));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_agent_session_starts_with_only_the_mcp_servers_its_node_is_scoped_to() {
+    let mut tebar = server("srv-tebar", "Tebar");
+    tebar.aliases = vec!["srv-old".into()];
+    let root = tempfile::tempdir().unwrap();
+    let te = test_engine_with_mcp(
+        root.path().to_path_buf(),
+        Arc::new(MemoryVault::default()),
+        HttpConfig::default(),
+        registry(vec![
+            tebar,
+            server("srv-gh", "GitHub"),
+            server("srv-fs", "Files"),
+        ]),
+        FakeMcp::new(),
+    );
+    let Some(mock) = MockAgent::install(&te).await else {
+        return;
+    };
+    let step = |scope: Value| {
+        let mut spec = agent("MODE=ok Go", 1);
+        spec["tools"] = json!(["other"]);
+        spec["mcp_servers"] = scope;
+        spec
+    };
+    let a = manual(
+        &te,
+        json!({
+            "nodes": [node("all", step(json!(null))),
+                      node("scoped", step(json!(["srv-gh", "srv-old"]))),
+                      node("none", step(json!([])))],
+            "edges": [edge("trigger", "out", "all"), edge("all", "out", "scoped"),
+                      edge("scoped", "out", "none")]
+        }),
+    );
+
+    let run = run_to_end(&te, &a).await;
+
+    assert_eq!(run.status, RunStatus::Succeeded);
+    assert_eq!(
+        mock.session_mcp_servers(),
+        vec![
+            vec![
+                "Tebar".to_string(),
+                "GitHub".to_string(),
+                "Files".to_string()
+            ],
+            vec!["GitHub".to_string(), "Tebar".to_string()],
+            vec![],
+        ]
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

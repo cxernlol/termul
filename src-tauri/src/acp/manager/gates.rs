@@ -34,7 +34,7 @@ pub(super) fn stable_agent_namespace(config: &AgentConfig) -> Option<String> {
 
 /// Validate project/session MCP transports against negotiated capabilities.
 /// Stdio is mandatory in ACP; HTTP/SSE require their advertised flags.
-pub(super) fn gate_mcp_servers(
+pub(crate) fn gate_mcp_servers(
     caps: &AgentCapabilities,
     servers: &[McpServer],
 ) -> Result<(), String> {

@@ -55,7 +55,8 @@
             },
             "timeout_ms": 120000,
             "max_attempts": 2,
-            "tools": ["search", "read", "search"]
+            "tools": ["search", "read", "search"],
+            "mcp_servers": null
           }
         },
         {
@@ -141,9 +142,18 @@
       ]
     },
     "layout": {
-      "extract": { "x": 480.0, "y": -16.0 },
-      "fetch": { "x": 240.0, "y": 40.5 },
-      "trigger": { "x": 0.0, "y": 40.0 }
+      "extract": {
+        "x": 480.0,
+        "y": -16.0
+      },
+      "fetch": {
+        "x": 240.0,
+        "y": 40.5
+      },
+      "trigger": {
+        "x": 0.0,
+        "y": 40.0
+      }
     },
     "isolation": "shared_in_root",
     "next_run_at": 1773046800000,
@@ -378,6 +388,23 @@
               "kind": "fail",
               "message": "{{trigger.kind}}"
             }
+          },
+          {
+            "id": "triage",
+            "label": "Triage",
+            "spec": {
+              "kind": "agent",
+              "agent_id": "claude",
+              "model": null,
+              "prompt": "Triage",
+              "output_schema": {
+                "type": "object"
+              },
+              "timeout_ms": 60000,
+              "max_attempts": 1,
+              "tools": ["other"],
+              "mcp_servers": ["srv-github"]
+            }
           }
         ],
         "edges": [
@@ -497,6 +524,23 @@
             "spec": {
               "kind": "fail",
               "message": "{{trigger.kind}}"
+            }
+          },
+          {
+            "id": "triage",
+            "label": "Triage",
+            "spec": {
+              "kind": "agent",
+              "agent_id": "claude",
+              "model": null,
+              "prompt": "Triage",
+              "output_schema": {
+                "type": "object"
+              },
+              "timeout_ms": 60000,
+              "max_attempts": 1,
+              "tools": ["other"],
+              "mcp_servers": ["srv-github"]
             }
           }
         ],
@@ -621,6 +665,23 @@
             "spec": {
               "kind": "fail",
               "message": "{{trigger.kind}}"
+            }
+          },
+          {
+            "id": "triage",
+            "label": "Triage",
+            "spec": {
+              "kind": "agent",
+              "agent_id": "claude",
+              "model": null,
+              "prompt": "Triage",
+              "output_schema": {
+                "type": "object"
+              },
+              "timeout_ms": 60000,
+              "max_attempts": 1,
+              "tools": ["other"],
+              "mcp_servers": ["srv-github"]
             }
           }
         ],
@@ -786,7 +847,25 @@
         "agent_id": "claude",
         "model": "sonnet",
         "timeout_ms": 120000,
-        "tools": ["read", "search"]
+        "tools": ["read", "search"],
+        "mcp_servers": []
+      },
+      {
+        "node_id": "triage",
+        "agent_id": "claude",
+        "model": null,
+        "timeout_ms": 60000,
+        "tools": ["other"],
+        "mcp_servers": [
+          {
+            "server_id": "srv-tebar",
+            "name": "Tebar"
+          },
+          {
+            "server_id": "srv-github",
+            "name": "GitHub"
+          }
+        ]
       }
     ],
     "secrets": [

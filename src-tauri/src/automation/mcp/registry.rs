@@ -1,10 +1,14 @@
-//! The MCP servers as `mcp_tool` nodes see them: the host's one list in its
-//! web store (see `web::mcp_registry`), the same for every project, with the
-//! ids the one-time import dropped as aliases of the server it kept.
+//! The MCP servers as `mcp_tool` nodes and agent nodes that list `other` see
+//! them: the host's one list in its web store (see `web::mcp_registry`), the
+//! same for every project, with the ids the one-time import dropped as
+//! aliases of the server it kept.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use agent_client_protocol::schema::v1::{
+    EnvVariable, HttpHeader, McpServer, McpServerHttp, McpServerSse, McpServerStdio,
+};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -26,6 +30,42 @@ pub struct McpServerEntry {
     pub aliases: Vec<String>,
 }
 
+impl McpServerEntry {
+    /// The server as an agent's `session/new` takes it, the same shape a chat
+    /// session gets. `None` for a stdio entry without a command, an http or
+    /// sse entry without a url, or an unknown transport.
+    pub fn acp_server(&self) -> Option<McpServer> {
+        let config = &self.config;
+        let headers = || {
+            config
+                .headers
+                .iter()
+                .map(|h| HttpHeader::new(&h.name, &h.value))
+                .collect()
+        };
+        match config.r#type.as_deref() {
+            None | Some("stdio") => Some(McpServer::Stdio(
+                McpServerStdio::new(&self.name, config.command.as_deref()?)
+                    .args(config.args.clone())
+                    .env(
+                        config
+                            .env
+                            .iter()
+                            .map(|e| EnvVariable::new(&e.name, &e.value))
+                            .collect(),
+                    ),
+            )),
+            Some("http") => Some(McpServer::Http(
+                McpServerHttp::new(&self.name, config.url.as_deref()?).headers(headers()),
+            )),
+            Some("sse") => Some(McpServer::Sse(
+                McpServerSse::new(&self.name, config.url.as_deref()?).headers(headers()),
+            )),
+            Some(_) => None,
+        }
+    }
+}
+
 /// The server a node's `server_id` names: the entry with that id, else the
 /// entry that holds it as an alias.
 pub fn find_server<'a>(servers: &'a [McpServerEntry], id: &str) -> Option<&'a McpServerEntry> {
@@ -33,6 +73,25 @@ pub fn find_server<'a>(servers: &'a [McpServerEntry], id: &str) -> Option<&'a Mc
         .iter()
         .find(|s| s.server_id == id)
         .or_else(|| servers.iter().find(|s| s.aliases.iter().any(|a| a == id)))
+}
+
+/// The servers an agent node that lists `other` starts with: every one when
+/// `scope` is `None`, else the ones its ids name (aliases included) in the
+/// scope's order, each once. An id that names no server is dropped.
+pub fn agent_servers<'a>(
+    scope: Option<&[String]>,
+    servers: &'a [McpServerEntry],
+) -> Vec<&'a McpServerEntry> {
+    let Some(ids) = scope else {
+        return servers.iter().collect();
+    };
+    let mut picked: Vec<&McpServerEntry> = Vec::new();
+    for server in ids.iter().filter_map(|id| find_server(servers, id)) {
+        if !picked.iter().any(|p| p.server_id == server.server_id) {
+            picked.push(server);
+        }
+    }
+    picked
 }
 
 #[derive(Deserialize)]

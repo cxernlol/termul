@@ -40,7 +40,9 @@ for line in sys.stdin:
     method, rid = msg.get("method"), msg.get("id")
     if method == "initialize":
         send({"jsonrpc": "2.0", "id": rid, "result": {
-            "protocolVersion": 1, "agentCapabilities": {}, "authMethods": []}})
+            "protocolVersion": 1,
+            "agentCapabilities": json.loads(os.environ.get("MOCK_CAPS", "{}")),
+            "authMethods": []}})
     elif method == "session/new":
         if os.environ.get("MOCK_META_FILE"):
             with open(os.environ["MOCK_META_FILE"], "w") as f:
@@ -169,6 +171,7 @@ impl Mock {
             model: model.map(str::to_string),
             project_id: None,
             tools: ToolAllowlist::default(),
+            mcp_servers: vec![],
         }
     }
 
@@ -422,6 +425,33 @@ async fn a_one_shot_session_gets_no_termul_mcp_server_but_a_chat_session_does() 
         .expect("chat session starts");
     assert_eq!(std::fs::read_to_string(&mcp_file).unwrap(), r#"["troupe"]"#);
     mock.manager.kill_detached(&spawned.agent_id);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_request_servers_reach_session_new_minus_transports_the_agent_lacks() {
+    use agent_client_protocol::schema::v1::{McpServerHttp, McpServerSse, McpServerStdio};
+    let Some(mock) = Mock::new().await else {
+        return;
+    };
+    let mcp_file = mock.dir.join("mcp-servers");
+    let env = [
+        ("MOCK_MCP_FILE", mcp_file.to_str().unwrap()),
+        ("MOCK_CAPS", r#"{"mcpCapabilities": {"sse": true}}"#),
+    ];
+    let mut request = mock.request(None, &env);
+    request.mcp_servers = vec![
+        McpServer::Stdio(McpServerStdio::new("Files", "fs-mcp")),
+        McpServer::Http(McpServerHttp::new("GitHub", "http://127.0.0.1:9/mcp")),
+        McpServer::Sse(McpServerSse::new("Events", "http://127.0.0.1:9/sse")),
+    ];
+    let session = OneShotSession::start(&mock.manager, request)
+        .await
+        .expect("one-shot session starts");
+    assert_eq!(
+        std::fs::read_to_string(&mcp_file).unwrap(),
+        r#"["Files", "Events"]"#
+    );
+    session.dispose().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

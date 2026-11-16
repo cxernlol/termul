@@ -66,7 +66,22 @@ const runGraph: Unbranded<Graph> = {
         timeout_ms: 86400000
       }
     },
-    { id: 'stop', label: 'Stop', spec: { kind: 'fail', message: '{{trigger.kind}}' } }
+    { id: 'stop', label: 'Stop', spec: { kind: 'fail', message: '{{trigger.kind}}' } },
+    {
+      id: 'triage',
+      label: 'Triage',
+      spec: {
+        kind: 'agent',
+        agent_id: 'claude',
+        model: null,
+        prompt: 'Triage',
+        output_schema: { type: 'object' },
+        timeout_ms: 60000,
+        max_attempts: 1,
+        tools: ['other'],
+        mcp_servers: ['srv-github']
+      }
+    }
   ],
   edges: [
     { from: 'trigger', port: 'out', to: 'each' },
@@ -137,7 +152,8 @@ const typed: Unbranded<WireFixture> = {
             },
             timeout_ms: 120000,
             max_attempts: 2,
-            tools: ['search', 'read', 'search']
+            tools: ['search', 'read', 'search'],
+            mcp_servers: null
           }
         },
         {
@@ -532,7 +548,19 @@ const typed: Unbranded<WireFixture> = {
         agent_id: 'claude',
         model: 'sonnet',
         timeout_ms: 120000,
-        tools: ['read', 'search']
+        tools: ['read', 'search'],
+        mcp_servers: []
+      },
+      {
+        node_id: 'triage',
+        agent_id: 'claude',
+        model: null,
+        timeout_ms: 60000,
+        tools: ['other'],
+        mcp_servers: [
+          { server_id: 'srv-tebar', name: 'Tebar' },
+          { server_id: 'srv-github', name: 'GitHub' }
+        ]
       }
     ],
     secrets: [

@@ -18,9 +18,9 @@ use super::mcp::{
     RmcpClient, ToolSchema,
 };
 use super::model::{
-    ApplyOpsResult, Automation, AutomationChanged, AutomationId, Issue, IssueCode, Layout,
-    NamedTemplate, NodeId, NodeKind, NodeSpec, Op, Run, RunId, RunPolicy, RunTrigger, Schedule,
-    Step,
+    AgentTool, ApplyOpsResult, Automation, AutomationChanged, AutomationId, Issue, IssueCode,
+    Layout, NamedTemplate, NodeId, NodeKind, NodeSpec, Op, Run, RunId, RunPolicy, RunTrigger,
+    Schedule, Step,
 };
 use super::policy;
 use super::schedule;
@@ -470,17 +470,17 @@ impl AutomationService {
     }
 
     fn policy_with(&self, automation: &Automation, servers: &[McpServerEntry]) -> RunPolicy {
-        let server_name = |id: &str| find_server(servers, id).map(|s| s.name.clone());
-        policy::run_policy(automation, self.engine.now_ms(), &server_name)
+        policy::run_policy(automation, self.engine.now_ms(), servers)
     }
 
-    /// The project's MCP servers, read only when a node calls one.
+    /// The project's MCP servers, read only when a node calls one or an
+    /// agent node may use them.
     fn mcp_servers(&self, automation: &Automation) -> Vec<McpServerEntry> {
-        let calls_mcp = automation
-            .graph
-            .nodes
-            .iter()
-            .any(|n| matches!(n.spec, NodeSpec::McpTool { .. }));
+        let calls_mcp = automation.graph.nodes.iter().any(|n| match &n.spec {
+            NodeSpec::McpTool { .. } => true,
+            NodeSpec::Agent { tools, .. } => tools.contains(&AgentTool::Other),
+            _ => false,
+        });
         if calls_mcp {
             self.engine.mcp().servers(&automation.project_id)
         } else {
@@ -636,6 +636,18 @@ impl AutomationService {
                     _ => None,
                 }),
         );
+        for node in &automation.graph.nodes {
+            if let NodeSpec::Agent {
+                tools,
+                mcp_servers: Some(ids),
+                ..
+            } = &node.spec
+            {
+                if tools.contains(&AgentTool::Other) {
+                    issues.extend(unknown_scope_servers(&node.id, ids, servers));
+                }
+            }
+        }
         let mcp = self.engine.mcp();
         for node in &automation.graph.nodes {
             if let NodeSpec::McpTool {
@@ -656,6 +668,24 @@ impl AutomationService {
         self.engine
             .notify(&automation.project_id, Some(&automation.id));
     }
+}
+
+/// An agent's `mcp_servers` ids that name no enabled server.
+fn unknown_scope_servers(
+    node_id: &NodeId,
+    ids: &[String],
+    servers: &[McpServerEntry],
+) -> Vec<Issue> {
+    ids.iter()
+        .filter(|id| find_server(servers, id).is_none())
+        .map(|id| Issue {
+            node_id: Some(node_id.clone()),
+            code: IssueCode::UnknownMcpServer,
+            message: format!(
+                "mcp_servers names {id:?}, which is not an enabled MCP server of this project; pick a server_id from automation_capabilities"
+            ),
+        })
+        .collect()
 }
 
 fn mcp_issues(

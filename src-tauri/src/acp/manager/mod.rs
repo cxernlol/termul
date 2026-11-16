@@ -69,7 +69,9 @@ mod gates;
 mod activity;
 mod close;
 mod exit;
-pub(crate) use gates::{ApiKey, AuthCredential, ConfigOptionValue, GatewayAuthInput};
+pub(crate) use gates::{
+    gate_mcp_servers, ApiKey, AuthCredential, ConfigOptionValue, GatewayAuthInput,
+};
 mod history;
 mod import_session_history;
 mod import_steps;

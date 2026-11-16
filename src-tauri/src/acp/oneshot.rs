@@ -5,8 +5,10 @@
 //! with [`AcpManager::spawn_private`], so its events reach only this module's
 //! [`ReplyCollector`] sink and never the WS relay: nothing is shown to,
 //! persisted for, or replayed to a client, on desktop and `termul-server`
-//! alike. The session is ephemeral, so the host injects no MCP server and the
-//! driver auto-cancels questions and elicitations. Permission requests are
+//! alike. The session is ephemeral, so the host injects no plan MCP server and
+//! the driver auto-cancels questions and elicitations. It starts with the
+//! request's MCP servers whose transport the agent supports; the manager adds
+//! stored OAuth tokens as it does for chat sessions. Permission requests are
 //! answered from the request's [`ToolAllowlist`]. A session that does not
 //! start in a mode known to ask is moved to one, so every tool the agent
 //! gates reaches that allowlist. The host never selects a bypass mode, and
@@ -17,13 +19,15 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use agent_client_protocol::schema::v1::{
-    ContentBlock, SessionModeState, StopReason, TextContent,
+    AgentCapabilities, ContentBlock, McpServer, SessionModeState, StopReason, TextContent,
 };
 use parking_lot::Mutex;
 
 use crate::acp::config::{AgentConfig, AgentId, SessionId};
 use crate::acp::events::{self, SessionModelState};
-use crate::acp::manager::{AcpManager, SessionCreationContext, ACP_AUTH_REQUIRED_PREFIX};
+use crate::acp::manager::{
+    gate_mcp_servers, AcpManager, SessionCreationContext, ACP_AUTH_REQUIRED_PREFIX,
+};
 use crate::acp::session::ToolAllowlist;
 use crate::web::sink::{AcpEvent, EventSink};
 
@@ -46,6 +50,8 @@ pub struct OneShotRequest {
     pub project_id: Option<String>,
     /// The tool kinds the host allows when the agent asks; it refuses the rest.
     pub tools: ToolAllowlist,
+    /// Servers whose transport the agent does not support are skipped.
+    pub mcp_servers: Vec<McpServer>,
 }
 
 /// Modes known to ask before a tool acts (Claude Agent, Cursor, Codex,
@@ -116,6 +122,7 @@ impl OneShotSession {
             model,
             project_id,
             tools,
+            mcp_servers,
         } = request;
         let agent_name = config.name.clone();
         let collector = Arc::new(ReplyCollector::default());
@@ -130,11 +137,23 @@ impl OneShotSession {
             manager: manager.clone(),
             agent_id: spawned.agent_id,
         };
+        let (mcp_servers, skipped) = usable_mcp_servers(&spawned.capabilities, mcp_servers);
+        if !skipped.is_empty() {
+            log::info!(
+                "[acp-oneshot] agent {} does not support the transport of MCP servers {skipped:?}; skipping them",
+                agent.agent_id
+            );
+        }
+        log::info!(
+            "[acp-oneshot] agent {} session/new with {} MCP server(s)",
+            agent.agent_id,
+            mcp_servers.len()
+        );
         let created = manager
             .new_session_with_context(
                 &agent.agent_id,
                 cwd,
-                vec![],
+                mcp_servers,
                 SessionCreationContext {
                     project_id,
                     ephemeral: true,
@@ -336,6 +355,27 @@ async fn ensure_asking_mode(
             log::warn!("[acp-oneshot] agent {agent_id} mode switch failed: {error}");
             OneShotError::Spawn(format!("could not leave mode `{current}`: {error}"))
         })
+}
+
+/// The servers `session/new` accepts for an agent with `capabilities`, and
+/// the names of the rest.
+fn usable_mcp_servers(
+    capabilities: &AgentCapabilities,
+    servers: Vec<McpServer>,
+) -> (Vec<McpServer>, Vec<String>) {
+    let (usable, skipped): (Vec<_>, Vec<_>) = servers
+        .into_iter()
+        .partition(|server| gate_mcp_servers(capabilities, std::slice::from_ref(server)).is_ok());
+    let names = skipped
+        .iter()
+        .map(|server| match server {
+            McpServer::Http(http) => http.name.clone(),
+            McpServer::Sse(sse) => sse.name.clone(),
+            McpServer::Stdio(stdio) => stdio.name.clone(),
+            _ => "(unknown transport)".to_string(),
+        })
+        .collect();
+    (usable, names)
 }
 
 fn start_error(error: String) -> OneShotError {

@@ -41,7 +41,8 @@ export const NODE_KINDS: {
       output_schema: { type: 'string' },
       timeout_ms: 120_000,
       max_attempts: 1,
-      tools: []
+      tools: [],
+      mcp_servers: null
     })
   },
   mcp_tool: {

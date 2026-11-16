@@ -1,4 +1,4 @@
-import type { Automation, Issue, RunPolicy } from '@shared/types/automation.types'
+import type { AgentMcpServer, Automation, Issue, RunPolicy } from '@shared/types/automation.types'
 import { AlertTriangle, ShieldCheck } from '@/components/icons'
 import { Button } from '@/components/ui/button'
 import { WriteGate } from '@/components/ui/write-gate'
@@ -72,6 +72,7 @@ export function RunPolicyCard({
                     {agent.model ? ` (${agent.model})` : ''}
                     {` · times out after ${formatDuration(agent.timeout_ms)}`}
                     {` · ${agentToolsLabel(agent.tools)}`}
+                    {agent.tools.includes('other') && ` · ${agentMcpLabel(agent.mcp_servers)}`}
                   </span>
                 </li>
               ))}
@@ -149,6 +150,12 @@ export function RunPolicyCard({
       )}
     </section>
   )
+}
+
+function agentMcpLabel(servers: readonly AgentMcpServer[]): string {
+  return servers.length === 0
+    ? 'no MCP servers'
+    : `MCP servers offered: ${servers.map((server) => server.name).join(', ')}`
 }
 
 function PolicyRow({

@@ -19,6 +19,7 @@ import {
   TemplateField,
   useFieldText
 } from './fields'
+import { McpServerScope } from './McpServerScope'
 import { type FormProps, NameRow, taking } from './node-forms'
 import {
   freshFieldName,
@@ -81,8 +82,17 @@ export function AgentForm({
         id={`${id}-tools`}
         tools={spec.tools}
         rules={agentToolRules(graph, nodeId, spec.tools)}
-        commit={(tools) => commit({ ...spec, tools })}
+        commit={(tools) =>
+          commit({ ...spec, tools, mcp_servers: tools.includes('other') ? spec.mcp_servers : null })
+        }
       />
+      {spec.tools.includes('other') && (
+        <McpServerScope
+          id={`${id}-mcp`}
+          scope={spec.mcp_servers}
+          commit={(mcp_servers) => commit({ ...spec, mcp_servers })}
+        />
+      )}
       <div className="grid grid-cols-2 items-start gap-2.5">
         <SecondsField
           id={`${id}-timeout`}

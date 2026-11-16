@@ -22,7 +22,8 @@ describe('automation wire parser', () => {
       { kind: 'merge', mode: 'any' },
       { kind: 'wait', duration_ms: 3600000 },
       { kind: 'approval', message: 'Ship {{nodes.body.output.item}}?', timeout_ms: 86400000 },
-      { kind: 'fail', message: '{{trigger.kind}}' }
+      { kind: 'fail', message: '{{trigger.kind}}' },
+      expect.objectContaining({ kind: 'agent' })
     ])
     expect(graph.edges[1]).toEqual({ from: 'each', port: 'item', to: 'body' })
     expect(parseStepList(wire.steps)[4]).toMatchObject({
@@ -31,6 +32,34 @@ describe('automation wire parser', () => {
       status: 'waiting',
       wait_until: 1773050461000
     })
+  })
+
+  it("reads an agent's MCP server scope, and a missing one as every server", () => {
+    const { graph } = parseRun(wire.runs[0])
+    expect(graph.nodes.at(-1)?.spec).toEqual({
+      kind: 'agent',
+      agent_id: 'claude',
+      model: null,
+      prompt: 'Triage',
+      output_schema: { type: 'object' },
+      timeout_ms: 60000,
+      max_attempts: 1,
+      tools: ['other'],
+      mcp_servers: ['srv-github']
+    })
+    const legacy = structuredClone(wire.automation)
+    const extract = legacy.graph.nodes.find((node) => node.id === 'extract')
+    if (extract?.spec.kind !== 'agent') throw new Error('the fixture lost its agent step')
+    delete (extract.spec as { mcp_servers?: unknown }).mcp_servers
+    const parsed = parseAutomation(legacy).graph.nodes.find((node) => node.id === 'extract')
+    expect(parsed?.spec).toMatchObject({ kind: 'agent', mcp_servers: null })
+  })
+
+  it('rejects an MCP server scope that is not a list of ids', () => {
+    const run = structuredClone(wire.runs[0])
+    const triage = run.graph.nodes.at(-1)?.spec as { mcp_servers?: unknown }
+    triage.mcp_servers = ['srv-github', 7]
+    expect(() => parseRun(run)).toThrow(/mcp_servers\[1\]/)
   })
 
   it('reads a step without the new fields as outside any loop and not parked', () => {

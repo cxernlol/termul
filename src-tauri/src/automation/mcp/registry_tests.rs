@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use serde_json::{json, Value};
 
-use super::registry::{attach_aliases, find_server, parse_registry, store_servers};
+use super::registry::{agent_servers, attach_aliases, find_server, parse_registry, store_servers};
 use super::{McpServerConfig, McpServerEntry};
 use crate::acp::mcp_probe::McpNameValuePair;
 use crate::web::mcp_registry::{ALIASES_KEY, STORE_KEY};
@@ -206,4 +206,66 @@ fn the_stored_aliases_follow_the_stored_list() {
     );
     assert_eq!(aliases_of(&servers("p1")), vec![("srv-3", vec![])]);
     assert!(find_server(&servers("p1"), "old-files").is_none());
+}
+
+#[test]
+fn each_entry_becomes_the_session_server_a_chat_session_gets() {
+    let entries = parse_registry(&json!([
+        { "id": "a", "name": "Files", "command": "npx", "args": ["-y", "fs"],
+          "env": [{ "name": "TOKEN", "value": "t-123" }] },
+        { "id": "b", "type": "stdio", "name": "Bare", "command": "fs-mcp" },
+        { "id": "c", "type": "http", "name": "Remote", "url": "https://mcp.example.com",
+          "headers": [{ "name": "X-Key", "value": "k-1" }] },
+        { "id": "d", "type": "sse", "name": "Events", "url": "https://sse.example.com" },
+        { "id": "e", "name": "No command" },
+        { "id": "f", "type": "http", "name": "No url" },
+        { "id": "g", "type": "ws", "name": "Unknown", "url": "wss://x" }
+    ]));
+    let servers: Vec<Value> = entries
+        .iter()
+        .filter_map(McpServerEntry::acp_server)
+        .map(|server| serde_json::to_value(server).unwrap())
+        .collect();
+    assert_eq!(
+        servers,
+        vec![
+            json!({ "name": "Files", "command": "npx", "args": ["-y", "fs"],
+                    "env": [{ "name": "TOKEN", "value": "t-123" }] }),
+            json!({ "name": "Bare", "command": "fs-mcp", "args": [], "env": [] }),
+            json!({ "type": "http", "name": "Remote", "url": "https://mcp.example.com",
+                    "headers": [{ "name": "X-Key", "value": "k-1" }] }),
+            json!({ "type": "sse", "name": "Events", "url": "https://sse.example.com",
+                    "headers": [] }),
+        ]
+    );
+}
+
+#[test]
+fn an_agent_scope_picks_its_servers_in_its_order_once_each() {
+    let mut entries = parse_registry(&stored_list());
+    attach_aliases(
+        &mut entries,
+        &stored_list(),
+        &json!({ "old-files": "srv-1" }),
+    );
+    let picked = |scope: Option<&[String]>| -> Vec<&str> {
+        agent_servers(scope, &entries)
+            .into_iter()
+            .map(|s| s.server_id.as_str())
+            .collect()
+    };
+    let scope = |ids: &[&str]| -> Vec<String> { ids.iter().map(|id| id.to_string()).collect() };
+
+    assert_eq!(picked(None), vec!["srv-1", "srv-3"]);
+    assert_eq!(picked(Some(&scope(&[]))), Vec::<&str>::new());
+    assert_eq!(
+        picked(Some(&scope(&["srv-3", "old-files"]))),
+        vec!["srv-3", "srv-1"]
+    );
+    let repeated = scope(&["srv-1", "srv-9", "srv-2", "old-files", "srv-1"]);
+    assert_eq!(
+        picked(Some(&repeated)),
+        vec!["srv-1"],
+        "unknown and disabled ids drop; an alias of a picked server adds nothing"
+    );
 }

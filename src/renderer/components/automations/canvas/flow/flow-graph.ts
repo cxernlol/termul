@@ -118,6 +118,7 @@ function issueCounts(issues: readonly Issue[]): Map<CanvasNodeId, number> {
 /** Issues a card names in place of its detail, so the broken setting reads on the canvas. */
 const CARD_PROBLEMS: Partial<Record<IssueCode, string>> = {
   unknown_mcp_server: 'Server not configured',
+  mcp_servers_without_other: 'MCP servers need MCP tools',
   unknown_mcp_tool: 'Tool not found'
 }
 

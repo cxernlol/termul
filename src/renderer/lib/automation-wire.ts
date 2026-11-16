@@ -6,6 +6,7 @@
  */
 
 import type {
+  AgentMcpServer,
   AgentPolicy,
   AgentTool,
   ApplyOpsResult,
@@ -161,7 +162,8 @@ function nodeSpec(v: unknown, p: string): NodeSpec {
         output_schema: obj(o.output_schema, `${p}.output_schema`) as JsonSchemaSubset,
         timeout_ms: num(o.timeout_ms, `${p}.timeout_ms`),
         max_attempts: num(o.max_attempts, `${p}.max_attempts`),
-        tools: agentTools(o.tools, `${p}.tools`)
+        tools: agentTools(o.tools, `${p}.tools`),
+        mcp_servers: nullable(o.mcp_servers, `${p}.mcp_servers`, (v, q) => arr(v, q, str))
       }
     case 'transform':
       return { kind: 'transform', fields: arr(o.fields, `${p}.fields`, namedTemplate) }
@@ -296,7 +298,16 @@ function agentPolicy(v: unknown, p: string): AgentPolicy {
     agent_id: str(o.agent_id, `${p}.agent_id`),
     model: nullable(o.model, `${p}.model`, str),
     timeout_ms: num(o.timeout_ms, `${p}.timeout_ms`),
-    tools: agentTools(o.tools, `${p}.tools`)
+    tools: agentTools(o.tools, `${p}.tools`),
+    mcp_servers: arr(o.mcp_servers, `${p}.mcp_servers`, agentMcpServer)
+  }
+}
+
+function agentMcpServer(v: unknown, p: string): AgentMcpServer {
+  const o = obj(v, p)
+  return {
+    server_id: str(o.server_id, `${p}.server_id`),
+    name: str(o.name, `${p}.name`)
   }
 }
 

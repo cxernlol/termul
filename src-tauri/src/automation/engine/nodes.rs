@@ -107,6 +107,7 @@ pub(super) async fn run(scope: &NodeScope<'_>, spec: &NodeSpec) -> Result<NodeSu
             timeout_ms,
             max_attempts,
             tools,
+            mcp_servers,
         } => {
             let request = agent::AgentSpec {
                 agent_id,
@@ -116,6 +117,7 @@ pub(super) async fn run(scope: &NodeScope<'_>, spec: &NodeSpec) -> Result<NodeSu
                 timeout_ms: *timeout_ms,
                 max_attempts: *max_attempts,
                 tools,
+                mcp_servers: mcp_servers.as_deref(),
             };
             agent::run(scope, request).await.map(out)
         }

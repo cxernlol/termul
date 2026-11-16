@@ -309,6 +309,10 @@ pub enum NodeSpec {
         max_attempts: u8,
         #[serde(default)]
         tools: Vec<AgentTool>,
+        /// The MCP server ids a session that lists `other` starts with:
+        /// `None` for every enabled server, `[]` for none.
+        #[serde(default)]
+        mcp_servers: Option<Vec<String>>,
     },
     Transform {
         fields: Vec<NamedTemplate>,
@@ -624,6 +628,7 @@ pub enum IssueCode {
     InvalidOutputSchema,
     AgentTimeoutOutOfRange,
     AgentMaxAttemptsOutOfRange,
+    McpServersWithoutOther,
     MissingConditionOperand,
     InvalidSchedule,
     UntrustedAgentOutboundTool,
@@ -775,6 +780,17 @@ pub struct AgentPolicy {
     pub timeout_ms: u64,
     /// Sorted and deduplicated; empty means no tools.
     pub tools: Vec<AgentTool>,
+    /// The enabled MCP servers its session starts with: the node's
+    /// `mcp_servers` in that order, or every one in Settings order when it
+    /// is unset; empty unless `tools` has `other`. The agent skips a server
+    /// whose transport it does not support.
+    pub mcp_servers: Vec<AgentMcpServer>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct AgentMcpServer {
+    pub server_id: String,
+    pub name: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

@@ -5,20 +5,17 @@ use std::collections::BTreeSet;
 use chrono::{TimeZone, Utc};
 
 use super::graph;
+use super::mcp::{agent_servers, find_server, McpServerEntry};
 use super::model::{
-    AgentPolicy, Automation, McpToolPolicy, NodeHosts, NodeSecrets, NodeSpec,
-    RunPolicy, Schedule, Trigger,
+    AgentMcpServer, AgentPolicy, AgentTool, Automation, McpToolPolicy, NodeHosts, NodeSecrets,
+    NodeSpec, RunPolicy, Schedule, Trigger,
 };
 use super::schedule::{next_runs, BACKOFF_LADDER_MS};
 
 const PREVIEW_RUNS: usize = 3;
 
-/// `server_name` names the project's enabled MCP server of an id.
-pub fn run_policy(
-    automation: &Automation,
-    now_ms: i64,
-    server_name: &dyn Fn(&str) -> Option<String>,
-) -> RunPolicy {
+/// `servers` are the project's enabled MCP servers.
+pub fn run_policy(automation: &Automation, now_ms: i64, servers: &[McpServerEntry]) -> RunPolicy {
     let graph = &automation.graph;
     let mut agents = Vec::new();
     let mut secrets = Vec::new();
@@ -31,6 +28,7 @@ pub fn run_policy(
                 model,
                 timeout_ms,
                 tools,
+                mcp_servers,
                 ..
             } => agents.push(AgentPolicy {
                 node_id: node.id.clone(),
@@ -43,6 +41,11 @@ pub fn run_policy(
                     .collect::<BTreeSet<_>>()
                     .into_iter()
                     .collect(),
+                mcp_servers: if tools.contains(&AgentTool::Other) {
+                    agent_mcp_servers(mcp_servers.as_deref(), servers)
+                } else {
+                    Vec::new()
+                },
             }),
             NodeSpec::Http { allowed_hosts, .. } => {
                 let names = graph::secret_names(&node.spec);
@@ -62,7 +65,7 @@ pub fn run_policy(
             } => mcp_tools.push(McpToolPolicy {
                 node_id: node.id.clone(),
                 server_id: server_id.clone(),
-                server_name: server_name(server_id),
+                server_name: find_server(servers, server_id).map(|s| s.name.clone()),
                 tool: tool.clone(),
             }),
             NodeSpec::Transform { .. }
@@ -87,6 +90,19 @@ pub fn run_policy(
         untrusted_flow: graph::untrusted_flow(graph),
         failure_policy: failure_policy(),
     }
+}
+
+/// The servers an agent node's session gets: those of its scope with a
+/// usable launch config, as `engine::agent` passes them.
+fn agent_mcp_servers(scope: Option<&[String]>, servers: &[McpServerEntry]) -> Vec<AgentMcpServer> {
+    agent_servers(scope, servers)
+        .into_iter()
+        .filter(|server| server.acp_server().is_some())
+        .map(|server| AgentMcpServer {
+            server_id: server.server_id.clone(),
+            name: server.name.clone(),
+        })
+        .collect()
 }
 
 fn trigger_summary(trigger: &Trigger) -> String {

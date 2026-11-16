@@ -363,6 +363,8 @@ fn check_node(
             output_schema,
             timeout_ms,
             max_attempts,
+            tools,
+            mcp_servers,
             ..
         } => {
             if let Err(e) = schema::parse(&output_schema.0) {
@@ -384,6 +386,13 @@ fn check_node(
                     Some(id),
                     IssueCode::AgentMaxAttemptsOutOfRange,
                     format!("max_attempts must be 1..={AGENT_MAX_ATTEMPTS}, got {max_attempts}"),
+                ));
+            }
+            if mcp_servers.is_some() && !tools.contains(&AgentTool::Other) {
+                issues.push(issue(
+                    Some(id),
+                    IssueCode::McpServersWithoutOther,
+                    "mcp_servers takes effect only when tools lists other; list other or set mcp_servers to null".to_string(),
                 ));
             }
         }

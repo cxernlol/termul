@@ -297,3 +297,81 @@ async fn an_automation_naming_a_server_by_id_and_alias_is_told_once_per_listing(
     );
     assert_eq!(fake.list_count(), 1);
 }
+
+/// An automation in `p1` whose one agent node lists `tools` and is scoped
+/// to `scope`.
+fn with_agent(service: &AutomationService, tools: Value, scope: Value) -> Automation {
+    let created = service.create("p1", "Triage").unwrap();
+    service
+        .apply_ops(
+            &created.id,
+            1,
+            &ops(json!([
+                { "op": "add_node", "node": { "id": "triage", "label": "Triage", "spec": {
+                    "kind": "agent", "agent_id": "claude", "prompt": "Triage",
+                    "output_schema": { "type": "object" }, "timeout_ms": 60000,
+                    "max_attempts": 1, "tools": tools, "mcp_servers": scope } } },
+                { "op": "connect", "edge": { "from": "trigger", "port": "out", "to": "triage" } }
+            ])),
+        )
+        .unwrap()
+        .automation
+}
+
+#[tokio::test]
+async fn an_agent_scope_id_that_names_no_enabled_server_points_at_capabilities() {
+    let service = service(FakeMcp::new());
+    let unknown_agent = (
+        IssueCode::UnknownAgent,
+        "agent \"claude\" is not known on this host; start it once in a chat".to_string(),
+    );
+
+    let scoped = with_agent(
+        &service,
+        json!(["other"]),
+        json!(["srv-old", "srv-9", "srv-2"]),
+    );
+    assert_eq!(
+        issues(&service, &scoped),
+        vec![
+            unknown_agent.clone(),
+            (
+                IssueCode::UnknownMcpServer,
+                "mcp_servers names \"srv-9\", which is not an enabled MCP server of this project; pick a server_id from automation_capabilities".to_string()
+            ),
+        ]
+    );
+
+    let without_other = with_agent(&service, json!([]), json!(["srv-9"]));
+    assert_eq!(
+        issues(&service, &without_other),
+        vec![
+            (
+                IssueCode::McpServersWithoutOther,
+                "mcp_servers takes effect only when tools lists other; list other or set mcp_servers to null".to_string()
+            ),
+            unknown_agent,
+        ]
+    );
+}
+
+#[tokio::test]
+async fn the_policy_names_only_the_servers_an_agent_is_scoped_to() {
+    let service = service(FakeMcp::new());
+    let a = with_agent(&service, json!(["other"]), json!(["srv-2", "srv-old"]));
+    let policy = service.policy(&a.id).unwrap();
+    let reach: Vec<&str> = policy.agents[0]
+        .mcp_servers
+        .iter()
+        .map(|s| s.server_id.as_str())
+        .collect();
+    assert_eq!(reach, vec!["srv-2", "srv-1"]);
+    assert_eq!(
+        service.get(&a.id).unwrap().automation.graph.nodes[0].spec,
+        serde_json::from_value(json!({
+            "kind": "agent", "agent_id": "claude", "prompt": "Triage",
+            "output_schema": { "type": "object" }, "timeout_ms": 60000,
+            "max_attempts": 1, "tools": ["other"], "mcp_servers": ["srv-2", "srv-old"] }))
+        .unwrap()
+    );
+}
