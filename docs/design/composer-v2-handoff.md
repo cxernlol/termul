@@ -1,6 +1,6 @@
 # Composer V2 and the new chat layout: handoff spec
 
-Status: design only (2026-11-16). Not in code yet. Dark theme only.
+Status: C1–C3 in code (2026-11-16, #1868): desktop composer and launcher, phone compact composer, phone sheets and a phone polish pass. C4 and C5 are still design only. Dark theme only.
 Design source: Paper file "Termul Design System", page **Composer V2 · States**.
 
 Scope: the chat composer (desktop and phone), its menus and sheets, the working chat layout around it (status rail, tool rows, subagent card), and the rules for long text. The sidebar is in `sidebar-v2-handoff.md`. The browser client renders the same composer, so check it too (`AGENTS.md`).
@@ -84,22 +84,32 @@ A "…" that means "in progress" ("Running bunx tsc…") is copy, not truncation
 
 ## Checklist
 
-- [ ] Desktop Composer V2 card, tray and foot row (`ChatInputBar.tsx`, `ChatStartContextRow.tsx`, `composer-menu.tsx`)
-- [ ] Mode chip with "Ask first" default and the Bypass pill
-- [ ] Connectors in the foot row (desktop) and in the Add sheet (phone)
-- [ ] Phone compact composer (2.6b) with 44px hit areas
-- [ ] Phone sheets: grab handle without ✕, sub-sheets with ←, fixed stack height (`mobile-sheet.tsx`)
-- [ ] Provider loading and failed states with the same layout
-- [ ] Connectors "Needs attention" rows without a switch
-- [ ] Voice "Use" in the send slot, blue emboss
-- [ ] Agent update banner above the composer
-- [ ] Status rail top-right; counts hug, use `tabular-nums`, cap at "99+"
-- [ ] Real provider and MCP logos with the letter-tile fallback
-- [ ] `fade-end` on every one-line row in the table above; no `truncate` there
+Phases: C1 desktop composer and launcher, C2 phone compact composer, C3 phone sheets (all in #1868); C4 details (fades in the timeline, rail "99+", logos, update banner); C5 voice, light theme.
+
+- [x] Desktop Composer V2 card, tray and foot row (`ChatInputBar.tsx`, `composer/ComposerFoot.tsx`, `chat-layout.ts`); the launcher uses the same tray
+- [x] Mode chip with "Ask first" default and the Bypass pill (`AgentHeader.tsx`, `mode-menu.tsx`)
+- [x] Connectors in the foot row (desktop) and in the Add sheet (phone); sample Gmail, GitHub and Notion logos while no server is on
+- [x] Phone compact composer (2.6b) with 44px hit areas; worktree strip under a new chat (2.6g)
+- [x] Phone header: title 15/20, subtitle 14/18 "project · worktree or branch", end fades
+- [x] Phone sheets: grab handle without ✕, sub-sheets with ←, a pushed view keeps the root height (`mobile-sheet.tsx`)
+- [x] Phone sheets drag down to close from the handle and header; iOS sheet curve; no tap flash; `theme-color` follows the theme
+- [x] Select model: options under Provider
+- [x] Provider loading and failed states with the same layout
+- [x] Connectors "Needs attention" rows without a switch
+- [x] Start screen centred in the app window (desktop) and between the header and the composer (phone)
+- [x] Browser client checked (desktop width and 390×844)
+- [ ] Voice "Use" in the send slot, blue emboss (C5)
+- [ ] Agent update banner above the composer (C4)
+- [ ] Status rail top-right; counts hug, use `tabular-nums`, cap at "99+" (C4)
+- [ ] Real provider and MCP logos with the letter-tile fallback (C4; providers already use `AgentIcon`, MCP rows still use letter tiles)
+- [ ] `fade-end` on every one-line row in the table above; no `truncate` there (done in the composer, sheets and header; the timeline's tool rows and subagent card are C4)
 - [ ] Worst-case data from frame 2.6o checked in the app at 320px and 390px
-- [ ] Browser client checked
+- [ ] Real phone / iOS Safari checked (tap delay, status bar, drag feel)
 - [ ] Light theme checked (design is dark only)
 
 ## Open items
 
 - MCP connector rows in the design still show letter tiles (no logo assets in the design file). In code they use the catalog icon first.
+- Needs a decision (CodeRabbit on #1868): a connector under "Needs attention" cannot be turned off from the phone sheet; the design has no switch there until it works.
+- Needs a decision (CodeRabbit on #1868): phone text at 15px (`text-[15px]`) is outside the type scale (12/14/16/22). Either add a 15/20 phone token or move to 14 or 16.
+- E2E `crash-recovery.spec.ts` "reopening a crashed chat from history" fails on dev and other branches: a project row's overlay button covers the Rail chat row. Not from the composer.
