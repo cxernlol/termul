@@ -90,13 +90,14 @@ impl WsRelaySink {
                 .is_some_and(|rendezvous| !rendezvous.pending_requests(sid).is_empty())
         };
         let elicitation = || !self.elicitations.pending_requests(sid).is_empty();
+        let mcp_install = || !self.mcp_installs.pending_requests(sid).is_empty();
         let project_id = self
             .persistence
             .as_ref()
             .and_then(|persistence| persistence.metadata(sid).ok())
             .and_then(|metadata| metadata.project_id);
         ActivityInputs {
-            needs_you: permission || question() || elicitation(),
+            needs_you: permission || question() || elicitation() || mcp_install(),
             read: self.chat_reads.get(sid),
             log_epoch: self.log_head(sid).map(|head| head.log_epoch),
             project_id,

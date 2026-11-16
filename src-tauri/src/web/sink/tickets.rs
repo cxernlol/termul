@@ -20,12 +20,14 @@ impl WsRelaySink {
             .question_rendezvous()
             .map_or(0, |rendezvous| rendezvous.release_session(session_id));
         let elicitations = self.elicitations.release_session(session_id);
-        if permissions + questions + elicitations > 0 {
+        let mcp_installs = self.mcp_installs.release_session(session_id);
+        if permissions + questions + elicitations + mcp_installs > 0 {
             tracing::info!(
                 session_id,
                 permissions,
                 questions,
                 elicitations,
+                mcp_installs,
                 "released pending approvals after the session ended"
             );
             self.refresh_chat_activity(session_id);
@@ -44,12 +46,14 @@ impl WsRelaySink {
             .question_rendezvous()
             .map_or(0, |rendezvous| rendezvous.release_session(session_id));
         let elicitations = self.elicitations.release_session(session_id);
-        if permissions + questions + elicitations > 0 {
+        let mcp_installs = self.mcp_installs.release_session(session_id);
+        if permissions + questions + elicitations + mcp_installs > 0 {
             tracing::info!(
                 session_id = %crate::logging::redact_session_id(session_id),
                 permissions,
                 questions,
                 elicitations,
+                mcp_installs,
                 "released pending approvals after the turn ended"
             );
         }
@@ -73,12 +77,14 @@ impl WsRelaySink {
             .question_rendezvous()
             .map_or(0, |rendezvous| rendezvous.release_agent(agent_id));
         let elicitations = self.elicitations.release_agent(agent_id);
-        if permissions + questions + elicitations > 0 {
+        let mcp_installs = self.mcp_installs.release_agent(agent_id);
+        if permissions + questions + elicitations + mcp_installs > 0 {
             tracing::info!(
                 agent_id = %agent_id,
                 permissions,
                 questions,
                 elicitations,
+                mcp_installs,
                 "released pending approvals after the agent ended"
             );
             self.refresh_pending_chat_activity();

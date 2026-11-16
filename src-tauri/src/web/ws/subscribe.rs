@@ -37,15 +37,15 @@ pub(super) fn spawn_event_forwarder(mut stream: EventStream, out_tx: OutboundSen
 }
 
 /// Add the session's still-pending prompts to a subscribe or snapshot reply:
-/// `pendingPermissions` (queue order), `pendingQuestions` and
-/// `pendingElicitations` (registration order), each the request payloads as
-/// published. Read AFTER the subscription registered: a request published
-/// later is delivered live, and its ticket is registered before the publish,
-/// so none falls in between. A replay cannot restore these: a permission
-/// request is not in the durable log (issue #1595), and a question or
-/// elicitation the client's history already covers is dropped, since no event
-/// says it was answered. A list is present only when the host keeps its
-/// tickets; without one the client keeps what it has.
+/// `pendingPermissions` (queue order), `pendingQuestions`,
+/// `pendingElicitations` and `pendingMcpInstalls` (registration order), each
+/// the request payloads as published. Read AFTER the subscription registered:
+/// a request published later is delivered live, and its ticket is registered
+/// before the publish, so none falls in between. A replay cannot restore
+/// these: a permission request is not in the durable log (issue #1595), and a
+/// question, elicitation or MCP install the client's history already covers
+/// is dropped, since no event says it was answered. A list is present only
+/// when the host keeps its tickets; without one the client keeps what it has.
 pub(super) fn attach_pending_prompts(reply: &mut Value, relay: &WsRelaySink, session_id: &str) {
     let permissions = relay
         .rendezvous()
@@ -54,13 +54,15 @@ pub(super) fn attach_pending_prompts(reply: &mut Value, relay: &WsRelaySink, ses
         .question_rendezvous()
         .map(|rdz| rdz.pending_requests(session_id));
     let elicitations = relay.elicitations().pending_requests(session_id);
+    let mcp_installs = relay.mcp_installs().pending_requests(session_id);
     let count = |list: &Option<Vec<Value>>| list.as_ref().map_or(0, Vec::len);
-    if count(&permissions) + count(&questions) + elicitations.len() > 0 {
+    if count(&permissions) + count(&questions) + elicitations.len() + mcp_installs.len() > 0 {
         log::info!(
-            "[ws] subscription restores pending prompts permissions={} questions={} elicitations={} session_id={}",
+            "[ws] subscription restores pending prompts permissions={} questions={} elicitations={} mcp_installs={} session_id={}",
             count(&permissions),
             count(&questions),
             elicitations.len(),
+            mcp_installs.len(),
             crate::logging::redact_session_id(session_id)
         );
     }
@@ -71,6 +73,7 @@ pub(super) fn attach_pending_prompts(reply: &mut Value, relay: &WsRelaySink, ses
         reply["pendingQuestions"] = Value::Array(questions);
     }
     reply["pendingElicitations"] = Value::Array(elicitations);
+    reply["pendingMcpInstalls"] = Value::Array(mcp_installs);
 }
 
 /// Wire `subscribe` → [`WsRelaySink::subscribe`] + forward replay/live to this connection.

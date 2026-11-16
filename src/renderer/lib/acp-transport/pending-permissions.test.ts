@@ -56,7 +56,12 @@ function elicitation(requestId: string, sessionId = SID): ElicitationRequestEven
   }
 }
 
-const NO_LISTS: PendingPrompts = { permissions: null, questions: null, elicitations: null }
+const NO_LISTS: PendingPrompts = {
+  permissions: null,
+  questions: null,
+  elicitations: null,
+  mcpInstalls: null
+}
 
 describe('readPendingPrompts', () => {
   it('reads every absent list as null', () => {
@@ -77,15 +82,40 @@ describe('readPendingPrompts', () => {
     expect(readPendingPrompts(SID, reply)).toEqual({
       permissions: [request('perm-1')],
       questions: [question('q-1')],
-      elicitations: [elicitation('el-1')]
+      elicitations: [elicitation('el-1')],
+      mcpInstalls: null
     })
+  })
+
+  it('reads a pending MCP install of this session and skips a malformed one', () => {
+    const card = {
+      agentId: 'a1',
+      sessionId: SID,
+      requestId: 'mcp-1',
+      name: 'echo',
+      title: 'echo',
+      transport: 'stdio',
+      form: { title: 'echo', fields: [] },
+      consent: null,
+      planId: 'plan-1',
+      launchDigest: 'sha256:abc'
+    }
+    const reply = {
+      pendingMcpInstalls: [
+        card,
+        { ...card, requestId: 'mcp-other', sessionId: 'other' },
+        { requestId: 'mcp-bad' }
+      ]
+    }
+    expect(readPendingPrompts(SID, reply).mcpInstalls).toEqual([card])
   })
 
   it('reads an empty list as authoritative and an absent one as no list', () => {
     expect(readPendingPrompts(SID, { pendingPermissions: [], pendingElicitations: [] })).toEqual({
       permissions: [],
       questions: null,
-      elicitations: []
+      elicitations: [],
+      mcpInstalls: null
     })
   })
 })
@@ -124,7 +154,7 @@ describe('PendingPromptCoverage', () => {
     expect(coverage.covers(SID, at('elicitation_request', 4, 'el-1'))).toBe(true)
     expect(coverage.covers(SID, at('question_request', 4, 'q-1'))).toBe(false)
     expect(coverage.covers(SID, at('permission_request', 4))).toBe(false)
-    coverage.note(SID, 5, { permissions: [], questions: [], elicitations: [] })
+    coverage.note(SID, 5, { permissions: [], questions: [], elicitations: [], mcpInstalls: null })
     expect(coverage.covers(SID, at('question_request', 4, 'q-1'))).toBe(true)
     expect(coverage.covers(SID, at('elicitation_request', 6, 'el-1'))).toBe(false)
   })
@@ -145,6 +175,37 @@ describe('PendingPromptCoverage', () => {
       coverage.covers(SID, replay('permission_request', request('perm-1'))),
       'a listed approval is restored by the list, never by replay'
     ).toBe(true)
+  })
+
+  it('covers a replayed install card the list left out and lets a listed one through', () => {
+    const coverage = new PendingPromptCoverage()
+    const card = {
+      agentId: 'a1',
+      sessionId: SID,
+      requestId: 'mcp-live',
+      name: 'echo',
+      title: 'echo',
+      transport: 'stdio' as const,
+      form: {
+        source: { kind: 'import' as const, json: '{}', server: 'echo' },
+        choice: null,
+        title: 'echo',
+        fields: []
+      },
+      consent: null,
+      planId: 'plan-1',
+      launchDigest: 'sha256:abc'
+    }
+    coverage.note(SID, 5, { ...NO_LISTS, mcpInstalls: [card] })
+    expect(coverage.covers(SID, { type: 'mcp_install_request', seq: 4, payload: card })).toBe(false)
+    expect(
+      coverage.covers(SID, {
+        type: 'mcp_install_request',
+        seq: 4,
+        payload: { ...card, requestId: 'mcp-done' }
+      })
+    ).toBe(true)
+    expect(coverage.covers(SID, { type: 'mcp_install_request', seq: 6, payload: card })).toBe(false)
   })
 })
 
@@ -383,7 +444,8 @@ describe('WsAcpTransport pending approvals (issue #1595)', () => {
         prompts: {
           permissions: [],
           questions: [question('q-1')],
-          elicitations: [elicitation('el-1')]
+          elicitations: [elicitation('el-1')],
+          mcpInstalls: null
         }
       }
     ])
@@ -402,7 +464,12 @@ describe('WsAcpTransport pending approvals (issue #1595)', () => {
     expect(PendingHost.last?.sent.map((req) => req.type)).toContain('recover_session_snapshot')
     expect(prompts.at(-1)).toEqual({
       sessionId: SID,
-      prompts: { permissions: null, questions: [], elicitations: [elicitation('el-1')] }
+      prompts: {
+        permissions: null,
+        questions: [],
+        elicitations: [elicitation('el-1')],
+        mcpInstalls: null
+      }
     })
     transport.dispose()
   })
@@ -441,7 +508,10 @@ describe('WsAcpTransport pending approvals (issue #1595)', () => {
     transport.seedSessionCursor(SID, { lastSeq: 2, logEpoch: 'epoch-A' })
     await transport.subscribeSession(SID)
     expect(prompts).toEqual([
-      { sessionId: SID, prompts: { permissions: [], questions: null, elicitations: null } }
+      {
+        sessionId: SID,
+        prompts: { permissions: [], questions: null, elicitations: null, mcpInstalls: null }
+      }
     ])
     const host = PendingHost.last as PendingHost
     host.emit({ sid: SID, seq: 3, type: 'question_request', payload: question('q-1') })

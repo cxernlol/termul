@@ -67,6 +67,7 @@
 //! tool call does not execute).
 
 mod elicitations;
+mod mcp_installs;
 mod questions;
 mod tombstones;
 mod turn_watermark;
@@ -84,6 +85,7 @@ use crate::browser_automation::core::ports::ConsentOption;
 use crate::web::sink::ClientId;
 
 pub use elicitations::ElicitationTickets;
+pub use mcp_installs::McpInstallTickets;
 pub use questions::{QuestionRendezvous, QuestionRespondError, QuestionRespondOutcome};
 pub use tombstones::RESOLVED_TOMBSTONE_CAPACITY;
 pub use turn_watermark::{TurnClaim, TurnWatermark};

@@ -408,6 +408,14 @@ impl EventSink for WsRelaySink {
             "elicitation_request" if event.sid.is_some() => {
                 self.elicitations.register_event(&event.payload);
             }
+            "mcp_install_request" => {
+                self.mcp_installs.register_event(&event.payload);
+            }
+            "mcp_install_resolved" => {
+                if let Some(request_id) = event.payload.get("requestId").and_then(Value::as_str) {
+                    self.mcp_installs.settle(request_id);
+                }
+            }
             _ => {}
         }
 

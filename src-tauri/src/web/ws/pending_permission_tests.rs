@@ -578,3 +578,38 @@ async fn lifecycle_ends_release_pending_questions_and_elicitations() {
         assert_eq!(payload["pendingElicitations"], json!([]), "{type_}");
     }
 }
+
+#[tokio::test]
+async fn subscribe_lists_a_pending_mcp_install_until_it_resolves() {
+    let relay = Arc::new(WsRelaySink::new());
+    relay.seed_session_for_test(SID);
+    emit(
+        &relay,
+        "acp:mcp_install_request",
+        json!({
+            "agentId": "agent-1",
+            "sessionId": SID,
+            "requestId": "mcp-1",
+            "name": "echo",
+            "title": "echo",
+            "form": { "title": "echo", "fields": [] }
+        }),
+    );
+    let payload = subscribe_reply(&relay, json!({"sessionId": SID})).await;
+    assert_eq!(payload["pendingMcpInstalls"][0]["requestId"], "mcp-1");
+    assert_eq!(payload["pendingMcpInstalls"][0]["name"], "echo");
+    emit(
+        &relay,
+        "acp:mcp_install_resolved",
+        json!({
+            "agentId": "agent-1",
+            "sessionId": SID,
+            "requestId": "mcp-1",
+            "outcome": "declined",
+            "nextSteps": [],
+            "oauth": false
+        }),
+    );
+    let payload = subscribe_reply(&relay, json!({"sessionId": SID})).await;
+    assert_eq!(payload["pendingMcpInstalls"], json!([]));
+}

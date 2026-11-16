@@ -25,7 +25,8 @@ import type { AcpState } from './types'
 const answering: Record<PendingPromptKind, Set<string>> = {
   permissions: new Set(),
   questions: new Set(),
-  elicitations: new Set()
+  elicitations: new Set(),
+  mcpInstalls: new Set()
 }
 
 export function noteAnswering(kind: PendingPromptKind, id: string): void {
@@ -42,7 +43,8 @@ type StoreSet = (fn: (state: AcpState) => Partial<AcpState>) => void
 const STORE_KEY = {
   permissions: 'pendingPermissions',
   questions: 'pendingQuestions',
-  elicitations: 'pendingElicitations'
+  elicitations: 'pendingElicitations',
+  mcpInstalls: 'pendingMcpInstalls'
 } as const satisfies Record<PendingPromptKind, keyof AcpState>
 
 /** Drop the session's stored requests of `kind` whose ids the host list leaves out. */
@@ -55,10 +57,14 @@ function dropUnlisted(
   const key = STORE_KEY[kind]
   let dropped = 0
   set((state) => {
-    const stored: Record<string, { sessionId: string }> = state[key] ?? {}
-    const stale = Object.keys(stored).filter(
-      (id) => stored[id].sessionId === sessionId && !listed.has(id)
-    )
+    const stored: Record<string, { sessionId: string; result?: unknown }> = state[key] ?? {}
+    const stale = Object.keys(stored).filter((id) => {
+      const entry = stored[id]
+      if (entry.sessionId !== sessionId || listed.has(id)) return false
+      // A finished install card keeps its next steps until the user dismisses it.
+      if (kind === 'mcpInstalls' && entry.result != null) return false
+      return true
+    })
     if (stale.length === 0) return {}
     dropped = stale.length
     const next = { ...stored }
@@ -125,6 +131,16 @@ export function syncPendingPrompts(
       prompts.elicitations,
       (request) => request.requestId,
       (request) => get()._onElicitationRequest(request)
+    )
+  }
+  if (prompts.mcpInstalls) {
+    syncKind(
+      set,
+      sessionId,
+      'mcpInstalls',
+      prompts.mcpInstalls,
+      (request) => request.requestId,
+      (request) => get()._onMcpInstallRequest(request)
     )
   }
 }

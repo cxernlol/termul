@@ -24,6 +24,7 @@ import { logFrontendError } from '@/lib/log-api'
 import { pendingFromRequest } from '@/lib/mcp-install-request'
 import { syncSharedKey } from '@/lib/shared-key-sync'
 import { randomUUID } from '@/lib/uuid'
+import { forgetAnswering, noteAnswering } from '../pending-permission-sync'
 import type { AcpState } from '../types'
 
 // MCP registry mutations (save/import/toggle/delete) are serialized through a
@@ -343,6 +344,7 @@ export const createMcpSlice: McpSliceCreator = (set, get) => ({
         }
       }))
     }
+    noteAnswering('mcpInstalls', requestId)
     try {
       await answerMcpInstallApi({
         requestId,
@@ -354,6 +356,7 @@ export const createMcpSlice: McpSliceCreator = (set, get) => ({
         launchDigest: launchDigest ?? pending.launchDigest
       })
     } catch (err) {
+      forgetAnswering('mcpInstalls', requestId)
       set((s) => {
         const current = s.pendingMcpInstalls[requestId]
         if (!current) return {}
@@ -396,6 +399,7 @@ export const createMcpSlice: McpSliceCreator = (set, get) => ({
   },
 
   _onMcpInstallResolved: (event) => {
+    forgetAnswering('mcpInstalls', event.requestId)
     set((s) => {
       const previous = s.pendingMcpInstalls[event.requestId]
       if (!previous) return {}

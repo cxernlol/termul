@@ -243,6 +243,45 @@ async fn a_pending_permission_or_question_needs_you_until_answered() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_pending_mcp_install_needs_you_until_it_resolves() {
+    let host = ticket_host();
+    let mut watcher = host.connect();
+    watcher.authenticate().await;
+    watch_activity(&mut watcher.peer).await;
+
+    emit(
+        &host,
+        Some(SESSION),
+        "acp:mcp_install_request",
+        json!({
+            "agentId": AGENT,
+            "sessionId": SESSION,
+            "requestId": "mcp-1",
+            "name": "echo"
+        }),
+    );
+    watcher.peer.read_for(Duration::from_millis(50)).await;
+    assert_eq!(
+        activity(&watcher.peer).get(SESSION),
+        Some(&record(false, true, false, Value::Null))
+    );
+
+    emit(
+        &host,
+        Some(SESSION),
+        "acp:mcp_install_resolved",
+        json!({
+            "agentId": AGENT,
+            "sessionId": SESSION,
+            "requestId": "mcp-1",
+            "outcome": "declined"
+        }),
+    );
+    watcher.peer.read_for(Duration::from_millis(50)).await;
+    assert_eq!(activity(&watcher.peer).get(SESSION), None);
+}
+
+#[tokio::test(start_paused = true)]
 async fn an_elicitation_needs_you_until_its_turn_ends() {
     let host = ticket_host();
     let mut watcher = host.connect();

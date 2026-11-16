@@ -7,11 +7,13 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { respondPermissionMock, answerQuestionMock, respondElicitationMock } = vi.hoisted(() => ({
-  respondPermissionMock: vi.fn(),
-  answerQuestionMock: vi.fn(),
-  respondElicitationMock: vi.fn()
-}))
+const { respondPermissionMock, answerQuestionMock, respondElicitationMock, answerMcpInstallMock } =
+  vi.hoisted(() => ({
+    respondPermissionMock: vi.fn(),
+    answerQuestionMock: vi.fn(),
+    respondElicitationMock: vi.fn(),
+    answerMcpInstallMock: vi.fn()
+  }))
 
 vi.mock('@/lib/log-api', () => ({ logFrontendError: vi.fn() }))
 vi.mock('@/lib/acp-api', async (importActual) => {
@@ -23,7 +25,8 @@ vi.mock('@/lib/acp-api', async (importActual) => {
       respondPermission: respondPermissionMock,
       answerQuestion: answerQuestionMock,
       respondElicitation: respondElicitationMock
-    }
+    },
+    answerMcpInstall: answerMcpInstallMock
   }
 })
 
@@ -33,6 +36,7 @@ import type {
   PermissionRequestEvent
 } from '@/lib/acp-api'
 import type { PendingPrompts } from '@/lib/acp-transport/pending-permissions'
+import type { McpInstallRequestEvent, McpInstallResolvedEvent } from '@/lib/mcp-install-request'
 import { useAcpStore } from '@/stores/acp-store'
 import { syncPendingPrompts } from './pending-permission-sync'
 import { historySeqWatermarks } from './shared-state'
@@ -76,22 +80,57 @@ const syncPrompts = (sessionId: string, prompts: Partial<PendingPrompts>) =>
     permissions: null,
     questions: null,
     elicitations: null,
+    mcpInstalls: null,
     ...prompts
   })
 
 const sync = (sessionId: string, requests: PermissionRequestEvent[]) =>
   syncPrompts(sessionId, { permissions: requests })
 
+function installCard(requestId: string, sessionId = SID): McpInstallRequestEvent {
+  return {
+    agentId: 'agent-1',
+    sessionId,
+    requestId,
+    name: 'echo',
+    title: 'echo',
+    transport: 'stdio',
+    form: {
+      source: { kind: 'import', json: '{}', server: 'echo' },
+      choice: null,
+      title: 'echo',
+      fields: []
+    },
+    consent: null,
+    planId: 'plan-1',
+    launchDigest: 'sha256:abc'
+  }
+}
+
+function installed(requestId: string, sessionId = SID): McpInstallResolvedEvent {
+  return {
+    agentId: 'agent-1',
+    sessionId,
+    requestId,
+    outcome: 'installed',
+    name: 'echo',
+    serverId: 'srv-1',
+    nextSteps: [{ kind: 'oauth', message: 'Sign in' }],
+    oauth: true
+  }
+}
+
 const pendingIds = () => Object.keys(useAcpStore.getState().pendingPermissions).sort()
 const questionIds = () => Object.keys(useAcpStore.getState().pendingQuestions).sort()
 const elicitationIds = () => Object.keys(useAcpStore.getState().pendingElicitations).sort()
 
 beforeEach(() => {
-  useAcpStore.setState(FRESH)
+  useAcpStore.setState({ ...FRESH, pendingMcpInstalls: {} })
   historySeqWatermarks.clear()
   respondPermissionMock.mockReset()
   answerQuestionMock.mockReset()
   respondElicitationMock.mockReset()
+  answerMcpInstallMock.mockReset()
 })
 
 describe('syncPendingPrompts: approvals', () => {
@@ -236,5 +275,58 @@ describe('syncPendingPrompts: questions and elicitations', () => {
     await useAcpStore.getState().respondElicitation('el-1', 'accept', { plan: 'pro' })
     syncPrompts(SID, { elicitations: [elicitation('el-1')] })
     expect(elicitationIds()).toEqual(['el-1'])
+  })
+})
+
+describe('syncPendingPrompts: mcp install cards', () => {
+  it('keeps a resolved card with its next steps when the host no longer lists it', () => {
+    useAcpStore.getState()._onMcpInstallRequest(installCard('mcp-1'))
+    useAcpStore.getState()._onMcpInstallResolved(installed('mcp-1'))
+    expect(useAcpStore.getState().pendingMcpInstalls['mcp-1']?.result?.nextSteps[0]?.message).toBe(
+      'Sign in'
+    )
+
+    syncPrompts(SID, { mcpInstalls: [] })
+
+    expect(useAcpStore.getState().pendingMcpInstalls['mcp-1']?.result).toMatchObject({
+      outcome: 'installed',
+      serverId: 'srv-1',
+      oauth: true,
+      nextSteps: [{ kind: 'oauth', message: 'Sign in' }]
+    })
+  })
+
+  it('installs a listed card and drops an unanswered one the host released', () => {
+    useAcpStore.getState()._onMcpInstallRequest(installCard('mcp-open'))
+    useAcpStore.getState()._onMcpInstallRequest(installCard('mcp-other', 'sess-2'))
+
+    syncPrompts(SID, { mcpInstalls: [installCard('mcp-new')] })
+
+    expect(Object.keys(useAcpStore.getState().pendingMcpInstalls).sort()).toEqual([
+      'mcp-new',
+      'mcp-other'
+    ])
+    expect(useAcpStore.getState().pendingMcpInstalls['mcp-new']).toMatchObject({
+      name: 'echo',
+      sessionId: SID,
+      planId: 'plan-1'
+    })
+  })
+
+  it('does not bring back a card whose answer is still on its way', async () => {
+    useAcpStore.getState()._onMcpInstallRequest(installCard('mcp-1'))
+    let finish: () => void = () => {}
+    answerMcpInstallMock.mockImplementation(
+      () => new Promise<void>((resolve) => (finish = resolve))
+    )
+    const answering = useAcpStore.getState().answerMcpInstall('mcp-1', 'decline')
+    const during = useAcpStore.getState().pendingMcpInstalls['mcp-1']
+
+    syncPrompts(SID, { mcpInstalls: [installCard('mcp-1')] })
+
+    expect(useAcpStore.getState().pendingMcpInstalls['mcp-1']).toBe(during)
+    finish()
+    await answering
+    expect(useAcpStore.getState().pendingMcpInstalls['mcp-1']).toBe(during)
   })
 })

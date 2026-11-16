@@ -397,7 +397,12 @@ describe('acp-store: live-turn attach replays the open turn (reopen tool cards)'
     // reply lists it as still pending.
     transport.subscribeSession.mockImplementation(async () => {
       listeners.get('acp:elicitation_request')?.(elicitation, 11)
-      installPendingPrompts?.(id, { permissions: [], questions: [], elicitations: [elicitation] })
+      installPendingPrompts?.(id, {
+        permissions: [],
+        questions: [],
+        elicitations: [elicitation],
+        mcpInstalls: null
+      })
     })
     _setAcpTransportForTests(transport)
     const teardown = initAcpEventListeners()

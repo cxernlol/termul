@@ -152,6 +152,9 @@ pub struct WsRelaySink {
     /// Pending elicitations of every session (always present: answering one
     /// needs no rendezvous policy, only the list a reconnecting client reads).
     elicitations: crate::web::permissions::ElicitationTickets,
+    /// Pending MCP install cards. Always present, like elicitations: a
+    /// subscribe reply lists them so a reconnecting client can render the card.
+    mcp_installs: crate::web::permissions::McpInstallTickets,
     /// Server-side turn-id watermark (Story 1.7 T7.2 — FR13/FR11 plumbing).
     /// Always present (cheap to construct; no external handle). 1.8's
     /// `prompt_complete` / `send_prompt` handlers read this via
@@ -250,6 +253,7 @@ impl WsRelaySink {
             rendezvous: Mutex::new(None),
             question_rendezvous: Mutex::new(None),
             elicitations: crate::web::permissions::ElicitationTickets::default(),
+            mcp_installs: crate::web::permissions::McpInstallTickets::default(),
             turn_watermark: crate::web::permissions::TurnWatermark::new(),
             pre_registration_events: Mutex::new(HashMap::new()),
             pre_registration_capacity: DEFAULT_PRE_REGISTRATION_CAPACITY,
@@ -412,6 +416,11 @@ impl WsRelaySink {
     /// The session-scoped elicitations still waiting for an answer.
     pub fn elicitations(&self) -> &crate::web::permissions::ElicitationTickets {
         &self.elicitations
+    }
+
+    /// The MCP install cards still waiting for an answer.
+    pub fn mcp_installs(&self) -> &crate::web::permissions::McpInstallTickets {
+        &self.mcp_installs
     }
 
     /// Number of clients currently subscribed to `session_id`.

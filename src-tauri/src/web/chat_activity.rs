@@ -8,8 +8,8 @@
 //! - `busy`: a prompt turn is open (`user_prompt` recorded, no
 //!   `prompt_complete` yet) or the agent works outside a turn
 //!   (`agent_working`). A closed session or a dead agent works on nothing.
-//! - `needsYou`: the relay holds a pending permission, question or
-//!   elicitation of the session (the list a subscribing client installs).
+//! - `needsYou`: the relay holds a pending permission, question, elicitation
+//!   or MCP install card of the session (the list a subscribing client installs).
 //! - `unread`: the newest turn end this host saw is past the shared last-read
 //!   marker ([`crate::web::chat_reads`]). `turnEnd` is that turn end, so the
 //!   surface showing the chat can mark it read.
@@ -126,7 +126,9 @@ impl ActivityEvent {
             "permission_request"
             | "question_request"
             | "elicitation_request"
-            | "question_cancelled" => Some(Self::Prompt {
+            | "question_cancelled"
+            | "mcp_install_request"
+            | "mcp_install_resolved" => Some(Self::Prompt {
                 agent_id: agent_id(),
             }),
             _ => None,
