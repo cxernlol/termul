@@ -410,10 +410,8 @@ function checkVerdict(found: number, paths: readonly string[]): string {
   if (found === 0) return 'No "Termul" left.'
   return [
     `${found} "Termul" left. The product is called Troupe now.`,
-    'Rename each file (site links stay until the domain moves):',
-    ...paths.map(
-      (path) => `  bun run rebrand --apply --skip-category url --paths ${shellQuote(path)}`
-    ),
+    'Rename each file:',
+    ...paths.map((path) => `  bun run rebrand --apply --paths ${shellQuote(path)}`),
     'If the old name is intended (persisted data, a legacy file name, history), add a',
     'keep entry with a reason to KEEP_PATTERNS or KEEP_PATHS in scripts/rebrand/rules.ts.'
   ].join('\n')

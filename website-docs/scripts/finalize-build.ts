@@ -12,12 +12,9 @@
  * The SPA fallback becomes docs/404.html: Cloudflare Pages serves the nearest
  * 404.html with a 404 status for unknown URLs, so /docs/* misses render the
  * docs not-found page and paths outside /docs are left to whoever owns them.
- *
- * build/client/_redirects is only read by the standalone docs project
- * (docs.termul.dev), which serves build/client at its root.
  */
 
-import { existsSync, readdirSync, renameSync, writeFileSync } from 'node:fs'
+import { existsSync, readdirSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
 import { docsRoute } from '../app/lib/shared'
 
@@ -42,14 +39,4 @@ for (const entry of readdirSync(client)) {
   renameSync(join(client, entry), target)
 }
 
-// Old root URLs from before the docs moved under /docs.
-const redirects = [
-  `/ ${docsRoute}/ 301`,
-  `/llms.txt ${docsRoute}/llms.txt 301`,
-  `/llms-full.txt ${docsRoute}/llms-full.txt 301`,
-  `/llms.mdx/docs/* ${docsRoute}/llms.mdx/:splat 301`,
-  `/api-reference.html ${docsRoute}/api-reference.html 301`
-]
-writeFileSync(join(client, '_redirects'), `${redirects.join('\n')}\n`)
-
-console.log(`✓ ${site} holds the site; ${client}/_redirects written`)
+console.log(`✓ ${site} holds the site`)

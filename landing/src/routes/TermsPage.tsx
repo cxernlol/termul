@@ -54,7 +54,7 @@ export function TermsPage() {
           </li>
           <li>
             You agree that your quote, name, role, and avatar may be shown
-            publicly on termul.dev if the maintainer approves it. Submissions
+            publicly on usetroupe.dev if the maintainer approves it. Submissions
             are reviewed first and may be rejected or unpublished at any time
             without a reason.
           </li>
@@ -96,7 +96,7 @@ export function TermsPage() {
         <p>
           <em>Ringkasan:</em> Troupe gratis dan berlisensi MIT, diberikan apa
           adanya tanpa garansi. Dengan mengirim testimoni, kamu setuju
-          kutipan, nama, peran, dan avatar ditampilkan di termul.dev setelah
+          kutipan, nama, peran, dan avatar ditampilkan di usetroupe.dev setelah
           disetujui, dan bisa minta dihapus lewat issue GitHub.
         </p>
       </LegalSection>

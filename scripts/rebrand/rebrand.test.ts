@@ -141,8 +141,8 @@ describe('CLI against a git repo', () => {
       stdout: "src/b.ts:1: const title = 'Termul'\n",
       stderr: [
         '1 "Termul" left. The product is called Troupe now.',
-        'Rename each file (site links stay until the domain moves):',
-        "  bun run rebrand --apply --skip-category url --paths 'src/b.ts'",
+        'Rename each file:',
+        "  bun run rebrand --apply --paths 'src/b.ts'",
         'If the old name is intended (persisted data, a legacy file name, history), add a',
         'keep entry with a reason to KEEP_PATTERNS or KEEP_PATHS in scripts/rebrand/rules.ts.',
         ''

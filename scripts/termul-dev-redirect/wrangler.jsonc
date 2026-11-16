@@ -1,0 +1,13 @@
+// Deploy by hand: bunx wrangler deploy -c scripts/termul-dev-redirect/wrangler.jsonc
+// The routes sit in front of the termul.dev and docs.termul.dev Pages custom
+// domains, which stay attached so their DNS records and certificates remain.
+{
+  "name": "termul-dev-redirect",
+  "main": "worker.ts",
+  "compatibility_date": "2026-11-01",
+  "workers_dev": false,
+  "routes": [
+    { "pattern": "termul.dev/*", "zone_name": "termul.dev" },
+    { "pattern": "docs.termul.dev/*", "zone_name": "termul.dev" }
+  ]
+}

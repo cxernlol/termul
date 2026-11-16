@@ -291,6 +291,13 @@ export const KEEP_PATHS: readonly KeepPath[] = [
     globs: ['scripts/rebrand/**']
   },
   {
+    id: 'termul-dev-redirect',
+    reason:
+      'The Worker that sends termul.dev and docs.termul.dev to usetroupe.dev has to name the old hosts.',
+    owner: 'keep while termul.dev redirects',
+    globs: ['scripts/termul-dev-redirect/**']
+  },
+  {
     id: 'design-files',
     reason: 'Design documents are edited in their own tools.',
     owner: 'design',

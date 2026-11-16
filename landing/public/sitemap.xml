@@ -1,22 +1,22 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url>
-    <loc>https://termul.dev/</loc>
+    <loc>https://usetroupe.dev/</loc>
     <changefreq>monthly</changefreq>
     <priority>1.0</priority>
   </url>
   <url>
-    <loc>https://termul.dev/testimonial/submit/</loc>
+    <loc>https://usetroupe.dev/testimonial/submit/</loc>
     <changefreq>monthly</changefreq>
     <priority>0.6</priority>
   </url>
   <url>
-    <loc>https://termul.dev/privacy/</loc>
+    <loc>https://usetroupe.dev/privacy/</loc>
     <changefreq>yearly</changefreq>
     <priority>0.3</priority>
   </url>
   <url>
-    <loc>https://termul.dev/terms/</loc>
+    <loc>https://usetroupe.dev/terms/</loc>
     <changefreq>yearly</changefreq>
     <priority>0.3</priority>
   </url>

@@ -999,10 +999,10 @@ jobs:
         with:
           egress-policy: audit
 
-      - name: Dispatch the docs deploy
+      - name: Dispatch the landing and docs deploy
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh workflow run deploy-docs.yml --repo "$GITHUB_REPOSITORY" --ref main
+        run: gh workflow run deploy-landing.yml --repo "$GITHUB_REPOSITORY" --ref main
 
   # Manual Insider→Stable promotion. Copies the moving-tag Insider manifest,
   # rewrites its version + asset URLs to a stable tag (whose release must

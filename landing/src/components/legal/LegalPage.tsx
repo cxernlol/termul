@@ -22,7 +22,7 @@ export function LegalPage({
     robots: 'index,follow',
   });
   useHead({
-    link: [{ rel: 'canonical', href: `https://termul.dev${path}` }],
+    link: [{ rel: 'canonical', href: `https://usetroupe.dev${path}` }],
   });
 
   return (

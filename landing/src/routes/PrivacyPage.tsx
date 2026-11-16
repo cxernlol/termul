@@ -17,7 +17,7 @@ export function PrivacyPage() {
     >
       <LegalSection title="Summary">
         <p>
-          Troupe is a free, open-source desktop app. This website (termul.dev)
+          Troupe is a free, open-source desktop app. This website (usetroupe.dev)
           loads Google Tag Manager, may load Cloudflare Web Analytics, and
           stores testimonial submissions. We did not find analytics or crash
           reporting code in the desktop app source. Details below.
@@ -42,7 +42,7 @@ export function PrivacyPage() {
           <li>
             <strong>Cloudflare Web Analytics</strong>: the Content Security
             Policy allows the Cloudflare Insights script and endpoint. Whether
-            it is turned on for termul.dev is a dashboard setting we have not
+            it is turned on for usetroupe.dev is a dashboard setting we have not
             verified.
           </li>
           <li>
@@ -129,7 +129,7 @@ export function PrivacyPage() {
           <li>
             Your terminals, files, and projects stay on your machine. If you
             use features that connect elsewhere (AI coding agents, MCP
-            servers, SSH, a browser pane, or termul-server), the data you send
+            servers, SSH, a browser pane, or troupe-server), the data you send
             goes to the service you chose, under that service&apos;s own
             policy. We did not audit each of these integrations for this page.
           </li>

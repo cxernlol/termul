@@ -6,5 +6,5 @@
 /build/
 .source
 
-# Downloaded from the latest release at deploy time (deploy-docs.yml).
+# Downloaded from the latest release at deploy time (deploy-landing.yml).
 /public/openapi.yaml

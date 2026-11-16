@@ -211,7 +211,7 @@ A reverse proxy that preserves the public `Host` header (Caddy and cloudflared d
 
 ```bash
 troupe-server --host 127.0.0.1 --port 8080 \
-    --allowed-origins https://termul.example.com
+    --allowed-origins https://troupe.example.com
 ```
 
 Comma-separate several origins, or repeat `--allowed-origins`. The flag replaces `TROUPE_ALLOWED_ORIGINS` when both are set. The server does not send `Access-Control-Allow-Origin`.
@@ -274,7 +274,7 @@ The image contains no agent CLIs such as Claude Code or Codex. `PATH` starts wit
 Run the proxy on the host and forward to `127.0.0.1:8080`, with WebSocket upgrades enabled. A proxy that keeps the public `Host` header needs no extra setting. Caddy does this by default:
 
 ```
-termul.example.com {
+troupe.example.com {
 	reverse_proxy 127.0.0.1:8080
 }
 ```
@@ -282,7 +282,7 @@ termul.example.com {
 If the proxy rewrites `Host` to the upstream address, add the public origin to `.env`:
 
 ```bash
-TROUPE_ALLOWED_ORIGINS=https://termul.example.com
+TROUPE_ALLOWED_ORIGINS=https://troupe.example.com
 ```
 
 A proxy container on the same Compose network reaches the server at `termul-server:8080`. In that case, remove the `ports` entry.

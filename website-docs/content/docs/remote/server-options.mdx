@@ -87,7 +87,7 @@ A reverse proxy such as Caddy or nginx can add HTTPS in front of Troupe. HTTPS k
 With Caddy, this is the whole configuration:
 
 ```text
-termul.example.com {
+troupe.example.com {
 	reverse_proxy 127.0.0.1:8080
 }
 ```
@@ -95,7 +95,7 @@ termul.example.com {
 The server checks that browser requests come from its own address. A proxy that passes the public host name through, as Caddy does by default, needs nothing more. If your proxy changes the host name to the upstream address, the browser gets refused. List the public address with `--allowed-origins`:
 
 ```bash
-troupe-server --host 127.0.0.1 --port 8080 --allowed-origins https://termul.example.com
+troupe-server --host 127.0.0.1 --port 8080 --allowed-origins https://troupe.example.com
 ```
 
 ## Update the server

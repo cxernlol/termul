@@ -51,9 +51,9 @@ The `deploy` script invokes `wrangler pages deploy dist` and uploads the build o
    ```bash
    bunx wrangler pages project create termul-landing --production-branch main
    ```
-3. Connect the custom domain `termul.dev`:
+3. Connect the custom domain `usetroupe.dev`:
    - Go to [Cloudflare Pages → termul-landing → Custom domains](https://dash.cloudflare.com/?to=/:account/pages/view/termul-landing/custom-domains)
-   - Click **Set up a custom domain** and enter `termul.dev`
+   - Click **Set up a custom domain** and enter `usetroupe.dev`
    - Cloudflare auto-provisions SSL and routes traffic (DNS must be on Cloudflare)
 
 **Routing and 404:** Every route is prerendered to static HTML, so there is no SPA catch-all rewrite. The catch-all `*` route (`NotFoundPage`) is prerendered at `/404` and `scripts/write-404.ts` moves it to `dist/404.html`, which Cloudflare Pages serves with a real 404 status for unknown URLs. If you add a route, add it to `src/routes/index.tsx` (and `public/sitemap.xml` if it should be indexed) so it is prerendered.
@@ -144,4 +144,4 @@ After `bun run build`:
 
 1. Open `dist/index.html` and confirm `#app` contains rendered markup (e.g. "Terminal, reimagined", feature titles, footer CTA).
 2. Run `bun run verify:prerender` for an automated check.
-3. After deploy to `https://termul.dev`, validate with [Google Rich Results Test](https://search.google.com/test/rich-results) or view-source in the browser.
+3. After deploy to `https://usetroupe.dev`, validate with [Google Rich Results Test](https://search.google.com/test/rich-results) or view-source in the browser.

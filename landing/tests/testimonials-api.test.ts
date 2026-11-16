@@ -145,7 +145,7 @@ describe('testimonial API helpers', () => {
   });
 
   test('uses the first forwarded IP when CF-Connecting-IP is absent', () => {
-    const request = new Request('https://termul.dev/api/testimonials', {
+    const request = new Request('https://usetroupe.dev/api/testimonials', {
       headers: {
         'X-Forwarded-For': '1.2.3.4, 5.6.7.8',
       },
@@ -155,7 +155,7 @@ describe('testimonial API helpers', () => {
   });
 
   test('prefers CF-Connecting-IP over X-Forwarded-For', () => {
-    const request = new Request('https://termul.dev/api/testimonials', {
+    const request = new Request('https://usetroupe.dev/api/testimonials', {
       headers: {
         'CF-Connecting-IP': '9.9.9.9',
         'X-Forwarded-For': '1.2.3.4, 5.6.7.8',

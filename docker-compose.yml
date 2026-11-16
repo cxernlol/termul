@@ -38,7 +38,7 @@ services:
       # termul-home volume. A value here replaces that token.
       TROUPE_WEB_AUTH_TOKEN: ${TROUPE_WEB_AUTH_TOKEN:-${TERMUL_WEB_AUTH_TOKEN:-}}
       # The public origin of a reverse proxy that rewrites the Host header,
-      # for example https://termul.example.com. Comma-separate several.
+      # for example https://troupe.example.com. Comma-separate several.
       TROUPE_ALLOWED_ORIGINS: ${TROUPE_ALLOWED_ORIGINS:-${TERMUL_ALLOWED_ORIGINS:-}}
       # Requests reach the container from the Docker network, never from
       # loopback, so without this the server refuses every file and git write
