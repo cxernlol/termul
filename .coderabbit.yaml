@@ -1,5 +1,9 @@
 # CodeRabbit Configuration
 reviews:
+  auto_review:
+    # Skip draft pull requests. Set this explicitly. The schema default is
+    # false, and a draft pull request was still auto-reviewed.
+    drafts: false
   path_filters:
     - "!**/*.test.ts"
     - "!**/*.test.tsx"

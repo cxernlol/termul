@@ -19,6 +19,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Rust stays in this matrix. The code scanning configuration on dev is
+  # `codeql.yml:analyze/build-mode:none/language:rust`. Moving rust to another
+  # job, or skipping the upload, makes the CodeQL check fail with
+  # "1 configuration not found". PR Validation still path-filters its Rust jobs.
   analyze:
     name: Analyze (${{ matrix.language }})
     runs-on: ubuntu-22.04

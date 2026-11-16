@@ -2,7 +2,9 @@ name: PR Validation
 
 on:
   pull_request:
-    types: [opened, edited, synchronize, reopened]
+    # ready_for_review is required. The two checks below are required on dev,
+    # and they must start when a draft is marked ready, with no new push.
+    types: [opened, edited, synchronize, reopened, ready_for_review]
     branches: [main, develop, dev]
 
 permissions:
@@ -15,6 +17,7 @@ concurrency:
   # and leave them skipped.
   # A base-branch edit is also `edited`, but the merge commit changed.
   # Cancel the older run. The code jobs on this run still execute.
+  # ready_for_review is not `edited`, so it cancels the in-progress draft run.
   cancel-in-progress: ${{ github.event.action != 'edited' || github.event.changes.base != null }}
 
 jobs:
@@ -118,6 +121,79 @@ jobs:
               await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
             }
 
+  # Job-level filter. Do not add on.pull_request.paths to this workflow.
+  # A skipped workflow leaves "Validate PR Title" and "Validate PR Description"
+  # Pending, and those two checks are required on dev. A skipped job reports
+  # success and does not block the pull request.
+  changes:
+    name: Detect Rust changes
+    if: github.event.action != 'edited' || github.event.changes.base != null
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Detect Rust-relevant changes
+        id: filter
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+
+          # A change to this workflow must still run these jobs.
+          # CodeQL rust stays in its analyze matrix. Skipping that upload
+          # makes the CodeQL check fail with "1 configuration not found".
+          # scripts/canvas and the pin are inputs of Rust Checks.
+          # check-server-no-gui-libs.sh is an input of Standalone Server Build.
+          # build:web inputs are not listed. Those jobs embed the bundle only.
+          is_rust_relevant() {
+            case "$1" in
+              src-tauri|src-tauri/*) return 0 ;;
+              .cargo|.cargo/*) return 0 ;;
+              Cargo.toml|*/Cargo.toml|Cargo.lock|*/Cargo.lock) return 0 ;;
+              rust-toolchain|*/rust-toolchain) return 0 ;;
+              rust-toolchain.toml|*/rust-toolchain.toml) return 0 ;;
+              rustfmt.toml|*/rustfmt.toml|clippy.toml|*/clippy.toml) return 0 ;;
+              .github/workflows/pr-validation.yml) return 0 ;;
+              canvas/figcraft.pin) return 0 ;;
+              scripts/canvas|scripts/canvas/*) return 0 ;;
+              scripts/check-server-no-gui-libs.sh) return 0 ;;
+              *) return 1 ;;
+            esac
+          }
+
+          if ! [[ "$BASE_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "Base SHA is missing or not 40 hex characters. Rust jobs run."
+            echo "rust=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! git cat-file -e "${BASE_SHA}^{commit}"; then
+            echo "Base commit ${BASE_SHA} is not in this checkout. Rust jobs run."
+            echo "rust=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # -z plus quotePath=false keeps names that Git would otherwise quote.
+          # Read each NUL-terminated path from the stream. Do not store that
+          # output in a shell variable.
+          rust=false
+          while IFS= read -r -d '' file; do
+            [ -n "$file" ] || continue
+            if is_rust_relevant "$file"; then
+              echo "rust path: $file"
+              rust=true
+            fi
+          done < <(git -c core.quotePath=false diff --name-only --no-renames -z "$BASE_SHA" HEAD)
+          echo "Rust-relevant changes: $rust"
+          echo "rust=$rust" >> "$GITHUB_OUTPUT"
+
   validate:
     name: Lint, Typecheck & Test
     # Skip a description or title edit. A base-branch edit changes the merge
@@ -156,7 +232,10 @@ jobs:
 
   rust-checks:
     name: Rust Checks
-    if: github.event.action != 'edited' || github.event.changes.base != null
+    needs: changes
+    if: >-
+      (github.event.action != 'edited' || github.event.changes.base != null) &&
+      needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-22.04
     # Check, test and clippy run about 17 minutes on a warm cache, and the
     # post-job cache save adds about one more.
@@ -255,7 +334,10 @@ jobs:
 
   standalone-server-build:
     name: Standalone Server Build
-    if: github.event.action != 'edited' || github.event.changes.base != null
+    needs: changes
+    if: >-
+      (github.event.action != 'edited' || github.event.changes.base != null) &&
+      needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-22.04
     timeout-minutes: 20
     steps:
@@ -317,7 +399,10 @@ jobs:
 
   rust-windows-check:
     name: Rust Windows Smoke Check
-    if: github.event.action != 'edited' || github.event.changes.base != null
+    needs: changes
+    if: >-
+      (github.event.action != 'edited' || github.event.changes.base != null) &&
+      needs.changes.outputs.rust == 'true'
     runs-on: windows-latest
     # A cold-cache run builds for up to about 18 min, and the post-job cache
     # save adds up to about 6 min. The budget covers both.
@@ -364,8 +449,18 @@ jobs:
 
   build-check:
     name: Verify Tauri Frontend Build
-    if: github.event.action != 'edited' || github.event.changes.base != null
-    needs: [validate, rust-checks, rust-windows-check, web-build, standalone-server-build]
+    # !cancelled() replaces the default success() check. A path-skipped Rust
+    # job must not skip this job. A failed Rust job still does.
+    if: >-
+      !cancelled() &&
+      (github.event.action != 'edited' || github.event.changes.base != null) &&
+      needs.changes.result == 'success' &&
+      needs.validate.result == 'success' &&
+      needs.web-build.result == 'success' &&
+      (needs.rust-checks.result == 'success' || needs.rust-checks.result == 'skipped') &&
+      (needs.rust-windows-check.result == 'success' || needs.rust-windows-check.result == 'skipped') &&
+      (needs.standalone-server-build.result == 'success' || needs.standalone-server-build.result == 'skipped')
+    needs: [changes, validate, rust-checks, rust-windows-check, web-build, standalone-server-build]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
