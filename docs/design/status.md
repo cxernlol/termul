@@ -5,10 +5,13 @@ Status colour is a role, not a hue. Always pair it with a word or an icon. Colou
 | Role | Ink | Tint (badge, banner) | Meaning |
 |---|---|---|---|
 | `success` | `text-success` | `bg-success/10` | Connected lamp, completed, added (outside a diff) |
-| `warning` | `text-warning` | `bg-warning/10` | Needs you, in progress, conflict, caution |
+| `warning` | `text-warning` | `bg-warning/10` | Needs you, conflict, caution |
 | `destructive` | `text-destructive` | `bg-destructive/10` | Failed, delete, error, removed diff line |
 | `connection` | `text-connection` | `bg-connection/15` | Remote access and agent connection (lamp, banner) — never "success" |
 | `muted` | `text-muted-foreground` | `bg-muted-foreground/50` (lamp) | Idle, offline, disconnected |
+| spinner | `Spinner` in `text-muted-foreground` | none | In progress: a subagent or a background command is running |
+
+In progress is not a colour. Use the shared `Spinner` (`ui/spinner`) in muted ink, with a word such as "Working" or "Running". It pauses under reduced motion. Do not use `warning` for "running".
 
 Tints are `/10` (`/15` for `connection`). A banner adds a `border-{role}/20` to `/30` edge. Do not use `/20` or stronger fills: they read as a button.
 
@@ -18,7 +21,8 @@ Tints are `/10` (`/15` for `connection`). A banner adds a `border-{role}/20` to 
 What is the status?
  ├── Git diff paint → addition diff-added · deletion destructive · changed file diff-modified
  ├── A live connection (remote access, agent link) → connection
- ├── Needs the user, or in progress, or a conflict → warning
+ ├── In progress (running, working) → Spinner in muted ink, plus a word
+ ├── Needs the user, or a conflict → warning
  ├── Failed, deleted, error → destructive
  ├── Connected / completed → success (lamp or icon), word stays muted
  └── Idle, offline → muted
@@ -37,6 +41,20 @@ What is the status?
 | failed | `text-destructive` | `bg-destructive` |
 
 Do not split reconnecting onto `project-orange`.
+
+## Status rail
+
+The session status rail sits at the top right of the chat (`chat/ChatStatusChips.tsx`). It has one segment each for Subagents, Background and Changes. Each segment shows one mark and a count. The plan is in [`status-rail-handoff.md`](./status-rail-handoff.md).
+
+| Mark | Meaning | Where |
+|---|---|---|
+| Spinner (muted) | Something runs | Subagents, Background |
+| Red dot, `destructive` | Failed, conflict, or a Git error | Any segment |
+| Blue dot, `primary-fill` | New changes since the user last looked | Changes segment only |
+
+- Amber is not a rail mark. "Needs you" keeps `warning` outside the rail.
+- Counts never animate. A mark change is a short crossfade (see [`motion.md`](./motion.md)).
+- A segment with nothing to show leaves the rail. The blue dot clears when the user opens the Changes popover or the Git tab.
 
 ## Shell
 

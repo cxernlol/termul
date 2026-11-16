@@ -86,6 +86,9 @@ function renderPill(toolCalls: ToolCall[], extra: PillProps = {}) {
 
 const panel = () => screen.getByTestId('subagent-panel')
 
+/** The mark slot kind of a segment: `spinner`, `failed`, `new` or `none`. */
+const mark = (button: HTMLElement) => button.querySelector('[data-mark]')?.getAttribute('data-mark')
+
 const pill = () => screen.getByRole('button', { name: /^Subagents:/ })
 
 describe('ChatStatusChips subagents', () => {
@@ -117,7 +120,8 @@ describe('ChatStatusChips subagents', () => {
       ),
       sub({ toolCallId: 'c', status: 'failed' })
     ])
-    expect(pill()).toHaveTextContent('Subagent3')
+    expect(pill()).toHaveTextContent('3')
+    expect(mark(pill())).toBe('spinner')
     expect(pill()).toHaveAccessibleName('Subagents: 1 working, 1 done, 1 failed')
     fireEvent.click(pill())
     const popover = screen.getByRole('dialog', { name: 'Subagents' })
@@ -166,6 +170,11 @@ describe('ChatStatusChips subagents', () => {
 
     const settled = sub({ status: 'completed', timestamp: start }, { endedAt: start + 7000 })
     rerender(<Pill toolCalls={[settled]} turnActive={false} />)
+    // The spinner mark crosses over to no mark; its leaving layer holds a short timer.
+    expect(mark(pill())).toBe('none')
+    act(() => {
+      vi.runAllTimers()
+    })
     fireEvent.click(pill())
     const done = () => screen.getByRole('button', { name: /^Audit code.*Done/ })
     expect(done()).toHaveTextContent(/Done\s*7s/)
@@ -276,7 +285,7 @@ describe('ChatStatusChips subagents', () => {
   it('opens a bottom sheet on the phone shell and registers it for Back', () => {
     mobileRef.current = true
     renderPill([sub({ status: 'completed' }), sub({ toolCallId: 'b', status: 'in_progress' })])
-    expect(pill()).toHaveTextContent('Subagent2')
+    expect(pill()).toHaveTextContent('2')
     fireEvent.click(pill())
     const sheet = screen.getByRole('dialog', { name: 'Subagents' })
     expect(sheet).toHaveAttribute('data-sheet')

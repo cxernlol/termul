@@ -1,9 +1,8 @@
 import { memo } from 'react'
 import { Check, ChevronRight, TerminalSquare } from '@/components/icons'
 import type { BackgroundCommand } from '@/lib/acp-api'
-import { cn } from '@/lib/utils'
 import { useToolCallRevealStore } from '@/stores/tool-call-reveal-store'
-import { SubagentStatusIcon } from './SubagentRow'
+import { AvatarStatusMark, SubagentStatusIcon } from './SubagentRow'
 import { BackgroundCommandElapsed } from './subagent-time'
 
 interface BackgroundCommandRowProps {
@@ -39,12 +38,7 @@ function BackgroundCommandRowComponent({
         className="relative inline-flex size-8 shrink-0 items-center justify-center rounded-full border border-border bg-muted"
       >
         <TerminalSquare size={16} className="text-muted-foreground" />
-        <span
-          className={cn(
-            'absolute -bottom-0.5 -right-0.5 size-2.5 rounded-full ring-2 ring-card',
-            running ? 'bg-warning' : 'bg-muted-foreground'
-          )}
-        />
+        <AvatarStatusMark status={running ? 'running' : 'stopped'} />
       </span>
       <span className="flex min-w-0 flex-1 flex-col">
         <span className="min-w-0 truncate text-sm font-medium text-foreground">
@@ -56,12 +50,7 @@ function BackgroundCommandRowComponent({
           </span>
         )}
       </span>
-      <span
-        className={cn(
-          'flex shrink-0 items-center gap-1 text-xs',
-          running ? 'text-warning' : 'text-muted-foreground'
-        )}
-      >
+      <span className="flex shrink-0 items-center gap-1 text-xs text-muted-foreground">
         {running ? (
           <SubagentStatusIcon status="running" />
         ) : (

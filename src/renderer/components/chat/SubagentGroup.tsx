@@ -7,6 +7,7 @@ import type { ToolCall } from '@/lib/acp-api'
 import { cn } from '@/lib/utils'
 import { CHEVRON_TRANSITION } from './chat-motion'
 import {
+  isSubagentWaiting,
   SubagentAvatar,
   SubagentCountParts,
   SubagentRow,
@@ -90,6 +91,7 @@ function SubagentGroupComponent({
             <SubagentAvatar
               key={toolCall.toolCallId}
               status={status}
+              waiting={isSubagentWaiting(toolCall, status)}
               size="sm"
               className={cn('ring-2 ring-background', i > 0 && '-ml-2')}
             />

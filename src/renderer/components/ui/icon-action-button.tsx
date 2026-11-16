@@ -5,7 +5,7 @@ import { cn } from '@/lib/utils'
 interface IconActionButtonProps {
   /** Accessible name and tooltip label. */
   label: string
-  onClick: () => void
+  onClick: (event: React.MouseEvent<HTMLButtonElement>) => void
   children: ReactNode
   disabled?: boolean
   className?: string

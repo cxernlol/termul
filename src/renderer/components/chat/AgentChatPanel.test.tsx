@@ -440,7 +440,6 @@ vi.mock('./ChatInputBar', () => ({
     chatInputBarPropsRef.current.push(props)
     return (
       <div data-chat-composer="true" tabIndex={-1} data-testid="composer-stub">
-        {props.statusRow}
         {props.notice}
         {props.permission ? (
           <section data-approval-prompt={`permission:${props.permission.requestId}`}>
@@ -2620,7 +2619,7 @@ describe('AgentChatPanel mobile dock wiring', () => {
       expect(lastPlan()).toMatchObject({ defaultCollapsed: true, forceCollapsed: false })
       const pill = screen.getByRole('button', { name: /^Changes:/ })
       fireEvent.click(pill)
-      fireEvent.click(screen.getByRole('button', { name: 'Review changes' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Open in Git' }))
       // The chip is the opener, so the Git sheet returns focus to it.
       expect(openGitSheetRef.current).toHaveBeenCalledTimes(1)
       expect(openGitSheetRef.current).toHaveBeenCalledWith('/repo/.worktrees/a', pill)
@@ -2636,9 +2635,50 @@ describe('AgentChatPanel mobile dock wiring', () => {
       expect(lastPlan()).toMatchObject({ defaultCollapsed: false, forceCollapsed: false })
       fireEvent.click(screen.getByRole('button', { name: /^Changes:/ }))
       expect(screen.getByRole('dialog', { name: 'Changed files' })).toBeInTheDocument()
-      // Desktop: Review changes opens the Changes tab, not the Git sheet.
-      fireEvent.click(screen.getByRole('button', { name: 'Review changes' }))
+      // Desktop: Open in Git opens the Changes tab, not the Git sheet.
+      fireEvent.click(screen.getByRole('button', { name: 'Open in Git' }))
       expect(openGitSheetRef.current).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('status rail placement', () => {
+    const rail = () => screen.getByRole('group', { name: 'Session status' })
+
+    it('mounts the rail once, as a child of the chat root and outside the composer', () => {
+      mobileRef.current = false
+      changedFilePathsRef.current = ['/repo/.worktrees/a/src/a.ts']
+      render(<AgentChatPanel sessionId="s1" isVisible />)
+
+      expect(screen.getAllByRole('group', { name: 'Session status' })).toHaveLength(1)
+      expect(screen.getByTestId('composer-stub')).not.toContainElement(rail())
+      const root = rail().parentElement
+      expect(root).not.toBeNull()
+      expect(root?.className).toContain('@container')
+      expect(root).toContainElement(screen.getByTestId('composer-stub'))
+    })
+
+    it('sets data-status-rail on the chat root only while the rail shows', () => {
+      mobileRef.current = false
+      changedFilePathsRef.current = ['/repo/.worktrees/a/src/a.ts']
+      const { rerender } = render(<AgentChatPanel sessionId="s1" isVisible />)
+      const root = rail().parentElement
+      expect(root).toHaveAttribute('data-status-rail', 'shown')
+
+      changedFilePathsRef.current = []
+      rerender(<AgentChatPanel sessionId="s1" isVisible />)
+      expect(root).not.toHaveAttribute('data-status-rail')
+    })
+
+    it('hides the rail and drops the gutter while the keyboard is open on the phone', () => {
+      changedFilePathsRef.current = ['/repo/.worktrees/a/src/a.ts']
+      const { rerender } = render(<AgentChatPanel sessionId="s1" isVisible />)
+      const root = rail().parentElement
+      expect(root).toHaveAttribute('data-status-rail', 'shown')
+
+      oskRef.current = OSK_OPEN
+      rerender(<AgentChatPanel sessionId="s1" isVisible />)
+      expect(root).not.toHaveAttribute('data-status-rail')
+      expect(screen.queryByRole('group', { name: 'Session status' })).toBeNull()
     })
   })
 

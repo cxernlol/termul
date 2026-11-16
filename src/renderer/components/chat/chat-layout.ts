@@ -20,6 +20,16 @@ export const NARROW_PANE_PX = 400
 export const CHAT_GUTTER_X = 'px-3 @[400px]:px-5'
 
 /**
+ * Right gutter that keeps content out from under the status rail (12px inset,
+ * 60px wide, 72px with its edge). It applies while the chat root has
+ * `data-status-rail="shown"` and the pane is narrower than 892px (a 748px
+ * column and 72px on each side); a wide pane centres the column clear of the
+ * rail. It replaces the right half of {@link CHAT_GUTTER_X} and never animates.
+ * `!` because `@[400px]:px-5` is emitted after the `@max` rule and would win.
+ */
+export const STATUS_RAIL_GUTTER_X = 'in-data-[status-rail=shown]:@max-[892px]:pr-[72px]!'
+
+/**
  * Hit area for text controls in the chat pane.
  * 44px on a narrow pane, 40px when the pane is at least 400px.
  * No min width: a long label must not become a square.

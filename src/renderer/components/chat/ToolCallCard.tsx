@@ -11,7 +11,6 @@ import {
   FileText,
   FolderInput,
   Globe,
-  LoaderCircle,
   Search,
   Shuffle,
   TerminalSquare,
@@ -21,6 +20,7 @@ import {
 import { CollapseExpandMotion } from '@/components/ui/collapse-expand-motion'
 import { IconActionButton } from '@/components/ui/icon-action-button'
 import { ShimmerText } from '@/components/ui/shimmer-text'
+import { Spinner } from '@/components/ui/spinner'
 import type { ContentBlock, DiffContent, ToolCall, ToolCallContent } from '@/lib/acp-api'
 import { resolveDiffLanguage } from '@/lib/diff-highlight'
 import { type FilePathResolutionContext, openFilePathFromTerminal } from '@/lib/file-path-links'
@@ -327,11 +327,7 @@ function ToolCallCardComponent({
   // chevron, open-file) is preserved by the flex container below.
   const rowSummary = inBackground ? (
     <>
-      <LoaderCircle
-        size={13}
-        className="shrink-0 animate-spin text-warning motion-reduce:animate-none"
-        aria-hidden="true"
-      />
+      <Spinner size={13} decorative className="shrink-0 text-muted-foreground" />
       <span className="min-w-0 flex-1 truncate" title={inBackground.command ?? label}>
         <span className="text-muted-foreground">Running in background </span>
         <span className="font-medium text-foreground">{inBackground.command ?? primary}</span>

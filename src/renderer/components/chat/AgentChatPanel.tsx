@@ -60,7 +60,7 @@ import { ChatInputBar } from './ChatInputBar'
 import { ChatMessageList } from './ChatMessageList'
 import { ChatStartContextRow } from './ChatStartContextRow'
 import { ChatStatusChips } from './ChatStatusChips'
-import { CHAT_GUTTER_X, COMPOSER_CARD_CLASS } from './chat-layout'
+import { CHAT_GUTTER_X, COMPOSER_CARD_CLASS, STATUS_RAIL_GUTTER_X } from './chat-layout'
 import { ChatStartFooter, ChatStartGlow, ChatTimelineStage } from './chat-start-morph'
 import { buildTimeline, consolidateThoughtGroups, spliceReloadMarker } from './chat-timeline'
 import { ClaudeLimitNotice } from './claude-account/ClaudeLimitNotice'
@@ -786,30 +786,32 @@ export function AgentChatPanel({
   // layout (the spacer's `flex-1`) is unchanged. The hook is also above the
   // early returns: the wrapper may mount long after the first render.
   const dockRef = useDockClearance(isMobileShell && isVisible)
-  // Status chips (subagents, background commands, changes) above the
-  // composer card, or above the question card while one shows.
-  const renderStatusChips = (className?: string): React.ReactNode =>
-    session ? (
-      <ChatStatusChips
-        className={className}
-        sessionId={session.id}
-        cwd={session.cwd}
-        toolCalls={toolCalls}
-        messages={messages}
-        turnActive={session.activeTurn}
-        hideChanges={quickChat}
-        onOpenGitChanges={
-          quickChat
-            ? undefined
-            : (opener) =>
-                isMobileShell
-                  ? openGitSheet(session.cwd, opener)
-                  : openChangesTab(session.projectId, session.cwd)
-        }
-        hidden={(isMobileShell && osk.isOskOpen) || showTransportOverlay}
-        isVisible={isVisible}
-      />
-    ) : null
+  // The status rail (subagents, background commands, changes) at the top right
+  // of the chat root. While it shows, the root says so (`data-status-rail`) and
+  // narrow panes keep a right gutter clear of it.
+  const [statusRailShown, setStatusRailShown] = useState(false)
+  const statusRail = session ? (
+    <ChatStatusChips
+      sessionId={session.id}
+      cwd={session.cwd}
+      projectId={session.projectId}
+      toolCalls={toolCalls}
+      messages={messages}
+      turnActive={session.activeTurn}
+      hideChanges={quickChat}
+      onOpenGitChanges={
+        quickChat
+          ? undefined
+          : (opener) =>
+              isMobileShell
+                ? openGitSheet(session.cwd, opener)
+                : openChangesTab(session.projectId, session.cwd)
+      }
+      hidden={(isMobileShell && osk.isOskOpen) || showTransportOverlay}
+      isVisible={isVisible}
+      onShownChange={setStatusRailShown}
+    />
+  ) : null
   const dockClassName = isMobileShell ? 'flex shrink-0 flex-col' : 'contents'
 
   // An automatic resume keeps the composer (and the draft being typed)
@@ -947,6 +949,7 @@ export function AgentChatPanel({
       ref={rootRef}
       onFocus={onFocus}
       onBlur={onBlur}
+      data-status-rail={statusRailShown ? 'shown' : undefined}
       className="@container relative isolate flex h-full flex-col bg-terminal-bg"
       // Story 5.3 (T2.1): apply OSK spacer as bottom padding so the sticky
       // composer card stays visible above the on-screen keyboard. iOS Safari
@@ -968,7 +971,7 @@ export function AgentChatPanel({
         <div
           role="status"
           aria-live="polite"
-          className="flex items-center gap-2 border-b border-border/60 bg-muted/30 px-3 py-1.5 text-xs text-muted-foreground"
+          className={`flex items-center gap-2 border-b border-border/60 bg-muted/30 px-3 py-1.5 text-xs text-muted-foreground ${STATUS_RAIL_GUTTER_X}`}
         >
           <Spinner size={12} decorative />
           Resuming chat…
@@ -979,7 +982,9 @@ export function AgentChatPanel({
         !isLaunchingSession &&
         discoveredReopenContext &&
         session.lastError && (
-          <div className="flex items-center justify-between gap-2 border-b border-destructive/30 bg-destructive/10 px-3 py-1.5 text-xs text-destructive">
+          <div
+            className={`flex items-center justify-between gap-2 border-b border-destructive/30 bg-destructive/10 px-3 py-1.5 text-xs text-destructive ${STATUS_RAIL_GUTTER_X}`}
+          >
             <span>Failed to restore agent chat.</span>
             <button
               type="button"
@@ -1006,6 +1011,7 @@ export function AgentChatPanel({
           <span>{hostOffline ? 'Host offline' : 'Reconnecting…'}</span>
         </div>
       )}
+      {statusRail}
       <PlanPanel
         key={`plan-${session.id}`}
         entries={plan}
@@ -1072,9 +1078,6 @@ export function AgentChatPanel({
           hide until the prompt resolves. */}
       {!isClosed && (pendingElicitation || pendingQuestion) ? (
         <div ref={dockRef} data-chat-dock="true" className={dockClassName}>
-          <div className={CHAT_GUTTER_X}>
-            <div className="mx-auto w-full max-w-3xl">{renderStatusChips('pt-3 pb-0')}</div>
-          </div>
           {activeError && !atUsageLimit && (
             <div className={`${CHAT_GUTTER_X} pt-3`}>
               <div className={`mx-auto w-full max-w-3xl overflow-hidden ${COMPOSER_CARD_CLASS}`}>
@@ -1121,7 +1124,6 @@ export function AgentChatPanel({
               (atUsageLimit && !isClosed) ||
               (Boolean(activeError) && !atUsageLimit)
             }
-            statusRow={renderStatusChips()}
             disabledPlaceholder={
               olderReadOnly
                 ? 'This older chat is read-only'

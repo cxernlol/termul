@@ -54,6 +54,22 @@ describe('component tokens', () => {
     expect(vars['--rail-keycap-fill']).toBe(CONTAINER)
   })
 
+  it('gives the status rail a white fill, a 1px ink ring and a drop in Troupe Light', () => {
+    const vars = emittedVars('termul-light')
+    expect(vars['--rail-fill']).toBe(CONTAINER)
+    expect(vars['--rail-edge']).toBe('#20202014')
+    expect(vars['--shadow-rail']).toBe('0 0 0 1px #20202014, 0 1px 2px #2020201f')
+  })
+
+  it('draws the status rail from the muted fill, a 0.5px edge and a black drop in dark themes', () => {
+    const vars = emittedVars('termul')
+    expect(vars['--rail-fill']).toBe('oklch(var(--muted))')
+    expect(vars['--shadow-rail']).toBe('0 0 0 0.5px var(--rail-edge), 0 1px 2px rgb(0 0 0 / 0.5)')
+    // Hover and press step up from whichever fill the theme sets.
+    expect(vars['--rail-segment-hover']).toContain('var(--rail-fill)')
+    expect(vars['--rail-segment-active']).toContain('var(--rail-fill)')
+  })
+
   for (const id of Object.keys(BUNDLED_COLOR_THEMES).filter((id) => id !== 'termul-light')) {
     it(`${id} keeps the composer and keycap defaults`, () => {
       const vars = emittedVars(id)

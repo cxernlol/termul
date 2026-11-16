@@ -15,7 +15,7 @@ import type { SessionConfigOption } from '@/lib/acp-api'
 import type { AcpSession } from '@/stores/acp-store'
 import { ChatInputBar } from './ChatInputBar'
 import { ChatMessageList } from './ChatMessageList'
-import { CHAT_GUTTER_X, NARROW_PANE_PX } from './chat-layout'
+import { CHAT_GUTTER_X, NARROW_PANE_PX, STATUS_RAIL_GUTTER_X } from './chat-layout'
 import type { TimelineItem } from './chat-timeline'
 import { PlanPanel } from './PlanPanel'
 
@@ -228,6 +228,34 @@ describe('Story 5.1 responsive chat layout', () => {
     )
     expect(plan.container.innerHTML).toContain('max-w-3xl')
     expect(plan.container.innerHTML).toContain('@[400px]:px-5')
+    plan.unmount()
+  })
+
+  it('keeps the thread and the plan clear of the status rail only in panes under 892px', () => {
+    // 748px column + 72px each side. A container query on the chat root, so a wide pane
+    // never gets it; it needs the root's data-status-rail="shown" (set while the rail shows).
+    expect(STATUS_RAIL_GUTTER_X).toContain('@max-[892px]:')
+    expect(STATUS_RAIL_GUTTER_X).toContain('in-data-[status-rail=shown]:')
+    expect(STATUS_RAIL_GUTTER_X).toContain('pr-[72px]')
+    // No transition: the gutter changes at once.
+    expect(STATUS_RAIL_GUTTER_X).not.toContain('transition')
+
+    const list = render(
+      <TooltipProvider>
+        <ChatMessageList
+          items={[timelineItem]}
+          sessionId="session-1"
+          showRunningIndicator={false}
+        />
+      </TooltipProvider>
+    )
+    expect(list.container.innerHTML).toContain(STATUS_RAIL_GUTTER_X)
+    list.unmount()
+
+    const plan = render(
+      <PlanPanel entries={[{ content: 'step', status: 'pending', priority: 'low' }]} />
+    )
+    expect(plan.container.innerHTML).toContain(STATUS_RAIL_GUTTER_X)
     plan.unmount()
   })
 

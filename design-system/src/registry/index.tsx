@@ -2,6 +2,7 @@ import * as C from '../previews/components'
 import * as F from '../previews/foundations'
 import * as M from '../previews/model-selector'
 import * as P from '../previews/patterns'
+import * as R from '../previews/status-rail'
 import * as S from '../previews/surfaces'
 import * as T from '../previews/tokens'
 import type { CanvasEntry, CanvasSection } from './types'
@@ -420,6 +421,22 @@ export const SECTIONS: CanvasSection[] = [
             width: 560,
             height: 432,
             Preview: C.MessagePreview
+          },
+          {
+            id: 'chat.status-rail',
+            name: 'Status rail in a chat',
+            source: 'src/renderer/components/chat/StatusChip.tsx',
+            width: 760,
+            height: 420,
+            Preview: R.StatusRailInChat
+          },
+          {
+            id: 'chat.status-rail.states',
+            name: 'Status rail segment states',
+            source: 'src/renderer/components/chat/StatusChip.tsx',
+            width: 320,
+            height: 200,
+            Preview: R.StatusRailStates
           },
           {
             id: 'chat.model-selector.v1',

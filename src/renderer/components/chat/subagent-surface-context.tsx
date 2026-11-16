@@ -21,9 +21,14 @@ export interface SubagentSurface {
   /**
    * Show `id` in the panel. `siblings` is the list the row sits in, for
    * "i of n" and arrow-key stepping. `nested` keeps the current subagent
-   * underneath, so Back returns to it.
+   * underneath, so Back returns to it. `origin` is where the row's avatar sits
+   * on screen: the panel's avatar grows out of it (none from the keyboard).
    */
-  open: (id: string, siblings: readonly string[], options?: { nested?: boolean }) => void
+  open: (
+    id: string,
+    siblings: readonly string[],
+    options?: { nested?: boolean; origin?: DOMRect | null }
+  ) => void
 }
 
 /** Rows rendered outside a chat (tests, previews) show but cannot open a panel. */

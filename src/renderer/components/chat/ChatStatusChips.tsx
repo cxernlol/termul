@@ -1,60 +1,66 @@
-import { useCallback, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Bot, FileDiff, TerminalSquare } from '@/components/icons'
-import { Button } from '@/components/ui/button'
-import { DiffStatCounts } from '@/components/ui/diff-stat-counts'
 import { useMobileWebShell } from '@/hooks/use-mobile-web-shell'
 import type { BackgroundCommand, ToolCall } from '@/lib/acp-api'
 import { cn } from '@/lib/utils'
+import { normalizePath } from '@/lib/working-copy'
 import { useAcpStore } from '@/stores/acp-store'
 import type { ChatMessage } from '@/stores/acp-store/types'
+import { useGitStatusStore } from '@/stores/git-status-store'
 import { useOverlayRegistration } from '@/stores/overlay-stack-store'
 import { BackgroundCommandRow } from './BackgroundCommandRow'
 import { sessionBackgroundCommands } from './background-commands'
-import { ChangedFilesRows, openChangedFile } from './ChangedFilesList'
+import { openChangedFile } from './ChangedFilesList'
+import { ChangesPanel } from './ChangesPanel'
 import {
-  STATUS_CHIP_ICON_CLASS,
+  RAIL_EXIT_MS,
+  STATUS_RAIL_ICON_CLASS,
   StatusChip,
-  StatusChipCount,
-  StatusChipDot,
-  StatusChipLabel,
   StatusChipPanelHeader,
   StatusChipPanelNote,
-  StatusChipRow,
-  type StatusChipTone
+  type StatusMarkKind,
+  StatusRail,
+  StatusRailSegment,
+  StatusRailSlot
 } from './StatusChip'
 import { SubagentRow, subagentCountSummary } from './SubagentRow'
 import { SubagentRowStop } from './SubagentRowStop'
 import type { SubagentCounts, SubagentStatus } from './subagent-strip'
+import { useChangesSeen } from './use-changes-seen'
 import { type ChatChangedFiles, useChatChangedFiles } from './use-chat-changed-files'
 import { useBackgroundWait, useCurrentTurnSubagents } from './use-current-turn-subagents'
 
 export type StatusKind = 'subagents' | 'background' | 'changes'
 
-/** Changed files shown before "View all". */
-const FILES_PREVIEW = 5
+/** Segment order, top to bottom. */
+const KIND_ORDER: readonly StatusKind[] = ['subagents', 'background', 'changes']
 
 interface ChatStatusChipsProps {
   sessionId: string
   cwd: string
+  /** The chat's project; the blue "new changes" dot clears when its Git tab shows. */
+  projectId?: string | null
   toolCalls: ToolCall[]
   messages: readonly ChatMessage[]
   /** Session `activeTurn`: a subagent with no status yet counts as running while true; its end refreshes git state. */
   turnActive: boolean
   /**
-   * "Review changes" in the Changes panel: opens the Git view (the Changes
-   * tab on desktop, the Git sheet on the phone). Called with the chip, which
+   * "Open in Git" in the Changes panel: opens the Git view (the Changes
+   * tab on desktop, the Git sheet on the phone). Called with the segment, which
    * the Git sheet returns focus to. Without it the action is not shown.
    */
   onOpenGitChanges?: (opener: HTMLElement) => void
-  /** Hide the chips (phone keyboard open, reconnect notice showing). */
+  /** Hide the rail (phone keyboard open, reconnect notice showing). */
   hidden?: boolean
   /**
-   * Quick chats have no Git view. Omit the Changes chip and do not read git
+   * Quick chats have no Git view. Omit the Changes segment and do not read git
    * status for the chat folder.
    */
   hideChanges?: boolean
   /** False while the chat tab is hidden (tabs stay mounted); closes the panel. */
   isVisible?: boolean
+  /** The rail shows or hides: the chat root sets `data-status-rail` for the gutter. */
+  onShownChange?: (shown: boolean) => void
   className?: string
 }
 
@@ -62,15 +68,28 @@ function plural(count: number, noun: string): string {
   return `${count} ${noun}${count === 1 ? '' : 's'}`
 }
 
-/** Dot for the subagents chip: amber while one works, then red, green, grey. */
-function subagentTone(counts: SubagentCounts): StatusChipTone {
-  if (counts.running > 0) return 'running'
+function subagentMark(counts: SubagentCounts): StatusMarkKind | null {
+  if (counts.running > 0) return 'spinner'
   if (counts.failed > 0) return 'failed'
-  if (counts.done > 0) return 'done'
-  return 'idle'
+  return null
 }
 
-/** What every chip gets from the row: its open state and its surface. */
+/** What a segment shows. The rail keeps the last one of a segment that leaves, for its fade out. */
+interface SegmentView {
+  label: string
+  tooltip?: string
+  count: number
+  mark: StatusMarkKind | null
+  icon: React.ReactNode
+}
+
+const SEGMENT_ICON_PROPS = {
+  size: 14,
+  className: STATUS_RAIL_ICON_CLASS,
+  'aria-hidden': 'true'
+} as const
+
+/** What every segment gets from the rail: its open state and its surface. */
 interface ChipBaseProps {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -81,6 +100,7 @@ interface ChipBaseProps {
 }
 
 function SubagentsChip({
+  view,
   subagents,
   statuses,
   counts,
@@ -88,6 +108,7 @@ function SubagentsChip({
   onRowOpen,
   ...base
 }: ChipBaseProps & {
+  view: SegmentView
   subagents: ToolCall[]
   statuses: SubagentStatus[]
   counts: SubagentCounts
@@ -95,25 +116,15 @@ function SubagentsChip({
   onRowOpen: () => void
 }): React.JSX.Element {
   const subagentIds = useMemo(() => subagents.map((tc) => tc.toolCallId), [subagents])
-  const summary = subagentCountSummary(counts)
   return (
     <StatusChip
-      label={`Subagents: ${[summary, waitingLabel?.toLowerCase()].filter(Boolean).join('; ')}`}
+      {...view}
       panelTitle="Subagents"
-      hint={waitingLabel ?? undefined}
       open={base.open}
       onOpenChange={base.onOpenChange}
       sheet={base.sheet}
-      trigger={
-        <>
-          <Bot size={14} className={STATUS_CHIP_ICON_CLASS} aria-hidden="true" />
-          <StatusChipLabel>Subagent</StatusChipLabel>
-          <StatusChipCount>{subagents.length}</StatusChipCount>
-          <StatusChipDot tone={subagentTone(counts)} />
-        </>
-      }
     >
-      <StatusChipPanelHeader>{summary}</StatusChipPanelHeader>
+      <StatusChipPanelHeader>{subagentCountSummary(counts)}</StatusChipPanelHeader>
       {waitingLabel && <StatusChipPanelNote>{waitingLabel}</StatusChipPanelNote>}
       <ul
         className={cn(
@@ -141,37 +152,28 @@ function SubagentsChip({
 }
 
 function BackgroundChip({
+  view,
   sessionId,
   commands,
   running,
   summary,
-  hint,
   onRowOpen,
   ...base
 }: ChipBaseProps & {
+  view: SegmentView
   sessionId: string
   commands: readonly BackgroundCommand[]
   running: number
   summary: string
-  hint: string | null
   onRowOpen: () => void
 }): React.JSX.Element {
   return (
     <StatusChip
-      label={`Background commands: ${summary}`}
+      {...view}
       panelTitle="Background"
-      hint={hint ?? undefined}
       open={base.open}
       onOpenChange={base.onOpenChange}
       sheet={base.sheet}
-      trigger={
-        <>
-          <TerminalSquare size={14} className={STATUS_CHIP_ICON_CLASS} aria-hidden="true" />
-          <StatusChipLabel>Background</StatusChipLabel>
-          <StatusChipCount>{commands.length}</StatusChipCount>
-          <StatusChipDot tone={running > 0 ? 'running' : 'idle'} />
-        </>
-      }
     >
       <StatusChipPanelHeader>{summary}</StatusChipPanelHeader>
       <ul
@@ -194,116 +196,88 @@ function BackgroundChip({
 }
 
 function ChangesChip({
+  view,
   changes,
+  cwd,
+  turnActive,
   onOpenGitChanges,
   onClose,
+  onOpened,
   ...base
 }: ChipBaseProps & {
+  view: SegmentView
   changes: ChatChangedFiles
+  cwd: string
+  turnActive: boolean
   onOpenGitChanges?: (opener: HTMLElement) => void
   onClose: () => void
+  /** The panel opened: the changes count as seen. */
+  onOpened: () => void
 }): React.JSX.Element {
-  const [showAll, setShowAll] = useState(false)
-  const chipRef = useRef<HTMLButtonElement>(null)
+  const segmentRef = useRef<HTMLButtonElement>(null)
   // Set while focus is handed to the Git view, so closing this panel does not
-  // pull focus back to the chip.
+  // pull focus back to the segment.
   const handingOffFocus = useRef(false)
-  const fileCount = changes.files.length
-  const hasTotals = changes.totalAdded > 0 || changes.totalRemoved > 0
-  const visibleFiles = showAll ? changes.files : changes.files.slice(0, FILES_PREVIEW)
-  const hiddenFiles = fileCount - visibleFiles.length
 
   return (
     <StatusChip
-      label={`Changes: ${plural(fileCount, 'changed file')}`}
+      {...view}
       panelTitle="Changed files"
       open={base.open}
       onOpenChange={(next) => {
-        if (!next) setShowAll(false)
+        if (next) onOpened()
         base.onOpenChange(next)
       }}
       sheet={base.sheet}
-      triggerRef={chipRef}
+      triggerRef={segmentRef}
       onCloseAutoFocus={(event) => {
         if (!handingOffFocus.current) return
         handingOffFocus.current = false
         event.preventDefault()
       }}
-      trigger={
-        <>
-          <FileDiff size={14} className={STATUS_CHIP_ICON_CLASS} aria-hidden="true" />
-          <StatusChipLabel>Changes</StatusChipLabel>
-          {hasTotals ? (
-            <>
-              <span className="font-mono tabular-nums @max-[420px]:hidden">
-                <DiffStatCounts added={changes.totalAdded} removed={changes.totalRemoved} />
-              </span>
-              <StatusChipCount className="hidden @max-[420px]:inline">{fileCount}</StatusChipCount>
-            </>
-          ) : (
-            <StatusChipCount>{fileCount}</StatusChipCount>
-          )}
-        </>
-      }
     >
-      <StatusChipPanelHeader
-        actions={
-          onOpenGitChanges && (
-            <Button
-              type="button"
-              size="xs"
-              onClick={() => {
-                const opener = chipRef.current
+      <ChangesPanel
+        changes={changes}
+        cwd={cwd}
+        turnActive={turnActive}
+        showTitle={!base.sheet}
+        onOpenFile={(path) => {
+          onClose()
+          void openChangedFile(path)
+        }}
+        onOpenGit={
+          onOpenGitChanges
+            ? () => {
+                const opener = segmentRef.current
                 if (!opener) return
                 handingOffFocus.current = true
                 onClose()
                 onOpenGitChanges(opener)
-              }}
-              className="shrink-0 px-2.5"
-            >
-              Review changes
-            </Button>
-          )
+              }
+            : undefined
         }
-      >
-        {changes.source === 'git'
-          ? `${plural(fileCount, 'file')}, not committed`
-          : `${plural(fileCount, 'file')} edited this session`}
-      </StatusChipPanelHeader>
-      <ChangedFilesRows
-        files={visibleFiles}
-        rowBase={changes.rowBase}
-        className={base.listClassName}
-        onOpen={(path) => {
-          onClose()
-          void openChangedFile(path)
-        }}
       />
-      {hiddenFiles > 0 && (
-        <button
-          type="button"
-          onClick={() => setShowAll(true)}
-          className="mx-1 mb-1 flex h-7 items-center rounded-md px-2 text-2xs font-medium text-muted-foreground transition-colors duration-150 ease-out hover:bg-foreground/[0.06] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus-ring motion-reduce:transition-none"
-        >
-          View all {fileCount} files
-        </button>
-      )}
     </StatusChip>
   )
 }
 
 /**
- * Which chip has its panel open: one at a time. A hidden tab or a chip whose
- * last row went away closes it (adjusted during render, so it does not open
- * again when the chip comes back). On the phone the open sheet takes Back.
+ * Which segment has its panel open: one at a time. A hidden tab or a segment
+ * whose last row went away closes it (adjusted during render, so it does not
+ * open again when the segment comes back). Changes is the exception: it stays
+ * open at count 0 (a discard empties it) and leaves when its panel closes. On
+ * the phone the open sheet takes Back.
  */
 function useOpenChip(
   rowCount: Record<StatusKind, number>,
   available: boolean,
-  isMobile: boolean
-): { base: (kind: StatusKind) => ChipBaseProps; close: () => void } {
+  isMobile: boolean,
+  hideChanges: boolean
+): { base: (kind: StatusKind) => ChipBaseProps; close: () => void; activeKind: StatusKind | null } {
   const [openKind, setOpenKind] = useState<StatusKind | null>(null)
-  const activeKind = openKind && available && rowCount[openKind] > 0 ? openKind : null
+  const keepsOpenAtZero = openKind === 'changes' && !hideChanges
+  const activeKind =
+    openKind && available && (rowCount[openKind] > 0 || keepsOpenAtZero) ? openKind : null
   if (openKind !== null && activeKind === null) setOpenKind(null)
 
   const close = useCallback(() => setOpenKind(null), [])
@@ -316,7 +290,56 @@ function useOpenChip(
     sheet: isMobile,
     listClassName
   })
-  return { base, close }
+  return { base, close, activeKind }
+}
+
+/**
+ * The segments in the rail, in order, with the ones that just left. A segment
+ * that leaves stays for RAIL_EXIT_MS so it can fade out; one that comes back
+ * in that time stays. Adjusted during render, so the segment never drops out
+ * of the DOM for a frame before its fade.
+ */
+function useRailSlots(present: Record<StatusKind, boolean>): StatusKind[] {
+  const [previous, setPrevious] = useState(present)
+  const [exiting, setExiting] = useState<readonly StatusKind[]>([])
+  if (KIND_ORDER.some((kind) => previous[kind] !== present[kind])) {
+    setPrevious(present)
+    setExiting((current) => {
+      const next = current.filter((kind) => !present[kind])
+      for (const kind of KIND_ORDER) {
+        if (previous[kind] && !present[kind] && !next.includes(kind)) next.push(kind)
+      }
+      return next
+    })
+  }
+
+  const timers = useRef(new Map<StatusKind, ReturnType<typeof setTimeout>>())
+  useEffect(() => {
+    for (const kind of exiting) {
+      if (timers.current.has(kind)) continue
+      timers.current.set(
+        kind,
+        setTimeout(() => {
+          timers.current.delete(kind)
+          setExiting((current) => current.filter((item) => item !== kind))
+        }, RAIL_EXIT_MS)
+      )
+    }
+    for (const [kind, timer] of timers.current) {
+      if (exiting.includes(kind)) continue
+      clearTimeout(timer)
+      timers.current.delete(kind)
+    }
+  }, [exiting])
+  useEffect(() => {
+    const pending = timers.current
+    return () => {
+      for (const timer of pending.values()) clearTimeout(timer)
+      pending.clear()
+    }
+  }, [])
+
+  return KIND_ORDER.filter((kind) => present[kind] || exiting.includes(kind))
 }
 
 /** The session's background commands and how to say their state. */
@@ -341,7 +364,16 @@ function useBackgroundCommands(sessionId: string): {
   return { commands, running, summary: parts.join(', '), hint }
 }
 
-/** What the live region says while the chips show. */
+/** True while Git status for the folder fails after it had read once. */
+function useGitStatusFailed(cwd: string): boolean {
+  return useGitStatusStore((state) => {
+    if (!cwd) return false
+    const key = normalizePath(cwd)
+    return state.statuses[key] !== undefined && state.errors[key]?.status !== undefined
+  })
+}
+
+/** What the live region says while the rail shows. */
 function liveStatus(
   subagentCount: number,
   waitingLabel: string | null,
@@ -355,13 +387,16 @@ function liveStatus(
 }
 
 /**
- * Status chips above the composer: Subagent, Background and Changes, each
- * shown only while its list has rows, in that order. A chip opens its own
- * panel just above it (one at a time); the dot says if something still runs.
+ * The status rail at the top right of the chat: Subagents, Background and
+ * Changes, each a segment shown only while its list has rows (Changes also
+ * while its panel is open). A segment opens its own panel to its left, one at
+ * a time; its mark says if something runs, failed or is new. The rail is
+ * `absolute`: mount it as a direct child of the chat root.
  */
 export function ChatStatusChips({
   sessionId,
   cwd,
+  projectId = null,
   toolCalls,
   messages,
   turnActive,
@@ -369,6 +404,7 @@ export function ChatStatusChips({
   hidden = false,
   isVisible = true,
   hideChanges = false,
+  onShownChange,
   className
 }: ChatStatusChipsProps): React.JSX.Element | null {
   const isMobile = useMobileWebShell()
@@ -386,54 +422,152 @@ export function ChatStatusChips({
   const waitingLabel = waiting > 0 ? `Waiting on ${plural(waiting, 'background subagent')}` : null
   const background = useBackgroundCommands(sessionId)
   const commands = background.commands
+  const gitFailed = useGitStatusFailed(hideChanges ? '' : cwd)
+  const seen = useChangesSeen({
+    sessionId,
+    cwd,
+    projectId,
+    files: hideChanges ? [] : changes.files
+  })
   const rowCount: Record<StatusKind, number> = {
     subagents: subagents.length,
     background: commands.length,
     changes: hideChanges ? 0 : changes.files.length
   }
-  const shown =
-    !hidden && (rowCount.subagents > 0 || rowCount.background > 0 || rowCount.changes > 0)
-  const { base, close } = useOpenChip(rowCount, shown && isVisible, isMobile)
+  const { base, close, activeKind } = useOpenChip(
+    rowCount,
+    !hidden && isVisible,
+    isMobile,
+    hideChanges
+  )
+
+  const present: Record<StatusKind, boolean> = {
+    subagents: rowCount.subagents > 0,
+    background: rowCount.background > 0,
+    changes: rowCount.changes > 0 || activeKind === 'changes'
+  }
+  const firstPresent = KIND_ORDER.find((kind) => present[kind])
+  const shown = !hidden && firstPresent !== undefined
+  const slots = useRailSlots(present)
+
+  // The rail stays mounted once it has shown, so it can fade out and back.
+  const [everShown, setEverShown] = useState(false)
+  if (shown && !everShown) setEverShown(true)
+
+  useEffect(() => {
+    if (!onShownChange) return
+    onShownChange(shown)
+    return () => onShownChange(false)
+  }, [shown, onShownChange])
+
+  const changesWords = plural(rowCount.changes, 'changed file')
+  const views: Record<StatusKind, SegmentView> = {
+    subagents: {
+      label: `Subagents: ${[subagentCountSummary(counts), waitingLabel?.toLowerCase()].filter(Boolean).join('; ')}`,
+      count: subagents.length,
+      mark: subagentMark(counts),
+      icon: <Bot {...SEGMENT_ICON_PROPS} />
+    },
+    background: {
+      label: `Background commands: ${background.summary}`,
+      count: commands.length,
+      mark: background.running > 0 ? 'spinner' : null,
+      icon: <TerminalSquare {...SEGMENT_ICON_PROPS} />
+    },
+    changes: {
+      label: `Changes: ${changesWords}${gitFailed ? ', Git status failed' : seen.hasNew ? ', new changes' : ''}`,
+      tooltip: `${changesWords} · Open list`,
+      count: rowCount.changes,
+      mark: gitFailed ? 'failed' : seen.hasNew ? 'new' : null,
+      icon: <FileDiff {...SEGMENT_ICON_PROPS} />
+    }
+  }
+  // The last view of each segment, for the one that is fading out.
+  const lastViews = useRef<Partial<Record<StatusKind, SegmentView>>>({})
+  useEffect(() => {
+    for (const kind of KIND_ORDER) if (present[kind]) lastViews.current[kind] = views[kind]
+  })
 
   const liveText = shown ? liveStatus(subagents.length, waitingLabel, counts, background.hint) : ''
+
+  const renderSegment = (kind: StatusKind): React.ReactNode => {
+    switch (kind) {
+      case 'subagents':
+        return (
+          <SubagentsChip
+            {...base('subagents')}
+            view={views.subagents}
+            subagents={subagents}
+            statuses={statuses}
+            counts={counts}
+            waitingLabel={waitingLabel}
+            onRowOpen={close}
+          />
+        )
+      case 'background':
+        return (
+          <BackgroundChip
+            {...base('background')}
+            view={views.background}
+            sessionId={sessionId}
+            commands={commands}
+            running={background.running}
+            summary={background.summary}
+            onRowOpen={close}
+          />
+        )
+      case 'changes':
+        return (
+          <ChangesChip
+            {...base('changes')}
+            view={views.changes}
+            changes={changes}
+            cwd={cwd}
+            turnActive={turnActive}
+            onOpenGitChanges={onOpenGitChanges}
+            onClose={close}
+            onOpened={seen.markSeen}
+          />
+        )
+    }
+  }
 
   return (
     <>
       <span aria-live="polite" className="sr-only">
         {liveText}
       </span>
-      {shown && (
-        <StatusChipRow className={className}>
-          {subagents.length > 0 && (
-            <SubagentsChip
-              {...base('subagents')}
-              subagents={subagents}
-              statuses={statuses}
-              counts={counts}
-              waitingLabel={waitingLabel}
-              onRowOpen={close}
-            />
-          )}
-          {commands.length > 0 && (
-            <BackgroundChip
-              {...base('background')}
-              sessionId={sessionId}
-              commands={commands}
-              running={background.running}
-              summary={background.summary}
-              hint={background.hint}
-              onRowOpen={close}
-            />
-          )}
-          {!hideChanges && changes.files.length > 0 && (
-            <ChangesChip
-              {...base('changes')}
-              changes={changes}
-              onOpenGitChanges={onOpenGitChanges}
-              onClose={close}
-            />
-          )}
-        </StatusChipRow>
+      {everShown && (
+        <StatusRail shown={shown} className={className}>
+          {slots.map((kind, index) => {
+            const exiting = !present[kind]
+            // The first slot has no divider. A leaving slot keeps the divider it had.
+            const isFirst = exiting
+              ? slots.slice(0, index).every((other) => !present[other])
+              : kind === firstPresent
+            const last = lastViews.current[kind]
+            return (
+              <StatusRailSlot
+                key={kind}
+                isFirst={isFirst}
+                exiting={exiting}
+                detached={firstPresent !== undefined}
+              >
+                {exiting
+                  ? last && (
+                      <StatusRailSegment
+                        label={last.label}
+                        icon={last.icon}
+                        count={last.count}
+                        mark={last.mark}
+                        tabIndex={-1}
+                      />
+                    )
+                  : renderSegment(kind)}
+              </StatusRailSlot>
+            )
+          })}
+        </StatusRail>
       )}
     </>
   )

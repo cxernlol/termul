@@ -39,9 +39,16 @@ Never `ease-in` on UI (it delays the response), never `transition: all`, and nev
 | Collapse (Rail chat list) | 200ms rows + fade + 4px lift, `--ease-out` | 150ms | `RailChatCollapse` (`RailProjectChats.tsx`) |
 | Collapse (framer) | 150ms `easeInOut`; chat 250ms smooth-out | same | `ui/collapse-expand-motion.tsx` |
 | Chevron that turns | `rotate` 150ms, `--ease-out` | same | `project-item.tsx` |
+| Subagent panel open | header avatar grows out of the clicked row's avatar: FLIP `translate` + `scale`, 340ms, `--ease-out`; the docked panel fades in with a 12px slide from the right, 200ms | 150ms fade + 12px slide to the right, `--ease-out`, held at the end; the chat takes the width back at once. The panel stays mounted through it (no second morph, scroll kept). Only a pointer close (Close, Back to chat, Back from the last subagent); Esc and Enter/Space close at once | `chat/SubagentPanel.tsx` (`useAvatarMorph`), `chat/SubagentSurface.tsx` (`DockedAside`) |
 | First-send composer morph | spring `{ visualDuration: 0.35, bounce: 0 }`; the hero exits in 160ms; the transcript enters in 320ms after 80ms | — | `chat/chat-start-morph.tsx` |
+| Status rail entrance | 150ms, fade + `scale(0.97 → 1)`, origin top right, `--ease-smooth-out` | 120ms, fade only | `chat/ChatStatusChips.tsx` |
+| Status rail segment add, remove | 150ms fade in | 120ms fade out, out of layout at once. The rail height does not animate | `chat/ChatStatusChips.tsx` |
+| Status mark crossfade (spinner, red dot, none) | 150ms, fade + `scale(0.9 → 1)`, `--ease-out` | same | `chat/StatusChip.tsx` |
+| Blue dot pop | 250ms, `scale(0.6 → 1)`, `--ease-bounce`, once on mount | none | `chat/StatusChip.tsx` |
 
-A press is `scale(0.97)`: never below 0.95, never on a full-width row, a menu item, a chip, a tab or an icon button. A row that shrinks reads as the layout jumping.
+A press is `scale(0.97)`: never below 0.95, never on a full-width row, a menu item, a chip, a tab or an icon button. A row that shrinks reads as the layout jumping. The status rail segments follow this rule: a press changes the fill only, with no scale.
+
+The blue dot pop is the one bounce outside a celebration. It plays once, when the dot mounts, and never loops. The rail uses opacity and `scale` only, and its reduced path is opacity only.
 
 Tailwind v4's `scale-*` and `rotate-*` set the CSS `scale` and `rotate` properties, not `transform`. `transition-transform` covers them; a hand-written list must name them, or the change snaps: `transition-[scale,background-color]`, never `transition-[transform,…]` for an `active:scale-*`.
 

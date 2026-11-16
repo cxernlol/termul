@@ -19,7 +19,7 @@ import { useToolCallRevealStore } from '@/stores/tool-call-reveal-store'
 import { AgentSwitchSeparator } from './AgentSwitchSeparator'
 import { ChatEmptyState } from './ChatEmptyState'
 import { ChatMessage } from './ChatMessage'
-import { CHAT_GUTTER_X } from './chat-layout'
+import { CHAT_GUTTER_X, STATUS_RAIL_GUTTER_X } from './chat-layout'
 import {
   activityParentTurn,
   groupTurnActivity,
@@ -373,7 +373,7 @@ export function ChatMessageList({
       <MessageScrollerProvider autoScroll>
         <ItemCountReporter count={stableItems.length} />
         <MessageScroller>
-          <MessageScrollerViewport className={cn(CHAT_GUTTER_X, 'py-4')}>
+          <MessageScrollerViewport className={cn(CHAT_GUTTER_X, STATUS_RAIL_GUTTER_X, 'py-4')}>
             <VirtualizedTimeline
               sessionId={sessionId}
               groupedItems={stableItems}

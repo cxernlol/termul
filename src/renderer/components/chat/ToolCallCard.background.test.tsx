@@ -84,6 +84,14 @@ describe('ToolCallCard background commands', () => {
     expect(row.parentElement).toHaveTextContent('14s')
   })
 
+  it('marks a running background command with a neutral spinner, not amber', () => {
+    seed(running)
+    renderCard()
+    const row = screen.getByRole('button', { expanded: false })
+    expect(row.querySelector('.tm-comet')).not.toBeNull()
+    expect(row.querySelector('.text-warning')).toBeNull()
+  })
+
   it('shows the finished row with the command run time once the command ended', () => {
     seed({ ...running, state: 'ended', endedAtMs: NOW })
     renderCard()

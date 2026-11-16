@@ -79,6 +79,15 @@ function renderPill(toolCalls: ToolCall[] = []): void {
   )
 }
 
+/** The mark slot kind of a segment: `spinner`, `failed`, `new` or `none`. */
+const mark = (button: HTMLElement) => button.querySelector('[data-mark]')?.getAttribute('data-mark')
+
+/** Focus opens the tooltip at once; it holds the same words as the accessible name. */
+const tooltipOf = (button: HTMLElement) => {
+  fireEvent.focus(button)
+  return screen.getByRole('tooltip')
+}
+
 const pill = () => screen.getByRole('button', { name: /^Background commands:/ })
 
 describe('ChatStatusChips background commands', () => {
@@ -96,16 +105,18 @@ describe('ChatStatusChips background commands', () => {
   it('counts the commands on the chip and running and ended ones in its panel', () => {
     seed([watch, tests])
     renderPill()
-    expect(pill()).toHaveTextContent('Background2')
+    expect(pill()).toHaveTextContent('2')
     expect(pill()).toHaveAccessibleName('Background commands: 1 running, 1 ended')
-    expect(pill()).toHaveAttribute('title', '1 command running in the background')
+    // A running command shows the spinner mark; the tooltip says the same words.
+    expect(mark(pill())).toBe('spinner')
+    expect(tooltipOf(pill())).toHaveTextContent('Background commands: 1 running, 1 ended')
     fireEvent.click(pill())
     expect(
       within(screen.getByRole('dialog', { name: 'Background' })).getByText('1 running, 1 ended')
     ).toBeInTheDocument()
   })
 
-  it('announces and titles a background subagent wait and running commands together', () => {
+  it('announces a background subagent wait and running commands together, and says the wait in the tooltip', () => {
     seed([watch])
     renderPill([
       subagentToolCall(
@@ -114,11 +125,9 @@ describe('ChatStatusChips background commands', () => {
       )
     ])
     const text = 'Waiting on 1 background subagent. 1 command running in the background'
-    expect(screen.getByRole('button', { name: /^Subagents:/ })).toHaveAttribute(
-      'title',
-      'Waiting on 1 background subagent'
+    expect(tooltipOf(screen.getByRole('button', { name: /^Subagents:/ }))).toHaveTextContent(
+      'waiting on 1 background subagent'
     )
-    expect(pill()).toHaveAttribute('title', '1 command running in the background')
     expect(document.querySelector('[aria-live="polite"]')).toHaveTextContent(text)
   })
 
@@ -148,7 +157,7 @@ describe('ChatStatusChips background commands', () => {
     renderPill()
     fireEvent.click(pill())
     expect(screen.queryByText('The agent gets each result when the command ends.')).toBeNull()
-    expect(pill()).not.toHaveAttribute('title')
+    expect(mark(pill())).toBe('none')
   })
 
   it('closes the list and asks the chat to show the card of a clicked row', () => {

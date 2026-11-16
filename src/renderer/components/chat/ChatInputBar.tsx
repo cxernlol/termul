@@ -139,8 +139,6 @@ interface ChatInputBarProps {
    * limit warning. Defaults to `notice` being set.
    */
   noticeShown?: boolean
-  /** Row above the card (the status chips); it sits above the queue too. */
-  statusRow?: React.ReactNode
   /** Placeholder while `disabled` (default "Composer unavailable"). */
   disabledPlaceholder?: string
   onRemoveQueued?: (queueId: string) => void
@@ -199,7 +197,6 @@ export function ChatInputBar({
   permission,
   notice = null,
   noticeShown = notice !== null,
-  statusRow = null,
   disabledPlaceholder = 'Composer unavailable',
   onRemoveQueued,
   onSendQueuedNow,
@@ -577,7 +574,6 @@ export function ChatInputBar({
           startScreen ? CHAT_START_COLUMN_CLASS : 'max-w-3xl'
         )}
       >
-        {statusRow}
         {slashOpen && (
           <SlashCommandMenu
             ref={slashMenuRef}

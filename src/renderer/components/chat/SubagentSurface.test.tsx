@@ -16,11 +16,12 @@ import { buildTimeline } from './chat-timeline'
 import { SubagentSurfaceProvider } from './SubagentSurface'
 
 const mobileRef = vi.hoisted(() => ({ current: false }))
+const reducedRef = vi.hoisted(() => ({ current: true }))
 vi.mock('@/hooks/use-mobile-web-shell', () => ({ useMobileWebShell: () => mobileRef.current }))
 
 vi.mock('framer-motion', async () => {
   const actual = await vi.importActual<typeof import('framer-motion')>('framer-motion')
-  return { ...actual, useReducedMotion: () => true }
+  return { ...actual, useReducedMotion: () => reducedRef.current }
 })
 
 vi.mock('@/lib/log-api', () => ({ logFrontendError: vi.fn() }))
@@ -212,6 +213,26 @@ describe('subagents in the transcript', () => {
     )
   })
 
+  it('shows a running subagent as a neutral spinner, not amber', () => {
+    renderChat({ toolCalls: [dispatch('map', { title: 'Map the UI' })] })
+    const card = row(/^Map the UI.*Working/)
+    expect(card.querySelectorAll('.tm-comet').length).toBeGreaterThanOrEqual(2)
+    expect(card.querySelector('.text-muted-foreground .tm-comet')).not.toBeNull()
+    expect(card.querySelector('.text-warning')).toBeNull()
+    expect(card.querySelector('.bg-warning')).toBeNull()
+  })
+
+  it('keeps the warning ink for a subagent that waits on the user', () => {
+    renderChat({
+      toolCalls: [
+        dispatch('ask', { title: 'Ask the user', state: { activity: 'requires_action' } })
+      ]
+    })
+    const card = row(/^Ask the user.*Needs input/)
+    expect(card.querySelector('.text-warning')).not.toBeNull()
+    expect(card.querySelector('.bg-warning')).not.toBeNull()
+  })
+
   it('shows a single subagent as one card without a group header', () => {
     renderChat({ toolCalls: [dispatch('map', { title: 'Map the UI', role: 'Explore' })] })
     expect(row(/^Map the UI.*Working/)).toBeInTheDocument()
@@ -395,5 +416,131 @@ describe('subagents in the transcript', () => {
       useOverlayStackStore.getState().stack.at(-1)?.close()
     })
     expect(screen.queryByRole('dialog', { name: 'Audit auth flow' })).toBeNull()
+  })
+})
+
+describe('opening the subagent panel', () => {
+  const animate = vi.fn((): { cancel: () => void; onfinish: (() => void) | null } => ({
+    cancel: vi.fn(),
+    onfinish: null
+  }))
+  beforeEach(() => {
+    mobileRef.current = false
+    reducedRef.current = false
+    seq = 10
+    useOverlayStackStore.setState({ stack: [] })
+    animate.mockClear()
+    Object.defineProperty(HTMLElement.prototype, 'animate', { configurable: true, value: animate })
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockReturnValue(
+      DOMRect.fromRect({ x: 40, y: 80, width: 32, height: 32 })
+    )
+  })
+  afterEach(async () => {
+    cleanup()
+    await act(() => new Promise((resolve) => setTimeout(resolve, 0)))
+    vi.restoreAllMocks()
+    Reflect.deleteProperty(HTMLElement.prototype, 'animate')
+    reducedRef.current = true
+    useAcpStore.setState({ toolCalls: {} })
+  })
+
+  const morphCalls = () =>
+    animate.mock.contexts.filter((el) => (el as Element).hasAttribute('data-subagent-morph'))
+
+  it('grows the header avatar out of the clicked row avatar', () => {
+    renderChat({ toolCalls: [dispatch('a', { title: 'Audit auth flow' }), dispatch('b')] })
+    fireEvent.click(row(/^Audit auth flow/), { detail: 1 })
+    expect(morphCalls()).toHaveLength(1)
+    const [keyframes, options] = animate.mock.calls[0] as unknown as [
+      Keyframe[],
+      KeyframeAnimationOptions
+    ]
+    expect(String(keyframes[0].transform)).toMatch(/^translate\(.+\) scale\(.+\)$/)
+    expect(keyframes[1].transform).toBe('translate(0, 0) scale(1)')
+    expect(options.duration).toBe(340)
+  })
+
+  it('opens at once from the keyboard, on a step and under reduced motion', () => {
+    renderChat({ toolCalls: [dispatch('a', { title: 'Audit auth flow' }), dispatch('b')] })
+    // A keyboard click has detail 0.
+    fireEvent.click(row(/^Audit auth flow/), { detail: 0 })
+    expect(morphCalls()).toHaveLength(0)
+    fireEvent.keyDown(panel(), { key: 'ArrowDown' })
+    expect(morphCalls()).toHaveLength(0)
+    fireEvent.click(within(panel()).getByRole('button', { name: 'Back to chat' }))
+
+    reducedRef.current = true
+    fireEvent.click(row(/^Audit auth flow/), { detail: 1 })
+    expect(morphCalls()).toHaveLength(0)
+  })
+
+  it('slides the docked panel in once, not on each step', () => {
+    renderChat({ toolCalls: [dispatch('a', { title: 'Audit auth flow' }), dispatch('b')] })
+    fireEvent.click(row(/^Audit auth flow/), { detail: 1 })
+    const aside = screen.getByRole('complementary', { name: 'Subagent' })
+    expect(aside.className).toContain('animate-in')
+    expect(aside.className).toContain('motion-safe:slide-in-from-right-3')
+    fireEvent.keyDown(panel(), { key: 'ArrowDown' })
+    expect(screen.getByRole('complementary', { name: 'Subagent' })).toBe(aside)
+  })
+
+  it('closes the docked panel with a fade and a slide out, then removes it', () => {
+    renderChat({ toolCalls: [dispatch('a', { title: 'Audit auth flow' }), dispatch('b')] })
+    fireEvent.click(row(/^Audit auth flow/), { detail: 1 })
+    const shown = panel()
+    animate.mockClear()
+    fireEvent.click(within(panel()).getByRole('button', { name: 'Back to chat' }), { detail: 1 })
+
+    // The panel leaves the layout at once and fades out over the chat. It is
+    // the same element: no second mount, so no second avatar morph.
+    expect(screen.getByTestId('subagent-panel')).toBe(shown)
+    expect(morphCalls()).toHaveLength(0)
+    expect(screen.queryByRole('complementary', { name: 'Subagent' })).toBeNull()
+    const exitCall = animate.mock.calls.findIndex(
+      (call) => (call as unknown as [Keyframe[]])[0]?.[1]?.opacity === 0
+    )
+    expect(exitCall).toBeGreaterThanOrEqual(0)
+    const [keyframes, options] = animate.mock.calls[exitCall] as unknown as [
+      Keyframe[],
+      KeyframeAnimationOptions
+    ]
+    expect(keyframes[1]).toEqual({ opacity: 0, transform: 'translateX(12px)' })
+    expect(options).toMatchObject({ duration: 150, fill: 'forwards' })
+    const leaving = animate.mock.contexts[exitCall] as HTMLElement
+    expect(leaving).toHaveAttribute('aria-hidden', 'true')
+    expect(leaving.className).toContain('absolute')
+
+    act(() => animate.mock.results[exitCall].value.onfinish?.())
+    expect(leaving).not.toBeInTheDocument()
+  })
+
+  it('closes at once from the keyboard: Esc, and Enter or Space on Close or Back', () => {
+    renderChat({ toolCalls: [dispatch('a', { title: 'Audit auth flow' })] })
+    const exits = () =>
+      animate.mock.calls.filter((call) => (call as unknown as [Keyframe[]])[0]?.[1]?.opacity === 0)
+
+    fireEvent.click(row(/^Audit auth flow/), { detail: 1 })
+    fireEvent.keyDown(panel(), { key: 'Escape' })
+    expect(screen.queryByTestId('subagent-panel')).toBeNull()
+
+    fireEvent.click(row(/^Audit auth flow/), { detail: 1 })
+    fireEvent.click(within(panel()).getByRole('button', { name: 'Close' }), { detail: 0 })
+    expect(screen.queryByTestId('subagent-panel')).toBeNull()
+
+    fireEvent.click(row(/^Audit auth flow/), { detail: 1 })
+    fireEvent.click(within(panel()).getByRole('button', { name: 'Back' }), { detail: 0 })
+    expect(screen.queryByTestId('subagent-panel')).toBeNull()
+
+    expect(exits()).toHaveLength(0)
+  })
+
+  it('does not play the exit when the chat empties the panel itself', () => {
+    const view = renderChat({ toolCalls: [dispatch('a', { title: 'Audit auth flow' })] })
+    fireEvent.click(row(/^Audit auth flow/), { detail: 1 })
+    animate.mockClear()
+    // The subagent leaves the chat: the panel closes with no exit.
+    view.update({ toolCalls: [] })
+    expect(screen.queryByTestId('subagent-panel')).toBeNull()
+    expect(animate).not.toHaveBeenCalled()
   })
 })

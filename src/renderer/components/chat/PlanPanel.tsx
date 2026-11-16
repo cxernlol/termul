@@ -7,7 +7,7 @@ import { isNewPlanList, isSettledPlan, planEntryIdentity, planEntryKeys } from '
 import { cn } from '@/lib/utils'
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '../ui/accordion'
 import { CollapseExpandMotion } from '../ui/collapse-expand-motion'
-import { CHAT_GUTTER_X, CHAT_HIT_MIN_H, CHAT_ROW_MIN_H } from './chat-layout'
+import { CHAT_GUTTER_X, CHAT_HIT_MIN_H, CHAT_ROW_MIN_H, STATUS_RAIL_GUTTER_X } from './chat-layout'
 import { CHAT_SPRING_SOFT, iconPop } from './chat-motion'
 import { useForcedCollapse } from './use-forced-collapse'
 
@@ -59,7 +59,7 @@ function StatusIcon({ status }: { status?: string }): React.JSX.Element {
     status === 'completed' ? (
       <CheckCircle2 size={13} className="text-success" />
     ) : status === 'in_progress' ? (
-      <Spinner size={13} decorative className="text-warning" />
+      <Spinner size={13} decorative className="text-muted-foreground" />
     ) : (
       <Circle size={13} className="text-muted-foreground" />
     )
@@ -156,7 +156,7 @@ export function PlanPanel({
           transition={reduced ? { duration: 0 } : CHAT_SPRING_SOFT}
           className="shrink-0"
         >
-          <div className={cn(CHAT_GUTTER_X, 'py-2')}>
+          <div className={cn(CHAT_GUTTER_X, STATUS_RAIL_GUTTER_X, 'py-2')}>
             <section
               className="mx-auto w-full max-w-3xl overflow-hidden rounded-lg bg-card/30 ring-1 ring-border/50"
               aria-label="Execution plan"
@@ -176,7 +176,9 @@ export function PlanPanel({
               >
                 <ListChecks size={12} className="shrink-0" aria-hidden="true" />
                 <span className="text-balance">Plan</span>
-                {hasInProgress && <Spinner size={12} decorative className="ml-1 text-warning" />}
+                {hasInProgress && (
+                  <Spinner size={12} decorative className="ml-1 text-muted-foreground" />
+                )}
                 <span className="ml-auto tabular-nums text-muted-foreground">
                   {completed}
                   <span className="text-muted-foreground/40">/</span>
