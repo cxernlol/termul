@@ -81,6 +81,7 @@ import { AcpConnectionCoordinator, type AcpRecovery } from '@/lib/acp-connection
 import { getAcpTransport, isTransientAcpTransportError } from '@/lib/acp-transport'
 import { splitReadOnlyGuard } from '@/lib/github-handoff/read-only-guard'
 import { logFrontendError } from '@/lib/log-api'
+import type { McpInstallRequestEvent, McpInstallResolvedEvent } from '@/lib/mcp-install-request'
 import { foldRecoveredPlan, markPlanTool } from '@/lib/plan-session'
 import { wireBlocksToDisplay } from '@/lib/skills-wire-reverse'
 import { useChatStartPickStore } from '@/stores/chat-start-pick-store'
@@ -669,6 +670,15 @@ export function initAcpEventListeners(): () => void {
     ),
     acpApi.onEvent<QuestionCancelledEvent>(ACP_EVENTS.questionCancelled, (e) =>
       useAcpStore.getState()._onQuestionCancelled(e)
+    ),
+    acpApi.onEvent<McpInstallRequestEvent>(ACP_EVENTS.mcpInstallRequest, (e) =>
+      useAcpStore.getState()._onMcpInstallRequest(e)
+    ),
+    acpApi.onEvent<McpInstallResolvedEvent>(ACP_EVENTS.mcpInstallResolved, (e) =>
+      useAcpStore.getState()._onMcpInstallResolved(e)
+    ),
+    acpApi.onEvent(ACP_EVENTS.mcpRegistryChanged, () =>
+      useAcpStore.getState()._onMcpRegistryChanged()
     ),
     acpApi.onEvent<ElicitationRequestEvent>(ACP_EVENTS.elicitationRequest, (e, eventSeq) =>
       useAcpStore.getState()._onElicitationRequest(e, eventSeq)

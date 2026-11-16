@@ -72,6 +72,12 @@ import type { PrepareChatError } from '@/lib/agents/acp-spawn-errors'
 import type { BrowserConsentOptionId, BrowserConsentTicket } from '@/lib/browser-consent-api'
 import type { CommandState } from '@/lib/command-engine'
 import type { LogPoint } from '@/lib/log-point'
+import type {
+  McpInstallDecisionName,
+  McpInstallRequestEvent,
+  McpInstallResolvedEvent,
+  PendingMcpInstall
+} from '@/lib/mcp-install-request'
 import type { QueuedPrompt } from '../prompt-queue-orchestration'
 
 /** A prompt command's state while the chat waits to confirm it (AD-6). */
@@ -572,6 +578,8 @@ export interface AcpState {
   mcpServers: StoredMcpServer[]
   // True once `loadMcpServers` has resolved at least once.
   mcpServersLoaded: boolean
+  /** Chat approval cards for `mcp_install`, keyed by request id. No secret values. */
+  pendingMcpInstalls: Record<string, PendingMcpInstall>
 
   // MCP probe state — on-demand only (no persistent always-on connections).
   // `mcpProbeStatus` reflects Troupe's own rmcp client connection, NOT the
@@ -961,6 +969,18 @@ export interface AcpState {
   saveCatalogInstall: (result: McpInstallCommitResult) => Promise<StoredMcpServer>
   setMcpServerEnabled: (id: string, enabled: boolean) => Promise<void>
   deleteMcpServer: (id: string) => Promise<void>
+  answerMcpInstall: (
+    requestId: string,
+    decision: McpInstallDecisionName,
+    inputs?: Record<string, string>,
+    secretValues?: Record<string, string>,
+    planId?: string | null,
+    launchDigest?: string | null
+  ) => Promise<void>
+  dismissMcpInstall: (requestId: string) => void
+  _onMcpInstallRequest: (event: McpInstallRequestEvent) => void
+  _onMcpInstallResolved: (event: McpInstallResolvedEvent) => void
+  _onMcpRegistryChanged: () => void
 
   // Actions — MCP probe (on-demand, read-only). State slices above.
   /**

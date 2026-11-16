@@ -93,8 +93,8 @@ describe('web-protocol.types — event/request type registries (AC2)', () => {
     expect(WS_REQUEST_TYPES).toContain('get_session_payload')
   })
 
-  it('exports exactly 83 request types including warm-pool promotion, host-owned session delete, quick-chat rename, browser stop and subagent stop', () => {
-    expect(WS_REQUEST_TYPES).toHaveLength(83)
+  it('exports exactly 84 request types including chat MCP install approval', () => {
+    expect(WS_REQUEST_TYPES).toHaveLength(84)
     const expected = [
       'send_prompt',
       'cancel_prompt',

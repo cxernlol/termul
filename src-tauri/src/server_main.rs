@@ -462,6 +462,7 @@ fn main() -> ExitCode {
         };
         // The MCP server list is one host-wide store value; a host that kept
         // one list per project file merges them into it once.
+        termul_manager_lib::host_mcp::mcp_install::install_live(Arc::clone(&store));
         if let Err(error) = termul_manager_lib::web::mcp_registry::import_registered_project_files(
             &store, &registry,
         ) {

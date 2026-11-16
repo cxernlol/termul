@@ -132,6 +132,9 @@ export const WS_REQUEST_TYPES = [
   'set_model',
   'respond_permission',
   'answer_question',
+  // Chat approval of an MCP install. The payload may carry secret field
+  // values, so the host does not ledger it.
+  'answer_mcp_install',
   // Stop agent browsing for a session (desktop parity with the
   // `browser_stop` Tauri command); only an authenticated client of the
   // session may send it.
@@ -371,6 +374,7 @@ export const WS_COMMAND_CLASSES: Readonly<
   set_model: ['idempotent', null],
   respond_permission: ['command', 'payload'],
   answer_question: ['command', 'payload'],
+  answer_mcp_install: ['command', 'never'],
   browser_stop: ['idempotent', null],
   create_session: ['create', 'entity'],
   load_session: ['command', 'payload'],

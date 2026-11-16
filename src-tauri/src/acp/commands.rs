@@ -5,7 +5,9 @@
 //! the desktop's `ipc::Channel` carrier (`web::ws::channel`), not by a command
 //! here. What stays is host-local by design: Claude Account management, the
 //! factory key, the Codex CLI login probe, runtime and MCP probes, MCP OAuth,
-//! and the ACP timeout overrides.
+//! the ACP timeout overrides, and the desktop answer to a chat MCP install.
+//! A remote client answers that card over `/ws`. The desktop channel is not
+//! an approver, so the `main` webview uses `acp_answer_mcp_install`.
 
 use std::sync::Arc;
 
@@ -575,6 +577,98 @@ pub fn acp_set_agent_idle_window(secs: Option<u64>) -> Result<(), String> {
 #[tauri::command]
 pub fn acp_get_agent_idle_window() -> crate::web::agent_reaper::AgentIdleWindowStatus {
     crate::web::agent_reaper::resolved_agent_idle_window()
+}
+
+/// Desktop answer to a chat MCP install card. Only the `main` webview may
+/// call it. The first answer wins. Secret values are not logged.
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpInstallAnswerArgs {
+    request_id: String,
+    session_id: String,
+    decision: String,
+    #[serde(default)]
+    inputs: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    secret_values: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    plan_id: Option<String>,
+    #[serde(default)]
+    launch_digest: Option<String>,
+}
+
+#[tauri::command]
+pub fn acp_answer_mcp_install(
+    answer: McpInstallAnswerArgs,
+    webview: tauri::Webview,
+    manager: State<'_, Arc<AcpManager>>,
+) -> Result<IpcResult<()>, String> {
+    if webview.label() != "main" {
+        log::warn!("[Security] acp_answer_mcp_install rejected from a non-main webview");
+        return Err("acp_answer_mcp_install must come from the main window".to_string());
+    }
+    let McpInstallAnswerArgs {
+        request_id,
+        session_id,
+        decision,
+        inputs,
+        secret_values,
+        plan_id,
+        launch_digest,
+    } = answer;
+    let parsed = match decision.as_str() {
+        "decline" => crate::acp::host_mcp::mcp_install::McpInstallDecision::Decline,
+        "preview" => crate::acp::host_mcp::mcp_install::McpInstallDecision::Preview { inputs },
+        "approve" => {
+            let Some(plan_id) = plan_id.filter(|value| !value.is_empty()) else {
+                return Ok(IpcResult::error("planId is required", "MCP_INSTALL_PLAN"));
+            };
+            let Some(launch_digest) = launch_digest.filter(|value| !value.is_empty()) else {
+                return Ok(IpcResult::error(
+                    "launchDigest is required",
+                    "MCP_INSTALL_PLAN",
+                ));
+            };
+            crate::acp::host_mcp::mcp_install::McpInstallDecision::Approve {
+                inputs,
+                secret_values,
+                plan_id,
+                launch_digest,
+            }
+        }
+        _ => {
+            return Ok(IpcResult::error(
+                "decision must be decline, preview, or approve",
+                "MCP_INSTALL_DECISION",
+            ));
+        }
+    };
+    Ok(
+        match manager.answer_mcp_install(&request_id, &session_id, parsed) {
+            Ok(()) => IpcResult::success(()),
+            Err(crate::acp::host_mcp::mcp_install::McpInstallAnswerError::NotFound) => {
+                IpcResult::error("no outstanding install for this requestId", "MCP_INSTALL_NOT_FOUND")
+            }
+            Err(crate::acp::host_mcp::mcp_install::McpInstallAnswerError::AlreadyResolved) => {
+                IpcResult::error(
+                    "this install was already answered",
+                    "MCP_INSTALL_ALREADY_RESOLVED",
+                )
+            }
+            Err(crate::acp::host_mcp::mcp_install::McpInstallAnswerError::SessionMismatch) => {
+                IpcResult::error(
+                    "the install belongs to another session",
+                    "MCP_INSTALL_SESSION",
+                )
+            }
+            Err(crate::acp::host_mcp::mcp_install::McpInstallAnswerError::TooEarly) => {
+                IpcResult::error(
+                    "answered too soon after the prompt appeared; try again",
+                    "MCP_INSTALL_TOO_EARLY",
+                )
+            }
+        },
+    )
 }
 
 #[cfg(test)]

@@ -28,6 +28,7 @@ pub mod canvas_policy;
 pub mod canvas_skill;
 pub mod canvas_tools;
 pub mod child;
+pub mod mcp_install;
 pub mod parent;
 pub mod presence;
 pub mod read_chat;
@@ -36,6 +37,8 @@ pub mod read_chat;
 mod automation_tools_tests;
 #[cfg(test)]
 mod gateway_harness;
+#[cfg(test)]
+mod mcp_install_tests;
 #[cfg(test)]
 mod read_chat_tests;
 
@@ -86,7 +89,8 @@ list of your own. In the first turn, once the user's intent is clear, call `set_
 once with a short title and a kebab-case `branch` slug. When you need a decision or missing \
 details from the user, ask with the `ask_user` tool or your client's own question tool, not in \
 plain text. When the user gives you a Troupe chat ID or a copied chat reference, read that chat \
-with the `read_chat` tool.";
+with the `read_chat` tool. To install an MCP server from a link, a registry name, or \
+JSON, read it with your own tools and call `mcp_install`. The user approves on a card in the chat.";
 
 /// The context budget Claude Code gives a server's `instructions`: it keeps
 /// this many UTF-16 code units (`CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH`,
@@ -195,6 +199,8 @@ pub enum FrameKind {
     Automation,
     /// A `read_chat` tool call: any chat on this host, rendered as text.
     ReadChat,
+    /// `mcp_install`: show the approval card, then plan and commit on approve.
+    McpInstall,
 }
 
 /// One option the agent offers in an `ask_user` question.
@@ -399,6 +405,9 @@ pub struct FrameRequest {
     /// The chat and page a `ReadChat` frame asks for.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub read_chat: Option<read_chat::ReadChatInput>,
+    /// The catalog or import source of an `McpInstall` frame.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_install: Option<crate::mcp_catalog::FormRequest>,
 }
 
 /// Parent reply frame (one per connection). `result` carries the browser

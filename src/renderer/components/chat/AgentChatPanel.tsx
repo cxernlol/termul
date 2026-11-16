@@ -70,6 +70,7 @@ import { isAtLimit as isAtCodexLimit, useCodexLimit } from './codex-account/use-
 import { ComposerWorktreeLabel } from './composer/ComposerFoot'
 import type { SelectionContextInsertRequest } from './composer/insert-selection-context'
 import { ElicitationPrompt } from './ElicitationPrompt'
+import { McpInstallCard } from './McpInstallCard'
 import { sendFromChatStart } from './new-chat/send-from-chat-start'
 import { PendingRestartBanner } from './PendingRestartBanner'
 import { PermissionPrompt } from './PermissionPrompt'
@@ -214,6 +215,13 @@ export function AgentChatPanel({
     useShallow(
       (s) =>
         Object.values(s.pendingElicitations ?? {}).find((item) => item.sessionId === sessionId) ??
+        null
+    )
+  )
+  const pendingMcpInstall = useAcpStore(
+    useShallow(
+      (s) =>
+        Object.values(s.pendingMcpInstalls ?? {}).find((item) => item.sessionId === sessionId) ??
         null
     )
   )
@@ -871,7 +879,8 @@ export function AgentChatPanel({
   const isClosed = session.status === 'closed'
   // No add while the composer is unmounted (stopped chat, or a question replaces it).
   const composerHidden =
-    (isClosed && !isResumableStop) || (!isClosed && (pendingElicitation || pendingQuestion))
+    (isClosed && !isResumableStop) ||
+    (!isClosed && (pendingElicitation || pendingQuestion || pendingMcpInstall))
   const showBrowserConsentCard =
     pendingBrowserConsent != null && !isClosed && !stripHosting && !overlayOpen
   // Failed launches keep the Retry affordance even without a user prompt in
@@ -1077,7 +1086,7 @@ export function AgentChatPanel({
       {/* Any pending agent prompt morphs the composer into the question
           dialog — the composer and queued prompts all
           hide until the prompt resolves. */}
-      {!isClosed && (pendingElicitation || pendingQuestion) ? (
+      {!isClosed && (pendingElicitation || pendingQuestion || pendingMcpInstall) ? (
         <div ref={dockRef} data-chat-dock="true" className={dockClassName}>
           {activeError && !atUsageLimit && (
             <div className={`${CHAT_GUTTER_X} pt-3`}>
@@ -1103,6 +1112,13 @@ export function AgentChatPanel({
                 />
               </div>
             </div>
+          )}
+          {pendingMcpInstall && (
+            <McpInstallCard
+              key={pendingMcpInstall.requestId}
+              install={pendingMcpInstall}
+              projectId={session.projectId ?? null}
+            />
           )}
           {pendingQuestion && (
             <AskUserQuestion

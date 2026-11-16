@@ -1794,9 +1794,9 @@ pub fn run() {
                 Arc::new(move |project_id| registry.canonical_root(project_id))
             };
             // `mcp_tool` nodes call the host's one MCP server list.
-            let mcp_servers = automation::mcp::store_servers(
-                handle.state::<remote::SharedLiveData>().store.clone(),
-            );
+            let mcp_store = handle.state::<remote::SharedLiveData>().store.clone();
+            crate::acp::host_mcp::mcp_install::install_live(Arc::clone(&mcp_store));
+            let mcp_servers = automation::mcp::store_servers(mcp_store);
             match automation::service::AutomationService::open(
                 &app_data_dir,
                 Arc::clone(&acp_manager),
@@ -2281,6 +2281,7 @@ pub fn run() {
             acp::commands::acp_get_agent_idle_window,
             acp::commands::acp_probe_mcp_server,
             acp::commands::acp_mcp_oauth_start,
+            acp::commands::acp_answer_mcp_install,
             acp::commands::acp_mcp_oauth_has_token,
             acp::commands::acp_mcp_oauth_disconnect,
             acp_registry_snapshot::acp_fetch_registry_snapshot,

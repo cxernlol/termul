@@ -507,7 +507,8 @@ pub(super) async fn list_tools(config: ChildConfig) -> Vec<serde_json::Value> {
     let (server_io, client_io) = tokio::io::duplex(256 * 1024);
     let (server_read, server_write) = tokio::io::split(server_io);
     let (client_read, mut client_write) = tokio::io::split(client_io);
-    let serve = tokio::spawn(async move { serve_mcp_transport(config, server_read, server_write).await });
+    let serve =
+        tokio::spawn(async move { serve_mcp_transport(config, server_read, server_write).await });
     let mut reader = BufReader::new(client_read);
     let init = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test-client","version":"0.0.1"}}}"#;
     client_write.write_all(init.as_bytes()).await.unwrap();
@@ -524,7 +525,10 @@ pub(super) async fn list_tools(config: ChildConfig) -> Vec<serde_json::Value> {
     drop(client_write);
     drop(reader);
     serve.await.expect("serve task").expect("serve ok");
-    tools["result"]["tools"].as_array().expect("tools array").clone()
+    tools["result"]["tools"]
+        .as_array()
+        .expect("tools array")
+        .clone()
 }
 
 #[test]
@@ -561,7 +565,8 @@ async fn call_browser(config: ChildConfig, calls: &[serde_json::Value]) -> Vec<s
     let (server_io, client_io) = tokio::io::duplex(256 * 1024);
     let (server_read, server_write) = tokio::io::split(server_io);
     let (client_read, mut client_write) = tokio::io::split(client_io);
-    let serve = tokio::spawn(async move { serve_mcp_transport(config, server_read, server_write).await });
+    let serve =
+        tokio::spawn(async move { serve_mcp_transport(config, server_read, server_write).await });
     let mut reader = BufReader::new(client_read);
     let init = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test-client","version":"0.0.1"}}}"#;
     client_write.write_all(init.as_bytes()).await.unwrap();
@@ -581,7 +586,10 @@ async fn call_browser(config: ChildConfig, calls: &[serde_json::Value]) -> Vec<s
             "method": "tools/call",
             "params": { "name": "browser", "arguments": arguments },
         });
-        client_write.write_all(request.to_string().as_bytes()).await.unwrap();
+        client_write
+            .write_all(request.to_string().as_bytes())
+            .await
+            .unwrap();
         client_write.write_all(b"\n").await.unwrap();
         results.push(read_json_id(&mut reader, id).await["result"].clone());
     }
@@ -615,8 +623,14 @@ fn without_a_host_the_browser_tool_is_advertised_fail_closed() {
         .find(|tool| tool["name"] == "browser")
         .expect("the browser tool is advertised");
     let description = browser["description"].as_str().unwrap();
-    assert!(description.contains("not available on this host"), "{description}");
-    assert!(description.contains("capability_unavailable"), "{description}");
+    assert!(
+        description.contains("not available on this host"),
+        "{description}"
+    );
+    assert!(
+        description.contains("capability_unavailable"),
+        "{description}"
+    );
 
     let started = std::time::Instant::now();
     let results = runtime.block_on(call_browser(
@@ -628,7 +642,10 @@ fn without_a_host_the_browser_tool_is_advertised_fail_closed() {
             serde_json::json!({}),
         ],
     ));
-    assert!(started.elapsed() < std::time::Duration::from_secs(5), "fail-closed calls never wait");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "fail-closed calls never wait"
+    );
     for result in results {
         assert_eq!(result["isError"], true, "{result}");
         assert_eq!(
@@ -650,8 +667,9 @@ fn without_a_host_the_browser_tool_is_advertised_fail_closed() {
     }
 }
 
-const HOST_TOOLS: [&str; 14] = [
+const HOST_TOOLS: [&str; 15] = [
     "ask_user",
+    "mcp_install",
     "automation_apply_ops",
     "automation_capabilities",
     "automation_create",
@@ -1054,6 +1072,93 @@ async fn canvas_tools_answer_canvas_closed_with_the_way_to_open_it() {
             text.contains("ask the user to open it with the Canvas button"),
             "{text}"
         );
+        drop(writer);
+    })
+    .await;
+}
+
+/// `tools/list` advertises `mcp_install`, and `tools/call` returns the
+/// parent's declined result. The description tells the agent how to resolve
+/// a link and that the user must approve.
+#[tokio::test]
+async fn mcp_install_lists_and_a_declined_call_returns_declined() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = std::sync::Arc::new(
+        crate::web::store::WebStore::open(
+            dir.path().join("store.json"),
+            crate::web::store::StorePolicy::default(),
+        )
+        .unwrap(),
+    );
+    let catalog = std::sync::Arc::new(crate::mcp_catalog::McpCatalogService::service_for_rows(
+        Vec::new(),
+        crate::mcp_catalog::RunnerAvailability {
+            npx: true,
+            uvx: true,
+            docker: true,
+            dotnet: true,
+        },
+    ));
+    let parent = crate::acp::host_mcp::parent::HostPlanServer::start(vec![], None);
+    parent.set_mcp_install_answer_floor_for_tests(std::time::Duration::ZERO);
+    parent.set_mcp_installer_for_tests(std::sync::Arc::new(
+        crate::acp::host_mcp::mcp_install::HostMcpInstall::for_tests(catalog, store),
+    ));
+    let (port, token, provisional) = parent.register_session("agent-1");
+    parent.bind_session(&token, "sess-server");
+    parent.begin_turn("agent-1", "sess-server");
+    let config = ChildConfig {
+        port,
+        token,
+        session_id: provisional,
+        agent_id: "agent-1".to_string(),
+    };
+    let parent_for_call = std::sync::Arc::clone(&parent);
+    with_mcp_session(config, move |mut writer, mut reader| async move {
+        send_line(
+            &mut writer,
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#,
+        )
+        .await;
+        let listed = read_json_id(&mut reader, 2).await;
+        let tool = listed["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "mcp_install")
+            .expect("mcp_install is listed");
+        let description = tool["description"].as_str().unwrap();
+        assert!(description.contains("catalog"), "{description}");
+        assert!(description.contains("import"), "{description}");
+        assert!(description.contains("approves"), "{description}");
+        assert!(description.contains("secret"), "{description}");
+        assert!(
+            description.contains("`attached` is always false for now"),
+            "{description}"
+        );
+
+        let call = r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"mcp_install","arguments":{"source":{"kind":"import","json":"{\"mcpServers\":{\"echo\":{\"command\":\"echo\",\"args\":[\"hi\"]}}}"}}}}"#;
+        send_line(&mut writer, call).await;
+        let parent = parent_for_call;
+        tokio::spawn(async move {
+            for _ in 0..200 {
+                if let Some(id) = parent.open_mcp_install_ids().into_iter().next() {
+                    assert!(parent
+                        .answer_mcp_install(
+                            &id,
+                            "sess-server",
+                            crate::acp::host_mcp::mcp_install::McpInstallDecision::Decline,
+                        )
+                        .is_ok());
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        });
+        let reply = read_json_id(&mut reader, 3).await;
+        let text = reply["result"]["content"][0]["text"].as_str().unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
+        assert_eq!(parsed["outcome"], "declined", "{text}");
         drop(writer);
     })
     .await;

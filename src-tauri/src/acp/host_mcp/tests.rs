@@ -137,6 +137,7 @@ fn title_frame_round_trips_with_kind_and_title() {
         automation_tool: None,
         automation_input: None,
         read_chat: None,
+        mcp_install: None,
     };
     let value = serde_json::to_value(&frame).unwrap();
     assert_eq!(value["kind"], "set_title");
@@ -425,7 +426,10 @@ fn browser_frame_carries_the_raw_tool_arguments_verbatim() {
 fn describe_frame_kind_round_trips() {
     let value = serde_json::to_value(FrameKind::Describe).unwrap();
     assert_eq!(value, "describe");
-    assert_eq!(serde_json::from_value::<FrameKind>(value).unwrap(), FrameKind::Describe);
+    assert_eq!(
+        serde_json::from_value::<FrameKind>(value).unwrap(),
+        FrameKind::Describe
+    );
 }
 
 #[test]
@@ -462,6 +466,7 @@ fn title_frame_carries_the_optional_branch_slug() {
         automation_tool: None,
         automation_input: None,
         read_chat: None,
+        mcp_install: None,
     };
     let value = serde_json::to_value(&frame).unwrap();
     assert_eq!(value["branch"], "fix-login");

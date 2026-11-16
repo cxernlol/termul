@@ -56,7 +56,10 @@ pub(super) type EntityKey = String;
 pub(super) fn entity_key(request: &WsRequest) -> Option<EntityKey> {
     if matches!(
         request.type_.as_str(),
-        "respond_permission" | "answer_question" | "respond_elicitation"
+        "respond_permission"
+            | "answer_question"
+            | "respond_elicitation"
+            | "answer_mcp_install"
     ) {
         return None;
     }

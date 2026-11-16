@@ -221,6 +221,31 @@ impl McpCatalogService {
         }
     }
 
+    /// A catalog of `rows` (registry server objects wrapped like the snapshot)
+    /// and a fixed runner set. Host-tool tests install through this instead of
+    /// the embedded snapshot.
+    #[cfg(test)]
+    pub(crate) fn service_for_rows(
+        rows: Vec<serde_json::Value>,
+        runners: RunnerAvailability,
+    ) -> Self {
+        let mut items: Vec<_> = rows
+            .into_iter()
+            .filter_map(snapshot::item_from_row)
+            .collect();
+        items.sort_by(|a, b| a.name.cmp(&b.name));
+        Self::with_runners(
+            snapshot::LoadedCatalog::from_items(
+                items,
+                snapshot::McpCatalogSource {
+                    updated_at: None,
+                    sample: true,
+                },
+            ),
+            runners,
+        )
+    }
+
     #[cfg(test)]
     pub(crate) fn with_runners(catalog: LoadedCatalog, runners: RunnerAvailability) -> Self {
         Self::new(catalog, Arc::new(move || runners))
@@ -496,6 +521,11 @@ impl McpCatalogService {
     #[cfg(test)]
     pub(crate) fn stored_plans(&self) -> usize {
         self.plans.count()
+    }
+
+    /// Runners the host can start. Cached for a short time on the live service.
+    pub async fn runner_availability(&self) -> RunnerAvailability {
+        self.runners().await
     }
 
     async fn runners(&self) -> RunnerAvailability {

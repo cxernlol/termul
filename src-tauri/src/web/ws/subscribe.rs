@@ -469,3 +469,105 @@ pub(super) async fn handle_answer_question(
         }
     }
 }
+
+/// `answer_mcp_install`: the approval card's decision. Only an authorized
+/// client of the install's session may answer. `secretValues` are forwarded
+/// to the parked tool and are not logged.
+pub(super) fn handle_answer_mcp_install(
+    id: String,
+    payload: &Value,
+    env: &HandlerEnv,
+) -> WsReply {
+    let Some(request_id) = payload.get("requestId").and_then(Value::as_str) else {
+        return WsReply::err(id, WsErrorCode::Unsupported, "requestId is required");
+    };
+    let Some(session_id) = payload.get("sessionId").and_then(Value::as_str) else {
+        return WsReply::err(id, WsErrorCode::Unsupported, "sessionId is required");
+    };
+    if request_id.is_empty() || session_id.is_empty() {
+        return WsReply::err(
+            id,
+            WsErrorCode::Unsupported,
+            "requestId and sessionId are required",
+        );
+    }
+    if !remote_approver(env, Some(session_id)).qualifies() {
+        return WsReply::err(
+            id,
+            WsErrorCode::PermissionDenied,
+            "only an authenticated client of this session can answer it",
+        );
+    }
+    let inputs = string_map(payload.get("inputs"));
+    let secret_values = string_map(payload.get("secretValues"));
+    let decision = match payload.get("decision").and_then(Value::as_str) {
+        Some("decline") => crate::acp::host_mcp::mcp_install::McpInstallDecision::Decline,
+        Some("preview") => {
+            crate::acp::host_mcp::mcp_install::McpInstallDecision::Preview { inputs }
+        }
+        Some("approve") => {
+            let Some(plan_id) = payload.get("planId").and_then(Value::as_str) else {
+                return WsReply::err(id, WsErrorCode::Unsupported, "planId is required");
+            };
+            let Some(launch_digest) = payload.get("launchDigest").and_then(Value::as_str) else {
+                return WsReply::err(id, WsErrorCode::Unsupported, "launchDigest is required");
+            };
+            if plan_id.is_empty() || launch_digest.is_empty() {
+                return WsReply::err(
+                    id,
+                    WsErrorCode::Unsupported,
+                    "planId and launchDigest are required",
+                );
+            }
+            crate::acp::host_mcp::mcp_install::McpInstallDecision::Approve {
+                inputs,
+                secret_values,
+                plan_id: plan_id.to_string(),
+                launch_digest: launch_digest.to_string(),
+            }
+        }
+        _ => {
+            return WsReply::err(
+                id,
+                WsErrorCode::Unsupported,
+                "decision must be decline, preview, or approve",
+            );
+        }
+    };
+    match env.acp.answer_mcp_install(request_id, session_id, decision) {
+        Ok(()) => WsReply::ok(id, Some(json!({}))),
+        Err(crate::acp::host_mcp::mcp_install::McpInstallAnswerError::NotFound) => WsReply::err(
+            id,
+            WsErrorCode::Stale,
+            "no outstanding install for this requestId",
+        ),
+        Err(crate::acp::host_mcp::mcp_install::McpInstallAnswerError::AlreadyResolved) => {
+            WsReply::err(
+                id,
+                WsErrorCode::AlreadyResolved,
+                "this install was already answered (first-response-wins)",
+            )
+        }
+        Err(crate::acp::host_mcp::mcp_install::McpInstallAnswerError::SessionMismatch) => {
+            WsReply::err(
+                id,
+                WsErrorCode::PermissionDenied,
+                "the install belongs to another session",
+            )
+        }
+        Err(crate::acp::host_mcp::mcp_install::McpInstallAnswerError::TooEarly) => WsReply::err(
+            id,
+            WsErrorCode::RateLimited,
+            "answered too soon after the prompt appeared; try again",
+        ),
+    }
+}
+
+fn string_map(value: Option<&Value>) -> std::collections::BTreeMap<String, String> {
+    let Some(Value::Object(map)) = value else {
+        return std::collections::BTreeMap::new();
+    };
+    map.iter()
+        .filter_map(|(key, item)| item.as_str().map(|text| (key.clone(), text.to_string())))
+        .collect()
+}

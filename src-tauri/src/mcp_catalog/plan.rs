@@ -79,7 +79,7 @@ pub struct PlanChoice {
     pub index: usize,
 }
 
-#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct FormRequest {
     pub source: PlanSource,

@@ -85,19 +85,7 @@ export function McpConsentDialog({
             </DialogDescription>
           </DialogHeader>
 
-          <div className="grid gap-4">
-            <Warnings warnings={plan.consentView.warnings} />
-            <LaunchSpec view={plan.consentView} />
-            <HostMounts mounts={plan.consentView.hostMounts} />
-            <ValueList heading="Environment" values={plan.consentView.env} />
-            <ValueList heading="Headers" values={plan.consentView.headers} />
-            {plan.consentView.provenance !== null && (
-              <Provenance provenance={plan.consentView.provenance} />
-            )}
-            <p className="break-all font-mono text-2xs text-muted-foreground">
-              Launch digest {plan.launchDigest}
-            </p>
-          </div>
+          <McpConsentReview view={plan.consentView} launchDigest={plan.launchDigest} />
 
           {notice}
 
@@ -118,6 +106,31 @@ export function McpConsentDialog({
         </DialogContent>
       )}
     </Dialog>
+  )
+}
+
+/** The launch review the Settings dialog and the chat approval card share. */
+export function McpConsentReview({
+  view,
+  launchDigest
+}: {
+  view: McpConsentView
+  launchDigest: string | null
+}): React.JSX.Element {
+  return (
+    <div className="grid gap-4">
+      <Warnings warnings={view.warnings} />
+      <LaunchSpec view={view} />
+      <HostMounts mounts={view.hostMounts} />
+      <ValueList heading="Environment" values={view.env} />
+      <ValueList heading="Headers" values={view.headers} />
+      {view.provenance !== null && <Provenance provenance={view.provenance} />}
+      {launchDigest !== null && launchDigest !== '' && (
+        <p className="break-all font-mono text-2xs text-muted-foreground">
+          Launch digest {launchDigest}
+        </p>
+      )}
+    </div>
   )
 }
 

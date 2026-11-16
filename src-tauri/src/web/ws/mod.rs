@@ -838,6 +838,8 @@ pub(crate) mod harness;
 #[cfg(test)]
 mod host_ticket_route_tests;
 #[cfg(test)]
+mod mcp_install_route_tests;
+#[cfg(test)]
 mod list_sessions_tests;
 #[cfg(test)]
 mod pending_permission_tests;

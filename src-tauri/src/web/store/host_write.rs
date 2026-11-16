@@ -24,6 +24,41 @@ impl WebStore {
         self.host_write(key, value, now_ms, true).map(|_| ())
     }
 
+    /// Read the current value and write the replacement under one lock.
+    /// Two callers cannot lose each other's update of this key.
+    pub fn update_as_host(
+        &self,
+        key: &str,
+        now_ms: u64,
+        update: impl FnOnce(Option<&Value>) -> Value,
+    ) -> Result<(), StoreError> {
+        if !key.starts_with("shared/lww/") {
+            return Err(StoreError::Invalid(format!(
+                "'{key}' is not a shared/lww key"
+            )));
+        }
+        self.with_state(|state| {
+            let next = update(state.data.get(key).map(|record| &record.v));
+            let rev = state
+                .data
+                .get(key)
+                .map(|record| record.rev)
+                .or_else(|| state.host.deleted_revs.get(key).copied())
+                .unwrap_or(0)
+                + 1;
+            let record = Record {
+                v: next,
+                rev,
+                cid: HOST_CLIENT_INSTANCE.to_string(),
+                cmd: None,
+                fields: None,
+            };
+            self.put(state, key, record, now_ms)?;
+            state.host.deleted_revs.remove(key);
+            Ok(())
+        })
+    }
+
     fn host_write(
         &self,
         key: &str,

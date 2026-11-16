@@ -2093,6 +2093,15 @@ fn agent_switch_is_a_durable_event() {
     assert!(!is_durable_event("permission_request"));
 }
 
+/// Chat MCP install events are live prompts. A replay must not resurrect a
+/// card after the user already answered it.
+#[test]
+fn mcp_install_events_are_not_durable() {
+    assert!(!is_durable_event("mcp_install_request"));
+    assert!(!is_durable_event("mcp_install_resolved"));
+    assert!(!is_durable_event("mcp_registry_changed"));
+}
+
 /// CAP-2: a switch recorded between two message enqueues at its allocated
 /// seq leaves a hole-free log with exactly one switch.
 #[tokio::test]

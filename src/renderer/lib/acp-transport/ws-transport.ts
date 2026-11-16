@@ -1642,6 +1642,18 @@ export class WsAcpTransport implements AcpTransport {
     await this.request('answer_question', { agentId, questionId, values }, undefined, options)
   }
 
+  async answerMcpInstall(request: {
+    requestId: string
+    sessionId: string
+    decision: 'decline' | 'preview' | 'approve'
+    inputs?: Record<string, string>
+    secretValues?: Record<string, string>
+    planId?: string | null
+    launchDigest?: string | null
+  }): Promise<void> {
+    await this.request('answer_mcp_install', request)
+  }
+
   /** Agent method auth — distinct from relay `authenticate` token gate. */
   async authenticate(
     agentId: AgentId,

@@ -154,6 +154,28 @@ If the review waits too long, or the server's details change before you approve,
 
 <Callout type="warn">Troupe saves the values you enter, API keys included, as plain text with the server's settings.</Callout>
 
+## Install from chat
+
+You can also ask the agent in a chat to install a server. Paste one of these and say "install this":
+
+- A docs link or a repository link
+- The registry name of a server, such as `io.github.org/server`
+- An `mcpServers` JSON snippet
+
+The agent reads the link and asks Troupe to install it. Troupe shows an approval card in the chat. The heading is the server name that will be saved. The card shows the same review as Settings: the command and arguments or the URL, each environment variable and header, folders from this computer, where the server comes from, and the launch digest.
+
+Type secret values, such as an API key, on the card. Those values stay on the card. The agent does not receive them, and they are not written into the chat.
+
+Choose **Install** to save the server, or **Decline** to save nothing. Nothing is saved before you choose **Install**. On troupe-server, a browser that has not passed the web token cannot answer the card. Troupe refuses that answer with `permission_denied`, the same rule as a host ticket. The desktop app answers from its own window.
+
+After you install, the card and the agent tell you what to do next:
+
+- Sign in, when the server asks for it. The card has a **Sign in** button.
+- Install a missing program, such as `npx`, `uvx`, `docker`, or `dotnet`, when the server needs it.
+- Start a new chat so the agent can use the new tools. The chat you are in keeps the tools it started with.
+
+The server then appears in **Settings > MCP Servers**, the same as a server you add there. If the server is already in the list, Troupe does not add it again.
+
 ## One list for every project
 
 The list in Settings is one list for the whole app or server. Every project uses the same servers, including projects you add later.

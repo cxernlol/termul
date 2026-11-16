@@ -114,6 +114,8 @@ pub const WS_COMMAND_CLASSES: &[(&str, CommandClass)] = &[
     // reply + resend of the same commandId must replay the original outcome.
     ("respond_permission", CommandClass::command(Replay::Payload)),
     ("answer_question", CommandClass::command(Replay::Payload)),
+    // The payload carries secret field values. Nothing is ledgered.
+    ("answer_mcp_install", CommandClass::command(Replay::Never)),
     ("browser_stop", CommandClass::idempotent()),
     ("create_session", CommandClass::create()),
     ("load_session", CommandClass::command(Replay::Payload)),
@@ -272,6 +274,7 @@ fn identifying_fields(request_type: &str) -> &'static [&'static str] {
         "record_agent_switch" => &["sessionId", "fromConfigId", "toConfigId", "newSessionId"],
         "respond_permission" => &["agentId", "requestId", "optionId"],
         "answer_question" => &["agentId", "questionId"],
+        "answer_mcp_install" => &["requestId"],
         "browser_stop" => &["sessionId"],
         "authenticate_agent" => &["agentId", "methodId"],
         "respond_elicitation" => &["agentId", "requestId", "action"],

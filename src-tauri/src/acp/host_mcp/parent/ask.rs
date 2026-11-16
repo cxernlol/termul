@@ -197,6 +197,7 @@ impl HostPlanServer {
         for ask in cancelled {
             let _ = ask.responder.send(AskOutcome::Cancelled);
         }
+        self.cancel_mcp_installs_for_session(real_session_id);
     }
 
     /// Register how to reset the idle deadline of `agent_id`'s sessions.

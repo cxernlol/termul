@@ -7,6 +7,7 @@ import { toast } from 'sonner'
 import type { StateCreator } from 'zustand'
 import {
   acpApi,
+  answerMcpInstall as answerMcpInstallApi,
   MCP_OAUTH_CANCELLED,
   McpOAuthError,
   type McpServerConfig,
@@ -20,6 +21,7 @@ import {
   saveMcpServers as saveMcpServersToDisk
 } from '@/lib/acp-mcp-persistence'
 import { logFrontendError } from '@/lib/log-api'
+import { pendingFromRequest } from '@/lib/mcp-install-request'
 import { syncSharedKey } from '@/lib/shared-key-sync'
 import { randomUUID } from '@/lib/uuid'
 import type { AcpState } from '../types'
@@ -69,6 +71,7 @@ type McpSliceState = Pick<
   AcpState,
   | 'mcpServers'
   | 'mcpServersLoaded'
+  | 'pendingMcpInstalls'
   | 'mcpProbeStatus'
   | 'mcpOAuthConnecting'
   | 'mcpOAuthConnected'
@@ -83,6 +86,11 @@ type McpSliceState = Pick<
   | 'saveCatalogInstall'
   | 'setMcpServerEnabled'
   | 'deleteMcpServer'
+  | 'answerMcpInstall'
+  | 'dismissMcpInstall'
+  | '_onMcpInstallRequest'
+  | '_onMcpInstallResolved'
+  | '_onMcpRegistryChanged'
   | 'probeMcpServer'
   | 'loadMcpTools'
   | 'connectMcpOAuth'
@@ -209,6 +217,7 @@ function reprobeEditedServer(
 export const createMcpSlice: McpSliceCreator = (set, get) => ({
   mcpServers: [],
   mcpServersLoaded: false,
+  pendingMcpInstalls: {},
   mcpProbeStatus: {},
   mcpOAuthConnecting: {},
   mcpOAuthConnected: {},
@@ -322,6 +331,105 @@ export const createMcpSlice: McpSliceCreator = (set, get) => ({
         throw err
       }
     }),
+
+  answerMcpInstall: async (requestId, decision, inputs, secretValues, planId, launchDigest) => {
+    const pending = get().pendingMcpInstalls[requestId]
+    if (!pending || pending.result) return
+    if (decision === 'approve') {
+      set((s) => ({
+        pendingMcpInstalls: {
+          ...s.pendingMcpInstalls,
+          [requestId]: { ...pending, saving: true, error: null }
+        }
+      }))
+    }
+    try {
+      await answerMcpInstallApi({
+        requestId,
+        sessionId: pending.sessionId,
+        decision,
+        inputs,
+        secretValues,
+        planId: planId ?? pending.planId,
+        launchDigest: launchDigest ?? pending.launchDigest
+      })
+    } catch (err) {
+      set((s) => {
+        const current = s.pendingMcpInstalls[requestId]
+        if (!current) return {}
+        return {
+          pendingMcpInstalls: {
+            ...s.pendingMcpInstalls,
+            [requestId]: { ...current, saving: false }
+          }
+        }
+      })
+      void logFrontendError({
+        level: 'warn',
+        source: 'acp-store.answerMcpInstall',
+        message: `mcp install ${decision} failed (${err instanceof Error ? err.name : 'error'})`
+      })
+      throw err
+    }
+  },
+
+  dismissMcpInstall: (requestId) => {
+    set((s) => {
+      if (!s.pendingMcpInstalls[requestId]) return {}
+      const pendingMcpInstalls = { ...s.pendingMcpInstalls }
+      delete pendingMcpInstalls[requestId]
+      return { pendingMcpInstalls }
+    })
+  },
+
+  _onMcpInstallRequest: (event) => {
+    set((s) => {
+      const previous = s.pendingMcpInstalls[event.requestId]
+      if (previous?.result) return {}
+      return {
+        pendingMcpInstalls: {
+          ...s.pendingMcpInstalls,
+          [event.requestId]: { ...pendingFromRequest(event), saving: false }
+        }
+      }
+    })
+  },
+
+  _onMcpInstallResolved: (event) => {
+    set((s) => {
+      const previous = s.pendingMcpInstalls[event.requestId]
+      if (!previous) return {}
+      if (event.outcome === 'declined' || event.outcome === 'cancelled') {
+        const pendingMcpInstalls = { ...s.pendingMcpInstalls }
+        delete pendingMcpInstalls[event.requestId]
+        return { pendingMcpInstalls }
+      }
+      return {
+        pendingMcpInstalls: {
+          ...s.pendingMcpInstalls,
+          [event.requestId]: {
+            ...previous,
+            saving: false,
+            error: null,
+            result: {
+              outcome: event.outcome,
+              name: event.name,
+              serverId: event.serverId,
+              nextSteps: event.nextSteps,
+              oauth: event.oauth
+            }
+          }
+        }
+      }
+    })
+  },
+
+  _onMcpRegistryChanged: () => {
+    void runSerializedMcpRegistryMutation(async () => {
+      const list = await loadMcpServersFromDisk()
+      set({ mcpServers: list, mcpServersLoaded: true })
+    })
+  },
 
   deleteMcpServer: (id) =>
     runSerializedMcpRegistryMutation(async () => {

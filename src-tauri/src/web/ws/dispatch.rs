@@ -128,6 +128,7 @@ pub(super) async fn route_request(req: WsRequest, env: &HandlerEnv) -> WsReply {
             relay.refresh_pending_chat_activity();
             reply
         }
+        "answer_mcp_install" => handle_answer_mcp_install(id, &req.payload, env),
         // Story 1.8: ACP command forwarding → `AcpManager`. The streaming events
         // (`message_chunk`, `tool_call`, `prompt_complete`, `session_created`,
         // `config_options_update`, …) flow back automatically through the

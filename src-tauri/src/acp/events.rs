@@ -153,6 +153,12 @@ pub const EVENT_QUESTION_REQUEST: &str = "acp:question_request";
 /// goes on (issue #784: the agent hung up its `ask_user` call). The relay
 /// releases its ticket and the renderer drops its panel.
 pub const EVENT_QUESTION_CANCELLED: &str = "acp:question_cancelled";
+/// `acp:mcp_install_request` — the approval card for `mcp_install`. No secret values.
+pub const EVENT_MCP_INSTALL_REQUEST: &str = "acp:mcp_install_request";
+/// `acp:mcp_install_resolved` — the card's outcome. No secret values.
+pub const EVENT_MCP_INSTALL_RESOLVED: &str = "acp:mcp_install_resolved";
+/// `acp:mcp_registry_changed` — the host list changed. The renderer reloads it.
+pub const EVENT_MCP_REGISTRY_CHANGED: &str = "acp:mcp_registry_changed";
 /// Event name: the agent requested structured user input (elicitation).
 pub const EVENT_ELICITATION_REQUEST: &str = "acp:elicitation_request";
 /// Event name: the agent asked the user to sign in at a URL outside any chat

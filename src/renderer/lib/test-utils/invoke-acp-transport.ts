@@ -415,6 +415,9 @@ export function createInvokeAcpTransport(): AcpTransport {
     answerQuestion: async (agentId, questionId, values) => {
       await invoke('acp_answer_question', { agentId, questionId, values })
     },
+    answerMcpInstall: async (request) => {
+      await invoke('acp_answer_mcp_install', request)
+    },
     stopBrowserAgent: async (sessionId) => {
       await invoke('browser_stop', { sessionId })
     },

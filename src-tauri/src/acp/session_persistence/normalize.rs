@@ -21,6 +21,9 @@ pub fn is_durable_event(type_: &str) -> bool {
     !matches!(
         type_,
         "permission_request"
+            | "mcp_install_request"
+            | "mcp_install_resolved"
+            | "mcp_registry_changed"
             | "browser_ticket_closed"
             | "browser_stop_changed"
             | "agent_working"

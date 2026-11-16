@@ -2888,6 +2888,31 @@ describe('MCP install plan parity (spine AD-5, AD-7, AD-12)', () => {
   })
 })
 
+describe('Chat MCP install approval parity', () => {
+  const SRC_TAURI = join(LIB_DIR, '..', '..', '..', 'src-tauri', 'src')
+  const read = (...parts: string[]) => readFileSync(join(SRC_TAURI, ...parts), 'utf-8')
+
+  it('desktop answers through the main-webview command and the web through /ws', () => {
+    const api = readFileSync(join(LIB_DIR, 'acp-api.ts'), 'utf-8')
+    expect(api).toMatch(/invokeIpc<null>\('acp_answer_mcp_install'/)
+    expect(api).toMatch(/isTauriContext\(\)/)
+    expect(readFileSync(join(LIB_DIR, 'acp-transport', 'ws-transport.ts'), 'utf-8')).toMatch(
+      /this\.request\('answer_mcp_install', request\)/
+    )
+    expect(readFileSync(join(LIB_DIR, 'test-utils', 'invoke-acp-transport.ts'), 'utf-8')).toMatch(
+      /invoke\('acp_answer_mcp_install', request\)/
+    )
+    expect(read('lib.rs')).toContain('acp::commands::acp_answer_mcp_install,')
+    expect(read('web', 'ws', 'dispatch.rs')).toMatch(
+      /"answer_mcp_install" => handle_answer_mcp_install\(id, &req\.payload, env\)/
+    )
+    expect(read('acp', 'commands.rs')).toMatch(/webview\.label\(\) != "main"/)
+    expect(read('web', 'ws', 'subscribe.rs')).toMatch(
+      /remote_approver\(env, Some\(session_id\)\)\.qualifies\(\)/
+    )
+  })
+})
+
 describe('MCP catalog sync parity (spine AD-3, AD-12)', () => {
   const SRC_TAURI = join(LIB_DIR, '..', '..', '..', 'src-tauri', 'src')
   const SHARED_TYPES = join(LIB_DIR, '..', '..', 'shared', 'types')
