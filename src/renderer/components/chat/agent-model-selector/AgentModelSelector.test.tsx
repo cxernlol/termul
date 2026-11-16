@@ -1763,6 +1763,13 @@ describe('phone Select model sheet', () => {
     const providers = openProviders()
     fireEvent.click(within(providers).getByRole('button', { name: 'Claude Agent' }))
     expect(within(sheet()).getByText('Could not load Claude Agent models.')).toBeInTheDocument()
+    // Composer V2 (Paper 2.6i·2): one card in the list's place, the provider
+    // row says "Not loaded", and the way back to the chat's own agent.
+    expect(within(sheet()).getByRole('alert')).toHaveTextContent(
+      'Could not load Claude Agent models.'
+    )
+    expect(within(sheet()).getByRole('button', { name: /Not loaded/ })).toBeInTheDocument()
+    expect(within(sheet()).getByRole('button', { name: /^Use / })).toBeInTheDocument()
 
     fireEvent.click(within(sheet()).getByRole('button', { name: 'Sign in to Claude Agent' }))
     const setup = screen.getByRole('dialog', { name: 'Claude Agent' })
@@ -1900,6 +1907,16 @@ describe('phone Select model sheet', () => {
     expect(screen.queryByRole('dialog')).toBeNull()
   })
 
+  it('puts the options right under Provider, above the model list (Composer V2)', () => {
+    renderSelector({ phone: phone({ modes: MODES, onSetMode: vi.fn() }) })
+    open()
+    const modeRow = within(sheet()).getByRole('button', { name: 'Mode Ask first' })
+    const firstModel = within(sheet()).getByRole('button', { name: /^Opus 5\.5/ })
+    expect(
+      modeRow.compareDocumentPosition(firstModel) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy()
+  })
+
   it('sets the mode from the sheet and shows a non-default mode on the pill', () => {
     const onSetMode = vi.fn()
     renderSelector({ phone: phone({ modes: MODES, onSetMode }) })
@@ -1907,7 +1924,7 @@ describe('phone Select model sheet', () => {
     expect(pill).toHaveAccessibleName('Opus 5.5. High. Switch agent. Currently Cursor')
     open()
 
-    fireEvent.click(within(sheet()).getByRole('button', { name: 'Mode Manual' }))
+    fireEvent.click(within(sheet()).getByRole('button', { name: 'Mode Ask first' }))
     const modes = screen.getByRole('dialog', { name: 'Mode' })
     const plan = within(modes).getByRole('radio', { name: 'Plan' })
     expect(plan).toHaveAccessibleDescription('Plan before editing')

@@ -2,7 +2,7 @@ import { useMobileWebShell } from '@/hooks/use-mobile-web-shell'
 import type { SessionId } from '@/lib/acp-api'
 import { useAcpStore } from '@/stores/acp-store'
 import { useProjectStore } from '@/stores/project-store'
-import { ChatStartHero } from './chat-start'
+import { CHAT_START_PHONE_HERO_CLASS, ChatStartHero } from './chat-start'
 
 interface ChatEmptyStateProps {
   sessionId: SessionId
@@ -23,7 +23,13 @@ export function ChatEmptyState({ sessionId }: ChatEmptyStateProps): React.JSX.El
   const quick = session?.kind === 'quick'
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col items-center justify-end px-5">
+    <div
+      className={
+        isMobileShell
+          ? CHAT_START_PHONE_HERO_CLASS
+          : 'flex min-h-0 flex-1 flex-col items-center justify-end px-5'
+      }
+    >
       <ChatStartHero
         projectLabel={projectName ?? 'this folder'}
         headingLevel={2}

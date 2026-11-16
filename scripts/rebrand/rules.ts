@@ -182,7 +182,12 @@ export const KEEP_PATTERNS: readonly KeepPattern[] = [
       'The Paper file is still named "Termul Design System". The design docs cite that file name.',
     owner: 'keep until the Paper file is renamed',
     pattern: /\bTermul Design System\b/g,
-    include: ['DESIGN.md', 'docs/design/sidebar-v2-handoff.md']
+    include: [
+      'DESIGN.md',
+      'docs/design/sidebar-v2-handoff.md',
+      'docs/design/status-rail-handoff.md',
+      'docs/design/composer-v2-handoff.md'
+    ]
   },
   {
     id: 'rename-notice',

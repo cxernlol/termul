@@ -472,6 +472,28 @@
        WebKitGTK on Linux paints <select> popups with the system light theme,
        which clashes hard with our dark UI. */
     color-scheme: dark;
+    /* Phone (mobile-native): no grey tap flash over pressed controls (each
+       control draws its own :active state), and no font inflation in
+       landscape. */
+    -webkit-tap-highlight-color: transparent;
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
+
+  /* Controls answer a tap at once (no double-tap-zoom wait) and a long press
+     does not select their label or open the link callout. Text that is
+     content (messages, code, links in prose) stays selectable. */
+  button,
+  [role="button"],
+  [role="tab"],
+  [role="switch"],
+  [role="menuitem"],
+  [role="menuitemcheckbox"],
+  [role="radio"] {
+    touch-action: manipulation;
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
   }
 
   body {
@@ -866,6 +888,17 @@
   overflow: hidden;
   white-space: nowrap;
   mask-image: linear-gradient(to right, black calc(100% - 24px), transparent);
+}
+
+/* `fade-end` for a label whose box hugs its text (a centred title, a label
+   next to a chevron): the fade shows only while the text overflows. The
+   `useOverflowFade` hook sets `data-overflowing` on the element. */
+@utility fade-end-overflow {
+  overflow: hidden;
+  white-space: nowrap;
+  &[data-overflowing] {
+    mask-image: linear-gradient(to right, black calc(100% - 24px), transparent);
+  }
 }
 
 /* ------------------------------------------------------------

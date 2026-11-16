@@ -377,3 +377,27 @@ describe('apply-color-theme', () => {
     })
   })
 })
+
+describe('theme-color meta (phone status bar)', () => {
+  afterEach(() => {
+    document.querySelector('meta[name="theme-color"]')?.remove()
+  })
+
+  it('follows the applied theme background, as sRGB hex', () => {
+    const getContext = HTMLCanvasElement.prototype.getContext
+    HTMLCanvasElement.prototype.getContext = (() => ({
+      fillStyle: '',
+      fillRect: () => {},
+      getImageData: () => ({ data: new Uint8ClampedArray([10, 11, 12, 255]) })
+    })) as unknown as typeof getContext
+    try {
+      applyColorTheme('termul')
+      expect(document.querySelector('meta[name="theme-color"]')).toHaveAttribute(
+        'content',
+        '#0a0b0c'
+      )
+    } finally {
+      HTMLCanvasElement.prototype.getContext = getContext
+    }
+  })
+})

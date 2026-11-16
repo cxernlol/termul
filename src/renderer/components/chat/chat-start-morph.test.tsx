@@ -122,7 +122,7 @@ describe('ChatStartFooter', () => {
       <ChatStartFooter show reduced={false} row={<div data-testid="row" />} />
     )
     expect(screen.getByTestId('row').parentElement).toHaveClass('max-w-[680px]', 'mx-auto')
-    expect(container.querySelector('[data-chat-start-spacer]')).toHaveClass('flex-[1_1_0px]')
+    expect(container.querySelector('[data-chat-start-spacer]')).toHaveClass('flex-[1_1_44px]')
 
     rerender(<ChatStartFooter show={false} reduced={false} row={<div data-testid="row" />} />)
     expect(container.querySelector('[data-chat-start-spacer]')).toBeNull()

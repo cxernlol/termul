@@ -1,7 +1,8 @@
-import { type RefObject, useEffect, useState } from 'react'
+import { type RefObject, useEffect, useRef, useState } from 'react'
 import { ChevronDown, Menu, MessageSquarePlus, MoreHorizontal } from '@/components/icons'
 import { Button } from '@/components/ui/button'
 import { subscribeMediaQuery } from '@/hooks/use-mobile-web-shell'
+import { useOverflowFade } from '@/hooks/use-overflow-fade'
 import { isTauriContext } from '@/lib/tauri-runtime'
 import { MOBILE_HEADER_MORE_SHEET_ID } from './MobileHeaderMoreSheet'
 import { MOBILE_TERMINAL_ACTIONS_SHEET_ID } from './MobileTerminalActionsSheet'
@@ -74,7 +75,8 @@ interface MobileShellHeaderProps {
 /**
  * Mobile shell header: ☰ · title block · attention pill · ✎ · ⋯. Three 44px
  * icon slots plus the title block, and nothing scrolls sideways. The title is a
- * plain heading; the subtitle under it opens the project sheet.
+ * plain heading; the subtitle under it opens the project sheet. Paper "2.6b":
+ * title 15/20, subtitle 14/18; long text fades over its last 24px.
  */
 export function MobileShellHeader({
   title,
@@ -97,6 +99,11 @@ export function MobileShellHeader({
   titleRef
 }: MobileShellHeaderProps): React.JSX.Element {
   const narrow = useNarrowViewport()
+  // The title fills the column (centred text), so `fade-end` never reaches a
+  // short title. The subtitle hugs its text next to the chevron: it fades
+  // only while it is cut.
+  const subtitleTextRef = useRef<HTMLSpanElement>(null)
+  useOverflowFade(subtitleTextRef, subtitleText)
   const hasAttention = attentionCount > 0
   const foldedIntoMenu = narrow && hasAttention
   const showPill = hasAttention && !narrow
@@ -136,12 +143,15 @@ export function MobileShellHeader({
           ref={titleRef}
           id="mobile-shell-title"
           tabIndex={-1}
-          className="pointer-events-none max-w-full truncate text-sm font-medium text-foreground focus:outline-none"
+          className="fade-end pointer-events-none w-full text-center text-[15px] font-medium leading-5 text-foreground focus:outline-none"
         >
           {title}
         </h1>
         {isTauriContext() ? (
-          <span className="max-w-full truncate px-1 text-xs text-muted-foreground">
+          <span
+            ref={subtitleTextRef}
+            className="fade-end-overflow max-w-full px-1 text-sm leading-[18px] text-muted-foreground"
+          >
             {subtitleText}
           </span>
         ) : (
@@ -149,14 +159,16 @@ export function MobileShellHeader({
             ref={subtitleRef}
             type="button"
             variant="ghost"
-            className="h-auto max-w-full min-w-0 gap-1 px-1 py-0 text-xs font-normal text-muted-foreground after:absolute after:inset-0 after:content-[''] [&_svg]:size-3"
+            className="h-auto max-w-full min-w-0 gap-1 px-1 py-0 text-sm font-normal leading-[18px] text-muted-foreground after:absolute after:inset-0 after:content-[''] [&_svg]:size-3"
             aria-label={subtitleLabel}
             aria-haspopup="dialog"
             aria-expanded={projectSheetOpen}
             aria-controls={projectSheetOpen ? PROJECT_SHEET_ID : undefined}
             onClick={onOpenProjectSheet}
           >
-            <span className="min-w-0 truncate">{subtitleText}</span>
+            <span ref={subtitleTextRef} className="fade-end-overflow min-w-0">
+              {subtitleText}
+            </span>
             <ChevronDown aria-hidden="true" />
           </Button>
         )}

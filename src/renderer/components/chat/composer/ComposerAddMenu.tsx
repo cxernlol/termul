@@ -1,5 +1,5 @@
-import { Fragment, useRef } from 'react'
-import { Paperclip, Plus, RefreshCw, Server, Settings2, Wrench } from '@/components/icons'
+import { useRef } from 'react'
+import { Paperclip, Plus, Wrench } from '@/components/icons'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -13,45 +13,33 @@ import {
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
 import { MENU_SHORTCUT_CLASS } from '@/components/ui/menu-styles'
-import { SwitchMark } from '@/components/ui/switch'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { logFrontendError } from '@/lib/log-api'
-import { useSettingsModalStore } from '@/stores/settings-modal-store'
-import type { McpServerListProps } from '../McpServerList'
 import { TERMUL_TOOL_ICONS } from '../ToolChip'
 import type { ComposerAddHandle } from './ComposerAddSheet'
-import { type ConnectorsHost, connectorsMenuModel } from './connectors-menu-model'
 import type { TermulToolRow } from './use-termul-tools'
 
 const LOG_SOURCE = 'composer-add-menu'
 const ICON = 'mr-2 shrink-0 text-muted-foreground'
-const NOTE = 'px-2 py-1.5 text-2xs text-muted-foreground'
 
 interface ComposerAddMenuProps {
   handle: ComposerAddHandle
   /** Session closed: the editor is unavailable. */
   disabled: boolean
-  connectors: Omit<McpServerListProps, 'listClassName'>
-  connectorsHost: ConnectorsHost
   termulTools: TermulToolRow[]
 }
 
-function openConnectorSettings(): void {
-  useSettingsModalStore.getState().openApp('mcp-servers')
-}
-
 /**
- * The desktop composer's `+`: attach, mention, slash commands, Troupe's own
- * tools, and the project's connectors (MCP servers). The phone shell uses `ComposerAddSheet`.
+ * The desktop composer's `+`: attach, mention, slash commands and Troupe's
+ * own tools. The connectors (MCP servers) have their own button in the
+ * Composer V2 foot row (`ComposerConnectorsButton`). The phone shell uses
+ * `ComposerAddSheet`, which keeps its Connectors row.
  */
 export function ComposerAddMenu({
   handle,
   disabled,
-  connectors,
-  connectorsHost,
   termulTools
 }: ComposerAddMenuProps): React.JSX.Element {
-  const model = connectorsMenuModel(connectors.servers, connectors.probeStatus, connectorsHost)
   // What to do once the menu has closed. Radix traps focus while the menu is
   // open, so an editor insert has to wait until the close hands focus back.
   // `null` returns focus to the editor (Escape); `'keep'` leaves it alone
@@ -83,7 +71,7 @@ export function ComposerAddMenu({
             </button>
           </DropdownMenuTrigger>
         </TooltipTrigger>
-        <TooltipContent side="bottom">Add files, mentions and connectors</TooltipContent>
+        <TooltipContent side="bottom">Add files, mentions and tools</TooltipContent>
       </Tooltip>
       <DropdownMenuContent
         align="start"
@@ -159,80 +147,6 @@ export function ComposerAddMenu({
                 </DropdownMenuItem>
               )
             })}
-          </DropdownMenuSubContent>
-        </DropdownMenuSub>
-        <DropdownMenuSub>
-          <DropdownMenuSubTrigger trailing={`${model.onCount} on`}>
-            <Server size={14} aria-hidden="true" className={ICON} />
-            Connectors
-          </DropdownMenuSubTrigger>
-          <DropdownMenuSubContent className="max-h-[min(26rem,var(--radix-dropdown-menu-content-available-height))] w-64 overflow-y-auto">
-            <DropdownMenuItem
-              onSelect={() => {
-                afterCloseRef.current = 'keep'
-                openConnectorSettings()
-              }}
-            >
-              <Settings2 size={14} aria-hidden="true" className={ICON} />
-              Manage connectors
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
-            {model.rows.length === 0 ? <p className={NOTE}>No connectors yet</p> : null}
-            {model.rows.map((row) => (
-              <Fragment key={row.id}>
-                <DropdownMenuItem
-                  role="menuitemcheckbox"
-                  aria-checked={row.on}
-                  onSelect={(event) => {
-                    event.preventDefault()
-                    connectors.onToggle?.(row.id, !row.on)
-                  }}
-                >
-                  <span className="min-w-0 flex-1 truncate">{row.name}</span>
-                  <span className="ml-auto pl-4">
-                    <SwitchMark on={row.on} />
-                  </span>
-                </DropdownMenuItem>
-                {row.needsSignIn ? (
-                  <DropdownMenuItem
-                    aria-label={`Sign in to ${row.name}`}
-                    className="pl-4 text-muted-foreground"
-                    onSelect={() => {
-                      afterCloseRef.current = 'keep'
-                      openConnectorSettings()
-                    }}
-                  >
-                    <span className="min-w-0 flex-1 truncate text-2xs">Needs sign-in</span>
-                    <span className={MENU_SHORTCUT_CLASS}>Sign in</span>
-                  </DropdownMenuItem>
-                ) : null}
-              </Fragment>
-            ))}
-            {model.footnote === 'next-chat' ? (
-              <p className={NOTE}>Takes effect on the next chat.</p>
-            ) : null}
-            {model.footnote === 'reload-chat' ? (
-              <>
-                <DropdownMenuSeparator />
-                <p className={NOTE}>This chat still uses the previous servers.</p>
-                <DropdownMenuItem
-                  disabled={connectors.reloadDisabled || connectors.reloading}
-                  title={
-                    connectors.reloadDisabled
-                      ? (connectors.reloadDisabledReason ?? undefined)
-                      : undefined
-                  }
-                  onSelect={() => {
-                    // A reload may ask to confirm first; that dialog takes focus.
-                    afterCloseRef.current = 'keep'
-                    connectors.onReloadChat?.()
-                  }}
-                >
-                  <RefreshCw size={14} aria-hidden="true" className={ICON} />
-                  {connectors.reloading ? 'Reloading…' : 'Reload this chat'}
-                </DropdownMenuItem>
-              </>
-            ) : null}
           </DropdownMenuSubContent>
         </DropdownMenuSub>
       </DropdownMenuContent>

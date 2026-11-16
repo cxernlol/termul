@@ -411,6 +411,7 @@ const { chatInputBarPropsRef } = vi.hoisted(() => ({
       onSend?: (text: string) => void
       onSendBlocks?: (blocks: unknown[], displayBlocks?: unknown[]) => void
       onDraftStart?: () => void
+      worktree?: unknown
       session?: {
         models?: unknown
         modes?: unknown
@@ -513,6 +514,7 @@ vi.mock('./chat-timeline', () => {
 })
 
 import { AgentChatPanel } from './AgentChatPanel'
+import { ComposerWorktreeLabel } from './composer/ComposerFoot'
 import {
   AUTO_RESUME_FAILED_QUEUED_TOAST,
   AUTO_RESUME_FAILED_REASON
@@ -2312,7 +2314,7 @@ describe('AgentChatPanel first-send morph (start screen → working chat)', () =
     mobileRef.current = true
   })
 
-  it('lays out the start block: hero on top, composer, row and the bottom spacer', () => {
+  it('lays out the start block: hero on top, composer with the worktree pick, the bottom spacer', () => {
     sessionRef.current = mockAcpSession({ id: 's1', cwd: '/w' })
     const { container } = render(<AgentChatPanel sessionId="s1" isVisible />)
 
@@ -2321,8 +2323,9 @@ describe('AgentChatPanel first-send morph (start screen → working chat)', () =
     expect(stage).toHaveClass('flex-[1_1_auto]', 'justify-end')
     expect(screen.getByRole('heading', { level: 2 })).toHaveTextContent(/What should we do in/)
     expect(lastComposerProps()).toMatchObject({ startScreen: true })
-    expect(screen.getByTestId('start-row-stub')).toBeInTheDocument()
-    expect(container.querySelector('[data-chat-start-spacer]')).toHaveClass('flex-[1_1_0px]')
+    // Composer V2: the worktree pick sits in the composer's foot row.
+    expect(lastComposerProps()?.worktree).toMatchObject({ props: { inFootRow: true } })
+    expect(container.querySelector('[data-chat-start-spacer]')).toHaveClass('flex-[1_1_44px]')
     // The transcript mounts on the first send.
     expect(chatMessageListPropsRef.current).toBeNull()
   })
@@ -2338,6 +2341,8 @@ describe('AgentChatPanel first-send morph (start screen → working chat)', () =
     // The shared element: the same DOM node moves to the dock.
     expect(screen.getByTestId('composer-stub')).toBe(composer)
     expect(lastComposerProps()).toMatchObject({ startScreen: false })
+    // A working chat shows its worktree read-only in the foot row.
+    expect(lastComposerProps()?.worktree).toMatchObject({ type: ComposerWorktreeLabel })
     expect(container.querySelector('[data-chat-timeline-stage]')).toHaveAttribute(
       'data-chat-timeline-stage',
       'timeline'

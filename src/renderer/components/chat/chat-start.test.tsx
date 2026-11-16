@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { useAcpStore } from '@/stores/acp-store'
 import { useProjectStore } from '@/stores/project-store'
 import { ChatEmptyState } from './ChatEmptyState'
-import { ChatStartHero } from './chat-start'
+import { CHAT_START_PHONE_HERO_CLASS, ChatStartHero } from './chat-start'
 
 describe('ChatStartHero (shared by the launcher and the empty chat)', () => {
   it('shows the Troupe mark and the project question', () => {
@@ -28,10 +28,17 @@ describe('ChatStartHero (shared by the launcher and the empty chat)', () => {
     expect(heading.parentElement).toHaveClass('gap-5', 'mb-6')
   })
 
-  it('keeps the smaller mobile hero', () => {
-    render(<ChatStartHero projectLabel="termul-new" isMobileShell />)
-    expect(screen.getByRole('img', { name: 'Troupe' })).toHaveAttribute('width', '32')
-    expect(screen.getByRole('heading', { level: 1 })).toHaveClass('text-xl')
+  it('keeps the full-size hero on the phone, centred by its host (Paper 2.6g)', () => {
+    const { container } = render(<ChatStartHero projectLabel="termul-new" isMobileShell />)
+    expect(screen.getByRole('img', { name: 'Troupe' })).toHaveAttribute('width', '56')
+    expect(screen.getByRole('heading', { level: 1 })).toHaveClass('text-hero', 'leading-7')
+    expect(container.firstElementChild).not.toHaveClass('mb-6')
+  })
+
+  it('centres the phone hero in the space above the composer', () => {
+    expect(CHAT_START_PHONE_HERO_CLASS).toContain('justify-center')
+    expect(CHAT_START_PHONE_HERO_CLASS).toContain('flex-1')
+    expect(CHAT_START_PHONE_HERO_CLASS).toContain('pb-7')
   })
 })
 

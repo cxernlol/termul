@@ -67,6 +67,7 @@ import { ClaudeLimitNotice } from './claude-account/ClaudeLimitNotice'
 import { isAtLimit, useClaudeLimit } from './claude-account/use-claude-limit'
 import { CodexLimitNotice } from './codex-account/CodexLimitNotice'
 import { isAtLimit as isAtCodexLimit, useCodexLimit } from './codex-account/use-codex-limit'
+import { ComposerWorktreeLabel } from './composer/ComposerFoot'
 import type { SelectionContextInsertRequest } from './composer/insert-selection-context'
 import { ElicitationPrompt } from './ElicitationPrompt'
 import { sendFromChatStart } from './new-chat/send-from-chat-start'
@@ -1155,14 +1156,26 @@ export function AgentChatPanel({
             selectionContextInsert={contextInsert}
             isVisible={isVisible}
             startScreen={isEmptyChat}
+            worktree={
+              quickChat ? null : isEmptyChat ? (
+                <ChatStartContextRow
+                  session={composerSession ?? session}
+                  inFootRow={!isMobileShell}
+                  phone={isMobileShell}
+                />
+              ) : (
+                <ComposerWorktreeLabel session={composerSession ?? session} />
+              )
+            }
           />
-          {/* Empty chat (desktop): the context row and the bottom part of
-              the start block, the launcher's layout rule (chat-start.tsx).
-              Mobile keeps the composer alone at the bottom. */}
+          {/* Empty chat (desktop): the bottom part of the start block, the
+              launcher's layout rule (chat-start.tsx). The worktree pick lives
+              in the composer's foot row (Composer V2). Mobile keeps the
+              composer alone at the bottom. */}
           <ChatStartFooter
             show={isEmptyChat && !isMobileShell}
             reduced={reducedMotion}
-            row={quickChat ? null : <ChatStartContextRow session={composerSession ?? session} />}
+            row={null}
           />
         </div>
       )}

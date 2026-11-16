@@ -1,7 +1,8 @@
 import type { ReactNode } from 'react'
-import { ModeIcon } from '@/components/chat/mode-menu'
+import { ModeIcon, modeChipLabel, modeKind } from '@/components/chat/mode-menu'
 import { SheetGroup, SheetRow, SheetSwitchRow } from '@/components/ui/mobile-sheet'
 import type { SessionModeState } from '@/lib/acp-api'
+import { cn } from '@/lib/utils'
 import type { ChoiceSection } from '../SelectorOptionRows'
 import { useOptimisticSwitch } from '../use-option-values'
 
@@ -87,16 +88,22 @@ export function OptionsCard({
           return <ToggleRow key={option.id} option={option} disabled={disabled} />
         }
         const current = option.choices.find((choice) => choice.value === option.value)
+        const isMode = option.id === 'mode'
+        // Mode: the chip's label ("Ask first" for the default mode) and, for a
+        // risky mode, the warning colour (Paper "2.6e": "Bypass permissions").
+        const risky = isMode && current ? modeKind(current.value).risk === 'danger' : false
         return (
           <SheetRow
             key={option.id}
             title={option.label}
             value={
               current ? (
-                <>
+                <span className={cn('flex min-w-0 items-center gap-1.5', risky && 'text-warning')}>
                   {option.glyph?.(current.value)}
-                  <span className="truncate">{current.name}</span>
-                </>
+                  <span className="truncate">
+                    {isMode ? modeChipLabel(current.value, current.name) : current.name}
+                  </span>
+                </span>
               ) : undefined
             }
             accessory="chevron"

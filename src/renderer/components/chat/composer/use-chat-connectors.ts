@@ -12,7 +12,7 @@ import type { ConnectorsHost } from './connectors-menu-model'
  * chat keeps the servers it started with until it is reloaded.
  */
 export function useChatConnectors(session: AcpSession): {
-  connectors: Omit<McpServerListProps, 'listClassName'>
+  connectors: McpServerListProps
   host: ConnectorsHost
 } {
   const chatReload = useReloadChat(session.id)

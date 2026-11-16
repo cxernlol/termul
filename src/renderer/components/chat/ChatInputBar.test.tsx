@@ -494,7 +494,8 @@ describe('ChatInputBar config controls', () => {
   it('working chat: the one-line text area and the dock padding', () => {
     const { container } = renderInputBar({})
     const row = container.querySelector('[data-composer-row]') as HTMLElement
-    expect(row).toHaveClass('px-4', 'pb-1.5', 'pt-3.5')
+    // Composer V2 raised card: 16 top, 10 bottom, 18 left, 10 right.
+    expect(row).toHaveClass('pl-[18px]', 'pr-2.5', 'pb-2.5', 'pt-4')
     const scroll = row.querySelector('[data-composer-scroll]') as HTMLElement
     expect(scroll.style.getPropertyValue('--composer-min-h')).toBe('26px')
     expect(container.firstElementChild).toHaveClass('pb-6', 'pt-3')
@@ -720,20 +721,48 @@ describe('ChatInputBar + menu', () => {
       'Add files',
       '@Mention@',
       '/Slash commands/',
-      'Troupe tools',
-      'Connectors2 on'
+      'Troupe tools'
     ])
   })
 
-  it('counts no connectors as 0 on when the project has none', async () => {
+  it('counts no connectors as 0 on when the project has none', () => {
     mockMcpCount.current = 0
     renderInputBar()
-    fireEvent.pointerDown(screen.getByRole('button', { name: 'Add to chat' }), {
-      button: 0,
-      ctrlKey: false
+    expect(screen.getByRole('button', { name: 'Connectors, 0 on' })).toBeInTheDocument()
+  })
+})
+
+describe('ChatInputBar Composer V2 (desktop)', () => {
+  it('nests a raised card and a foot row in the tray', () => {
+    const { container } = renderInputBar({
+      worktree: <span data-testid="foot-worktree">rail-icons · feat/rail</span>
     })
-    await screen.findByRole('menu')
-    expect(screen.getByRole('menuitem', { name: /Connectors/ })).toHaveTextContent('Connectors0 on')
+    const tray = container.querySelector('[data-chat-composer="true"]') as HTMLElement
+    expect(tray).toHaveClass('rounded-[20px]', 'bg-card', 'px-1.5', 'pt-1.5')
+    const [raised, foot] = Array.from(tray.children).filter(
+      (child) => !child.hasAttribute('aria-hidden')
+    )
+    expect(raised).toHaveAttribute('data-composer-raised', 'true')
+    expect(raised).toHaveClass('rounded-[14px]', 'bg-popover', 'shadow-control')
+    expect(foot).toHaveAttribute('data-composer-foot-row', 'true')
+    expect(within(foot as HTMLElement).getByTestId('foot-worktree')).toBeInTheDocument()
+    expect(
+      within(foot as HTMLElement).getByRole('button', { name: /^Connectors/ })
+    ).toBeInTheDocument()
+  })
+
+  it('puts the mode chip right of +, away from the model chip and send', () => {
+    renderInputBar()
+    const add = screen.getByRole('button', { name: 'Add to chat' })
+    const left = add.parentElement as HTMLElement
+    const send = screen.getByRole('button', { name: 'Send message' })
+    expect(left.contains(send)).toBe(false)
+    const toolbar = document.querySelector('[data-composer-toolbar]') as HTMLElement
+    const right = toolbar.lastElementChild as HTMLElement
+    expect(right.contains(send)).toBe(true)
+    for (const chip of within(right).queryAllByRole('button')) {
+      expect(left.contains(chip)).toBe(false)
+    }
   })
 })
 
@@ -1084,7 +1113,7 @@ describe('ChatInputBar Claude limit warning', () => {
 
   it('shows the warning inside the composer card, at its top', () => {
     const { container } = renderInputBar()
-    const composer = container.querySelector('[data-chat-composer="true"]')
+    const composer = container.querySelector('[data-composer-raised="true"]')
     const warning = screen.getByTestId('claude-limit-warning-stub')
     expect(composer).toContainElement(warning)
     expect(composer?.firstElementChild).toBe(warning)
@@ -1783,7 +1812,7 @@ describe('ChatInputBar draft start', () => {
       const { container } = renderInputBar({
         notice: <div data-testid="dock-notice">This chat stopped.</div>
       })
-      const composer = container.querySelector('[data-chat-composer="true"]')
+      const composer = container.querySelector('[data-composer-raised="true"]')
       expect(composer?.firstElementChild).toBe(screen.getByTestId('dock-notice'))
       expect(screen.queryByTestId('claude-limit-warning-stub')).not.toBeInTheDocument()
       expect(screen.queryByText('Session closed')).not.toBeInTheDocument()

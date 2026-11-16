@@ -334,7 +334,12 @@ describe('Story 5.1 responsive chat layout', () => {
     expect(row2).toBeNull()
     expect(toolbar?.querySelector('[data-composer-toolbar-row="single"]')).toBeNull()
 
-    expect(within(row1 as HTMLElement).getByRole('button', { name: /^Agent$/ })).toBeInTheDocument()
+    // Composer V2: the mode chip sits right of + (left group), not in the
+    // scrolling model row.
+    expect(within(row1 as HTMLElement).queryByRole('button', { name: /^Agent$/ })).toBeNull()
+    expect(
+      within(toolbar as HTMLElement).getByRole('button', { name: /^Agent$/ })
+    ).toBeInTheDocument()
     expect(
       within(row1 as HTMLElement).getByRole('button', { name: /composer-2\.5/ })
     ).toBeInTheDocument()

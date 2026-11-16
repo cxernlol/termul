@@ -9,6 +9,8 @@ import {
   useSheetStack
 } from '@/components/ui/mobile-sheet'
 import { SheetDescription } from '@/components/ui/sheet'
+import { Skeleton } from '@/components/ui/skeleton'
+import { Spinner } from '@/components/ui/spinner'
 import { logFrontendError } from '@/lib/log-api'
 import { cn } from '@/lib/utils'
 import { useSettingsModalStore } from '@/stores/settings-modal-store'
@@ -311,31 +313,44 @@ export function MobileModelSheet(props: MobileModelSheetProps): React.JSX.Elemen
     case 'error': {
       // An agent that asks for credentials signs in on its setup screen.
       const { signInTab } = view
+      const fallbackTab = state.viewId !== effectiveId ? tabOf(effectiveId) : null
       list = view.status ? (
         <StatusActions title={view.title} detail={view.detail} status={view.status} touch />
       ) : (
-        <>
-          <ListMessage title={view.title} detail={view.detail} />
-          {signInTab || view.retry ? (
-            <SheetGroup>
-              {signInTab ? (
-                <SheetRow
-                  title={`Sign in to ${signInTab.name}`}
-                  accessory="chevron"
-                  subview={setupRouteKey(signInTab.configId)}
-                  disabled={disabled}
-                  onSelect={() => openSetup(signInTab)}
-                />
-              ) : null}
-              {view.retry ? <SheetRow title="Try again" onSelect={view.retry} /> : null}
-            </SheetGroup>
-          ) : null}
-        </>
+        <PhoneListFailed
+          title={view.title}
+          detail={view.detail}
+          actions={[
+            ...(fallbackTab
+              ? [
+                  {
+                    key: 'fallback',
+                    label: `Use ${fallbackTab.name}`,
+                    onSelect: () => pickProvider(fallbackTab)
+                  }
+                ]
+              : []),
+            ...(signInTab
+              ? [
+                  {
+                    key: 'sign-in',
+                    label: `Sign in to ${signInTab.name}`,
+                    raised: true,
+                    onSelect: () => openSetup(signInTab)
+                  }
+                ]
+              : []),
+            ...(view.retry
+              ? [{ key: 'retry', label: 'Try again', raised: !signInTab, onSelect: view.retry }]
+              : [])
+          ]}
+          disabled={disabled}
+        />
       )
       break
     }
     case 'loading':
-      list = <ListMessage loading title={view.title} />
+      list = <PhoneListLoading title={view.title} />
       break
   }
 
@@ -400,7 +415,14 @@ export function MobileModelSheet(props: MobileModelSheetProps): React.JSX.Elemen
         }
         {...(allTabs.length > 1
           ? {
-              value: `${allTabs.length} available`,
+              // Paper "2.6i"/"2.6i·2": the row says why the list below is not
+              // there yet, instead of the provider count.
+              value:
+                view.kind === 'loading'
+                  ? 'Loading…'
+                  : view.kind === 'error' && !view.status
+                    ? 'Not loaded'
+                    : `${allTabs.length} available`,
               accessory: 'chevron' as const,
               subview: PROVIDERS_ROUTE_KEY,
               disabled,
@@ -451,6 +473,16 @@ export function MobileModelSheet(props: MobileModelSheetProps): React.JSX.Elemen
     body = (
       <>
         {providerRow}
+        {/* Composer V2 (Paper "2.6e"): the options sit right under Provider,
+            above the search and the model list, so Effort and Mode stay in
+            reach however long the list is. */}
+        {state.ownFooter && !state.searching ? (
+          <OptionsCard
+            options={options}
+            disabled={disabled}
+            onOpen={(id) => nav.push({ kind: 'option', id })}
+          />
+        ) : null}
         {state.searching || allTabs.length > 1 || modelCount > SEARCH_THRESHOLD ? (
           <SheetSearchField
             value={state.query}
@@ -460,13 +492,6 @@ export function MobileModelSheet(props: MobileModelSheetProps): React.JSX.Elemen
           />
         ) : null}
         {list}
-        {state.ownFooter && !state.searching ? (
-          <OptionsCard
-            options={options}
-            disabled={disabled}
-            onOpen={(id) => nav.push({ kind: 'option', id })}
-          />
-        ) : null}
         {state.otherHintTab ? (
           <p className="px-3 text-xs text-muted-foreground">
             {`Choose a model to set the options for ${state.otherHintTab.name}.`}
@@ -508,5 +533,97 @@ export function MobileModelSheet(props: MobileModelSheetProps): React.JSX.Elemen
       </SheetDescription>
       {body}
     </MobileSheetContent>
+  )
+}
+
+/**
+ * A provider's model list while it loads (Paper "2.6i"): a status line and
+ * four skeleton rows that keep the list's height, so the sheet does not jump
+ * when the models arrive.
+ */
+function PhoneListLoading({ title }: { title: string }): React.JSX.Element {
+  return (
+    <>
+      <p
+        role="status"
+        className="flex h-7 items-end gap-2 px-1 pb-1 text-sm leading-[18px] text-muted-foreground"
+      >
+        <Spinner size={14} decorative className="mb-0.5" />
+        {title}
+      </p>
+      <SheetGroup>
+        {[0, 1, 2, 3].map((row) => (
+          <div
+            key={row}
+            aria-hidden="true"
+            className="relative flex h-[60px] items-center gap-3 pl-3.5"
+            style={{ '--sheet-divider-inset': '44px' } as React.CSSProperties}
+          >
+            <Skeleton className="size-[18px] rounded" />
+            <div className="flex flex-col gap-2">
+              <Skeleton className={cn('h-3 rounded', row % 2 ? 'w-20' : 'w-28')} />
+              <Skeleton className={cn('h-2.5 rounded', row % 2 ? 'w-40' : 'w-48')} />
+            </div>
+          </div>
+        ))}
+      </SheetGroup>
+    </>
+  )
+}
+
+interface FailedAction {
+  key: string
+  label: string
+  /** The action that moves on: the raised secondary button. Others are text. */
+  raised?: boolean
+  onSelect: () => void
+}
+
+/**
+ * A provider's model list that did not load (Paper "2.6i·2"): the same place
+ * as the loading rows, a centred title and reason, and the way on. No icon
+ * before the title.
+ */
+function PhoneListFailed({
+  title,
+  detail,
+  actions,
+  disabled
+}: {
+  title: string
+  detail: string | undefined
+  actions: readonly FailedAction[]
+  disabled: boolean
+}): React.JSX.Element {
+  return (
+    <div
+      role="alert"
+      className="flex flex-col items-center gap-1 rounded-xl bg-muted px-4 pb-4 pt-6 text-center shadow-control"
+    >
+      <p className="text-[15px] leading-5 text-foreground">{title}</p>
+      {detail ? (
+        <p className="whitespace-pre-line text-sm leading-[18px] text-muted-foreground">{detail}</p>
+      ) : null}
+      {actions.length > 0 ? (
+        <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
+          {actions.map((action) => (
+            <button
+              key={action.key}
+              type="button"
+              disabled={disabled}
+              onClick={action.onSelect}
+              className={cn(
+                'h-11 rounded-[10px] px-4 text-[15px] font-medium transition-transform duration-150 ease-out active:scale-[0.97] focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-focus-ring disabled:cursor-not-allowed disabled:opacity-60 motion-reduce:active:scale-100',
+                action.raised
+                  ? 'bg-popover text-foreground shadow-control'
+                  : 'text-muted-foreground'
+              )}
+            >
+              {action.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
   )
 }

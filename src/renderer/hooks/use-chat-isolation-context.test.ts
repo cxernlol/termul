@@ -109,46 +109,48 @@ describe('describeProjectSubtitle', () => {
     isolationBranch: 'main',
     isDetachedHead: false
   }
+  const worktree: ChatIsolationContext = {
+    ...local,
+    isWorktree: true,
+    isolationModeLabel: 'Worktree',
+    isolationBranch: 'chat/ab12'
+  }
 
-  it('worktree chat: project · branch · Worktree', () => {
-    expect(
-      describeProjectSubtitle('termul', {
-        ...local,
-        isWorktree: true,
-        isolationModeLabel: 'Worktree',
-        isolationBranch: 'chat/ab12'
-      })
-    ).toEqual({
-      text: 'termul · chat/ab12 · Worktree',
+  it('worktree chat: project · worktree folder; the label adds the branch', () => {
+    expect(describeProjectSubtitle('termul', worktree, '/w/.worktrees/rail-icons')).toEqual({
+      text: 'termul · rail-icons',
+      label: 'termul · rail-icons, branch chat/ab12, switch project'
+    })
+  })
+
+  it('worktree chat with no known path: project · branch', () => {
+    expect(describeProjectSubtitle('termul', worktree)).toEqual({
+      text: 'termul · chat/ab12',
       label: 'termul · chat/ab12, switch project'
     })
   })
 
-  it('git local: project · branch · Local', () => {
+  it('git local: project · branch', () => {
     expect(describeProjectSubtitle('termul', local)).toEqual({
-      text: 'termul · main · Local',
+      text: 'termul · main',
       label: 'termul · main, switch project'
     })
   })
 
-  it('detached HEAD: project · Detached HEAD · Local', () => {
+  it('detached HEAD: project · Detached HEAD', () => {
     expect(
       describeProjectSubtitle('termul', { ...local, isolationBranch: null, isDetachedHead: true })
     ).toEqual({
-      text: 'termul · Detached HEAD · Local',
+      text: 'termul · Detached HEAD',
       label: 'termul · Detached HEAD, switch project'
     })
   })
 
-  it('worktree with an unknown branch: project · Worktree', () => {
-    expect(
-      describeProjectSubtitle('termul', {
-        ...local,
-        isWorktree: true,
-        isolationModeLabel: 'Worktree',
-        isolationBranch: null
-      })
-    ).toEqual({ text: 'termul · Worktree', label: 'termul, switch project' })
+  it('worktree with an unknown branch and path: project · Worktree', () => {
+    expect(describeProjectSubtitle('termul', { ...worktree, isolationBranch: null })).toEqual({
+      text: 'termul · Worktree',
+      label: 'termul · Worktree, switch project'
+    })
   })
 
   it('non-git project: the name only', () => {
@@ -201,20 +203,5 @@ describe('describeIsolationDetail', () => {
 
   it('non-git project: nothing', () => {
     expect(describeIsolationDetail({ ...local, isolationBranch: null })).toBeNull()
-  })
-
-  it('composes the subtitle: the detail follows the project name', () => {
-    for (const isolation of [
-      local,
-      worktree,
-      { ...local, isolationBranch: null, isDetachedHead: true },
-      { ...worktree, isolationBranch: null },
-      { ...local, isolationBranch: null }
-    ]) {
-      const detail = describeIsolationDetail(isolation)
-      expect(describeProjectSubtitle('termul', isolation).text).toBe(
-        detail ? `termul · ${detail}` : 'termul'
-      )
-    }
   })
 })

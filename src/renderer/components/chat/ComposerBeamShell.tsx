@@ -7,10 +7,13 @@ import { BorderBeam } from 'border-beam'
 export function ComposerBeamShell({
   busy,
   reduced,
+  radius = 16,
   children
 }: {
   busy: boolean
   reduced: boolean
+  /** Corner radius of the wrapped surface (Composer V2 tray: 20). */
+  radius?: number
   children: React.ReactNode
 }): React.JSX.Element {
   if (reduced) {
@@ -21,7 +24,7 @@ export function ComposerBeamShell({
       size="md"
       colorVariant="mono"
       theme="auto"
-      borderRadius={16}
+      borderRadius={radius}
       active={busy}
       className="relative z-10 w-full"
     >

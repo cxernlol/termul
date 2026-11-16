@@ -69,21 +69,34 @@ export function describeIsolationDetail(isolation: ChatIsolationContext): string
   return isolation.isWorktree ? 'Worktree' : null
 }
 
+/** Last segment of a path (a worktree's folder name). */
+function folderName(path: string): string {
+  const parts = path.split(/[\\/]/).filter(Boolean)
+  return parts[parts.length - 1] ?? path
+}
+
 /**
- * Subtitle under the mobile header title. A git project shows its branch (or
- * "Detached HEAD") and the isolation label; a worktree chat with an unknown
- * branch shows just "Worktree"; a non-git project shows only its name; no
- * project shows "No project". The accessible name drops the isolation label.
+ * Subtitle under the mobile header title (Paper "2.6b", Composer V2):
+ * `project · where`. A worktree chat names its worktree folder (or its branch
+ * when the path is unknown, else "Worktree"); a chat in the project folder
+ * names the branch (or "Detached HEAD"); a non-git project shows only its
+ * name; no project shows "No project". The accessible name adds the branch of
+ * a worktree, which the visible text leaves out.
  */
 export function describeProjectSubtitle(
   projectName: string | undefined,
-  isolation: ChatIsolationContext
+  isolation: ChatIsolationContext,
+  worktreePath?: string
 ): ProjectSubtitle {
   if (!projectName) return { text: 'No project', label: 'No project, switch project' }
-  const detail = describeIsolationDetail(isolation)
   const branch = describeIsolationBranch(isolation)
-  return {
-    text: detail ? `${projectName} · ${detail}` : projectName,
-    label: branch ? `${projectName} · ${branch}, switch project` : `${projectName}, switch project`
-  }
+  const where = isolation.isWorktree
+    ? worktreePath
+      ? folderName(worktreePath)
+      : (branch ?? 'Worktree')
+    : branch
+  const text = where ? `${projectName} · ${where}` : projectName
+  const worktreeBranch =
+    isolation.isWorktree && worktreePath && branch && branch !== where ? `, branch ${branch}` : ''
+  return { text, label: `${text}${worktreeBranch}, switch project` }
 }

@@ -62,43 +62,50 @@ interface SheetContentProps
   extends React.ComponentPropsWithoutRef<typeof SheetPrimitive.Content>,
     VariantProps<typeof sheetVariants> {
   closeButton?: boolean
+  /** Extra classes for the backdrop (a sheet that times its own motion). */
+  overlayClassName?: string
 }
 
 const SheetContent = React.forwardRef<
   React.ElementRef<typeof SheetPrimitive.Content>,
   SheetContentProps
->(({ side = 'right', className, children, closeButton = true, ...props }, ref) => (
-  <SheetPortal>
-    <SheetOverlay />
-    <SheetPrimitive.Content
-      ref={ref}
-      data-sheet=""
-      className={cn(sheetVariants({ side }), className)}
-      {...props}
-    >
-      <NativeWebviewOccluder />
-      {children}
-      {/* The box is the touch target (28px, 44px on coarse pointers) and the 16px
+>(
+  (
+    { side = 'right', className, children, closeButton = true, overlayClassName, ...props },
+    ref
+  ) => (
+    <SheetPortal>
+      <SheetOverlay data-sheet-overlay="" className={overlayClassName} />
+      <SheetPrimitive.Content
+        ref={ref}
+        data-sheet=""
+        className={cn(sheetVariants({ side }), className)}
+        {...props}
+      >
+        <NativeWebviewOccluder />
+        {children}
+        {/* The box is the touch target (28px, 44px on coarse pointers) and the 16px
           glyph stays where it was (24px from the corner): right-2.5/top-2.5 and
           right-0.5/top-0.5 centre it in the 28px and 44px boxes respectively.
           The 44px box sits 2px from a sheet edge that is flush with the
           viewport, so the coarse-pointer focus ring drops its 2px offset: with
           it the ring would land entirely past the screen edge. */}
-      {closeButton ? (
-        <SheetPrimitive.Close
-          className={cn(
-            'absolute right-2.5 top-2.5 flex items-center justify-center pointer-coarse:right-0.5 pointer-coarse:top-0.5',
-            CHAT_ROW_ICON,
-            'rounded-sm opacity-70 ring-offset-background transition-opacity data-[state=open]:bg-secondary hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-focus-ring focus:ring-offset-2 pointer-coarse:focus:ring-offset-0 disabled:pointer-events-none'
-          )}
-        >
-          <X className="h-4 w-4" />
-          <span className="sr-only">Close</span>
-        </SheetPrimitive.Close>
-      ) : null}
-    </SheetPrimitive.Content>
-  </SheetPortal>
-))
+        {closeButton ? (
+          <SheetPrimitive.Close
+            className={cn(
+              'absolute right-2.5 top-2.5 flex items-center justify-center pointer-coarse:right-0.5 pointer-coarse:top-0.5',
+              CHAT_ROW_ICON,
+              'rounded-sm opacity-70 ring-offset-background transition-opacity data-[state=open]:bg-secondary hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-focus-ring focus:ring-offset-2 pointer-coarse:focus:ring-offset-0 disabled:pointer-events-none'
+            )}
+          >
+            <X className="h-4 w-4" />
+            <span className="sr-only">Close</span>
+          </SheetPrimitive.Close>
+        ) : null}
+      </SheetPrimitive.Content>
+    </SheetPortal>
+  )
+)
 SheetContent.displayName = SheetPrimitive.Content.displayName
 
 const SheetHeader = ({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) => (

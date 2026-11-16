@@ -135,6 +135,42 @@ export const COMPOSER_SURFACE_CLASS =
 export const COMPOSER_CARD_CLASS = `${COMPOSER_SURFACE_CLASS} shadow-composer`
 
 /**
+ * Composer V2 tray (Paper "Composer V2 · States", desktop): the `card` fill
+ * with a 0.5px `border` edge and radius 20. It holds the raised composer card
+ * (6px inset on the top and the sides) and the 40px foot row under it.
+ */
+export const COMPOSER_TRAY_CLASS =
+  'flex flex-col rounded-[20px] border-[0.5px] border-border bg-card px-1.5 pt-1.5 transition-[border-color]'
+
+/**
+ * Composer V2 raised card inside the tray: the `popover` fill, radius 14
+ * (tray radius 20 − 6px inset) and the control edge and drop
+ * (`--shadow-control`: 0.5px `--popover-edge` + a 1px drop).
+ */
+export const COMPOSER_RAISED_CLASS = 'rounded-[14px] bg-popover shadow-control'
+
+/**
+ * Composer V2 compact card on the phone (Paper "2.6b"): no tray and no foot
+ * row; the `popover` fill, radius 20 and the control edge and drop. The
+ * transparent border keeps the drop-zone highlight (`border-primary/70`).
+ */
+export const COMPOSER_PHONE_CARD_CLASS =
+  'rounded-[20px] border border-transparent bg-popover shadow-control transition-[border-color]'
+
+/** Phone composer gutter: 16px from the screen edge (Paper "2.6b"). */
+export const COMPOSER_PHONE_GUTTER_X = 'px-4'
+
+/**
+ * Phone composer input row (Paper "2.6b"/"2.6g", new and running chat alike):
+ * 11px top, 2px bottom, 16px left, 14px right; one 24px line that grows to
+ * five, then scrolls. The short placeholder fits one line on a 320px phone.
+ */
+export const COMPOSER_PHONE_INPUT_ROW_CLASS = 'gap-1 pb-0.5 pl-4 pr-3.5 pt-[11px]'
+export const COMPOSER_PHONE_INPUT_MIN_HEIGHT = 24
+export const COMPOSER_PHONE_INPUT_MAX_HEIGHT = 120
+export const COMPOSER_PHONE_PLACEHOLDER = 'Ask anything…'
+
+/**
  * Prompt panel (AskUserQuestion, ElicitationPrompt) that replaces the
  * composer: the composer surface, raised over the transcript.
  * Per-theme lift: `--prompt-panel-shadow`.

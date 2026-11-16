@@ -280,7 +280,8 @@ export function MobileChatShell({
   })
   const subtitle = describeProjectSubtitle(
     chatSessionLoaded ? (sessionProjectName ?? activeProject?.name) : activeProject?.name,
-    isolation
+    isolation,
+    chatSessionLoaded ? sessionWorktreePath : undefined
   )
   const attentionCount = useMobileAttentionCount(activeProject?.id, activeSessionId)
 

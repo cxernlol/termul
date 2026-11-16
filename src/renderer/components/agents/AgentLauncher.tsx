@@ -14,6 +14,7 @@ import {
 } from '@/components/agents/launcher/constants'
 import { LauncherContextStrip } from '@/components/agents/launcher/context-strip'
 import { type LaunchCheckout, launchChat } from '@/components/agents/launcher/launch-chat'
+import { PHONE_CONTEXT_ROW_CLASS } from '@/components/agents/launcher/launcher-classes'
 import {
   LAUNCHER_DISMISS_MS,
   LAUNCHER_DOCK_SLIDE_MS,
@@ -26,7 +27,7 @@ import {
   prepareLaunchWorktree
 } from '@/components/agents/launcher/prepare-launch-worktree'
 import { LauncherStatusBanners } from '@/components/agents/launcher/status-banners'
-import { LauncherToolbar } from '@/components/agents/launcher/toolbar'
+import { LauncherToolbar, launcherMcpListProps } from '@/components/agents/launcher/toolbar'
 import { useAgentSignIn } from '@/components/agents/launcher/use-agent-sign-in'
 import { useBaseBranchChoices } from '@/components/agents/launcher/use-base-branch-choices'
 import { useLaunchWorkspace } from '@/components/agents/launcher/use-launch-workspace'
@@ -54,12 +55,21 @@ import {
   resolveModelOption,
   splitFastModeOption
 } from '@/components/chat/chat-input-bar-config'
-import { COMPOSER_CARD_CLASS, useComposerToolbarMode } from '@/components/chat/chat-layout'
+import {
+  COMPOSER_PHONE_CARD_CLASS,
+  COMPOSER_PHONE_INPUT_MAX_HEIGHT,
+  COMPOSER_PHONE_INPUT_MIN_HEIGHT,
+  COMPOSER_PHONE_INPUT_ROW_CLASS,
+  COMPOSER_PHONE_PLACEHOLDER,
+  COMPOSER_TRAY_CLASS,
+  useComposerToolbarMode
+} from '@/components/chat/chat-layout'
 import {
   CHAT_START_COLUMN_CLASS,
   CHAT_START_INPUT_MAX_HEIGHT,
   CHAT_START_INPUT_MIN_HEIGHT,
   CHAT_START_INPUT_ROW_CLASS,
+  CHAT_START_PHONE_HERO_CLASS,
   CHAT_START_TOP_CLASS,
   ChatStartBottomSpacer,
   ChatStartHero
@@ -68,6 +78,11 @@ import {
   ChatComposerEditor,
   focusComposerFromRowPress
 } from '@/components/chat/composer/ChatComposerEditor'
+import {
+  ComposerConnectorsButton,
+  ComposerFootRow,
+  ComposerRaised
+} from '@/components/chat/composer/ComposerFoot'
 import {
   blurComposerEditor,
   insertComposerTrigger
@@ -1625,6 +1640,24 @@ export function AgentLauncher({ paneId, className }: AgentLauncherProps): React.
       ? `calc(${osk.keyboardHeight}px + 0.5rem)`
       : undefined
 
+  // The worktree pick: in the Composer V2 foot row on desktop, under the
+  // card on the phone.
+  const contextStrip = (className?: string): React.JSX.Element => (
+    <LauncherContextStrip
+      workspace={workspace}
+      worktrees={activeProject?.worktrees ?? EMPTY_WORKTREES}
+      baseBranch={baseBranch}
+      setBaseBranch={setBaseBranch}
+      baseBranchInfo={baseBranchInfo}
+      baseOptions={baseOptions}
+      interactive={projectIsGitRepo}
+      newWorktreeDisabledReason={serverAdmitsWrites ? undefined : READ_ONLY_SERVER_REASON}
+      gitBranch={projectGitBranch}
+      isGitRepo={projectIsGitRepo}
+      className={className}
+    />
+  )
+
   return (
     <div
       ref={rootRef}
@@ -1672,12 +1705,14 @@ export function AgentLauncher({ paneId, className }: AgentLauncherProps): React.
         style={mobileBottomInset ? { paddingBottom: mobileBottomInset } : undefined}
       >
         {isMobileShell ? (
-          <ChatStartHero
-            isMobileShell
-            isExiting={isExiting}
-            reducedMotion={reducedMotion}
-            projectLabel={projectLabel}
-          />
+          <div className={CHAT_START_PHONE_HERO_CLASS}>
+            <ChatStartHero
+              isMobileShell
+              isExiting={isExiting}
+              reducedMotion={reducedMotion}
+              projectLabel={projectLabel}
+            />
+          </div>
         ) : (
           <div className={CHAT_START_TOP_CLASS}>
             <ChatStartHero
@@ -1733,7 +1768,9 @@ export function AgentLauncher({ paneId, className }: AgentLauncherProps): React.
               data-agent-launcher-composer="true"
               className={cn(
                 'relative z-10',
-                COMPOSER_CARD_CLASS,
+                // Desktop: Composer V2 tray (raised card + foot row), the
+                // same surface as the chat composer. Phone: the compact card.
+                isMobileShell ? COMPOSER_PHONE_CARD_CLASS : COMPOSER_TRAY_CLASS,
                 dragActive && 'border-primary/70'
               )}
               onDragEnter={dropProps.onDragEnter}
@@ -1742,132 +1779,165 @@ export function AgentLauncher({ paneId, className }: AgentLauncherProps): React.
               onDrop={dropProps.onDrop}
             >
               {dragActive && canDropPaste && (
-                <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-2xl border-2 border-dashed border-primary/60 bg-background/80 text-sm font-medium text-foreground backdrop-blur-sm">
+                <div
+                  className={cn(
+                    'pointer-events-none absolute inset-0 z-10 flex items-center justify-center border-2 border-dashed border-primary/60 bg-background/80 text-sm font-medium text-foreground backdrop-blur-sm',
+                    'rounded-[20px]'
+                  )}
+                >
                   <span className="flex items-center gap-2">
                     <Paperclip size={16} /> Drop files to attach
                   </span>
                 </div>
               )}
-              <LauncherStatusBanners
-                selectedEntry={selectedEntry}
-                manualInstallContext={manualInstallContext}
-                installingConfigId={installingConfigId}
-                handleInstallAgent={handleInstallAgent}
-                selectedInstall={selectedInstall}
-                setManualInstallOverride={setManualInstallOverride}
-                manualPath={manualPath}
-                savingManualPath={savingManualPath}
-                setManualPath={setManualPath}
-                handleBrowseManualPath={handleBrowseManualPath}
-                handleSaveManualPath={handleSaveManualPath}
-                prepareError={prepareError}
-                authMethods={authMethods}
-                signingInMethodId={signingInMethodId}
-                handleAuthMethod={handleAuthMethod}
-                handleAuthenticateWith={(method, input) => void runAuthenticate(method.id, input)}
-                handleRetryPrepare={handleRetryPrepare}
-                factoryKeyAuth={factoryKeyAuth}
-                inlineKeyMethodId={inlineKeyMethodId}
-              />
-              <AttachmentPreviewGroup
-                attachments={attachments}
-                onRemove={removeAttachment}
-                removeDisabled={composerLocked}
-              />
-              {/* Same input area as the empty chat's composer (chat-start.tsx);
+              <ComposerRaised raised={!isMobileShell}>
+                <LauncherStatusBanners
+                  selectedEntry={selectedEntry}
+                  manualInstallContext={manualInstallContext}
+                  installingConfigId={installingConfigId}
+                  handleInstallAgent={handleInstallAgent}
+                  selectedInstall={selectedInstall}
+                  setManualInstallOverride={setManualInstallOverride}
+                  manualPath={manualPath}
+                  savingManualPath={savingManualPath}
+                  setManualPath={setManualPath}
+                  handleBrowseManualPath={handleBrowseManualPath}
+                  handleSaveManualPath={handleSaveManualPath}
+                  prepareError={prepareError}
+                  authMethods={authMethods}
+                  signingInMethodId={signingInMethodId}
+                  handleAuthMethod={handleAuthMethod}
+                  handleAuthenticateWith={(method, input) => void runAuthenticate(method.id, input)}
+                  handleRetryPrepare={handleRetryPrepare}
+                  factoryKeyAuth={factoryKeyAuth}
+                  inlineKeyMethodId={inlineKeyMethodId}
+                />
+                <AttachmentPreviewGroup
+                  attachments={attachments}
+                  onRemove={removeAttachment}
+                  removeDisabled={composerLocked}
+                />
+                {/* Same input area as the empty chat's composer (chat-start.tsx);
                   toolbar px-2 pb-2 like ChatInputBar. */}
-              {/* biome-ignore lint/a11y/noStaticElementInteractions: pointer-only focus aid for the padding; the editor is the accessible target */}
-              <div
-                data-composer-row
-                className={cn('flex items-start', CHAT_START_INPUT_ROW_CLASS)}
-                onMouseDown={(event) => focusComposerFromRowPress(event, editorRef.current)}
-              >
-                {/* Tiptap rich-text editor — the skill "pill" is a real inline
+                {/* biome-ignore lint/a11y/noStaticElementInteractions: pointer-only focus aid for the padding; the editor is the accessible target */}
+                <div
+                  data-composer-row
+                  className={cn(
+                    'flex items-start',
+                    isMobileShell ? COMPOSER_PHONE_INPUT_ROW_CLASS : CHAT_START_INPUT_ROW_CLASS
+                  )}
+                  onMouseDown={(event) => focusComposerFromRowPress(event, editorRef.current)}
+                >
+                  {/* Tiptap rich-text editor — the skill "pill" is a real inline
                    DOM node, so the caret sits flush against the pill's right
                    edge by construction. No transparent textarea + mirror
                    overlay, no canvas padding. The `prompt` string (sentinel-token
                    format) is the shared model the wire builder + first-turn
                    sync + timeline consume (byte-identical wire payload). */}
-                <SkillFilesProvider projectRoot={skillsRoot}>
-                  <ChatComposerEditor
-                    value={prompt}
-                    onValueChange={setPrompt}
-                    onCaretChange={mentions.update}
-                    onBeforeEditorKeyDown={handleKeyDown}
-                    onPasteAttachments={handlePaste}
-                    getSkillPaths={() => skillPathsRef.current}
-                    editorRef={editorRef}
-                    inputRef={composerInputRef}
-                    disabled={composerLocked}
-                    className="min-w-0 flex-1"
-                    minHeight={CHAT_START_INPUT_MIN_HEIGHT}
-                    maxHeight={CHAT_START_INPUT_MAX_HEIGHT}
-                    placeholder={
-                      composerDisabled
-                        ? 'Composer unavailable'
-                        : hasCommandToken
-                          ? 'Add a message (optional)…'
-                          : 'Ask anything… (/ for commands, @ for files and chats)'
-                    }
-                    ariaLabel="Agent prompt"
-                    autoFocus
-                  />
-                </SkillFilesProvider>
-              </div>
-              <LauncherToolbar
-                addHandle={addHandle}
-                isMobileShell={isMobileShell}
-                mcpCount={mcpCount}
-                mcpServers={mcpServers}
-                setMcpServerEnabled={setMcpServerEnabled}
-                preparedKey={preparedKey}
-                activeConfigId={activeConfigId}
-                projectRoot={projectRoot}
-                activeProjectId={activeProjectId}
-                mcpProbeStatus={mcpProbeStatus}
-                mcpProbeError={mcpProbeError}
-                mcpTools={mcpTools}
-                loadMcpTools={loadMcpTools}
-                selectedEntry={selectedEntry}
-                selectedUpdateAgent={selectedUpdateAgent}
-                pendingRestartVersion={pendingRestartVersion}
-                updatingSelected={updatingSelected}
-                restartingUpdatedAgent={restartingUpdatedAgent}
-                handleSelectedAgentUpdate={handleSelectedAgentUpdate}
-                handleRestartUpdatedAgent={handleRestartUpdatedAgent}
-                selectedConfig={selectedConfig}
-                installingConfigId={installingConfigId}
-                savingManualPath={savingManualPath}
-                selectorSource={selectorSource}
-                modelOption={modelOption}
-                modelSource={modelSource}
-                optionsInteractive={optionsInteractive}
-                handleSetModel={handleSetModel}
-                thoughtLevel={thoughtLevel}
-                modelConfig={modelConfig}
-                handleSetConfig={handleSetConfig}
-                fastMode={fastMode}
-                nonFastGenericOptions={nonFastGenericOptions}
-                modePreviewSession={modePreviewSession}
-                handleSetMode={handleSetMode}
-                canLaunch={canLaunch}
-                launch={launch}
-                onSelectorCloseAutoFocus={handleSelectorCloseAutoFocus}
-                toolbarMode={toolbarMode}
-              />
+                  <SkillFilesProvider projectRoot={skillsRoot}>
+                    <ChatComposerEditor
+                      value={prompt}
+                      onValueChange={setPrompt}
+                      onCaretChange={mentions.update}
+                      onBeforeEditorKeyDown={handleKeyDown}
+                      onPasteAttachments={handlePaste}
+                      getSkillPaths={() => skillPathsRef.current}
+                      editorRef={editorRef}
+                      inputRef={composerInputRef}
+                      disabled={composerLocked}
+                      className="min-w-0 flex-1"
+                      minHeight={
+                        isMobileShell
+                          ? COMPOSER_PHONE_INPUT_MIN_HEIGHT
+                          : CHAT_START_INPUT_MIN_HEIGHT
+                      }
+                      maxHeight={
+                        isMobileShell
+                          ? COMPOSER_PHONE_INPUT_MAX_HEIGHT
+                          : CHAT_START_INPUT_MAX_HEIGHT
+                      }
+                      placeholder={
+                        composerDisabled
+                          ? 'Composer unavailable'
+                          : hasCommandToken
+                            ? 'Add a message (optional)…'
+                            : isMobileShell
+                              ? COMPOSER_PHONE_PLACEHOLDER
+                              : 'Ask anything… (/ for commands, @ for files and chats)'
+                      }
+                      ariaLabel="Agent prompt"
+                      autoFocus
+                    />
+                  </SkillFilesProvider>
+                </div>
+                <LauncherToolbar
+                  addHandle={addHandle}
+                  isMobileShell={isMobileShell}
+                  mcpCount={mcpCount}
+                  mcpServers={mcpServers}
+                  setMcpServerEnabled={setMcpServerEnabled}
+                  preparedKey={preparedKey}
+                  activeConfigId={activeConfigId}
+                  projectRoot={projectRoot}
+                  activeProjectId={activeProjectId}
+                  mcpProbeStatus={mcpProbeStatus}
+                  mcpProbeError={mcpProbeError}
+                  mcpTools={mcpTools}
+                  loadMcpTools={loadMcpTools}
+                  selectedEntry={selectedEntry}
+                  selectedUpdateAgent={selectedUpdateAgent}
+                  pendingRestartVersion={pendingRestartVersion}
+                  updatingSelected={updatingSelected}
+                  restartingUpdatedAgent={restartingUpdatedAgent}
+                  handleSelectedAgentUpdate={handleSelectedAgentUpdate}
+                  handleRestartUpdatedAgent={handleRestartUpdatedAgent}
+                  selectedConfig={selectedConfig}
+                  installingConfigId={installingConfigId}
+                  savingManualPath={savingManualPath}
+                  selectorSource={selectorSource}
+                  modelOption={modelOption}
+                  modelSource={modelSource}
+                  optionsInteractive={optionsInteractive}
+                  handleSetModel={handleSetModel}
+                  thoughtLevel={thoughtLevel}
+                  modelConfig={modelConfig}
+                  handleSetConfig={handleSetConfig}
+                  fastMode={fastMode}
+                  nonFastGenericOptions={nonFastGenericOptions}
+                  modePreviewSession={modePreviewSession}
+                  handleSetMode={handleSetMode}
+                  canLaunch={canLaunch}
+                  launch={launch}
+                  onSelectorCloseAutoFocus={handleSelectorCloseAutoFocus}
+                  toolbarMode={toolbarMode}
+                />
+              </ComposerRaised>
+              {isMobileShell ? null : (
+                <ComposerFootRow
+                  start={contextStrip('pl-0 pt-0')}
+                  end={
+                    <ComposerConnectorsButton
+                      connectors={launcherMcpListProps({
+                        mcpCount,
+                        mcpServers,
+                        setMcpServerEnabled,
+                        preparedKey,
+                        activeConfigId,
+                        projectRoot,
+                        activeProjectId,
+                        mcpProbeStatus,
+                        mcpProbeError,
+                        mcpTools,
+                        loadMcpTools
+                      })}
+                      connectorsHost="launcher"
+                      onClosed={addHandle.focusEditor}
+                    />
+                  }
+                />
+              )}
             </div>
-            <LauncherContextStrip
-              workspace={workspace}
-              worktrees={activeProject?.worktrees ?? EMPTY_WORKTREES}
-              baseBranch={baseBranch}
-              setBaseBranch={setBaseBranch}
-              baseBranchInfo={baseBranchInfo}
-              baseOptions={baseOptions}
-              interactive={projectIsGitRepo}
-              newWorktreeDisabledReason={serverAdmitsWrites ? undefined : READ_ONLY_SERVER_REASON}
-              gitBranch={projectGitBranch}
-              isGitRepo={projectIsGitRepo}
-            />
+            {isMobileShell ? contextStrip(PHONE_CONTEXT_ROW_CLASS) : null}
           </div>
         </div>
         {isMobileShell ? null : <ChatStartBottomSpacer />}

@@ -62,6 +62,15 @@ function dangerDescription(description: string | null | undefined): string {
   return `${base}${/[.!?]$/.test(base) ? '' : '.'} Use with care.`
 }
 
+/**
+ * The mode chip label. The modes that ask before edits by default
+ * (Claude Agent `default`) read "Ask first", the name of their menu group,
+ * not the agent's generic "Default". Other modes keep the agent's name.
+ */
+export function modeChipLabel(modeId: string | undefined, name: string): string {
+  return modeId === 'default' ? 'Ask first' : name
+}
+
 /** The chip icon for the current mode; yellow when the mode is risky. */
 export function ModeIcon({
   modeId,

@@ -37,8 +37,11 @@ describe('composer elevation family', () => {
   it.each([
     ['AskUserQuestion.tsx', 'PROMPT_PANEL_CLASS'],
     ['ElicitationPrompt.tsx', 'PROMPT_PANEL_CLASS'],
-    ['ChatInputBar.tsx', 'COMPOSER_CARD_CLASS'],
-    ['../agents/AgentLauncher.tsx', 'COMPOSER_CARD_CLASS']
+    // Composer V2: the desktop tray and the phone compact card.
+    ['ChatInputBar.tsx', 'COMPOSER_TRAY_CLASS'],
+    ['ChatInputBar.tsx', 'COMPOSER_PHONE_CARD_CLASS'],
+    ['../agents/AgentLauncher.tsx', 'COMPOSER_TRAY_CLASS'],
+    ['../agents/AgentLauncher.tsx', 'COMPOSER_PHONE_CARD_CLASS']
   ])('%s takes %s and no hard-coded shadow', (file, constant) => {
     const source = readFileSync(join(__dirname, file), 'utf8')
     expect(source).toContain(constant)

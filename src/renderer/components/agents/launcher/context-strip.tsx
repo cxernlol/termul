@@ -85,7 +85,8 @@ export function LauncherContextStrip({
   newWorktreeDisabledReason,
   gitBranch,
   isGitRepo,
-  surface = 'launcher'
+  surface = 'launcher',
+  className
 }: {
   /** Chip mode and the selected existing worktree (`useLaunchWorkspace`). */
   workspace: Pick<
@@ -109,6 +110,8 @@ export function LauncherContextStrip({
   isGitRepo: boolean
   /** Which surface hosts the row (its data hook): the launcher or an empty chat. */
   surface?: 'launcher' | 'chat-start'
+  /** Extra classes (Composer V2 foot row: no top inset). */
+  className?: string
 }): React.JSX.Element | null {
   const { isolationMode, setIsolationMode, existingWorktreeId, setExistingWorktreeId } = workspace
   const existingReason = existingDisabledReason(worktrees)
@@ -119,7 +122,7 @@ export function LauncherContextStrip({
       {...(surface === 'chat-start'
         ? { 'data-chat-start-context-row': 'true' }
         : { 'data-agent-launcher-context-strip': 'true' })}
-      className={CONTEXT_ROW_CLASS}
+      className={cn(CONTEXT_ROW_CLASS, className)}
     >
       {interactive ? (
         <>

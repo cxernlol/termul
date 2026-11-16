@@ -128,11 +128,16 @@ describe('MobileSheetContent', () => {
     fireEvent.click(within(sheet).getByRole('button', { name: 'Effort High' }))
     const back = within(sheet).getByRole('button', { name: 'Back' })
     expect(within(sheet).getByRole('heading', { name: 'Effort' })).toBeInTheDocument()
-    expect(within(sheet).queryByRole('button', { name: 'Close' })).toBeNull()
+    // Composer V2: no ✕ in the header; the grab handle (named Close) stays.
+    expect(within(sheet).getByRole('button', { name: 'Close' })).toHaveClass('h-[5px]', 'w-9')
     expect(within(sheet).getByRole('radio', { name: 'High' })).toHaveAttribute(
       'aria-checked',
       'true'
     )
+    // The picked choice: the 10% fill on the row, no tick.
+    const picked = within(sheet).getByRole('radio', { name: 'High' })
+    expect(picked.parentElement).toHaveClass('bg-foreground/10')
+    expect(picked.querySelector('[data-termul-icon="Check"]')).toBeNull()
     await waitFor(() => expect(back).toHaveFocus())
 
     fireEvent.click(back)
@@ -234,5 +239,99 @@ describe('MobileSheetContent', () => {
       ?.parentElement as HTMLElement
     expect(pushed.style.transform).toBe('')
     expect(pushed.style.opacity).toBe('0')
+  })
+})
+
+describe('MobileSheetContent drag to dismiss (gestures)', () => {
+  function dragHandle(sheet: HTMLElement, dy: number, steps = 4): void {
+    const handle = within(sheet).getByRole('button', { name: 'Close' })
+    fireEvent.pointerDown(handle, { pointerId: 1, button: 0, clientY: 100 })
+    for (let i = 1; i <= steps; i += 1) {
+      fireEvent.pointerMove(window, { pointerId: 1, clientY: 100 + (dy * i) / steps })
+    }
+    fireEvent.pointerUp(window, { pointerId: 1, clientY: 100 + dy })
+  }
+
+  it('follows the finger, then closes from where it was let go past the threshold', async () => {
+    render(<Harness />)
+    const sheet = openSheet()
+    const handle = within(sheet).getByRole('button', { name: 'Close' })
+    fireEvent.pointerDown(handle, { pointerId: 1, button: 0, clientY: 100 })
+    fireEvent.pointerMove(window, { pointerId: 1, clientY: 180 })
+    expect(sheet.style.transform).toBe('translate3d(0, 80px, 0)')
+    fireEvent.pointerUp(window, { pointerId: 1, clientY: 180 })
+    expect(sheet).toHaveAttribute('data-drag-dismissed')
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+  })
+
+  it('treats a press that barely moves as a tap, and the handle tap closes', async () => {
+    render(<Harness />)
+    const sheet = openSheet()
+    dragHandle(sheet, 2, 1)
+    expect(sheet.style.transform).toBe('')
+    expect(sheet).not.toHaveAttribute('data-drag-dismissed')
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Close' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+  })
+
+  it('resists an upward pull and snaps back on release', () => {
+    render(<Harness />)
+    const sheet = openSheet()
+    const handle = within(sheet).getByRole('button', { name: 'Close' })
+    fireEvent.pointerDown(handle, { pointerId: 1, button: 0, clientY: 300 })
+    fireEvent.pointerMove(window, { pointerId: 1, clientY: 200 })
+    expect(sheet.style.transform).toBe('translate3d(0, -20px, 0)')
+    fireEvent.pointerUp(window, { pointerId: 1, clientY: 200 })
+    expect(sheet.style.transform).toBe('')
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+  })
+
+  it('does not let the drag end click Back', () => {
+    render(<Harness />)
+    const sheet = openSheet()
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Effort High' }))
+    const back = within(sheet).getByRole('button', { name: 'Back' })
+    fireEvent.pointerDown(back, { pointerId: 2, button: 0, clientY: 300 })
+    fireEvent.pointerMove(window, { pointerId: 2, clientY: 290 })
+    fireEvent.pointerUp(window, { pointerId: 2, clientY: 290 })
+    fireEvent.click(back)
+    expect(within(sheet).getByRole('heading', { name: 'Effort' })).toBeInTheDocument()
+  })
+})
+
+describe('MobileSheetContent drag release', () => {
+  function pointer(type: string, clientY: number, timeStamp: number): Event {
+    const event = new MouseEvent(type, { bubbles: true, clientY, button: 0 })
+    Object.defineProperty(event, 'pointerId', { value: 3 })
+    Object.defineProperty(event, 'timeStamp', { value: timeStamp })
+    return event
+  }
+
+  it('does not treat a hold before release as a flick', () => {
+    // A 400px sheet: the distance threshold is 60px.
+    const height = vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(400)
+    render(<Harness />)
+    const sheet = openSheet()
+    const handle = within(sheet).getByRole('button', { name: 'Close' })
+    fireEvent(handle, pointer('pointerdown', 100, 0))
+    fireEvent(window, pointer('pointermove', 105, 10))
+    fireEvent(window, pointer('pointermove', 110, 20))
+    // Held still for a second, then lifted: 10px is under the threshold.
+    fireEvent(window, pointer('pointerup', 110, 1020))
+    expect(sheet).not.toHaveAttribute('data-drag-dismissed')
+    height.mockRestore()
+  })
+
+  it('still dismisses a quick flick under the distance threshold', () => {
+    const height = vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(400)
+    render(<Harness />)
+    const sheet = openSheet()
+    const handle = within(sheet).getByRole('button', { name: 'Close' })
+    fireEvent(handle, pointer('pointerdown', 100, 0))
+    fireEvent(window, pointer('pointermove', 105, 10))
+    fireEvent(window, pointer('pointermove', 110, 20))
+    fireEvent(window, pointer('pointerup', 110, 30))
+    expect(sheet).toHaveAttribute('data-drag-dismissed')
+    height.mockRestore()
   })
 })

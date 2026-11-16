@@ -352,6 +352,39 @@ function suppressTransitionsForThemeSwap(): void {
   })
 }
 
+/**
+ * Phone browsers colour the status bar and browser chrome from
+ * `<meta name="theme-color">`. The app switches themes with CSS variables, not
+ * the OS setting, so the tag follows the applied `--background` (the colour at
+ * the very top of the app). Read through a 1px canvas so any CSS colour space
+ * (oklch) lands as plain sRGB hex, which every browser's chrome accepts.
+ */
+function syncThemeColorMeta(): void {
+  if (typeof document === 'undefined' || !document.body) return
+  const background = getComputedStyle(document.body).backgroundColor
+  if (!background) return
+  let hex: string | null = null
+  try {
+    const ctx = document.createElement('canvas').getContext('2d', { willReadFrequently: true })
+    if (ctx) {
+      ctx.fillStyle = background
+      ctx.fillRect(0, 0, 1, 1)
+      const [r, g, b] = ctx.getImageData(0, 0, 1, 1).data
+      hex = `#${[r, g, b].map((v) => (v ?? 0).toString(16).padStart(2, '0')).join('')}`
+    }
+  } catch {
+    // No 2D canvas (tests, locked-down webviews): keep the tag as it is.
+  }
+  if (!hex) return
+  let meta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]')
+  if (!meta) {
+    meta = document.createElement('meta')
+    meta.name = 'theme-color'
+    document.head.append(meta)
+  }
+  meta.content = hex
+}
+
 /** Apply theme to document, terminals, and notify editors (instant, no persistence). */
 export function applyColorTheme(themeId: string): void {
   const theme = getColorThemeDefinition(themeId)
@@ -362,6 +395,7 @@ export function applyColorTheme(themeId: string): void {
   suppressTransitionsForThemeSwap()
   applyCssVariables(variant.palette, theme.appearance, variant.chrome)
   applyTerminalThemes(xtermTheme)
+  syncThemeColorMeta()
   lastAppliedThemeId = theme.id
   dispatchThemeChanged({ themeId: theme.id, syntax })
 }

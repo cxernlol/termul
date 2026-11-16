@@ -10,11 +10,16 @@ import { cn } from '@/lib/utils'
  * 1. CHAT_START_TOP_CLASS: the region above the composer. Its basis is its
  *    content (the hero), and it takes half of the free space.
  * 2. The composer (card + context row), no padding above or below.
- * 3. ChatStartBottomSpacer: a zero basis that takes the other half.
+ * 3. ChatStartBottomSpacer: a 44px basis (the tab bar height) that takes
+ *    the other half.
  *
  * Equal growth from both bases centres the block, so the hero and the
- * composer sit at the same y in the launcher and in an empty chat. Desktop
- * only: on the mobile web shell the composer stays at the bottom.
+ * composer sit at the same y in the launcher and in an empty chat. The
+ * spacer's 44px basis moves the block 22px up: the pane starts under the
+ * 44px tab bar, so this centres the block in the app window, not in the
+ * pane (decided with the design owner, 2026-11-16). When the height is
+ * tight the spacer shrinks first, down to 0. Desktop only: on the mobile
+ * web shell the composer stays at the bottom.
  */
 export const CHAT_START_TOP_CLASS =
   'flex w-full min-w-0 flex-[1_1_auto] flex-col items-center justify-end'
@@ -25,10 +30,18 @@ export function ChatStartBottomSpacer(): React.JSX.Element {
     <div
       aria-hidden="true"
       data-chat-start-spacer="true"
-      className="min-h-0 w-full flex-[1_1_0px]"
+      className="min-h-0 w-full flex-[1_1_44px]"
     />
   )
 }
+
+/**
+ * Phone empty chat and launcher (Paper "2.6g"): the hero sits in the middle of
+ * the space between the header and the composer, 28px of that space kept
+ * under it. The space scrolls if the keyboard leaves too little room.
+ */
+export const CHAT_START_PHONE_HERO_CLASS =
+  'flex min-h-0 w-full flex-1 flex-col items-center justify-center px-5 pb-7'
 
 /** Start-screen composer column (Paper: 680px wide). */
 export const CHAT_START_COLUMN_CLASS = 'max-w-[680px]'
@@ -50,9 +63,10 @@ export const CHAT_START_INPUT_MAX_HEIGHT = 160
  * 56px mark, 20px to a 22/28 heading, 24px to the composer). A quick chat
  * asks the same question without a project name.
  *
- * The mark + project question. On the mobile web shell it shrinks so the
- * bottom-anchored composer stays above the fold; during a launcher exit it
- * dissolves upward.
+ * The mark + project question. On the mobile web shell it keeps the same
+ * size (Paper "2.6g": 56px mark, 22/28 question, 20px apart) and its host
+ * centres it in the space above the composer (`CHAT_START_PHONE_HERO_CLASS`);
+ * during a launcher exit it dissolves upward.
  */
 export function ChatStartHero({
   projectLabel,
@@ -75,18 +89,14 @@ export function ChatStartHero({
   return (
     <div
       className={cn(
-        'mb-6 flex w-full flex-col items-center gap-5 text-center transition-[opacity,translate,filter] duration-200 ease-out motion-reduce:transition-none',
-        isMobileShell && 'mb-4 gap-2',
+        'flex w-full flex-col items-center gap-5 text-center transition-[opacity,translate,filter] duration-200 ease-out motion-reduce:transition-none',
+        // Desktop: 24px to the composer under it. Phone: the host centres it.
+        !isMobileShell && 'mb-6',
         isExiting && !reducedMotion && '-translate-y-2 opacity-0 blur-[2px]'
       )}
     >
-      <TermulMark size={isMobileShell ? 32 : 56} className="text-secondary-foreground" />
-      <Heading
-        className={cn(
-          'break-words text-hero font-normal leading-7 tracking-[-0.015em] text-foreground',
-          isMobileShell && 'text-xl'
-        )}
-      >
+      <TermulMark size={56} className="text-secondary-foreground" />
+      <Heading className="break-words text-hero font-normal leading-7 tracking-[-0.015em] text-foreground">
         {quick ? 'What should we do?' : `What should we do in ${projectLabel}?`}
       </Heading>
     </div>

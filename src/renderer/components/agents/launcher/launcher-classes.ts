@@ -21,6 +21,15 @@ export const ROW_TRIGGER_CLASS =
  */
 export const CONTEXT_ROW_CLASS = 'flex min-w-0 max-w-full items-center gap-0.5 pl-0.5 pt-1.5'
 
+/**
+ * The worktree strip under the phone composer of a new chat (Paper "2.6g"):
+ * 40px items with 14/18 muted text and 16px icons (the chevron stays 12px),
+ * the pick on the left and the branch on the right. It restyles the row's
+ * triggers and read-only items from the row, so the strip keeps one markup.
+ */
+export const PHONE_CONTEXT_ROW_CLASS =
+  'h-10 justify-between gap-0 px-1.5 pl-1.5 pt-0 [&_button]:h-10 [&_button]:min-h-10 [&_button]:gap-2 [&_button]:rounded-[10px] [&_button]:px-2 [&_button]:text-sm [&_button]:font-normal [&_button]:text-muted-foreground [&_button]:after:-inset-y-0.5 [&_button>svg:first-child]:size-4 [&>span]:h-10 [&>span]:gap-2 [&>span]:text-sm [&>span>svg]:size-4'
+
 /** A read-only item in the context row, same box as a trigger. */
 export const ROW_ITEM_CLASS =
   'inline-flex h-6 min-w-0 items-center gap-1.5 px-2 text-xs text-muted-foreground'

@@ -295,7 +295,9 @@ describe('font-family keep', () => {
 describe('paper design file keep', () => {
   it.each([
     'DESIGN.md',
-    'docs/design/sidebar-v2-handoff.md'
+    'docs/design/sidebar-v2-handoff.md',
+    'docs/design/status-rail-handoff.md',
+    'docs/design/composer-v2-handoff.md'
   ])('keeps the Paper file name in %s', (path) => {
     const text = 'Paper file "Termul Design System", page Troupe Design.'
     expect(rewrite(path, text, off)).toEqual({

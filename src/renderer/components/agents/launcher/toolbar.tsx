@@ -17,6 +17,7 @@ import {
 } from '@/components/chat/composer/ComposerAddSheet'
 import { ComposerSendButton } from '@/components/chat/composer/ComposerSendButton'
 import { useTermulTools } from '@/components/chat/composer/use-termul-tools'
+import type { McpServerListProps } from '@/components/chat/McpServerList'
 import type { StoredAgentConfig } from '@/lib/acp-agents-persistence'
 import type { McpToolInfo, ProbeStatus, SessionConfigOption } from '@/lib/acp-api'
 import type { StoredMcpServer } from '@/lib/acp-mcp-persistence'
@@ -28,14 +29,71 @@ import type { OptionValues } from '@/stores/acp-store/composer-options'
 import { CLAUDE_AGENT_CONFIG_ID } from '@/stores/claude-account-switch'
 import { AgentUpdateCta } from './AgentUpdateCta'
 
+/** What the launcher's connectors controls need (the + sheet and the foot row). */
+export interface LauncherMcpInput {
+  mcpCount: number
+  mcpServers: StoredMcpServer[]
+  setMcpServerEnabled: (id: string, enabled: boolean) => Promise<void>
+  preparedKey: string | null
+  activeConfigId: string
+  projectRoot: string | undefined
+  activeProjectId: string
+  mcpProbeStatus: Record<string, ProbeStatus>
+  mcpProbeError: Record<string, string | undefined>
+  mcpTools: Record<string, McpToolInfo[]>
+  loadMcpTools: (id: string) => Promise<void>
+}
+
+/**
+ * The launcher's connectors list props: a toggle saves the server and
+ * prepares the chat again so the new set applies to the chat it starts.
+ */
+export function launcherMcpListProps({
+  mcpCount,
+  mcpServers,
+  setMcpServerEnabled,
+  preparedKey,
+  activeConfigId,
+  projectRoot,
+  activeProjectId,
+  mcpProbeStatus,
+  mcpProbeError,
+  mcpTools,
+  loadMcpTools
+}: LauncherMcpInput): McpServerListProps {
+  return {
+    count: mcpCount,
+    servers: mcpServers,
+    onToggle: (id: string, enabled: boolean) => {
+      void setMcpServerEnabled(id, enabled)
+        .then(() => {
+          if (!preparedKey || !activeConfigId || !projectRoot) return
+          const store = useAcpStore.getState()
+          store.cancelPreparedChat(preparedKey)
+          store.prepareChat(activeConfigId, projectRoot, undefined, activeProjectId)
+        })
+        .catch(() => {
+          toast.error('Could not update the MCP server. Your previous setting was restored.')
+        })
+    },
+    probeStatus: mcpProbeStatus,
+    probeError: mcpProbeError,
+    tools: mcpTools,
+    onLoadTools: (id: string) => {
+      void loadMcpTools(id)
+    }
+  }
+}
+
 /** The launcher has no turn to stop: its send button never shows Stop. */
 const noop = (): void => {}
 
 /**
- * The composer card's bottom row: the + menu (attachments, mentions,
- * commands, connectors) and the Claude account chip on the left; the update CTA, the agent/model selector (agent,
- * model, effort, Fast, agent options), the mode chip, and the launch button on
- * the right. On the phone shell it is the chat composer's row: the + sheet
+ * The composer card's bottom row (Composer V2): the + menu (attachments,
+ * mentions, commands, Troupe tools), the mode chip and the account chips on
+ * the left; the update CTA, the agent/model selector (agent, model, effort,
+ * Fast, agent options) and the launch button on the right. The connectors
+ * are in the tray's foot row. On the phone shell it is the chat composer's row: the + sheet
  * (attachments, mentions, commands, connectors), the model pill, and launch.
  * The Select model sheet holds the mode and the Claude account.
  */
@@ -132,28 +190,19 @@ export function LauncherToolbar({
     selectedEntry?.configId === CLAUDE_AGENT_CONFIG_ID && activeProjectId ? activeProjectId : null
   const codexProjectId =
     selectedEntry?.configId === CODEX_AGENT_CONFIG_ID && activeProjectId ? activeProjectId : null
-  const mcpListProps = {
-    count: mcpCount,
-    servers: mcpServers,
-    onToggle: (id: string, enabled: boolean) => {
-      void setMcpServerEnabled(id, enabled)
-        .then(() => {
-          if (!preparedKey || !activeConfigId || !projectRoot) return
-          const store = useAcpStore.getState()
-          store.cancelPreparedChat(preparedKey)
-          store.prepareChat(activeConfigId, projectRoot, undefined, activeProjectId)
-        })
-        .catch(() => {
-          toast.error('Could not update the MCP server. Your previous setting was restored.')
-        })
-    },
-    probeStatus: mcpProbeStatus,
-    probeError: mcpProbeError,
-    tools: mcpTools,
-    onLoadTools: (id: string) => {
-      void loadMcpTools(id)
-    }
-  }
+  const mcpListProps = launcherMcpListProps({
+    mcpCount,
+    mcpServers,
+    setMcpServerEnabled,
+    preparedKey,
+    activeConfigId,
+    projectRoot,
+    activeProjectId,
+    mcpProbeStatus,
+    mcpProbeError,
+    mcpTools,
+    loadMcpTools
+  })
   const updateCta =
     selectedEntry && (selectedUpdateAgent || pendingRestartVersion) ? (
       // One CTA communicates the full lifecycle: Update → Updating
@@ -202,16 +251,18 @@ export function LauncherToolbar({
       onCancel={noop}
       onSubmit={launch}
       sendLabel="Start agent chat"
+      size={isMobileShell ? 'phone' : 'default'}
     />
   )
 
   if (isMobileShell) {
     return (
+      // Composer V2 phone (Paper "2.6b"): 4px left, 6px right, 6px bottom.
       <div
-        className="flex items-center justify-between gap-3 px-2 pb-2"
+        className="flex items-center justify-between pb-1.5 pl-1 pr-1.5"
         data-composer-toolbar={toolbarMode}
       >
-        <div className="flex min-w-0 flex-1 items-center gap-2" data-composer-toolbar-row="mobile">
+        <div className="flex min-w-0 flex-1 items-center gap-1" data-composer-toolbar-row="mobile">
           <ComposerAddSheet
             handle={addHandle}
             disabled={!addHandle.canPick}
@@ -239,14 +290,22 @@ export function LauncherToolbar({
       className="flex items-center justify-between gap-3 px-2 pb-2"
       data-composer-toolbar={toolbarMode}
     >
-      <div className="flex min-w-0 items-center gap-3">
+      <div className="flex min-w-0 items-center gap-1.5">
         <ComposerAddMenu
           handle={addHandle}
           disabled={!addHandle.canPick}
-          connectors={mcpListProps}
-          connectorsHost="launcher"
           termulTools={termulTools}
         />
+        {/* Composer V2: the mode chip sits right of `+`. */}
+        {modePreviewSession && (
+          <ModeChip
+            session={modePreviewSession}
+            disabled={!optionsInteractive}
+            onSelect={handleSetMode}
+            label="Agent"
+            agentName={selectedConfig?.name}
+          />
+        )}
         {claudeProjectId ? <ProjectClaudeAccountChip projectId={claudeProjectId} /> : null}
         {codexProjectId ? <ProjectCodexAccountChip projectId={codexProjectId} /> : null}
       </div>
@@ -264,15 +323,6 @@ export function LauncherToolbar({
             <>
               {updateCta}
               {selector()}
-              {modePreviewSession && (
-                <ModeChip
-                  session={modePreviewSession}
-                  disabled={!optionsInteractive}
-                  onSelect={handleSetMode}
-                  label="Agent"
-                  agentName={selectedConfig?.name}
-                />
-              )}
             </>
           )
           return toolbarMode === 'narrow' ? (

@@ -10,13 +10,21 @@ import { FOCUS_RING_CLASS } from './panel-styles'
  * the neutral switch: foreground track + background thumb when checked,
  * input track + muted thumb when not. Troupe themes use the brand blue.
  */
-export type SwitchSize = 'default' | 'sm'
+export type SwitchSize = 'default' | 'sm' | 'ios'
 
-/** 36x20 by default; `sm` is 28x16 for dense 28px rows. */
-const TRACK_SIZE: Record<SwitchSize, string> = { default: 'h-5 w-9', sm: 'h-4 w-7' }
+/**
+ * 36x20 by default; `sm` is 28x16 for dense 28px rows; `ios` is the phone
+ * sheet's 51x31 switch with a 23px knob 4px in (Apple HIG, Paper "2.6e").
+ */
+const TRACK_SIZE: Record<SwitchSize, string> = {
+  default: 'h-5 w-9',
+  sm: 'h-4 w-7',
+  ios: 'h-[31px] w-[51px]'
+}
 const THUMB_SIZE: Record<SwitchSize, string> = {
   default: 'size-4 data-[state=checked]:translate-x-4',
-  sm: 'size-3 data-[state=checked]:translate-x-3'
+  sm: 'size-3 data-[state=checked]:translate-x-3',
+  ios: 'size-[23px] shadow-[0_1px_2px_#00000066] data-[state=unchecked]:translate-x-0.5 data-[state=checked]:translate-x-[22px]'
 }
 
 /**
