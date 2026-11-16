@@ -30,7 +30,10 @@ export async function openWorkspace(page: Page): Promise<void> {
     .waitFor({ state: 'visible' })
 }
 
-/** Select a project in the Rail. */
+/**
+ * Select a project in the Rail. No click when it is already the active
+ * project: a click on the active row hides or shows its chats.
+ */
 export async function selectProject(page: Page, name: string): Promise<void> {
   // Prefix match: the active project's label carries an " (active)" suffix.
   // The expanded row's button covers the row. Its icon column is a sibling
@@ -39,9 +42,11 @@ export async function selectProject(page: Page, name: string): Promise<void> {
   // clear. The collapsed row's button contains the icon, so its center is safe.
   const button = page.locator(`[aria-label^="Project: ${cssEscape(name)}"]`).first()
   await button.waitFor({ state: 'visible' })
-  const collapsed = (await button.locator('[data-rail-icon-column]').count()) > 0
-  if (collapsed) await button.click()
-  else await button.click({ position: { x: 44, y: 14 } })
+  if ((await button.getAttribute('aria-current')) !== 'page') {
+    const collapsed = (await button.locator('[data-rail-icon-column]').count()) > 0
+    if (collapsed) await button.click()
+    else await button.click({ position: { x: 44, y: 14 } })
+  }
   // Wait for the Rail to mark it active (the workspace restore follows).
   await page
     .locator(`[aria-label^="Project: ${cssEscape(name)} (active)"]`)
