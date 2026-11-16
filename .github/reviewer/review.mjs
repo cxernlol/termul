@@ -19,12 +19,14 @@
 //
 // Exploration stops at TOOL_BUDGET tool calls or at 70% of the timeout, then
 // a follow-up turn on the same agent asks for post_findings with what it has.
+// When the provider fails before any tool call or token (bad key, quota, model
+// gone, outage), the run prints a ::warning:: with the cause and exits 0.
 import { execFileSync } from 'node:child_process'
 import { appendFile, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Agent } from '@cursor/sdk'
-import { hasBotReview, REVIEWS_PER_PAGE } from './reviews.mjs'
+import { hasBotReview, providerRunError, REVIEWS_PER_PAGE, reviewOutcome } from './reviews.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const MAX_DIFF_CHARS = 300_000
@@ -175,6 +177,8 @@ function relatedFiles(files) {
 }
 
 const flatten = (v) => String(v).replace(/\s+/g, ' ').trim()
+const describe = (error) => redact(flatten(`${error.code ?? 'unknown'}: ${error.message}`))
+const skipReview = (message) => console.log(`::warning::${redact(flatten(message))}`)
 
 function reviewBody(findings) {
   const verdict = findings.length === 0 ? 'CLEAN' : 'FINDINGS'
@@ -255,7 +259,7 @@ async function main() {
     return
   }
   const startedAt = Date.now()
-  const agent = await Agent.create({
+  const agentOptions = {
     apiKey,
     name: `termul-review-${prNumber}-${headSha.slice(0, 7)}`,
     model: {
@@ -323,7 +327,16 @@ async function main() {
         }
       }
     }
-  })
+  }
+  let agent
+  try {
+    agent = await Agent.create(agentOptions)
+  } catch (error) {
+    const runError = providerRunError(error)
+    if (runError === undefined) throw error
+    skipReview(reviewOutcome({ status: 'error', error: runError, tools: 0, tokens: 0 }).message)
+    return
+  }
 
   const deadline = startedAt + timeoutMs
   let tools = 0
@@ -339,7 +352,15 @@ async function main() {
   // One turn. Cancels when `stopAt` passes or, if `budget` is set, when the
   // turn has used that many tool calls.
   async function turn(message, stopAt, budget) {
-    const run = await agent.send(message)
+    let run
+    try {
+      run = await agent.send(message)
+    } catch (error) {
+      const runError = providerRunError(error)
+      if (runError === undefined) throw error
+      console.log(`[turn] send failed: ${describe(runError)}`)
+      return { status: 'error', error: runError }
+    }
     let stopped = null
     const stop = (why) => {
       if (stopped !== null) return
@@ -355,10 +376,18 @@ async function main() {
         used += 1
         console.log(`[tool] ${event.name}`)
         if (budget !== undefined && used >= budget && event.name !== 'mcp') stop('tool budget')
+      } else if (event.type === 'tool_call' && event.status === 'error') {
+        console.log(`[tool error] ${event.name}`)
+      } else if (event.type === 'status') {
+        const note = event.message ? `: ${redact(flatten(event.message))}` : ''
+        console.log(`[status] ${event.status}${note}`)
       }
     }
     const result = await run.wait()
     clearTimeout(timer)
+    console.log(
+      `[turn] status=${result.status}${result.error ? ` error=${describe(result.error)}` : ''}`
+    )
     requests.push(result.requestId ?? '-')
     for (const key of Object.keys(totals)) totals[key] += result.usage?.[key] ?? 0
     return result
@@ -369,7 +398,8 @@ async function main() {
     startedAt + timeoutMs * 0.7,
     toolBudget > 0 ? toolBudget : undefined
   )
-  if (findings === undefined) {
+  // Asking again after an error that came before any tool call only repeats it.
+  if (findings === undefined && !(result.status === 'error' && tools === 0)) {
     console.log('[wrap-up] asking for post_findings now')
     result = await turn(
       'Your tool budget is spent. Do not call read, grep, glob, or ls again. Call post_findings now with every bug you have concrete evidence for from the diff and the code you already read, each on its changed line with a concrete scenario. Drop only items you now think are wrong or are style.',
@@ -405,9 +435,18 @@ async function main() {
 
   await agent[Symbol.asyncDispose]()
 
-  if (findings === undefined) {
-    throw new Error(`Run ended (${result.status}) without calling post_findings.`)
+  const outcome = reviewOutcome({
+    status: result.status,
+    error: result.error,
+    tools,
+    tokens: totals.inputTokens + totals.outputTokens,
+    findings
+  })
+  if (outcome.kind === 'skip') {
+    skipReview(outcome.message)
+    return
   }
+  if (outcome.kind === 'fail') throw new Error(outcome.message)
   const body = reviewBody(findings)
   if (dryRun) {
     console.log('--- DRY RUN: review not posted ---')
