@@ -101,6 +101,28 @@ impl RealHost {
             persistence.clone(),
         ));
         let host = Host::from_parts(relay, Arc::clone(&acp), HistoryMode::Server);
+        let cwd = root.join("cwd");
+        host.state.registry.set(
+            vec![
+                crate::web::project_registry::ProjectSummary {
+                    id: "p-cwd".to_string(),
+                    name: "cwd".to_string(),
+                    color: "blue".to_string(),
+                    path: Some(cwd.to_string_lossy().into_owned()),
+                    is_archived: false,
+                    is_default: true,
+                },
+                crate::web::project_registry::ProjectSummary {
+                    id: "p-root".to_string(),
+                    name: "root".to_string(),
+                    color: "blue".to_string(),
+                    path: Some(root.to_string_lossy().into_owned()),
+                    is_archived: false,
+                    is_default: false,
+                },
+            ],
+            Some("p-cwd".to_string()),
+        );
         Some(Self {
             host,
             acp,

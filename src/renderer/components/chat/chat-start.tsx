@@ -47,7 +47,8 @@ export const CHAT_START_INPUT_MAX_HEIGHT = 160
  * with no messages yet): the Troupe mark, one project question and the
  * composer under it (each surface keeps its own composer). One source of
  * truth for this copy and this spacing (Paper "2.2 New chat / ASCII glow":
- * 56px mark, 20px to a 22/28 heading, 24px to the composer).
+ * 56px mark, 20px to a 22/28 heading, 24px to the composer). A quick chat
+ * asks the same question without a project name.
  *
  * The mark + project question. On the mobile web shell it shrinks so the
  * bottom-anchored composer stays above the fold; during a launcher exit it
@@ -58,7 +59,8 @@ export function ChatStartHero({
   headingLevel = 1,
   isMobileShell = false,
   isExiting = false,
-  reducedMotion = false
+  reducedMotion = false,
+  quick = false
 }: {
   projectLabel: string
   /** 1 in the launcher (the pane's main heading); 2 inside a chat tab. */
@@ -66,6 +68,8 @@ export function ChatStartHero({
   isMobileShell?: boolean
   isExiting?: boolean
   reducedMotion?: boolean
+  /** A chat with no project. The question does not name a folder. */
+  quick?: boolean
 }): React.JSX.Element {
   const Heading = headingLevel === 1 ? 'h1' : 'h2'
   return (
@@ -83,7 +87,7 @@ export function ChatStartHero({
           isMobileShell && 'text-xl'
         )}
       >
-        {`What should we do in ${projectLabel}?`}
+        {quick ? 'What should we do?' : `What should we do in ${projectLabel}?`}
       </Heading>
     </div>
   )

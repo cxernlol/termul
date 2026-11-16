@@ -49,6 +49,7 @@ import { useGitSheetStore } from '@/stores/git-sheet-store'
 import { hydrateGithubChatLinks } from '@/stores/github-chat-links-store'
 import { useProjectStore } from '@/stores/project-store'
 import { isAgentDeadError, sessionTurnBusy } from '@/stores/prompt-queue-orchestration'
+import { useQuickChatStore } from '@/stores/quick-chat-store'
 import { agentChatTabId, useWorkspaceStore } from '@/stores/workspace-store'
 import { AgentConnectionLamp } from './AgentConnectionLamp'
 import { AskUserQuestion } from './AskUserQuestion'
@@ -697,14 +698,27 @@ export function AgentChatPanel({
   // back to the deliberately unguarded `/fs/read` open path (the same one
   // the changed-files list in ChatStatusChips uses).
   const projects = useProjectStore((state) => state.projects)
+  const indexQuick = useAcpStore((state) =>
+    state.sessionIndex.some((entry) => entry.id === sessionId && entry.kind === 'quick')
+  )
+  const quickChat = session?.kind === 'quick' || indexQuick
+  const olderReadOnly = useQuickChatStore(
+    (state) =>
+      state.view.mode === 'chat' &&
+      state.view.readOnly === true &&
+      state.view.sessionId === sessionId
+  )
   const filePathContext = useMemo(
-    () => ({
-      cwd: session?.cwd,
-      projectRoot: session
-        ? projects.find((p) => p.id === session.projectId)?.path || session.cwd
-        : undefined
-    }),
-    [session, projects]
+    () =>
+      quickChat
+        ? undefined
+        : {
+            cwd: session?.cwd,
+            projectRoot: session
+              ? projects.find((p) => p.id === session.projectId)?.path || session.cwd
+              : undefined
+          },
+    [quickChat, session, projects]
   )
   const reloadMark = useAcpStore((s) => s.agentReloadMarks?.[sessionId] ?? null)
   const timeline = useMemo(() => {
@@ -783,10 +797,14 @@ export function AgentChatPanel({
         toolCalls={toolCalls}
         messages={messages}
         turnActive={session.activeTurn}
-        onOpenGitChanges={(opener) =>
-          isMobileShell
-            ? openGitSheet(session.cwd, opener)
-            : openChangesTab(session.projectId, session.cwd)
+        hideChanges={quickChat}
+        onOpenGitChanges={
+          quickChat
+            ? undefined
+            : (opener) =>
+                isMobileShell
+                  ? openGitSheet(session.cwd, opener)
+                  : openChangesTab(session.projectId, session.cwd)
         }
         hidden={(isMobileShell && osk.isOskOpen) || showTransportOverlay}
         isVisible={isVisible}
@@ -1096,7 +1114,7 @@ export function AgentChatPanel({
             session={composerSession ?? session}
             projectRoot={skillsProjectRoot}
             busy={sessionTurnBusy(session)}
-            disabled={isClosed && !isResumableStop}
+            disabled={olderReadOnly || (isClosed && !isResumableStop)}
             notice={composerNotice}
             noticeShown={
               showStoppedNotice ||
@@ -1105,7 +1123,11 @@ export function AgentChatPanel({
             }
             statusRow={renderStatusChips()}
             disabledPlaceholder={
-              showStoppedNotice && !codexSignedOut ? 'Resume the chat to send a message' : undefined
+              olderReadOnly
+                ? 'This older chat is read-only'
+                : showStoppedNotice && !codexSignedOut
+                  ? 'Resume the chat to send a message'
+                  : undefined
             }
             controlsDisabled={isClosed}
             onDraftStart={isResumableStop ? startAutoResume : undefined}
@@ -1138,7 +1160,7 @@ export function AgentChatPanel({
           <ChatStartFooter
             show={isEmptyChat && !isMobileShell}
             reduced={reducedMotion}
-            row={<ChatStartContextRow session={composerSession ?? session} />}
+            row={quickChat ? null : <ChatStartContextRow session={composerSession ?? session} />}
           />
         </div>
       )}

@@ -98,7 +98,6 @@ function buildProps(overrides: Partial<ShellFrameProps> = {}): ShellFrameProps {
     handleAddGitTab: vi.fn(),
     handleAddGitHistoryTab: vi.fn(),
     handleToggleThemePicker: vi.fn(),
-    handleOpenAgentChat: vi.fn(),
     handleOpenCanvas: vi.fn(),
     handleNewTerminal: vi.fn(),
     handleNewBrowserTab: vi.fn(),

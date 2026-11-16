@@ -4,11 +4,13 @@ import {
   ACTIVE_GROUP,
   groupSessionsByRecency,
   type HistoryGroup,
+  OLDER_CHATS_GROUP,
+  olderChats,
+  QUICK_CHATS_GROUP,
+  quickSessions,
   type RecencyKey,
   recencyTime,
-  scopeSessionIndex,
-  UNASSIGNED_GROUP,
-  unassignedSessions
+  scopeSessionIndex
 } from '@/lib/acp-history-persistence'
 import { activeWorktreeOf } from '@/lib/active-worktree'
 import { foldEntries, sessionChainIndex, UNTITLED_PATTERN } from '@/lib/session-chain'
@@ -62,7 +64,7 @@ export interface ChatHistoryEntries {
   filtered: ChatHistorySidebarEntry[]
   /** The rendered entries of `filtered`: every active one, then the lazy window of the rest. */
   visible: ChatHistorySidebarEntry[]
-  /** `visible` grouped Active, then Today / Yesterday / Earlier, then the Unassigned bucket. */
+  /** `visible` grouped Active, then Today / Yesterday / Earlier, then Quick chats. */
   groups: { group: HistoryGroup; entries: ChatHistorySidebarEntry[] }[]
   hasMore: boolean
   /** Attach to the lazy-load sentinel below the list. */
@@ -120,19 +122,24 @@ export function useChatHistoryEntries({
   // created is still reachable instead of silently hidden). Worktree-inclusive
   // reachability (above) keeps the project's worktree chats listed from the
   // root view. See `scopeSessionIndex` for the contract.
-  // Sessions the host stamped with the unassigned sentinel (no owning
-  // project) belong to no project's scope; they are listed in their own
-  // "Unassigned" bucket so they stay reachable.
-  const unassignedIds = useMemo(
-    () => new Set(unassignedSessions(sessionIndex).map((entry) => entry.id)),
+  // Quick chats (`kind: quick`) belong to no project. Legacy unassigned
+  // sessions stay out of this bucket.
+  const quickIds = useMemo(
+    () => new Set(quickSessions(sessionIndex).map((entry) => entry.id)),
+    [sessionIndex]
+  )
+  const olderIds = useMemo(
+    () => new Set(olderChats(sessionIndex).map((entry) => entry.id)),
     [sessionIndex]
   )
   const scopedIndex = useMemo(
     () => [
-      ...scopeSessionIndex(sessionIndex, activeProjectId, activeCwd, worktreePaths),
-      ...sessionIndex.filter((entry) => unassignedIds.has(entry.id))
+      ...scopeSessionIndex(sessionIndex, activeProjectId, activeCwd, worktreePaths).filter(
+        (entry) => !quickIds.has(entry.id) && !olderIds.has(entry.id)
+      ),
+      ...sessionIndex.filter((entry) => quickIds.has(entry.id) || olderIds.has(entry.id))
     ],
-    [sessionIndex, activeProjectId, activeCwd, worktreePaths, unassignedIds]
+    [sessionIndex, activeProjectId, activeCwd, worktreePaths, quickIds, olderIds]
   )
 
   // Troupe-created sessions only. The host-owned `discovered` flag is `false`
@@ -260,14 +267,16 @@ export function useChatHistoryEntries({
   )
 
   const groups = useMemo(() => {
-    const assigned = windowed.filter((entry) => !unassignedIds.has(entry.id))
-    const unassigned = windowed.filter((entry) => unassignedIds.has(entry.id))
+    const assigned = windowed.filter((entry) => !quickIds.has(entry.id) && !olderIds.has(entry.id))
+    const quick = windowed.filter((entry) => quickIds.has(entry.id))
+    const older = windowed.filter((entry) => olderIds.has(entry.id))
     const recency: { group: HistoryGroup; entries: ChatHistorySidebarEntry[] }[] =
       groupSessionsByRecency(assigned, Date.now(), timeKey)
     if (active.length > 0) recency.unshift({ group: ACTIVE_GROUP, entries: active })
-    if (unassigned.length > 0) recency.push({ group: UNASSIGNED_GROUP, entries: unassigned })
+    if (quick.length > 0) recency.push({ group: QUICK_CHATS_GROUP, entries: quick })
+    if (older.length > 0) recency.push({ group: OLDER_CHATS_GROUP, entries: older })
     return recency
-  }, [active, windowed, unassignedIds, timeKey])
+  }, [active, windowed, quickIds, olderIds, timeKey])
 
   // Grow the window when the bottom sentinel scrolls into view (lazy load).
   // `visibleCount` is intentionally in the deps so the observer re-arms after

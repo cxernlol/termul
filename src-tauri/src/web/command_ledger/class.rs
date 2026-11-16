@@ -188,6 +188,7 @@ pub const WS_COMMAND_CLASSES: &[(&str, CommandClass)] = &[
     ("ping", CommandClass::read()),
     ("list_persisted_sessions", CommandClass::read()),
     ("delete_session", CommandClass::idempotent()),
+    ("rename_session", CommandClass::idempotent()),
     ("open_persisted_session", CommandClass::read()),
     ("get_session_payload", CommandClass::read()),
     ("recover_session_snapshot", CommandClass::read()),
@@ -252,7 +253,8 @@ pub fn class_of(request_type: &str) -> Option<(&'static str, CommandClass)> {
 /// secret.
 fn identifying_fields(request_type: &str) -> &'static [&'static str] {
     match request_type {
-        "create_session" => &["agentId", "cwd", "projectId"],
+        "create_session" => &["agentId", "cwd", "projectId", "kind"],
+        "rename_session" => &["sessionId"],
         "spawn_agent" => &[
             "config.name",
             "config.command",

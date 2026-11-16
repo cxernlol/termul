@@ -1298,6 +1298,7 @@ export class WsAcpTransport implements AcpTransport {
       worktreePath?: string
       worktreeBranch?: string
       additionalDirectories?: string[]
+      kind?: 'quick'
     } & CommandCallOptions
   ): Promise<NewSessionOutcome> {
     // Web/remote: the host stamps `session.projectId` once — the explicit
@@ -1308,7 +1309,7 @@ export class WsAcpTransport implements AcpTransport {
       'create_session',
       {
         agentId,
-        cwd,
+        ...(options?.kind === 'quick' ? { kind: 'quick' } : { cwd }),
         mcpServers,
         ephemeral: options?.ephemeral ?? false,
         // Additive (story 8): sent only when set, so the wire shape is unchanged
@@ -1326,6 +1327,10 @@ export class WsAcpTransport implements AcpTransport {
       await this.subscribeSession(outcome.sessionId, null)
     }
     return outcome
+  }
+
+  async renameSession(sessionId: SessionId, title: string): Promise<{ title?: string | null }> {
+    return this.request('rename_session', { sessionId, title })
   }
 
   async disposeEphemeralSession(

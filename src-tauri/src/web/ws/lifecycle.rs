@@ -41,11 +41,17 @@ pub(super) async fn handle_resume_session(
             )
         }
     };
+    let cwd = match cwd_for_reopen(acp, &parsed.session_id.0, &parsed.cwd).await {
+        Ok(cwd) => cwd,
+        Err(message) => {
+            return WsReply::err(id, WsErrorCode::Unsupported, message);
+        }
+    };
     match acp
         .resume_session(
             &parsed.agent_id,
             parsed.session_id,
-            parsed.cwd,
+            cwd,
             parsed.additional_directories,
             parsed.mcp_servers,
         )
@@ -213,6 +219,13 @@ pub(super) fn resolve_list_sessions_cwd(
     project_id: Option<&str>,
     client_cwd: Option<&str>,
 ) -> Result<Option<String>, String> {
+    if let Some(cwd) = client_cwd.map(str::trim).filter(|value| !value.is_empty()) {
+        match crate::acp::quick_chat::listing_decision(cwd) {
+            crate::acp::quick_chat::ListingDecision::Locked(path) => return Ok(Some(path)),
+            crate::acp::quick_chat::ListingDecision::Rejected(message) => return Err(message),
+            crate::acp::quick_chat::ListingDecision::NotQuick => {}
+        }
+    }
     if carrier == crate::web::capabilities::Carrier::Ipc {
         return Ok(client_cwd.map(str::to_string));
     }
@@ -295,6 +308,39 @@ fn canonicalize_list_cwd(cwd: &str) -> Result<std::path::PathBuf, String> {
 
 fn listing_path_buf(path: &std::path::Path) -> std::path::PathBuf {
     std::path::PathBuf::from(listing_path_string(path))
+}
+
+/// Cwd for `resume_session` and `load_session`.
+///
+/// A quick session ignores the client path. The host derives
+/// `~/.troupe/quick-chats/<id>`. A client path that claims that root is
+/// refused for every other session, on desktop IPC and on `/ws`.
+pub(super) async fn cwd_for_reopen(
+    acp: &Arc<AcpManager>,
+    session_id: &str,
+    client_cwd: &str,
+) -> Result<String, String> {
+    if let Some(persistence) = acp.persistence() {
+        if let Ok(metadata) = persistence.metadata(session_id) {
+            if metadata.kind == crate::acp::session_persistence::SessionKind::Quick {
+                let chat_id = metadata.quick_chat_id.as_deref().unwrap_or("");
+                return crate::acp::quick_chat::cwd_for_quick_session(chat_id);
+            }
+        }
+    }
+    match crate::acp::quick_chat::listing_decision(client_cwd) {
+        crate::acp::quick_chat::ListingDecision::NotQuick => {
+            if client_cwd.trim().is_empty() {
+                Err("cwd is required".to_string())
+            } else {
+                Ok(client_cwd.to_string())
+            }
+        }
+        crate::acp::quick_chat::ListingDecision::Locked(_) => {
+            Err("that folder is reserved for quick chats".to_string())
+        }
+        crate::acp::quick_chat::ListingDecision::Rejected(message) => Err(message),
+    }
 }
 
 fn listing_path_string(path: &std::path::Path) -> String {

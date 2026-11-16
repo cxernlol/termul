@@ -398,6 +398,25 @@ impl SessionPersistence {
         &self,
         registration: SessionRegistration,
     ) -> Result<SessionMetadata> {
+        self.register_session_with(registration, None).await
+    }
+
+    /// Register a quick chat. `quick_chat_id` is the host-minted folder id.
+    /// The registration cwd must be that folder; any other path is refused.
+    pub async fn register_quick_session(
+        &self,
+        registration: SessionRegistration,
+        quick_chat_id: String,
+    ) -> Result<SessionMetadata> {
+        self.register_session_with(registration, Some(quick_chat_id))
+            .await
+    }
+
+    async fn register_session_with(
+        &self,
+        registration: SessionRegistration,
+        quick_chat_id: Option<String>,
+    ) -> Result<SessionMetadata> {
         // Idempotent catalog check BEFORE path validation: a duplicate
         // registration must return the existing entry even when its cwd is
         // unavailable (deleted between calls). Canonicalizing first would
@@ -427,6 +446,27 @@ impl SessionPersistence {
         // sanitizer keeps the `?` → an illegal Windows folder name → `mkdir`
         // fails with ENOENT and the resume is skipped (read-only transcript).
         let cwd = strip_verbatim_prefix(&canonical.to_string_lossy()).into_owned();
+        let (kind, quick_chat_id) = match quick_chat_id {
+            Some(id) => {
+                let expected = crate::acp::quick_chat::cwd_for_quick_session(&id).map_err(
+                    |message| SessionPersistenceError::Io(io::Error::other(message)),
+                )?;
+                if cwd != expected {
+                    return Err(SessionPersistenceError::Io(io::Error::other(
+                        "quick chat cwd does not match the host folder",
+                    )));
+                }
+                (SessionKind::Quick, Some(id))
+            }
+            None => {
+                if crate::acp::quick_chat::chat_id_of_canonical(&canonical).is_some() {
+                    return Err(SessionPersistenceError::Io(io::Error::other(
+                        "a project chat cannot use a quick chat folder",
+                    )));
+                }
+                (SessionKind::Project, None)
+            }
+        };
         let storage_key = Uuid::new_v4().to_string();
         let now = now_millis();
         let launch_branch = registration.worktree_branch.clone();
@@ -464,6 +504,8 @@ impl SessionPersistence {
             head_ahead_of_durable: false,
             sweep_checkpoint: None,
             continued_from: None,
+            kind,
+            quick_chat_id,
         };
         self.persist_metadata(&metadata)?;
         if let Err(error) = self.install_runtime(metadata.clone()) {
@@ -574,6 +616,8 @@ impl SessionPersistence {
             head_ahead_of_durable: false,
             sweep_checkpoint: None,
             continued_from: None,
+            kind: SessionKind::Project,
+            quick_chat_id: None,
         };
         if let Err(error) = self.persist_metadata(&metadata) {
             let _ = fs::remove_dir_all(self.session_dir(&metadata.storage_key)?);
@@ -649,6 +693,8 @@ impl SessionPersistence {
             head_ahead_of_durable: false,
             sweep_checkpoint: None,
             continued_from: None,
+            kind: SessionKind::Project,
+            quick_chat_id: None,
         };
         self.persist_metadata(&metadata)?;
         if let Err(error) = self.install_runtime(metadata.clone()) {
@@ -1333,8 +1379,94 @@ impl SessionPersistence {
     /// one is still live, delete the on-disk session directory, drop the
     /// catalog entry, and refresh the index. Unknown ids surface as
     /// [`SessionPersistenceError::SessionNotFound`].
+    /// Set a user-chosen title on a quick chat. Project chats are refused.
+    /// The source is [`TitleSource::LocalAlias`], which later agent titles cannot replace.
+    pub async fn set_local_alias(
+        &self,
+        session_id: &str,
+        raw_title: &str,
+    ) -> Result<SessionMetadata> {
+        let title = normalize_title(raw_title);
+        if title == "Untitled Chat" {
+            return Err(SessionPersistenceError::Io(io::Error::other(
+                "title must not be empty",
+            )));
+        }
+        let registration = self.inner.registration_lock.lock().await;
+        let entry = {
+            let catalog = self.inner.catalog.lock();
+            catalog
+                .get(session_id)
+                .cloned()
+                .ok_or(SessionPersistenceError::SessionNotFound)?
+        };
+        let previous = {
+            let mut metadata = entry.lock();
+            if metadata.kind != SessionKind::Quick {
+                return Err(SessionPersistenceError::Io(io::Error::other(
+                    "local rename is only available for quick chats",
+                )));
+            }
+            let previous = (metadata.title.clone(), metadata.title_source.clone());
+            metadata.title = Some(title);
+            metadata.title_source = Some(TitleSource::LocalAlias);
+            metadata.last_activity_at = now_millis();
+            previous
+        };
+        drop(registration);
+        let write_error = match self.runtime(session_id) {
+            Ok(runtime) => {
+                if self
+                    .send_command(&runtime, session_id, WriterCommand::PersistMetadata)
+                    .is_err()
+                {
+                    self.persist_mark_inline(session_id, &entry)
+                } else {
+                    let (tx, rx) = oneshot::channel();
+                    if self
+                        .send_command(&runtime, session_id, WriterCommand::Flush(tx))
+                        .is_err()
+                    {
+                        self.persist_mark_inline(session_id, &entry)
+                    } else {
+                        match rx.await {
+                            Ok(Ok(())) => None,
+                            Ok(Err(_)) | Err(_) => self.persist_mark_inline(session_id, &entry),
+                        }
+                    }
+                }
+            }
+            Err(_) => self.persist_mark_inline(session_id, &entry),
+        };
+        if let Some(error) = write_error {
+            let mut metadata = entry.lock();
+            metadata.title = previous.0;
+            metadata.title_source = previous.1;
+            return Err(error);
+        }
+        self.persist_index().await?;
+        log::info!(
+            "[quick-chat] renamed session_id={}",
+            crate::logging::redact_session_id(session_id)
+        );
+        self.metadata(session_id)
+    }
+
     pub async fn delete_session(&self, session_id: &str) -> Result<()> {
         let metadata = self.metadata(session_id)?;
+        if metadata.kind == SessionKind::Quick {
+            if let Some(chat_id) = metadata.quick_chat_id.as_deref() {
+                crate::acp::quick_chat::remove_chat_dir(chat_id).map_err(|message| {
+                    log::warn!(
+                        "[quick-chat] folder delete failed session_id={}: {message}",
+                        crate::logging::redact_session_id(session_id)
+                    );
+                    SessionPersistenceError::Io(io::Error::other(
+                        "could not delete the quick chat folder",
+                    ))
+                })?;
+            }
+        }
         // Drain the writer (if any) so a queued append cannot race the
         // directory removal below. The durability result of the drain is
         // irrelevant: the stored bytes are about to be deleted.

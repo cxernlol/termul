@@ -93,8 +93,8 @@ describe('web-protocol.types — event/request type registries (AC2)', () => {
     expect(WS_REQUEST_TYPES).toContain('get_session_payload')
   })
 
-  it('exports exactly 82 request types including warm-pool promotion, host-owned session delete, browser stop and subagent stop', () => {
-    expect(WS_REQUEST_TYPES).toHaveLength(82)
+  it('exports exactly 83 request types including warm-pool promotion, host-owned session delete, quick-chat rename, browser stop and subagent stop', () => {
+    expect(WS_REQUEST_TYPES).toHaveLength(83)
     const expected = [
       'send_prompt',
       'cancel_prompt',
@@ -119,6 +119,7 @@ describe('web-protocol.types — event/request type registries (AC2)', () => {
       'list_persisted_sessions',
       // CAP-11: host-owned session delete (desktop parity with acp_history_delete).
       'delete_session',
+      'rename_session',
       'open_persisted_session',
       'get_session_payload',
       'recover_session_snapshot',

@@ -1309,7 +1309,7 @@ export function AgentLauncher({ paneId, className }: AgentLauncherProps): React.
     const configSnapshot = selectedConfig
     const paneSnapshot = paneId
     const projectIdSnapshot = activeProjectId
-    const projectRootSnapshot = projectRoot
+    const projectRootSnapshot = projectRoot ?? ''
     const needsSave = !acpConfigs.some((config) => config.id === selectedConfig.id)
 
     // Build the wire text (skills framed by path under `# Agent Skills`, then
@@ -1330,7 +1330,16 @@ export function AgentLauncher({ paneId, className }: AgentLauncherProps): React.
       return
     }
     const { wireWithCommand, displayWithCommand, fileBlocks, contextBlocks } = parts
-
+    const syncBlocks = textWithAttachmentBlocks(displayWithCommand, attachmentsSnapshot)
+    const resetComposer = (): void => {
+      useWorkspaceStore.getState().hideAgentLauncher()
+      setPendingOptions(emptyPendingLauncherOptions())
+      skillPathsRef.current = {}
+      clearAttachments(attachmentsSnapshot)
+      resetMentions()
+      setPrompt('')
+      if (isCurrentLaunch()) launchHandedOffRef.current = true
+    }
     // CAP-3 ordering: the chat placeholder opens BEFORE the worktree prepare
     // (`launchChat`) so `git worktree add`'s stderr lines stream into the
     // in-timeline progress card while the checkout runs. The agent's cwd is
@@ -1360,18 +1369,6 @@ export function AgentLauncher({ paneId, className }: AgentLauncherProps): React.
     // Sync first-turn content so the chat can paint like a normal send. The
     // optimistic syncBlocks carry the DISPLAY (token) text so the timeline
     // renders inline chips; the real send dispatches the WIRE text.
-    const syncBlocks = textWithAttachmentBlocks(displayWithCommand, attachmentsSnapshot)
-
-    const resetComposer = (): void => {
-      useWorkspaceStore.getState().hideAgentLauncher()
-      setPendingOptions(emptyPendingLauncherOptions())
-      skillPathsRef.current = {}
-      clearAttachments(attachmentsSnapshot)
-      resetMentions()
-      setPrompt('')
-      if (isCurrentLaunch()) launchHandedOffRef.current = true
-    }
-
     // Runs once the checkout is ready: persist the picks, then build the wire
     // turn (path-framed skills, command-prefixed) so the agent receives paths,
     // not tokens.

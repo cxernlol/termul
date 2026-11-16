@@ -1852,6 +1852,7 @@ async fn delete_session_removes_host_persisted_record() {
         .await
         .unwrap();
     let relay = Arc::new(WsRelaySink::with_persistence(8, persistence.clone()));
+    let acp = Arc::new(crate::acp::AcpManager::new(vec![]));
     // A connection watching the chat-history index observes the delta; it
     // needs no session subscription.
     let (out, mut rx) = outbound_channel(16, 15);
@@ -1865,6 +1866,7 @@ async fn delete_session_removes_host_persisted_record() {
         "r1".to_string(),
         &json!({ "sessionId": "s-1" }),
         &relay,
+        &acp,
         HistoryMode::Server,
     )
     .await;
@@ -1891,6 +1893,7 @@ async fn delete_session_removes_host_persisted_record() {
         "r2".to_string(),
         &json!({ "sessionId": "s-1" }),
         &relay,
+        &acp,
         HistoryMode::Server,
     )
     .await;
@@ -1909,10 +1912,12 @@ async fn delete_session_removes_host_persisted_record() {
 #[tokio::test]
 async fn delete_session_unsupported_in_live_only() {
     let relay = Arc::new(WsRelaySink::new());
+    let acp = Arc::new(crate::acp::AcpManager::new(vec![]));
     let reply = handle_delete_session(
         "r1".to_string(),
         &json!({ "sessionId": "s-1" }),
         &relay,
+        &acp,
         HistoryMode::LiveOnly,
     )
     .await;
@@ -1931,9 +1936,11 @@ async fn delete_session_malformed_or_empty_payload_is_rejected() {
         .await
         .unwrap();
     let relay = Arc::new(WsRelaySink::with_persistence(8, persistence.clone()));
+    let acp = Arc::new(crate::acp::AcpManager::new(vec![]));
 
     let missing =
-        handle_delete_session("r1".to_string(), &json!({}), &relay, HistoryMode::Server).await;
+        handle_delete_session("r1".to_string(), &json!({}), &relay, &acp, HistoryMode::Server)
+            .await;
     assert!(!missing.ok, "missing sessionId must fail");
     assert_eq!(missing.err.unwrap().code, "unsupported");
 
@@ -1941,6 +1948,7 @@ async fn delete_session_malformed_or_empty_payload_is_rejected() {
         "r2".to_string(),
         &json!({ "sessionId": "" }),
         &relay,
+        &acp,
         HistoryMode::Server,
     )
     .await;

@@ -1559,6 +1559,8 @@ fn read_chat_metadata(
         head_ahead_of_durable: false,
         sweep_checkpoint: None,
         continued_from: None,
+        kind: crate::acp::session_persistence::SessionKind::Project,
+        quick_chat_id: None,
     }
 }
 

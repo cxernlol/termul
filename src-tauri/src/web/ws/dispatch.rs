@@ -63,7 +63,10 @@ pub(super) async fn route_request(req: WsRequest, env: &HandlerEnv) -> WsReply {
         // CAP-11: host-owned session delete (desktop parity with the
         // `acp_history_delete` Tauri command) — removes the persisted record
         // and tells every `chat_history` watcher the index changed.
-        "delete_session" => handle_delete_session(id, &req.payload, relay, history_mode).await,
+        "delete_session" => {
+            handle_delete_session(id, &req.payload, relay, acp, history_mode).await
+        }
+        "rename_session" => handle_rename_session(id, &req.payload, relay, history_mode).await,
         "open_persisted_session" => {
             handle_open_persisted_session(
                 id,

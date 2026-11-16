@@ -156,7 +156,7 @@ describe('useProjectSwitch (client-only)', () => {
   })
 })
 
-describe('useChatHistoryEntries (Unassigned bucket)', () => {
+describe('useChatHistoryEntries (Quick chats bucket)', () => {
   const DAY = 24 * 60 * 60 * 1000
 
   beforeEach(() => {
@@ -164,7 +164,7 @@ describe('useChatHistoryEntries (Unassigned bucket)', () => {
     seedProjectStore([mockProject({ id: 'p1', name: 'Alpha', path: '/work' })], 'p1')
   })
 
-  it('lists host-unassigned chats in their own group after every recency group', () => {
+  it('lists quick chats, then older no-project chats, after the recency groups', () => {
     const now = Date.now()
     useAcpStore.setState({
       sessionIndex: [
@@ -172,6 +172,7 @@ describe('useChatHistoryEntries (Unassigned bucket)', () => {
         { ...indexEntry('yesterday-chat', 'p1', now - DAY), cwd: '/work' },
         { ...indexEntry('earlier-chat', 'p1', now - 7 * DAY), cwd: '/work' },
         { ...indexEntry('stray', '__unassigned__', now), cwd: '/elsewhere' },
+        { ...indexEntry('quick', '__unassigned__', now), cwd: '/quick', kind: 'quick' },
         { ...indexEntry('other', 'p2', now), cwd: '/work' }
       ]
     })
@@ -181,10 +182,14 @@ describe('useChatHistoryEntries (Unassigned bucket)', () => {
       'Today',
       'Yesterday',
       'Earlier',
-      'Unassigned'
+      'Quick chats',
+      'Older chats'
     ])
-    const bucket = result.current.groups.find((g) => g.group === 'Unassigned')
-    expect(bucket?.entries.map((e) => e.id)).toEqual(['stray'])
+    const bucket = result.current.groups.find((g) => g.group === 'Quick chats')
+    expect(bucket?.entries.map((e) => e.id)).toEqual(['quick'])
+    const older = result.current.groups.find((g) => g.group === 'Older chats')
+    expect(older?.entries.map((e) => e.id)).toEqual(['stray'])
+    expect(result.current.mergedEntries.map((e) => e.id)).toContain('stray')
     expect(result.current.mergedEntries.map((e) => e.id)).not.toContain('other')
   })
 })

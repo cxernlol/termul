@@ -156,7 +156,7 @@ export function useTabOpeners({
     }
   }, [])
 
-  // New chat (menus, the phone header and drawer).
+  // New chat (menus, the phone header and drawer). No project opens a quick chat.
   const handleOpenAgentChat = useCallback(
     () => openNewChatOnWorkspace(pathname, navigate, 'menu'),
     [pathname, navigate]

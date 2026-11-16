@@ -1120,6 +1120,8 @@ export function mergeSessionIndexEntries(
             // one it wins, so a stale local edge cannot hide a host
             // correction. `undefined` still falls through to the local stamp.
             continuedFrom: hostEntry.continuedFrom ?? entry.continuedFrom,
+            // A newer local row that forgot `kind` must not hide a quick chat.
+            kind: entry.kind ?? hostEntry.kind,
             turnActive: mergeTurnActive(entry.turnActive, hostEntry.turnActive, true),
             // The host stamps `created_at` once at registration; a local
             // projection re-stamped by a reopen must not override it.

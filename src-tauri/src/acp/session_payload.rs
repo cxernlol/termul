@@ -122,6 +122,9 @@ pub struct SessionPayloadMetadata {
     pub continued_from: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model_name: Option<String>,
+    /// `"quick"` when this session is a quick chat. Absent for a project chat.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
 }
 
 /// The failure behind the last turn's terminator. `message` and the rest
@@ -331,6 +334,8 @@ pub fn materialize_session_payload(
         model_id: metadata.model_id.clone(),
         model_name: metadata.model_name.clone(),
         continued_from: metadata.continued_from.clone(),
+        kind: (metadata.kind == crate::acp::session_persistence::SessionKind::Quick)
+            .then(|| "quick".to_string()),
     };
     MaterializedSessionPayload {
         metadata: payload_metadata,

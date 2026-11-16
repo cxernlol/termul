@@ -39,6 +39,7 @@ pub mod oneshot;
 pub mod opencode_version;
 pub mod project_registry;
 pub mod provider_errors;
+pub mod quick_chat;
 pub mod safe_url;
 pub mod session;
 pub mod session_payload;

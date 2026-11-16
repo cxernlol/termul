@@ -96,6 +96,41 @@ fn the_probe_search_path_keeps_a_project_path() {
 }
 
 #[test]
+fn the_login_probe_scrubs_host_credentials_and_sets_the_account_home() {
+    let command = codex_command(
+        &["login", "status"],
+        Some("/tmp/codex-account".to_string()),
+        Some("/opt/codex"),
+        None,
+    );
+    let command = command.as_std();
+    let env: Vec<(String, Option<String>)> = command
+        .get_envs()
+        .map(|(key, value)| {
+            (
+                key.to_string_lossy().into_owned(),
+                value.map(|item| item.to_string_lossy().into_owned()),
+            )
+        })
+        .collect();
+    assert!(
+        env.iter()
+            .any(|(key, value)| key == "OPENAI_API_KEY" && value.is_none()),
+        "{env:?}"
+    );
+    assert!(
+        env.iter()
+            .any(|(key, value)| key == "CODEX_ACCESS_TOKEN" && value.is_none()),
+        "{env:?}"
+    );
+    assert!(
+        env.iter()
+            .any(|(key, value)| key == "CODEX_HOME" && value.as_deref() == Some("/tmp/codex-account")),
+        "{env:?}"
+    );
+}
+
+#[test]
 fn the_login_probe_command_asks_for_login_status() {
     let command = codex_command(&["login", "status"], None, Some("/opt/codex"), None);
     let command = command.as_std();

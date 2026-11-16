@@ -1,4 +1,5 @@
 import { PersistenceKeys } from '@shared/types/persistence.types'
+import { UNASSIGNED_PROJECT_ID } from '@shared/types/web-projects.types'
 import { toast } from 'sonner'
 import { type LaunchCheckout, launchChat } from '@/components/agents/launcher/launch-chat'
 import {
@@ -9,6 +10,7 @@ import {
   type PendingLauncherOptions,
   restoredLauncherOptions
 } from '@/components/agents/pending-launcher-options'
+import { newChatKind } from '@/components/shell/open-new-chat'
 import type { SessionId } from '@/lib/acp-api'
 import { persistenceApi } from '@/lib/api'
 import { logFrontendError } from '@/lib/log-api'
@@ -22,6 +24,7 @@ import {
 import { isScopedOption, readComposerOptions } from '@/stores/acp-store/composer-options'
 import { useChatStartPickStore } from '@/stores/chat-start-pick-store'
 import { useProjectStore } from '@/stores/project-store'
+import { useQuickChatStore } from '@/stores/quick-chat-store'
 import { agentChatTabId, findPaneById, useWorkspaceStore } from '@/stores/workspace-store'
 import { rememberNewChatAgent, resolveNewChatAgent } from './new-chat-agent'
 
@@ -189,10 +192,101 @@ const inFlight = new Map<string, Promise<OpenNewChatResult>>()
  * agent can start without a choice (none configured or installed; on web an
  * agent nobody configured never spawns, #840), or the agent needs a sign-in.
  */
+/**
+ * No active project: the same empty chat as a project New chat (last agent
+ * and its saved model), persisted as a quick chat. The host owns the folder.
+ * This path does not open the agent launcher.
+ */
+function openQuickNewChat(reason: NewChatReason): Promise<OpenNewChatResult> {
+  const view = useQuickChatStore.getState().view
+  if (view.mode === 'chat' && !view.readOnly && isEmptyStartChat(view.sessionId)) {
+    const session = useAcpStore.getState().sessions[view.sessionId]
+    if (session?.kind === 'quick') {
+      log('info', `New chat (reason=${reason}) focused the empty quick chat ${view.sessionId}`)
+      return Promise.resolve({ kind: 'focused', sessionId: view.sessionId })
+    }
+  }
+  const pending = inFlight.get('quick')
+  if (pending) return pending
+  const run = startQuick(reason).finally(() => inFlight.delete('quick'))
+  inFlight.set('quick', run)
+  return run
+}
+
+async function startQuick(reason: NewChatReason): Promise<OpenNewChatResult> {
+  const agent = await resolveNewChatAgent()
+  if (agent.kind === 'none') {
+    toast.error('No agent is ready to start a chat')
+    log('warn', `Quick chat (reason=${reason}) skipped: ${agent.reason}`)
+    return { kind: 'skipped' }
+  }
+  if (agent.configToSave) {
+    try {
+      await useAcpStore.getState().saveAgentConfig(agent.configToSave)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      toast.error(`Could not set up ${agent.name}: ${message}`)
+      log('warn', `Quick chat (reason=${reason}) could not save ${agent.configId}: ${message}`)
+      return { kind: 'skipped' }
+    }
+  }
+  rememberNewChatAgent(agent.configId)
+  const picks = await savedPicks(agent.configId)
+  const cache = useAcpStore.getState().agentOptionsCache[agent.configId]
+  const shown = newChatPlaceholderOptions(cache, picks)
+  const store = useAcpStore.getState()
+  const placeholderId = store.createLaunchPlaceholder({
+    configId: agent.configId,
+    cwd: '',
+    projectId: UNASSIGNED_PROJECT_ID,
+    models: shown.models,
+    modes: shown.modes,
+    configOptions: shown.configOptions,
+    kind: 'quick'
+  })
+  useQuickChatStore.getState().openChat(placeholderId)
+  const workspace = useWorkspaceStore.getState()
+  if (workspace.agentLauncherPaneId) workspace.hideAgentLauncher()
+  log(
+    'info',
+    `Quick chat ${placeholderId} (reason=${reason}) opened on ${agent.configId} with no project`
+  )
+  void store
+    .finalizeChatLaunch({
+      placeholderId,
+      configId: agent.configId,
+      cwd: '',
+      projectId: UNASSIGNED_PROJECT_ID,
+      pending: hasPendingLauncherOptions(picks) ? picks : null,
+      initialText: null,
+      initialBlocks: null,
+      adoptSession: (from, to) => {
+        const current = useQuickChatStore.getState().view
+        if (current.mode === 'chat' && current.sessionId === from) {
+          useQuickChatStore.getState().openChat(to)
+        }
+      }
+    })
+    .then((sessionId) => log('info', `Quick chat ${placeholderId} started as ${sessionId}`))
+    .catch((err: unknown) => {
+      if (err instanceof ChatLaunchCancelledError) return
+      // The empty chat shows the error and Retry. This path does not open the launcher.
+      log(
+        'warn',
+        `Quick chat ${placeholderId} did not start: ${err instanceof Error ? err.message : String(err)}`
+      )
+    })
+  return { kind: 'opened', sessionId: placeholderId }
+}
+
 export function openNewChat(request: OpenNewChatRequest): Promise<OpenNewChatResult> {
   const workspace = useWorkspaceStore.getState()
   const paneId = request.paneId ?? workspace.activePaneId
-  const projectId = request.projectId ?? useProjectStore.getState().activeProjectId
+  const explicitProject = request.projectId !== undefined
+  const projectId = explicitProject ? request.projectId : useProjectStore.getState().activeProjectId
+  if (newChatKind(projectId ?? '') === 'quick') {
+    return openQuickNewChat(request.reason)
+  }
   if (!paneId || !projectId) {
     log('warn', `New chat (reason=${request.reason}) skipped: no pane or no active project`)
     return Promise.resolve({ kind: 'skipped' })

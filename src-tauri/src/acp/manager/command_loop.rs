@@ -155,6 +155,7 @@ pub(super) async fn run_command_loop(
                 additional_directories,
                 command_id,
                 tool_allowlist,
+                quick_chat_id,
                 reply,
             } => {
                 let slot = reply_slot(reply);
@@ -223,9 +224,20 @@ pub(super) async fn run_command_loop(
                             };
                             if !ephemeral {
                                 if let Some(persistence) = req_persistence {
-                                    if let Err(error) =
-                                        persistence.register_session(registration.clone()).await
-                                    {
+                                    let registered = match quick_chat_id.clone() {
+                                        Some(chat_id) => {
+                                            persistence
+                                                .register_quick_session(
+                                                    registration.clone(),
+                                                    chat_id,
+                                                )
+                                                .await
+                                        }
+                                        None => {
+                                            persistence.register_session(registration.clone()).await
+                                        }
+                                    };
+                                    if let Err(error) = registered {
                                         let _ = close_cx
                                             .send_request(CloseSessionRequest::new(&session_id))
                                             .block_task()
@@ -297,6 +309,7 @@ pub(super) async fn run_command_loop(
                                     modes: response.modes,
                                     models: resolved.models,
                                     config_options: response.config_options,
+                                    cwd: quick_chat_id.map(|_| cwd),
                                 }),
                             );
                         }

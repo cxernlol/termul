@@ -23,6 +23,7 @@ import {
 } from '@/lib/top-row'
 import { isWorkspaceRoutePath } from '@/lib/workspace-route'
 import { useFileExplorerVisible } from '@/stores/file-explorer-store'
+import { useQuickChatOpen } from '@/stores/quick-chat-store'
 import { useSidebarVisible } from '@/stores/sidebar-store'
 import { useThemePickerOpen } from '@/stores/theme-picker-store'
 import { useFullscreenPaneId, usePaneRoot } from '@/stores/workspace-store'
@@ -41,7 +42,6 @@ export interface ShellFrameProps {
   handleAddGitTab: (paneId?: string) => void
   handleAddGitHistoryTab: (paneId?: string) => void
   handleToggleThemePicker: () => void
-  handleOpenAgentChat: () => void
   handleOpenCanvas: () => void
   /** Opens a new terminal tab in the active pane (tool strip): the default shell, or `shell`. */
   handleNewTerminal: (shell?: ShellInfo) => void
@@ -112,6 +112,7 @@ export function ShellFrame({
   const railExpanded = useSidebarVisible()
   const { activeSSHProfileId, handleSSHConnect, handleSelectSSHProfile } = ssh
 
+  const quickChatOpen = useQuickChatOpen()
   const paneRoot = usePaneRoot()
   const fullscreenPaneId = useFullscreenPaneId()
   const pathname = useLocation().pathname
@@ -173,16 +174,17 @@ export function ShellFrame({
                 {workspaceMain}
               </main>
 
-              {/* `ExplorerColumn` owns the right panel (width, resize, reveal
-                  motion, SSH file browser); the project body comes through
-                  its `sidePanel` slot. */}
-              <ExplorerColumn
-                activeProject={activeProject}
-                ssh={ssh}
-                sidePanel={
-                  activeProject ? <SidePanelColumn activeProject={activeProject} /> : undefined
-                }
-              />
+              {/* A quick chat has no project side panel. Otherwise
+                  `ExplorerColumn` owns the right panel. */}
+              {!quickChatOpen && (
+                <ExplorerColumn
+                  activeProject={activeProject}
+                  ssh={ssh}
+                  sidePanel={
+                    activeProject ? <SidePanelColumn activeProject={activeProject} /> : undefined
+                  }
+                />
+              )}
             </PaneDndProvider>
 
             <ShellToolStrip

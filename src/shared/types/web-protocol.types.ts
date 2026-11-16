@@ -168,6 +168,8 @@ export const WS_REQUEST_TYPES = [
   // errors reject. Publishes a `chat_history` watch delta on a real delete;
   // live-only mode → `unsupported`.
   'delete_session',
+  // Quick chat local rename. Sets TitleSource::LocalAlias. Quick chats only.
+  'rename_session',
   'open_persisted_session',
   'get_session_payload',
   'recover_session_snapshot',
@@ -411,6 +413,7 @@ export const WS_COMMAND_CLASSES: Readonly<
   ping: ['read', null],
   list_persisted_sessions: ['read', null],
   delete_session: ['idempotent', null],
+  rename_session: ['idempotent', null],
   open_persisted_session: ['read', null],
   get_session_payload: ['read', null],
   recover_session_snapshot: ['read', null],
@@ -1003,6 +1006,8 @@ export interface PersistedSessionSummary {
    * client can fold the chain into one history row without walking logs.
    */
   continuedFrom?: string
+  /** `quick` for a chat with no project. Absent on older hosts and on project chats. */
+  kind?: 'quick'
 }
 
 export interface UserPromptEvent {

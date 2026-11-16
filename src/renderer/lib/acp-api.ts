@@ -43,6 +43,7 @@ import { invokeIpc } from '@/lib/ipc/tauri'
 import { logFrontendError } from '@/lib/log-api'
 import { wireBlocksToDisplay } from '@/lib/skills-wire-reverse'
 import { isTauriContext } from '@/lib/tauri-runtime'
+import { randomUUID } from '@/lib/uuid'
 import { webServerMcpOAuth } from '@/lib/web-server-api'
 
 export type { AgentIdleWindowStatus }
@@ -358,6 +359,8 @@ export interface AgentConfig {
 
 export interface NewSessionOutcome {
   sessionId: SessionId
+  /** Host-derived folder for a quick chat. Absent for a project chat. */
+  cwd?: string | null
   modes?: SessionModeState | null
   models?: SessionModelState | null
   configOptions?: SessionConfigOption[] | null
@@ -1163,6 +1166,15 @@ export async function acpListAgents(): Promise<AgentId[]> {
   return getAcpTransport().listAgents()
 }
 
+/** Rename a quick chat. The host stores a local alias and ignores project chats. */
+export async function acpRenameQuickChat(sessionId: string, title: string): Promise<void> {
+  const transport = getAcpTransport()
+  if (!transport.renameSession) {
+    throw new Error('This host cannot rename a quick chat')
+  }
+  await transport.renameSession(sessionId, title)
+}
+
 export async function acpNewSession(
   agentId: AgentId,
   cwd: string,
@@ -1176,6 +1188,8 @@ export async function acpNewSession(
     worktreePath?: string
     worktreeBranch?: string
     additionalDirectories?: string[]
+    /** `quick` asks the host to create the folder. The client sends no cwd. */
+    kind?: 'quick'
   }
 ): Promise<NewSessionOutcome> {
   // The key names every field that distinguishes one create from another (the
@@ -1189,6 +1203,7 @@ export async function acpNewSession(
     options?.promotable ? 'p' : '',
     options?.worktreePath ?? '',
     options?.worktreeBranch ?? '',
+    options?.kind === 'quick' ? `quick:${randomUUID()}` : '',
     // Content-derived parts (MCP servers can carry env / headers): digest only,
     // so a different server set or extra roots is a different create.
     keyDigest(JSON.stringify([mcpServers ?? null, options?.additionalDirectories ?? []]))

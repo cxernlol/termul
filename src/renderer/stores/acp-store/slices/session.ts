@@ -939,7 +939,8 @@ async function openHistorySessionInner(
         createdAt: meta.createdAt,
         replaying: null,
         worktreePath: meta.worktreePath,
-        worktreeBranch: meta.worktreeBranch
+        worktreeBranch: meta.worktreeBranch,
+        kind: meta.kind
       }
     },
     messages: { ...s.messages, [id]: trimLiveWindow(installed.messages, id) },
@@ -1764,6 +1765,7 @@ export const createSessionSlice: StateCreator<AcpState, [], [], SessionSliceStat
           ...(projectId ? { projectId } : {}),
           ...(opts?.worktreePath ? { worktreePath: opts.worktreePath } : {}),
           ...(opts?.worktreeBranch ? { worktreeBranch: opts.worktreeBranch } : {}),
+          ...(opts?.kind === 'quick' ? { kind: 'quick' as const } : {}),
           additionalDirectories: additionalWorkspaceRoots(
             Boolean(
               get().agents[agentId]?.capabilities?.sessionCapabilities?.additionalDirectories
@@ -1816,8 +1818,8 @@ export const createSessionSlice: StateCreator<AcpState, [], [], SessionSliceStat
             [sessionId]: {
               id: sessionId,
               agentId,
-              cwd,
-              projectId,
+              cwd: outcome.cwd || cwd,
+              projectId: opts?.kind === 'quick' ? '__unassigned__' : projectId,
               status: existing?.status === 'closed' ? 'closed' : 'active',
               title: existing?.title ?? null,
               activeTurn: existing?.activeTurn ?? false,
@@ -1846,7 +1848,8 @@ export const createSessionSlice: StateCreator<AcpState, [], [], SessionSliceStat
               createdAt: existing?.createdAt ?? Date.now(),
               replaying: null,
               worktreePath: opts?.worktreePath ?? existing?.worktreePath,
-              worktreeBranch: opts?.worktreeBranch ?? existing?.worktreeBranch
+              worktreeBranch: opts?.worktreeBranch ?? existing?.worktreeBranch,
+              kind: opts?.kind ?? existing?.kind
             }
           },
           messages: { ...s.messages, [sessionId]: s.messages[sessionId] ?? [] },

@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::web::project_registry::{
-    set_default_project, AddProject, ProjectCommandError, ProjectHost, UpdateProject,
+    AddProject, ProjectCommandError, ProjectHost, UpdateProject, set_default_project,
 };
 
 /// `create_session` → `AcpManager::new_session(agent_id, cwd, mcp_servers)`.
@@ -12,6 +12,8 @@ use crate::web::project_registry::{
 #[serde(rename_all = "camelCase")]
 pub(super) struct CreateSessionPayload {
     agent_id: crate::acp::AgentId,
+    /// Required for a project chat. Omitted for a quick chat: the host derives it.
+    #[serde(default)]
     cwd: String,
     #[serde(default)]
     mcp_servers: Vec<agent_client_protocol::schema::v1::McpServer>,
@@ -27,8 +29,12 @@ pub(super) struct CreateSessionPayload {
     additional_directories: Vec<String>,
     /// Owning project. Optional: omitted → the host matches `cwd` against the
     /// registry, else stamps the unassigned sentinel. Stamped once at creation.
+    /// Ignored for a quick chat.
     #[serde(default)]
     project_id: Option<String>,
+    /// `"quick"` creates a chat with no project. The host mints the folder.
+    #[serde(default)]
+    kind: Option<String>,
 }
 
 /// The project id a new session is stamped with: the explicit registered id,
@@ -62,39 +68,103 @@ pub(super) async fn handle_create_session(
                 id,
                 WsErrorCode::Unsupported,
                 format!("malformed create_session payload (want agentId, cwd, mcpServers?): {e}"),
-            )
+            );
         }
+    };
+    let quick = parsed.kind.as_deref() == Some("quick");
+    if quick && parsed.ephemeral {
+        return WsReply::err(
+            id,
+            WsErrorCode::Unsupported,
+            "a quick chat cannot be ephemeral",
+        );
+    }
+    // A quick chat never uses a client cwd. The host mints
+    // `~/.troupe/quick-chats/<id>` and the session runs there.
+    let prepared_quick = if quick {
+        match crate::acp::quick_chat::prepare_new_chat_dir() {
+            Ok((chat_id, dir)) => Some((
+                chat_id,
+                crate::path_validation::strip_verbatim_prefix(&dir.to_string_lossy()).into_owned(),
+            )),
+            Err(message) => {
+                warn!(
+                    target: "termul::web::ws",
+                    "create_session: quick chat folder was not created: {message}"
+                );
+                return WsReply::err(id, WsErrorCode::Unsupported, message);
+            }
+        }
+    } else {
+        None
+    };
+    let cwd = match &prepared_quick {
+        Some((_, dir)) => dir.clone(),
+        None => parsed.cwd,
     };
     // Story 1.8 review (EC4): reject an empty cwd (the desktop store path
     // trims + rejects `cwd.length === 0`; the WS path must not diverge — an
     // empty cwd would give the agent subprocess undefined cwd semantics).
-    if parsed.cwd.trim().is_empty() {
+    if !quick && cwd.trim().is_empty() {
         return WsReply::err(
             id,
             WsErrorCode::Unsupported,
             "create_session requires a non-empty `cwd`",
         );
     }
+    // A project chat cannot start outside every registered project, and it
+    // cannot start inside the quick-chat root. Desktop IPC and `/ws` share
+    // this handler. An ephemeral warm session may use a host-chosen cwd that
+    // is not a project; it still cannot use the quick-chat root.
+    if !quick {
+        if crate::acp::quick_chat::is_quick_chat_path(&cwd) {
+            return WsReply::err(
+                id,
+                WsErrorCode::Unsupported,
+                "that folder is reserved for quick chats",
+            );
+        }
+        if !parsed.ephemeral && registry.find_by_path(&cwd).is_none() {
+            warn!(
+                target: "termul::web::ws",
+                "create_session: cwd is outside every registered project"
+            );
+            return WsReply::err(
+                id,
+                WsErrorCode::Unsupported,
+                "create_session cwd must be inside a registered project",
+            );
+        }
+    }
     // The host stamps the owning project once, here: explicit registered id,
     // else the registry project owning `cwd`, else the unassigned sentinel.
-    let project_id =
-        match resolve_session_project(registry, parsed.project_id.as_deref(), &parsed.cwd) {
-            Ok(project_id) => project_id,
-            Err(unknown) => {
-                warn!(
-                    target: "termul::web::ws",
-                    project_id = %unknown,
-                    "create_session: unknown projectId"
-                );
-                return WsReply::err(
-                    id,
-                    WsErrorCode::NotFound,
-                    format!("project '{unknown}' not found"),
-                );
-            }
-        };
+    // A quick chat is never matched to a project, even when a project contains
+    // the quick-chat root.
+    let project_id = if quick {
+        Ok(crate::acp::session_persistence::UNASSIGNED_PROJECT_ID.to_string())
+    } else {
+        resolve_session_project(registry, parsed.project_id.as_deref(), &cwd)
+    };
+    let project_id = match project_id {
+        Ok(project_id) => project_id,
+        Err(unknown) => {
+            warn!(
+                target: "termul::web::ws",
+                project_id = %unknown,
+                "create_session: unknown projectId"
+            );
+            return WsReply::err(
+                id,
+                WsErrorCode::NotFound,
+                format!("project '{unknown}' not found"),
+            );
+        }
+    };
     // A project being removed or archived takes no new sessions.
     if registry.is_removing(&project_id) {
+        if let Some((chat_id, _)) = &prepared_quick {
+            let _ = crate::acp::quick_chat::remove_chat_dir(chat_id);
+        }
         warn!(
             target: "termul::web::ws",
             project_id = %project_id,
@@ -110,7 +180,7 @@ pub(super) async fn handle_create_session(
     match acp
         .new_session_with_context(
             &parsed.agent_id,
-            parsed.cwd,
+            cwd,
             parsed.mcp_servers,
             SessionCreationContext {
                 project_id: Some(project_id.clone()),
@@ -118,6 +188,7 @@ pub(super) async fn handle_create_session(
                 promotable: parsed.promotable,
                 additional_directories: parsed.additional_directories,
                 command_id,
+                quick_chat_id: prepared_quick.as_ref().map(|(chat_id, _)| chat_id.clone()),
                 ..Default::default()
             },
         )
@@ -146,7 +217,12 @@ pub(super) async fn handle_create_session(
             }
             ok_with_payload(id, &outcome)
         }
-        Err(e) => acp_err_to_reply(id, e),
+        Err(e) => {
+            if let Some((chat_id, _)) = &prepared_quick {
+                let _ = crate::acp::quick_chat::remove_chat_dir(chat_id);
+            }
+            acp_err_to_reply(id, e)
+        }
     }
 }
 
@@ -355,6 +431,7 @@ pub(super) async fn handle_remove_project(
 pub(super) struct LoadResumeSessionPayload {
     pub(super) agent_id: crate::acp::AgentId,
     pub(super) session_id: crate::acp::SessionId,
+    #[serde(default)]
     pub(super) cwd: String,
     #[serde(default)]
     pub(super) additional_directories: Vec<String>,
@@ -376,14 +453,20 @@ pub(super) async fn handle_load_session(
                 id,
                 WsErrorCode::Unsupported,
                 format!("malformed load_session payload (want agentId, sessionId, cwd): {e}"),
-            )
+            );
+        }
+    };
+    let cwd = match super::lifecycle::cwd_for_reopen(acp, &parsed.session_id.0, &parsed.cwd).await {
+        Ok(cwd) => cwd,
+        Err(message) => {
+            return WsReply::err(id, WsErrorCode::Unsupported, message);
         }
     };
     match acp
         .load_session(
             &parsed.agent_id,
             parsed.session_id,
-            parsed.cwd,
+            cwd,
             parsed.additional_directories,
             parsed.mcp_servers,
         )

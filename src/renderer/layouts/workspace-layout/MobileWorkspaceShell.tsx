@@ -72,7 +72,7 @@ export function MobileWorkspaceShell({
       <Suspense fallback={<ShellSkeleton />}>
         <MobileChatShell
           onNewChat={handleOpenAgentChat}
-          canNewChat={Boolean(activeProject?.path)}
+          canNewChat
           onOpenCommandPalette={() => setIsCommandPaletteOpen(true)}
           onOpenGitChanges={() => openGitSheet()}
           onOpenGitHistory={() => handleAddGitHistoryTab()}

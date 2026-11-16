@@ -62,6 +62,8 @@ fn host_entry_to_desktop_maps_renderer_shape() {
         model_name: None,
         log_epoch: None,
         continued_from: None,
+        kind: crate::acp::session_persistence::SessionKind::Project,
+        quick_chat_id: None,
     };
     let desktop = host_entry_to_desktop(entry);
     assert_eq!(desktop.id, "s-1");
@@ -101,6 +103,8 @@ fn host_entry_to_desktop_maps_renderer_shape() {
         model_name: None,
         log_epoch: None,
         continued_from: None,
+        kind: crate::acp::session_persistence::SessionKind::Project,
+        quick_chat_id: None,
     };
     let desktop = host_entry_to_desktop(bare);
     assert_eq!(desktop.agent_id, "");
@@ -144,6 +148,8 @@ fn host_entry_to_desktop_model_keys_match_ws_entry_serialization() {
         model_name: Some("Claude Opus".to_string()),
         log_epoch: None,
         continued_from: None,
+        kind: crate::acp::session_persistence::SessionKind::Project,
+        quick_chat_id: None,
     };
     let ws = serde_json::to_value(&entry).unwrap();
     let desktop = serde_json::to_value(host_entry_to_desktop(entry.clone())).unwrap();

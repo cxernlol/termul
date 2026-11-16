@@ -271,6 +271,11 @@ export interface AcpSession {
   worktreePath?: string
   worktreeBranch?: string
   /**
+   * `quick` for a chat with no project. Copied onto the live record so a
+   * later index projection cannot drop it. Absent on project chats.
+   */
+  kind?: 'quick'
+  /**
    * Correlation id into `useWorktreeProgressStore` for the in-timeline
    * worktree-creation progress card. Set on the launch placeholder before the
    * worktree create call and carried across the placeholder→real-session
@@ -704,6 +709,8 @@ export interface AcpState {
       /** Worktree path + branch (CAP-3) — persisted onto the durable record. */
       worktreePath?: string
       worktreeBranch?: string
+      /** Host mints the folder. The client does not send a cwd. */
+      kind?: 'quick'
     }
   ) => Promise<SessionId>
   closeSession: (sessionId: SessionId) => Promise<void>
@@ -755,6 +762,11 @@ export interface AcpState {
     opts?: { worktreePath?: string; worktreeBranch?: string }
   ) => Promise<SessionId>
   /**
+   * Start a quick chat. No project env is applied. The host creates the folder
+   * and the Codex Accounts account stays in effect.
+   */
+  startQuickChat: (configId: string) => Promise<SessionId>
+  /**
    * Take ownership of a prepared session so launcher unmount cleanup cannot
    * reap it after the chat tab is already open. Promotes ephemeral pooled
    * sessions into persisted history.
@@ -779,6 +791,8 @@ export interface AcpState {
     worktreeBranch?: string
     /** Links the in-timeline worktree-creation progress card to this chat. */
     worktreeProgressId?: string
+    /** A chat with no project. The host owns the folder. */
+    kind?: 'quick'
   }) => SessionId
   /** Drop a launch placeholder that will not be remapped (e.g. after fatal error). */
   discardLaunchPlaceholder: (sessionId: SessionId) => void

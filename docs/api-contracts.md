@@ -573,7 +573,8 @@ The class column is the request's command class, defined in `src-tauri/src/web/c
 | `open_persisted_session` | read | Subscribes to a persisted session like `subscribe`. `unsupported` when the host keeps no durable history. |
 | `get_session_payload` | read | Returns a session's full payload from the durable log. `not_found` for an unknown id. |
 | `get_session_payload_tail` | read | Returns the last `limit` messages of a session and their tool calls. |
-| `delete_session` | idempotent | Deletes a persisted session. Replies `true` when it deleted and `false` when it was already absent. |
+| `delete_session` | idempotent | Deletes a persisted session. Replies `true` when it deleted and `false` when it was already absent. A quick chat also deletes its folder. |
+| `rename_session` | idempotent | Sets a quick chat's local title (`LocalAlias`). Refuses a project chat. |
 | `record_agent_switch` | command | Appends a durable `agent_switch` record to a session and delivers it live under the same seq. |
 | `mark_chat_read` | idempotent | Moves the host's shared last-read marker of a chat forward. An older seq is a no-op. |
 | `list_acp_catalog` | read | Returns the host's agent catalog with per-agent availability. Takes an optional `refresh`. |

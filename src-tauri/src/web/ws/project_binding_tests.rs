@@ -96,6 +96,61 @@ async fn create_session_with_an_unknown_project_replies_not_found_before_touchin
 }
 
 #[tokio::test]
+async fn create_session_refuses_a_cwd_outside_every_project() {
+    let acp = Arc::new(AcpManager::new(vec![]));
+    let registry = Arc::new(registry());
+    let reply = projects::handle_create_session(
+        "r1".to_string(),
+        &json!({"agentId": "a-1", "cwd": "/tmp"}),
+        &acp,
+        &registry,
+        None,
+    )
+    .await;
+    assert!(!reply.ok);
+    let err = reply.err.unwrap();
+    assert_eq!(err.code, "unsupported");
+    assert!(
+        err.message.contains("registered project"),
+        "{}",
+        err.message
+    );
+}
+
+#[tokio::test]
+async fn create_session_refuses_the_quick_chat_root_and_a_chat_folder() {
+    let root = tempfile::tempdir().unwrap();
+    let _guard = crate::acp::quick_chat::set_quick_chat_root_for_test(root.path());
+    std::fs::create_dir_all(root.path()).unwrap();
+    let chat = root.path().join("chat-1");
+    std::fs::create_dir(&chat).unwrap();
+    let acp = Arc::new(AcpManager::new(vec![]));
+    let registry = Arc::new(registry());
+    for cwd in [
+        root.path().to_string_lossy().to_string(),
+        chat.to_string_lossy().to_string(),
+    ] {
+        let reply = projects::handle_create_session(
+            "r1".to_string(),
+            &json!({"agentId": "a-1", "cwd": cwd, "projectId": "p-1"}),
+            &acp,
+            &registry,
+            None,
+        )
+        .await;
+        assert!(!reply.ok, "{cwd}");
+        let err = reply.err.unwrap();
+        assert_eq!(err.code, "unsupported");
+        assert!(
+            err.message.contains("quick chats"),
+            "{}: {}",
+            cwd,
+            err.message
+        );
+    }
+}
+
+#[tokio::test]
 async fn create_session_with_a_registered_project_reaches_the_agent() {
     // The no-op manager has no agent, so a request that passes project
     // resolution fails later with the unknown-agent error (the project
@@ -166,9 +221,9 @@ fn a_renderer_fed_project_with_the_reserved_id_is_never_registered() {
 
 #[tokio::test]
 async fn post_projects_refuses_the_reserved_unassigned_id() {
+    use axum::Json;
     use axum::extract::{ConnectInfo, State};
     use axum::response::IntoResponse;
-    use axum::Json;
 
     let state = super::tests::ws_test_app_state();
     let registry = state.registry.clone();
@@ -227,7 +282,9 @@ async fn add_and_remove_project_publish_the_post_mutation_list_to_watchers() {
     let (out, mut rx) = outbound_channel(16, 15);
     relay
         .watches()
-        .subscribe(crate::web::watch::WatchKind::Projects, "", &out, || json!(null))
+        .subscribe(crate::web::watch::WatchKind::Projects, "", &out, || {
+            json!(null)
+        })
         .expect("watch");
     let _state = rx.try_recv().expect("full-state frame");
     let acp = Arc::new(AcpManager::new(vec![]));
@@ -249,12 +306,9 @@ async fn add_and_remove_project_publish_the_post_mutation_list_to_watchers() {
     )
     .await;
     assert!(added.ok, "{:?}", added.err);
-    let removed = projects::handle_remove_project(
-        "r2".to_string(),
-        &json!({"projectId": "p-new"}),
-        &env,
-    )
-    .await;
+    let removed =
+        projects::handle_remove_project("r2".to_string(), &json!({"projectId": "p-new"}), &env)
+            .await;
     assert!(removed.ok, "{:?}", removed.err);
 
     let mut lists = Vec::new();
@@ -262,7 +316,11 @@ async fn add_and_remove_project_publish_the_post_mutation_list_to_watchers() {
         let delta = frame.delta_value().expect("delta");
         lists.push(delta["projects"].as_array().expect("projects").len());
     }
-    assert_eq!(lists, vec![1, 0], "the delta after add holds the project, after remove it does not");
+    assert_eq!(
+        lists,
+        vec![1, 0],
+        "the delta after add holds the project, after remove it does not"
+    );
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -275,7 +333,9 @@ async fn update_project_publishes_the_renamed_list_to_watchers() {
     let (out, mut rx) = outbound_channel(16, 15);
     relay
         .watches()
-        .subscribe(crate::web::watch::WatchKind::Projects, "", &out, || json!(null))
+        .subscribe(crate::web::watch::WatchKind::Projects, "", &out, || {
+            json!(null)
+        })
         .expect("watch");
     let _state = rx.try_recv().expect("full-state frame");
     let acp = Arc::new(AcpManager::new(vec![]));

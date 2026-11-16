@@ -374,6 +374,8 @@ export interface AcpTransport {
    * the same idempotent success.
    */
   deleteSession?(sessionId: SessionId): Promise<boolean>
+  /** Quick-chat local rename. Sets the host `LocalAlias` title. */
+  renameSession?(sessionId: SessionId, title: string): Promise<{ title?: string | null }>
   newSession(
     agentId: AgentId,
     cwd: string,
@@ -392,6 +394,8 @@ export interface AcpTransport {
       worktreePath?: string
       worktreeBranch?: string
       additionalDirectories?: string[]
+      /** `quick` asks the host to mint the folder. Omit cwd in that case. */
+      kind?: 'quick'
     } & CommandCallOptions
   ): Promise<NewSessionOutcome>
   loadSession(

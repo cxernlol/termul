@@ -1,5 +1,5 @@
 import { LayoutGroup, Reorder } from 'framer-motion'
-import type { Dispatch, MutableRefObject, SetStateAction } from 'react'
+import type { Dispatch, MutableRefObject, ReactNode, SetStateAction } from 'react'
 import { openNewChat } from '@/components/chat/new-chat/open-new-chat'
 import { ChevronDown, ChevronRight, FolderPlus } from '@/components/icons'
 import { useRailCollapsed } from '@/components/shell/rail/rail-density'
@@ -68,6 +68,8 @@ export interface ProjectListProps {
    * Projects header above the list).
    */
   railSections?: boolean
+  /** Sits in the project scroll, directly under the project rows. */
+  trailing?: ReactNode
   onNewProject?: () => void
   onNewGroup?: () => void
   /** Import chats into the open project (the `+` menu); absent hides the item. */
@@ -111,6 +113,7 @@ export function ProjectList({
   setShowArchived,
   renderArchivedProjectContextMenu,
   railSections = false,
+  trailing,
   onNewProject,
   onNewGroup,
   onImportChats,
@@ -369,6 +372,7 @@ export function ProjectList({
           )}
         </div>
       )}
+      {trailing}
     </div>
   )
 }

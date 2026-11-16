@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 import { ReloadChatMenuItem } from '@/components/chat/ReloadChatMenuItem'
-import { Columns2, Copy, FolderOpen, Hash, Terminal, Trash2 } from '@/components/icons'
+import { Columns2, Copy, Edit, FolderOpen, Hash, Terminal, Trash2 } from '@/components/icons'
 import type { ProjectChatEntry } from '@/components/sidebar/project-chat-row'
 import {
   ContextMenu,
@@ -18,6 +18,8 @@ interface RailChatMenuProps {
   actions: Omit<ChatRowMenuActions, 'onDelete'>
   /** Opens the delete confirm. The menu never deletes by itself. */
   onRequestDelete: (entry: ProjectChatEntry) => void
+  /** Quick chats only: store a local alias. */
+  onRename?: (entry: ProjectChatEntry) => void
   onOpenChange?: (open: boolean) => void
   /** The row's `RailChatRowFrame` (`asChild` trigger). */
   children: ReactNode
@@ -33,6 +35,7 @@ export function RailChatMenu({
   entry,
   actions,
   onRequestDelete,
+  onRename,
   onOpenChange,
   children
 }: RailChatMenuProps): React.JSX.Element {
@@ -73,6 +76,11 @@ export function RailChatMenu({
           <Hash className={ICON} /> Copy chat ID
         </ContextMenuItem>
         <ContextMenuSeparator />
+        {onRename && (
+          <ContextMenuItem onSelect={() => onRename(entry)}>
+            <Edit className={ICON} /> Rename
+          </ContextMenuItem>
+        )}
         <ContextMenuItem variant="destructive" onSelect={() => onRequestDelete(entry)}>
           <Trash2 className={ICON} /> Delete chat
         </ContextMenuItem>

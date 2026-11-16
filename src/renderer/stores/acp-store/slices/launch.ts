@@ -247,6 +247,7 @@ type LaunchSliceState = Pick<
   | 'cancelPreparedChat'
   | 'prepareChat'
   | 'startChat'
+  | 'startQuickChat'
   | 'claimPreparedChat'
   | 'createLaunchPlaceholder'
   | 'discardLaunchPlaceholder'
@@ -463,6 +464,44 @@ export const createLaunchSlice: StateCreator<AcpState, [], [], LaunchSliceState>
     return get().createSession(agentId, trimmedCwd, mcpServers, projectId, opts)
   },
 
+  startQuickChat: async (configId) => {
+    const config = get().agentConfigs.find((item) => item.id === configId)
+    if (!config) throw new Error(`unknown agent config ${configId}`)
+    // The spawn key is not a project path, so no project env (and no
+    // per-project CODEX_HOME) is applied. The session cwd comes from the host.
+    const agentId = await ensureLiveAgent(get, set, configId, 'quick-chat', {
+      holder: 'chat'
+    })
+    if (!agentId) throw new Error(`failed to spawn agent for config ${configId}`)
+    const sessionId = await get().createSession(agentId, '', undefined, '', { kind: 'quick' })
+    const cwd = get().sessions[sessionId]?.cwd ?? ''
+    const now = Date.now()
+    set((state) => ({
+      sessionIndex: [
+        {
+          id: sessionId,
+          agentId,
+          agentConfigId: configId,
+          title: state.sessions[sessionId]?.title ?? 'Untitled Chat',
+          cwd,
+          projectId: '__unassigned__',
+          createdAt: now,
+          lastActivityAt: now,
+          messageCount: 0,
+          status: 'active' as const,
+          kind: 'quick' as const
+        },
+        ...state.sessionIndex.filter((entry) => entry.id !== sessionId)
+      ]
+    }))
+    void logFrontendError({
+      level: 'info',
+      source: 'acp-store.startQuickChat',
+      message: `Started quick chat ${sessionId} with ${configId}`
+    })
+    return sessionId
+  },
+
   claimPreparedChat: (key, projectId) => {
     const sessionId = reconcilePreparedSlot(key, get, set)
     if (!sessionId || !preparedSessionFitsProject(get, sessionId, projectId)) return null
@@ -480,7 +519,8 @@ export const createLaunchSlice: StateCreator<AcpState, [], [], LaunchSliceState>
     initialUserBlocks,
     worktreePath,
     worktreeBranch,
-    worktreeProgressId
+    worktreeProgressId,
+    kind
   }) => {
     const sessionId = newId('launch')
     const blocks = initialUserBlocks ?? []
@@ -518,7 +558,8 @@ export const createLaunchSlice: StateCreator<AcpState, [], [], LaunchSliceState>
           worktreePath,
           worktreeBranch,
           worktreeProgressId,
-          launchConfigId: configId
+          launchConfigId: configId,
+          ...(kind === 'quick' ? { kind: 'quick' as const } : {})
         }
       },
       messages: {
@@ -761,10 +802,14 @@ export const createLaunchSlice: StateCreator<AcpState, [], [], LaunchSliceState>
           ? ([{ type: 'text', text: initialText }] as ContentBlock[])
           : null
     try {
-      const sessionId = await get().startChat(configId, cwd, mcpServers, projectId, {
-        worktreePath,
-        worktreeBranch
-      })
+      const quick = get().sessions[placeholderId]?.kind === 'quick'
+      // A quick chat's folder is host-derived. The client cwd is not sent.
+      const sessionId = quick
+        ? await get().startQuickChat(configId)
+        : await get().startChat(configId, cwd, mcpServers, projectId, {
+            worktreePath,
+            worktreeBranch
+          })
       launchedSessionId = sessionId
       // Cancellation tombstone: the failed chat was deleted from history
       // while startChat was in flight — the user revoked the launch. Tear
@@ -819,7 +864,8 @@ export const createLaunchSlice: StateCreator<AcpState, [], [], LaunchSliceState>
                   : (placeholder.configOptions ?? []),
               worktreePath: real.worktreePath ?? placeholder.worktreePath,
               worktreeBranch: real.worktreeBranch ?? placeholder.worktreeBranch,
-              worktreeProgressId: real.worktreeProgressId ?? placeholder.worktreeProgressId
+              worktreeProgressId: real.worktreeProgressId ?? placeholder.worktreeProgressId,
+              kind: real.kind ?? placeholder.kind
             }
           }
           delete sessions[placeholderId]

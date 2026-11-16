@@ -3478,3 +3478,90 @@ async fn the_sweeper_reports_the_end_of_work_once_the_session_goes_quiet() {
     assert_eq!(state.lock().activity(0).unprompted_sessions, 0);
     sweeper.abort();
 }
+
+/// Reopen starts a new agent and leaves `runtime_agent_id` on the agent from
+/// create. Delete must stop the live owner, not only the stored id.
+#[tokio::test]
+async fn delete_of_a_reopened_quick_chat_stops_the_live_agent() {
+    let root = tempfile::tempdir().expect("quick chat root");
+    let _guard = crate::acp::quick_chat::set_quick_chat_root_for_test(root.path());
+    let (chat_id, folder) = crate::acp::quick_chat::prepare_new_chat_dir().expect("chat folder");
+    let store = tempfile::tempdir().expect("session store");
+    let persistence = crate::acp::session_persistence::SessionPersistence::open(store.path().to_path_buf())
+        .await
+        .expect("persistence");
+    let session_id = "sess-reopen";
+    persistence
+        .register_quick_session(
+            crate::acp::session_persistence::SessionRegistration {
+                session_id: session_id.to_string(),
+                stable_agent_namespace: Some("config:test".to_string()),
+                runtime_agent_id: Some("created-agent".to_string()),
+                project_id: Some(
+                    crate::acp::session_persistence::UNASSIGNED_PROJECT_ID.to_string(),
+                ),
+                cwd: folder.clone(),
+                ..Default::default()
+            },
+            chat_id,
+        )
+        .await
+        .expect("register quick session");
+
+    let manager = AcpManager::new(vec![]);
+    let live = AgentId("reopened-agent".to_string());
+    let bystander = AgentId("other-agent".to_string());
+    let (live_tx, live_rx) = mpsc::unbounded_channel();
+    let (other_tx, other_rx) = mpsc::unbounded_channel();
+    let insert = |id: AgentId, tx: mpsc::UnboundedSender<AcpCommand>| {
+        manager.agents.lock().insert(
+            id,
+            AgentEntry {
+                command_tx: tx,
+                capabilities: AgentCapabilities::default(),
+                stable_namespace: None,
+                name: "test-agent".to_string(),
+                config_id: None,
+                join_handle: None,
+                exit: Default::default(),
+                stamp: SpawnStamp::default(),
+            },
+        );
+    };
+    insert(live.clone(), live_tx);
+    insert(bystander.clone(), other_tx);
+
+    let answer = |owns: bool, mut rx: mpsc::UnboundedReceiver<AcpCommand>| {
+        tokio::spawn(async move {
+            while let Some(command) = rx.recv().await {
+                match command {
+                    AcpCommand::OwnsSession { reply, .. } => {
+                        let _ = reply.send(Ok(owns));
+                    }
+                    AcpCommand::Shutdown => break,
+                    _ => {}
+                }
+            }
+        })
+    };
+    let live_task = answer(true, live_rx);
+    let other_task = answer(false, other_rx);
+
+    manager
+        .delete_persisted_session(&persistence, session_id)
+        .await
+        .expect("delete");
+
+    assert!(
+        manager.agents.lock().get(&live).is_none(),
+        "the reopened agent must stop before the record is removed"
+    );
+    assert!(
+        manager.agents.lock().contains_key(&bystander),
+        "an agent that does not own the session must stay"
+    );
+    assert!(persistence.metadata(session_id).is_err());
+    assert!(!folder.exists(), "the quick chat folder must be removed");
+    live_task.abort();
+    other_task.abort();
+}

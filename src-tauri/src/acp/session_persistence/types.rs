@@ -12,8 +12,8 @@ pub enum PersistedSessionStatus {
 /// (AD-1): `LocalAlias > BackgroundGenerated > AgentSupplied >
 /// DerivedFirstMessage > Untitled`. Once `title_source ==
 /// BackgroundGenerated`, subsequent `session_info_update` events do NOT
-/// overwrite the title. `LocalAlias` is reserved for a future local-rename
-/// feature; it is the highest precedence so a user-chosen name always wins.
+/// overwrite the title. `LocalAlias` is a user rename of a quick chat; it is
+/// the highest precedence so a user-chosen name always wins.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TitleSource {
@@ -21,6 +21,25 @@ pub enum TitleSource {
     AgentSupplied,
     DerivedFirstMessage,
     LocalAlias,
+}
+
+/// Whether a session is a project chat or a quick chat (no project).
+///
+/// Old records omit the field and load as [`SessionKind::Project`]. A quick
+/// chat serializes as `"quick"`. The unassigned project sentinel is not this
+/// flag: a legacy unassigned session stays a project-kind record.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionKind {
+    #[default]
+    Project,
+    Quick,
+}
+
+/// `true` when `kind` is a project chat, so the field is omitted on the wire.
+#[must_use]
+pub fn is_project_kind(kind: &SessionKind) -> bool {
+    *kind == SessionKind::Project
 }
 
 /// Returns `true` when `source` is one of the precedence tiers the host must
@@ -153,6 +172,14 @@ pub struct SessionMetadata {
     /// fold lazily when a source payload's markers are installed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub continued_from: Option<String>,
+    /// `quick` for a chat with no project. Absent on old records, which stay
+    /// project chats. Not the unassigned-project sentinel.
+    #[serde(default, skip_serializing_if = "is_project_kind")]
+    pub kind: SessionKind,
+    /// Host-minted folder id under `~/.troupe/quick-chats`. Set only when
+    /// `kind` is quick. The host derives the cwd from this id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quick_chat_id: Option<String>,
 }
 
 impl SessionMetadata {
@@ -229,6 +256,12 @@ pub struct SessionIndexEntry {
     /// can collapse a switch chain into one conversation row.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub continued_from: Option<String>,
+    /// `quick` for a chat with no project. Absent on old records.
+    #[serde(default, skip_serializing_if = "is_project_kind")]
+    pub kind: SessionKind,
+    /// Host-minted folder id. See [`SessionMetadata::quick_chat_id`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quick_chat_id: Option<String>,
 }
 
 impl From<&SessionMetadata> for SessionIndexEntry {
@@ -256,6 +289,8 @@ impl From<&SessionMetadata> for SessionIndexEntry {
             model_name: metadata.model_name.clone(),
             log_epoch: metadata.log_epoch.clone(),
             continued_from: metadata.continued_from.clone(),
+            kind: metadata.kind,
+            quick_chat_id: metadata.quick_chat_id.clone(),
         }
     }
 }
@@ -334,7 +369,9 @@ pub struct AgentSwitchRecord {
 pub enum SessionPersistenceError {
     Io(io::Error),
     Json(serde_json::Error),
-    UnsupportedVersion { found: u64 },
+    UnsupportedVersion {
+        found: u64,
+    },
     SessionNotFound,
     CorruptSession,
     InvalidStorageKey,
@@ -346,7 +383,10 @@ pub enum SessionPersistenceError {
     QueueFull,
     WriterStopped,
     PersistenceUnhealthy(String),
-    StaleCursor { cursor: u64, last_seq: u64 },
+    StaleCursor {
+        cursor: u64,
+        last_seq: u64,
+    },
 }
 
 impl std::fmt::Display for SessionPersistenceError {

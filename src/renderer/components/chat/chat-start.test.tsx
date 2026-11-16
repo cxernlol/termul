@@ -35,6 +35,14 @@ describe('ChatStartHero (shared by the launcher and the empty chat)', () => {
   })
 })
 
+describe('quick chat empty state copy', () => {
+  it('asks a neutral question and does not name a project', () => {
+    render(<ChatStartHero projectLabel="this folder" quick />)
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('What should we do?')
+    expect(screen.queryByText(/folder|project|workspace/i)).toBeNull()
+  })
+})
+
 describe('ChatEmptyState', () => {
   beforeEach(() => {
     useProjectStore.setState({
@@ -52,6 +60,14 @@ describe('ChatEmptyState', () => {
     )
     // No agent glyph tile and no starter cards: the starters live under the composer.
     expect(screen.queryByRole('group', { name: 'Starters' })).toBeNull()
+  })
+
+  it('asks a neutral question for a quick chat', () => {
+    useAcpStore.setState((s) => ({
+      sessions: { ...s.sessions, 's-quick': { id: 's-quick', kind: 'quick' } as never }
+    }))
+    render(<ChatEmptyState sessionId="s-quick" />)
+    expect(screen.getByRole('heading', { level: 2 })).toHaveTextContent('What should we do?')
   })
 
   it('falls back to "this folder" without a project', () => {

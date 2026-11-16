@@ -389,3 +389,27 @@ fn list_sessions_with_access(
             }
         })
 }
+
+/// A quick-chat folder is an allowed listing cwd on desktop IPC and on `/ws`.
+/// A climb out of that folder is refused on both carriers.
+#[test]
+fn resolve_list_sessions_cwd_locks_the_quick_chat_root_on_both_carriers() {
+    let root = tempfile::tempdir().unwrap();
+    let _guard = crate::acp::quick_chat::set_quick_chat_root_for_test(root.path());
+    let (chat_id, dir) = crate::acp::quick_chat::prepare_new_chat_dir().unwrap();
+    let path = dir.to_string_lossy().to_string();
+    let registry = ProjectRegistry::new();
+    for carrier in [Carrier::Ipc, Carrier::Ws] {
+        let locked = resolve_list_sessions_cwd(carrier, &registry, None, Some(&path))
+            .unwrap_or_else(|error| {
+                panic!("{carrier:?} must accept the quick chat folder: {error}")
+            });
+        assert_eq!(locked.as_deref(), Some(canonical_str(&dir).as_str()));
+        let climb = format!("{path}/../../outside");
+        must_refuse(
+            resolve_list_sessions_cwd(carrier, &registry, None, Some(&climb)),
+            "quick chat climb",
+        );
+    }
+    crate::acp::quick_chat::remove_chat_dir(&chat_id).unwrap();
+}

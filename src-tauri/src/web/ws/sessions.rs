@@ -24,6 +24,7 @@ pub(super) async fn handle_delete_session(
     id: String,
     payload: &Value,
     relay: &Arc<WsRelaySink>,
+    acp: &Arc<AcpManager>,
     history_mode: HistoryMode,
 ) -> WsReply {
     if history_mode != HistoryMode::Server {
@@ -50,7 +51,10 @@ pub(super) async fn handle_delete_session(
             "persisted history is unavailable",
         );
     };
-    match persistence.delete_session(&parsed.session_id).await {
+    match acp
+        .delete_persisted_session(&persistence, &parsed.session_id)
+        .await
+    {
         Ok(()) => {
             relay.forget_session(&parsed.session_id).await;
             crate::web::watch::publish_chat_history(relay, &[parsed.session_id.as_str()]);
@@ -74,6 +78,79 @@ pub(super) async fn handle_delete_session(
                 "SESSION_DELETE_FAILED",
                 "failed to delete persisted session",
             )
+        }
+    }
+}
+
+/// `rename_session` — set a quick chat's local title (`TitleSource::LocalAlias`).
+/// Project chats are refused. The new title is not a secret; the log records
+/// only the session id.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct RenameSessionPayload {
+    session_id: String,
+    title: String,
+}
+
+pub(super) async fn handle_rename_session(
+    id: String,
+    payload: &Value,
+    relay: &Arc<WsRelaySink>,
+    history_mode: HistoryMode,
+) -> WsReply {
+    if history_mode != HistoryMode::Server {
+        return WsReply::err(
+            id,
+            WsErrorCode::Unsupported,
+            "persisted history is unavailable",
+        );
+    }
+    let parsed: RenameSessionPayload = match serde_json::from_value(payload.clone()) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            return WsReply::err(
+                id,
+                WsErrorCode::Unsupported,
+                format!("malformed rename_session payload (want sessionId, title): {error}"),
+            );
+        }
+    };
+    let Some(persistence) = relay.persistence() else {
+        return WsReply::err(
+            id,
+            WsErrorCode::Unsupported,
+            "persisted history is unavailable",
+        );
+    };
+    match persistence
+        .set_local_alias(&parsed.session_id, &parsed.title)
+        .await
+    {
+        Ok(metadata) => {
+            crate::web::watch::publish_chat_history(relay, &[parsed.session_id.as_str()]);
+            tracing::info!(
+                target: "termul::web::ws",
+                session_id = %crate::logging::redact_session_id(&parsed.session_id),
+                "rename_session: local alias stored"
+            );
+            WsReply::ok(
+                id,
+                Some(json!({
+                    "sessionId": metadata.session_id,
+                    "title": metadata.title,
+                })),
+            )
+        }
+        Err(crate::acp::session_persistence::SessionPersistenceError::SessionNotFound) => {
+            WsReply::err(id, WsErrorCode::NotFound, "persisted session not found")
+        }
+        Err(error) => {
+            tracing::warn!(
+                target: "termul::web::ws",
+                session_id = %crate::logging::redact_session_id(&parsed.session_id),
+                "rename_session failed: {error}"
+            );
+            WsReply::err(id, WsErrorCode::Unsupported, error.to_string())
         }
     }
 }

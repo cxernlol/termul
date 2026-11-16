@@ -252,15 +252,22 @@ fn switch_context_rejects_archived_and_carries_private_mcp() {
     let reg = ProjectRegistry::open_durable(&file, RootCheck::Strict).expect("open");
     assert!(reg.switch_context("old").is_none());
     let context = reg.switch_context("live").expect("live context");
-    assert_eq!(context.cwd, live_dir.canonicalize().unwrap().to_string_lossy());
+    assert_eq!(
+        context.cwd,
+        live_dir.canonicalize().unwrap().to_string_lossy()
+    );
     assert_eq!(context.mcp_servers.len(), 1);
     let public = serde_json::to_value(reg.snapshot()).expect("public snapshot");
     assert!(public["projects"][0].get("mcpServers").is_none());
 
     // A commit rewrites the file without losing the project's MCP config.
-    reg.commit_update("live", Some("Renamed".to_string()), None, None, None).unwrap();
+    reg.commit_update("live", Some("Renamed".to_string()), None, None, None)
+        .unwrap();
     let reopened = ProjectRegistry::open_durable(&file, RootCheck::Strict).expect("reopen");
-    assert_eq!(reopened.switch_context("live").unwrap().mcp_servers.len(), 1);
+    assert_eq!(
+        reopened.switch_context("live").unwrap().mcp_servers.len(),
+        1
+    );
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -449,7 +456,10 @@ fn seed_root_registers_one_default_project_only_when_empty() {
     assert_eq!(snap.default_project_id.as_deref(), Some(SEEDED_PROJECT_ID));
     assert_eq!(snap.projects[0].path.as_deref(), Some(path_str(&dir)));
     assert!(reg.is_within_any_registered_root(&dir));
-    assert_eq!(reg.canonical_root(SEEDED_PROJECT_ID), dir.canonicalize().ok());
+    assert_eq!(
+        reg.canonical_root(SEEDED_PROJECT_ID),
+        dir.canonicalize().ok()
+    );
 
     let other = tempdir_like("seed2");
     assert!(
@@ -584,4 +594,25 @@ fn find_by_path_matches_verbatim_and_plain_windows_spellings() {
     reg.set(vec![sample("p-plain", Some(r"C:\repo"), false)], None);
     let expected = if cfg!(windows) { Some("p-plain") } else { None };
     assert_eq!(reg.find_by_path(r"\\?\C:\repo").as_deref(), expected);
+}
+
+/// A project rooted at the home directory must not claim a quick chat.
+#[test]
+fn find_by_path_does_not_bind_a_quick_chat_to_a_project() {
+    let home = tempfile::tempdir().unwrap();
+    let quick_root = home.path().join(".troupe").join("quick-chats");
+    let _guard = crate::acp::quick_chat::set_quick_chat_root_for_test(&quick_root);
+    let reg = ProjectRegistry::new();
+    let home_path = home.path().to_string_lossy().to_string();
+    reg.set(vec![sample("home", Some(&home_path), false)], None);
+    let quick = quick_root.join("chat-1");
+    assert!(
+        reg.find_by_path(&quick.to_string_lossy()).is_none(),
+        "a quick chat folder is not a project"
+    );
+    let sibling = home.path().join("notes");
+    assert_eq!(
+        reg.find_by_path(&sibling.to_string_lossy()).as_deref(),
+        Some("home")
+    );
 }

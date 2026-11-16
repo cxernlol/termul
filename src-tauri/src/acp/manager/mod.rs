@@ -156,6 +156,9 @@ pub struct NewSessionOutcome {
     pub models: Option<SessionModelState>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub config_options: Option<Vec<SessionConfigOption>>,
+    /// Canonical quick-chat folder. Absent for a project chat.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
 }
 
 /// Trusted server-side context attached to durable session registration.
@@ -186,6 +189,9 @@ pub struct SessionCreationContext {
     /// How the host answers an ephemeral session's permission requests.
     /// `None` cancels every request.
     pub tool_allowlist: Option<crate::acp::session::ToolAllowlist>,
+    /// Set when this session is a quick chat. The value is the host-minted
+    /// folder id. The client does not choose it.
+    pub quick_chat_id: Option<String>,
 }
 
 /// Commands sent from Tauri command handlers to an agent's driver thread.
@@ -206,6 +212,7 @@ enum AcpCommand {
         additional_directories: Vec<PathBuf>,
         command_id: Option<String>,
         tool_allowlist: Option<crate::acp::session::ToolAllowlist>,
+        quick_chat_id: Option<String>,
         reply: oneshot::Sender<Result<NewSessionOutcome, String>>,
     },
     LoadSession {
@@ -1245,6 +1252,7 @@ impl AcpManager {
                 additional_directories,
                 command_id: context.command_id,
                 tool_allowlist: context.tool_allowlist,
+                quick_chat_id: context.quick_chat_id,
                 reply,
             })
             .await
@@ -1925,6 +1933,65 @@ impl AcpManager {
         self.stop_agent(agent_id, ExitIntent::Killed).await
     }
 
+    /// Delete a persisted session. A quick chat stops every live agent that
+    /// owns the session, and the agent id stored at create, before the folder
+    /// and the record are removed. A project chat and an older unassigned
+    /// chat only remove the record.
+    pub async fn delete_persisted_session(
+        &self,
+        persistence: &SessionPersistence,
+        session_id: &str,
+    ) -> Result<(), SessionPersistenceError> {
+        if let Ok(metadata) = persistence.metadata(session_id) {
+            if metadata.kind == crate::acp::session_persistence::SessionKind::Quick {
+                // `runtime_agent_id` is the agent from create. Reopen starts a
+                // new agent and does not rewrite that field.
+                self.stop_quick_chat_agents(session_id, metadata.runtime_agent_id.as_deref())
+                    .await;
+            }
+        }
+        persistence.delete_session(session_id).await
+    }
+
+    /// Stop the live owners of a quick chat, then the stored create-time id.
+    /// An unknown or already-stopped id is success. The caller removes the
+    /// folder only after this returns.
+    async fn stop_quick_chat_agents(&self, session_id: &str, recorded_agent_id: Option<&str>) {
+        let live: Vec<AgentId> = self.agents.lock().keys().cloned().collect();
+        let mut stop = Vec::new();
+        for agent_id in live {
+            match self
+                .owns_session(&agent_id, SessionId::new(session_id))
+                .await
+            {
+                Ok(true) => stop.push(agent_id),
+                Ok(false) => {}
+                Err(error) => {
+                    log::warn!(
+                        "[quick-chat] ownership query failed before delete session_id={} \
+                         agent_id={} error={error}",
+                        crate::logging::redact_session_id(session_id),
+                        agent_id.0
+                    );
+                }
+            }
+        }
+        if let Some(agent_id) = recorded_agent_id.filter(|id| !id.is_empty()) {
+            let recorded = AgentId(agent_id.to_string());
+            if !stop.contains(&recorded) {
+                stop.push(recorded);
+            }
+        }
+        for agent_id in stop {
+            log::info!(
+                "[quick-chat] stopping agent before delete session_id={} agent_id={}",
+                crate::logging::redact_session_id(session_id),
+                agent_id.0
+            );
+            let _ = self.kill(&agent_id).await;
+        }
+    }
+
     /// Stop an agent for the idle reaper: same teardown as [`Self::kill`], but
     /// announced with reason `reaped`.
     pub async fn reap_agent(&self, agent_id: &AgentId) -> Result<(), String> {
@@ -2300,6 +2367,7 @@ impl AcpManager {
                             modes: None,
                             models: None,
                             config_options: None,
+                            cwd: None,
                         }));
                     }
                     AcpCommand::OwnsSession { session_id, reply } => {

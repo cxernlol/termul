@@ -1,6 +1,8 @@
 import type { DetectedShells } from '@shared/types/ipc.types'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
+import { OlderChatsGroup } from '@/components/shell/OlderChatsGroup'
+import { QuickChatsGroup } from '@/components/shell/QuickChatsGroup'
 import { PANEL_HEADER_CLASS, PANEL_ICON_BUTTON_CLASS } from '@/components/ui/panel-styles'
 import { dialogApi, shellApi } from '@/lib/api'
 import { cn } from '@/lib/utils'
@@ -377,6 +379,7 @@ export function ProjectSidebar({
         onNewGroup={() => setNewGroupModal({})}
         onImportChats={onImportChats}
         activeProjectContent={activeProjectContent}
+        trailing={<QuickChatsGroup />}
       />
 
       {/* SSH Connections - Resizable. Hidden on the collapsed Rail. */}
@@ -387,6 +390,8 @@ export function ProjectSidebar({
           activeProfileId={activeSSHProfileId}
         />
       )}
+
+      <OlderChatsGroup />
 
       {/* Group Delete Confirmation Dialog */}
       <ConfirmDialog

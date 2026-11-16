@@ -119,6 +119,12 @@ export interface SessionIndexEntry {
    * before the host stamped the field still fold.
    */
   continuedFrom?: string
+  /**
+   * `quick` for a chat with no project. Absent on project chats and on
+   * sessions saved before quick chats existed. The unassigned project id is
+   * not this flag.
+   */
+  kind?: 'quick'
 }
 
 /** The failure behind a failed turn's terminator, as the host recorded it. */
@@ -419,11 +425,22 @@ export function deriveTitle(messages: ChatMessage[], fallbackTitle: string): str
 
 export type RecencyGroup = 'Today' | 'Yesterday' | 'Earlier'
 
-/** The history bucket for sessions the host could not attribute to any project. */
-export const UNASSIGNED_GROUP = 'Unassigned'
+/**
+ * Mobile Recents bucket for quick chats (`kind: 'quick'`). Legacy sessions
+ * stamped only with the unassigned project id stay out of this group.
+ */
+export const QUICK_CHATS_GROUP = 'Quick chats'
+/** Legacy chats with no project. They are not quick chats. */
+export const OLDER_CHATS_GROUP = 'Older chats'
+/** @deprecated Use {@link QUICK_CHATS_GROUP}. Kept so older imports still compile. */
+export const UNASSIGNED_GROUP = QUICK_CHATS_GROUP
 /** The mobile Recents bucket for chats open in the active project's tree, listed first. */
 export const ACTIVE_GROUP = 'Active'
-export type HistoryGroup = typeof ACTIVE_GROUP | RecencyGroup | typeof UNASSIGNED_GROUP
+export type HistoryGroup =
+  | typeof ACTIVE_GROUP
+  | RecencyGroup
+  | typeof QUICK_CHATS_GROUP
+  | typeof OLDER_CHATS_GROUP
 
 /**
  * The timestamp that buckets and orders history: last activity (the desktop
@@ -434,6 +451,18 @@ export type RecencyKey = 'lastActivityAt' | 'createdAt'
 /** Index entries stamped with the host's unassigned-project sentinel. */
 export function unassignedSessions(entries: SessionIndexEntry[]): SessionIndexEntry[] {
   return entries.filter((entry) => entry.projectId === UNASSIGNED_PROJECT_ID)
+}
+
+/** Quick chats only. A legacy unassigned session (no `kind`) is not included. */
+export function quickSessions(entries: SessionIndexEntry[]): SessionIndexEntry[] {
+  return entries.filter((entry) => entry.kind === 'quick')
+}
+
+/** Legacy chats with no project. Quick chats are not included. */
+export function olderChats(entries: SessionIndexEntry[]): SessionIndexEntry[] {
+  return entries.filter(
+    (entry) => entry.projectId === UNASSIGNED_PROJECT_ID && entry.kind !== 'quick'
+  )
 }
 
 /** An entry's `key` timestamp; a missing `createdAt` reads as 0 (oldest). */
@@ -572,7 +601,8 @@ export function fromPersistedSessionSummary(entry: PersistedSessionSummary): Ses
     worktreeBranch: entry.worktreeBranch,
     modelId: entry.modelId,
     modelName: entry.modelName,
-    continuedFrom: entry.continuedFrom
+    continuedFrom: entry.continuedFrom,
+    kind: entry.kind === 'quick' ? 'quick' : undefined
   }
 }
 

@@ -48,6 +48,11 @@ interface ChatStatusChipsProps {
   onOpenGitChanges?: (opener: HTMLElement) => void
   /** Hide the chips (phone keyboard open, reconnect notice showing). */
   hidden?: boolean
+  /**
+   * Quick chats have no Git view. Omit the Changes chip and do not read git
+   * status for the chat folder.
+   */
+  hideChanges?: boolean
   /** False while the chat tab is hidden (tabs stay mounted); closes the panel. */
   isVisible?: boolean
   className?: string
@@ -363,10 +368,15 @@ export function ChatStatusChips({
   onOpenGitChanges,
   hidden = false,
   isVisible = true,
+  hideChanges = false,
   className
 }: ChatStatusChipsProps): React.JSX.Element | null {
   const isMobile = useMobileWebShell()
-  const changes = useChatChangedFiles(cwd, toolCalls, turnActive)
+  const changes = useChatChangedFiles(
+    hideChanges ? '' : cwd,
+    hideChanges ? [] : toolCalls,
+    turnActive
+  )
   const { subagents, backgroundRunning, statuses, counts } = useCurrentTurnSubagents(
     toolCalls,
     messages,
@@ -379,7 +389,7 @@ export function ChatStatusChips({
   const rowCount: Record<StatusKind, number> = {
     subagents: subagents.length,
     background: commands.length,
-    changes: changes.files.length
+    changes: hideChanges ? 0 : changes.files.length
   }
   const shown =
     !hidden && (rowCount.subagents > 0 || rowCount.background > 0 || rowCount.changes > 0)
@@ -415,7 +425,7 @@ export function ChatStatusChips({
               onRowOpen={close}
             />
           )}
-          {changes.files.length > 0 && (
+          {!hideChanges && changes.files.length > 0 && (
             <ChangesChip
               {...base('changes')}
               changes={changes}

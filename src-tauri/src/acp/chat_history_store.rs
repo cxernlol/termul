@@ -63,6 +63,10 @@ pub struct ChatHistoryIndexEntry {
     /// on unswitched chats and pre-feature entries.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub continued_from: Option<String>,
+    /// `"quick"` for a chat with no project. Absent on project chats and on
+    /// records written before quick chats existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

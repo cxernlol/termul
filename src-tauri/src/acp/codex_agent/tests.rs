@@ -136,7 +136,7 @@ async fn a_project_account_exports_its_home_strips_keys_and_probes_that_login() 
 }
 
 #[tokio::test]
-async fn the_builtin_account_unsets_codex_home_and_strips_keys() {
+async fn the_builtin_account_skips_the_login_check_and_keeps_api_keys() {
     let h = host(|_| None);
     let mut config = with_home("relative/home");
     assert!(h
@@ -145,9 +145,16 @@ async fn the_builtin_account_unsets_codex_home_and_strips_keys() {
         .await
         .unwrap());
     assert!(!config.env.contains_key(CODEX_HOME_ENV));
-    assert!(!config.env.contains_key("OPENAI_API_KEY"));
-    assert!(!config.env.contains_key("CODEX_ACCESS_TOKEN"));
-    assert_eq!(h.runtime.probed.lock().as_slice(), &[None]);
+    assert_eq!(
+        config.env.get("OPENAI_API_KEY").map(String::as_str),
+        Some("sk-test")
+    );
+    assert_eq!(
+        config.env.get("CODEX_ACCESS_TOKEN").map(String::as_str),
+        Some("token-test")
+    );
+    assert!(!config.env.contains_key(STRIP_CODEX_API_CREDENTIALS));
+    assert!(h.runtime.probed.lock().is_empty());
 }
 
 #[tokio::test]
@@ -285,7 +292,7 @@ fn a_tilde_project_env_home_without_a_home_is_ignored() {
 }
 
 #[tokio::test]
-async fn a_signed_out_builtin_account_names_the_host_login() {
+async fn a_signed_out_builtin_account_still_starts() {
     let root = tempfile::tempdir().unwrap();
     let accounts = Arc::new(CodexAccountStore::new(
         &root.path().join("state"),
@@ -297,18 +304,55 @@ async fn a_signed_out_builtin_account_names_the_host_login() {
         bins: parking_lot::Mutex::new(Vec::new()),
         paths: parking_lot::Mutex::new(Vec::new()),
         host_signed_out: true,
-        unavailable: false,
+        unavailable: true,
         require_dir: false,
     });
-    let service = CodexAgentService::with_probe(accounts, runtime);
+    let service = CodexAgentService::with_probe(accounts, runtime.clone());
     let mut config = managed();
-    let error = service
+    assert!(service
         .prepare_managed_config_for_project(&mut config, None)
         .await
-        .unwrap_err();
+        .unwrap());
+    assert!(runtime.probed.lock().is_empty());
     assert_eq!(
-        strip_signed_out_tag(&error),
-        Some("Codex CLI is not signed in. Run `codex login`, then retry.")
+        config.env.get("OPENAI_API_KEY").map(String::as_str),
+        Some("sk-test")
+    );
+}
+
+#[tokio::test]
+async fn a_missing_cli_for_a_linked_account_is_not_a_signed_out_error() {
+    let root = tempfile::tempdir().unwrap();
+    let accounts = Arc::new(CodexAccountStore::new(
+        &root.path().join("state"),
+        root.path().join("shared"),
+    ));
+    let work = accounts.add("Work").unwrap();
+    accounts
+        .set_project_account("office", Some(&work.id), None)
+        .unwrap();
+    let runtime = Arc::new(RecordingProbe {
+        probed: parking_lot::Mutex::new(Vec::new()),
+        signed_out: None,
+        bins: parking_lot::Mutex::new(Vec::new()),
+        paths: parking_lot::Mutex::new(Vec::new()),
+        host_signed_out: false,
+        unavailable: true,
+        require_dir: false,
+    });
+    let service = CodexAgentService::with_probe(Arc::clone(&accounts), runtime);
+    let mut config = managed();
+    let error = service
+        .prepare_managed_config_for_project(&mut config, Some("office"))
+        .await
+        .unwrap_err();
+    assert!(
+        strip_signed_out_tag(&error).is_none(),
+        "a missing CLI must not look like a signed-out account: {error}"
+    );
+    assert!(
+        error.contains("not installed") || error.contains("not on PATH"),
+        "{error}"
     );
 }
 
@@ -354,6 +398,10 @@ async fn a_missing_codex_cli_is_not_reported_as_signed_out() {
         &root.path().join("state"),
         root.path().join("shared"),
     ));
+    let work = accounts.add("Work").unwrap();
+    accounts
+        .set_project_account("office", Some(&work.id), None)
+        .unwrap();
     let runtime = Arc::new(RecordingProbe {
         probed: parking_lot::Mutex::new(Vec::new()),
         bins: parking_lot::Mutex::new(Vec::new()),
@@ -366,7 +414,7 @@ async fn a_missing_codex_cli_is_not_reported_as_signed_out() {
     let service = CodexAgentService::with_probe(accounts, runtime);
     let mut config = managed();
     let error = service
-        .prepare_managed_config_for_project(&mut config, None)
+        .prepare_managed_config_for_project(&mut config, Some("office"))
         .await
         .unwrap_err();
     assert!(strip_signed_out_tag(&error).is_none(), "{error}");
@@ -377,13 +425,17 @@ async fn a_missing_codex_cli_is_not_reported_as_signed_out() {
 #[tokio::test]
 async fn the_login_probe_uses_the_project_codex_path() {
     let h = host(|_| None);
+    let work = h.accounts.add("Work").unwrap();
+    h.accounts
+        .set_project_account("office", Some(&work.id), None)
+        .unwrap();
     let mut config = managed();
     config
         .env
         .insert("CODEX_PATH".to_string(), "/opt/codex".to_string());
     assert!(h
         .service
-        .prepare_managed_config_for_project(&mut config, None)
+        .prepare_managed_config_for_project(&mut config, Some("office"))
         .await
         .unwrap());
     assert_eq!(
@@ -395,6 +447,10 @@ async fn the_login_probe_uses_the_project_codex_path() {
 #[tokio::test]
 async fn the_login_probe_receives_the_project_path() {
     let h = host(|_| None);
+    let work = h.accounts.add("Work").unwrap();
+    h.accounts
+        .set_project_account("office", Some(&work.id), None)
+        .unwrap();
     let mut config = managed();
     config
         .env
@@ -404,7 +460,7 @@ async fn the_login_probe_receives_the_project_path() {
         .insert("CODEX_PATH".to_string(), "codex".to_string());
     assert!(h
         .service
-        .prepare_managed_config_for_project(&mut config, None)
+        .prepare_managed_config_for_project(&mut config, Some("office"))
         .await
         .unwrap());
     assert_eq!(

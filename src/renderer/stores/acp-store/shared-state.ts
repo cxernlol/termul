@@ -287,7 +287,10 @@ export function persistSession(
     // Switch-chain edge (CAP-8): like `agents`, the switch orchestration
     // stamps it once; every other persist carries it forward so a normal
     // projection never drops the fold's lookup.
-    continuedFrom: existingEntry?.continuedFrom
+    continuedFrom: existingEntry?.continuedFrom,
+    // A local projection must keep `kind: quick`. Dropping it hides the chat
+    // from the Quick chats list until the next host refetch.
+    kind: session.kind ?? existingEntry?.kind
   }
   const nextIndex = [entry, ...state.sessionIndex.filter((e) => e.id !== sessionId)]
   setIndex(nextIndex)

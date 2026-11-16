@@ -317,6 +317,11 @@ impl ProjectRegistry {
         if target.is_empty() {
             return None;
         }
+        // A quick chat lives under `~/.troupe/quick-chats`. A project that
+        // contains that root (home, or `~/.troupe`) must not claim the chat.
+        if crate::acp::quick_chat::is_quick_chat_path(target) {
+            return None;
+        }
         // Compare in git's plain spelling so a verbatim (`\\?\C:\…`) root and
         // the plain path returned by worktree create still match (#1724).
         // `git_path` only rewrites on Windows and only when both forms name

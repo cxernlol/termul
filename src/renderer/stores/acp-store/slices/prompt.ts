@@ -826,6 +826,18 @@ type PromptSliceState = Pick<
 
 /** The host's stable `already_resolved` reply: the approval/question ticket was
  *  answered by another connection or released when its turn, session or agent ended. */
+function rejectOlderChat(get: () => AcpState, sessionId: SessionId): Promise<never> | null {
+  const state = get()
+  const session = state.sessions[sessionId]
+  const entry = state.sessionIndex.find((item) => item.id === sessionId)
+  const projectId = session?.projectId ?? entry?.projectId
+  const kind = session?.kind ?? entry?.kind
+  if (projectId === '__unassigned__' && kind !== 'quick') {
+    return Promise.reject(new Error('This older chat is read-only'))
+  }
+  return null
+}
+
 function isAlreadyResolved(err: unknown): boolean {
   return err instanceof AcpTransportError && err.code === WS_ERROR_CODES.ALREADY_RESOLVED
 }
@@ -843,6 +855,8 @@ export const createPromptSlice: StateCreator<AcpState, [], [], PromptSliceState>
     if (isCodexAccountRestarting(sessionId)) {
       return Promise.reject(new Error('This chat is switching Codex accounts'))
     }
+    const older = rejectOlderChat(get, sessionId)
+    if (older) return older
     // Staged switch-on-send (CAP-1/CAP-4): an armed switch intercepts the
     // NEXT send — the composer's text becomes the pending draft carried into
     // the handoff instead of a normal turn on the old agent.
@@ -863,6 +877,8 @@ export const createPromptSlice: StateCreator<AcpState, [], [], PromptSliceState>
     if (isCodexAccountRestarting(sessionId)) {
       return Promise.reject(new Error('This chat is switching Codex accounts'))
     }
+    const older = rejectOlderChat(get, sessionId)
+    if (older) return older
     // Staged switch-on-send (CAP-1/CAP-4): the composer already built the
     // wire/display pair — route them straight into the armed switch rather
     // than re-deriving the pending draft from the wire text.

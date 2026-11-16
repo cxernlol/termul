@@ -16,10 +16,11 @@ interface ChatEmptyStateProps {
  */
 export function ChatEmptyState({ sessionId }: ChatEmptyStateProps): React.JSX.Element {
   const isMobileShell = useMobileWebShell()
-  const projectId = useAcpStore((s) => s.sessions?.[sessionId]?.projectId)
+  const session = useAcpStore((s) => s.sessions?.[sessionId])
   const projectName = useProjectStore((s) =>
-    projectId ? s.projects.find((p) => p.id === projectId)?.name : undefined
+    session?.projectId ? s.projects.find((p) => p.id === session.projectId)?.name : undefined
   )
+  const quick = session?.kind === 'quick'
 
   return (
     <div className="flex min-h-0 flex-1 flex-col items-center justify-end px-5">
@@ -27,6 +28,7 @@ export function ChatEmptyState({ sessionId }: ChatEmptyStateProps): React.JSX.El
         projectLabel={projectName ?? 'this folder'}
         headingLevel={2}
         isMobileShell={isMobileShell}
+        quick={quick}
       />
     </div>
   )

@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ToolCall } from '@/lib/acp-api'
 import { endedState, subagentToolCall } from '@/lib/test-utils/subagent'
 import type { ChatMessage } from '@/stores/acp-store/types'
+import { useGitStatusStore } from '@/stores/git-status-store'
 import { useOverlayStackStore } from '@/stores/overlay-stack-store'
 import { ChatStatusChips } from './ChatStatusChips'
 
@@ -72,6 +73,23 @@ describe('ChatStatusChips row', () => {
     expect(screen.queryByRole('group', { name: 'Session status' })).toBeNull()
     render(<Pill toolCalls={[subagent, ...EDITS]} hidden />)
     expect(screen.queryByRole('button')).toBeNull()
+  })
+
+  it('omits Changes for a quick chat and does not watch that folder', () => {
+    const watch = vi.spyOn(useGitStatusStore.getState(), 'watchDiffStat')
+    render(
+      <ChatStatusChips
+        sessionId="s1"
+        cwd="/home/me/.troupe/quick-chats/abc"
+        toolCalls={EDITS}
+        messages={[user]}
+        turnActive={false}
+        hideChanges
+      />
+    )
+    expect(screen.queryByRole('button', { name: /^Changes:/ })).toBeNull()
+    expect(watch).not.toHaveBeenCalled()
+    watch.mockRestore()
   })
 
   it('shows one chip per kind with rows, Subagent first and Changes last', () => {

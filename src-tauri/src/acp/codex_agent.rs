@@ -242,51 +242,57 @@ impl CodexAgentService {
                 return Err("Could not create the Codex home folder".to_string());
             }
         }
-        let codex_bin = config.env.get("CODEX_PATH").map(String::as_str);
-        let project_path = project_path_override(&config.env);
-        match self
-            .login_probe
-            .login_status(home.as_deref(), codex_bin, project_path)
-            .await
-        {
-            Ok(Some(true)) => {}
-            Ok(Some(false)) => {
-                log::warn!(
-                    "[acp-codex] managed config rejected: {} profile is not signed in",
-                    source.label()
-                );
-                let message = match source {
-                    HomeSource::Host => {
-                        "Codex CLI is not signed in. Run `codex login`, then retry.".to_string()
-                    }
+        // The built-in Default account is the host Codex home. It does not
+        // require `codex login status`: an API key in the project env, and the
+        // in-app Codex sign-in gate, still work when the CLI is absent.
+        // A linked account or a project-env CODEX_HOME does require a login.
+        if source != HomeSource::Host {
+            let codex_bin = config.env.get("CODEX_PATH").map(String::as_str);
+            let project_path = project_path_override(&config.env);
+            match self
+                .login_probe
+                .login_status(home.as_deref(), codex_bin, project_path)
+                .await
+            {
+                Ok(Some(true)) => {}
+                Ok(Some(false)) => {
+                    log::warn!(
+                        "[acp-codex] managed config rejected: {} profile is not signed in",
+                        source.label()
+                    );
+                    let message = match source {
                     HomeSource::Linked => format!(
                         "The Codex account \"{}\" is not signed in. Run `codex login` for that account, then retry.",
                         account.account_name
                     ),
                     HomeSource::ProjectEnv => "The Codex profile set by CODEX_HOME in the project environment is not signed in. Run `codex login` with that CODEX_HOME, then retry."
                         .to_string(),
+                    HomeSource::Host => unreachable!("the built-in account does not check login"),
                 };
-                return Err(signed_out_error(message));
+                    return Err(signed_out_error(message));
+                }
+                Ok(None) => {
+                    log::warn!(
+                        "[acp-codex] managed config rejected: {} profile login could not be checked",
+                        source.label()
+                    );
+                    return Err(
+                        "Codex CLI is not installed or is not on PATH. Install it, or set CODEX_PATH to the codex binary, then retry."
+                            .to_string(),
+                    );
+                }
+                Err(error) => {
+                    log::warn!("[acp-codex] managed config rejected: {error}");
+                    return Err(error);
+                }
             }
-            Ok(None) => {
-                log::warn!(
-                    "[acp-codex] managed config rejected: {} profile login could not be checked",
-                    source.label()
-                );
-                return Err(
-                    "Could not check the Codex login. Install the Codex CLI, or set CODEX_PATH to the codex binary, then retry."
-                        .to_string(),
-                );
-            }
-            Err(error) => {
-                log::warn!("[acp-codex] managed config rejected: {error}");
-                return Err(error);
-            }
+            // Managed homes must not inherit the host API key. The marker tells
+            // the spawn path to env_remove the same names from the child.
+            strip_api_credentials(&mut config.env);
+            config
+                .env
+                .insert(STRIP_CODEX_API_CREDENTIALS.to_string(), "1".to_string());
         }
-        strip_api_credentials(&mut config.env);
-        config
-            .env
-            .insert(STRIP_CODEX_API_CREDENTIALS.to_string(), "1".to_string());
         match &home {
             Some(dir) => {
                 let dir = dir.to_str().ok_or_else(|| {

@@ -31,6 +31,7 @@ vi.mock('@/stores/acp-store/composer-options', async (importOriginal) => ({
 
 import { useAcpStore } from '@/stores/acp-store'
 import { useProjectStore } from '@/stores/project-store'
+import { useQuickChatStore } from '@/stores/quick-chat-store'
 import { useShellLayoutStore } from '@/stores/shell-layout-store'
 import { agentChatTabId, useWorkspaceStore } from '@/stores/workspace-store'
 import { newChatPlaceholderOptions, openNewChat } from './open-new-chat'
@@ -206,6 +207,55 @@ describe('openNewChat', () => {
     ])
     expect(first).toEqual(second)
     expect(launchChat).toHaveBeenCalledTimes(1)
+  })
+
+  it('opens an empty quick chat when no project is active, and does not open the launcher', async () => {
+    useQuickChatStore.setState({ view: { mode: 'closed' } })
+    useProjectStore.setState({ activeProjectId: '', projects: [] } as never)
+    const store = useAcpStore.getState()
+    const createLaunchPlaceholder = vi.fn(() => 'launch-q')
+    const finalizeChatLaunch = vi.fn(async () => 'sess-q')
+    useAcpStore.setState({ createLaunchPlaceholder, finalizeChatLaunch } as never)
+    const showAgentLauncher = vi.spyOn(useWorkspaceStore.getState(), 'showAgentLauncher')
+
+    const result = await openNewChat({ reason: 'rail' })
+
+    expect(result).toEqual({ kind: 'opened', sessionId: 'launch-q' })
+    expect(launchChat).not.toHaveBeenCalled()
+    expect(showAgentLauncher).not.toHaveBeenCalled()
+    expect(createLaunchPlaceholder).toHaveBeenCalledWith(
+      expect.objectContaining({
+        configId: 'cfg-b',
+        cwd: '',
+        projectId: '__unassigned__',
+        kind: 'quick'
+      })
+    )
+    expect(finalizeChatLaunch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        placeholderId: 'launch-q',
+        configId: 'cfg-b',
+        cwd: '',
+        projectId: '__unassigned__'
+      })
+    )
+    expect(useQuickChatStore.getState().view).toEqual({ mode: 'chat', sessionId: 'launch-q' })
+    useAcpStore.setState({
+      createLaunchPlaceholder: store.createLaunchPlaceholder,
+      finalizeChatLaunch: store.finalizeChatLaunch
+    } as never)
+  })
+
+  it('does not open the launcher when no project is active and no agent can start', async () => {
+    useQuickChatStore.setState({ view: { mode: 'closed' } })
+    useProjectStore.setState({ activeProjectId: '', projects: [] } as never)
+    resolveEntries.mockResolvedValue([entry('cfg-b', 'install-required')])
+    const showAgentLauncher = vi.spyOn(useWorkspaceStore.getState(), 'showAgentLauncher')
+
+    expect(await openNewChat({ reason: 'rail' })).toEqual({ kind: 'skipped' })
+    expect(showAgentLauncher).not.toHaveBeenCalled()
+    expect(launchChat).not.toHaveBeenCalled()
+    expect(useQuickChatStore.getState().view.mode).toBe('closed')
   })
 
   it('opens the launcher when the last picked agent needs an install (desktop)', async () => {
