@@ -8,6 +8,7 @@ import {
   RailHoverPanelProjectRow,
   RailHoverPanelTrigger
 } from '@/components/shell/rail/rail-hover-panel'
+import { RAIL_COLLAPSED_ROW_CLASS } from '@/components/shell/rail/rail-motion'
 import { RAIL_ICON_BOX_CLASS } from '@/components/shell/rail-layout'
 import { ContextMenu, ContextMenuTrigger } from '@/components/ui/context-menu'
 import { FOCUS_RING_CLASS } from '@/components/ui/panel-styles'
@@ -27,9 +28,10 @@ export interface ProjectIconItemProps {
 
 /**
  * Project row of the collapsed Rail (Sidebar V2): the expanded row's 30px
- * with only the 16px project icon, centred (radius 6, hover 6% foreground).
+ * with only the 16px project icon, in a 30px square fill on the icon column,
+ * so the icon keeps its expanded x (radius 8, hover 6% foreground).
  * Hover or keyboard focus opens the project card
- * (name + diff stat) at x = 52, on the row's y. Right-click opens the same
+ * (name + diff stat) at x = 60, on the row's y. Right-click opens the same
  * menu as the expanded row.
  */
 export const ProjectIconItem = memo(function ProjectIconItem({
@@ -57,7 +59,8 @@ export const ProjectIconItem = memo(function ProjectIconItem({
                 }}
                 // Paper 1BU1: the open project is plain on the collapsed Rail too.
                 className={cn(
-                  'flex h-7.5 w-full cursor-pointer select-none items-center justify-center rounded-md',
+                  'flex h-7.5 cursor-pointer select-none items-center rounded-lg',
+                  RAIL_COLLAPSED_ROW_CLASS,
                   'transition-colors duration-150 ease-out hover:bg-foreground/[0.06] focus-visible:ring-inset',
                   FOCUS_RING_CLASS
                 )}

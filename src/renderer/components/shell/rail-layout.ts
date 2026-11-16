@@ -11,15 +11,20 @@ export const RAIL_ROW_INSET_CLASS = 'gap-2 px-3'
 /** The one icon box (16px) every Rail row puts its leading glyph in. */
 export const RAIL_ICON_BOX_CLASS = 'inline-flex size-4 shrink-0 items-center justify-center'
 
-/** Width of the collapsed Rail (`w-12`). */
-export const COLLAPSED_WIDTH = 48
+/**
+ * Width of the collapsed Rail (`w-14`). The icon column sits at x = 28 in
+ * both densities, so 56px puts it exactly in the middle of the collapsed
+ * Rail (13px on each side of a 30px square row fill) and an icon never moves
+ * on a toggle.
+ */
+export const COLLAPSED_WIDTH = 56
 
 /**
  * Collapsed Rail hover panels (Sidebar V2) open 4px right of the Rail edge
- * (x = 52). A Rail row spans x = 8..40 (the 8px list inset), so the panel
- * sits 12px from its trigger row.
+ * (x = 60). A collapsed Rail row fill spans x = 13..43 (on the icon column,
+ * `RAIL_COLLAPSED_ROW_CLASS`), so the panel sits 17px from its trigger row.
  */
-export const RAIL_HOVER_PANEL_SIDE_OFFSET = 12
+export const RAIL_HOVER_PANEL_SIDE_OFFSET = 17
 
 /** Inner padding of a hover panel (`p-1`): its first row starts 4px down. */
 export const RAIL_HOVER_PANEL_PADDING = 4

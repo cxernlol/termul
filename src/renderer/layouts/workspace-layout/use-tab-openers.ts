@@ -8,6 +8,7 @@ import { getActiveWorkingCopy, reportUnresolvedWorkingCopy } from '@/lib/active-
 import { launchAgentInPane } from '@/lib/agent-launch'
 import { BUILT_IN_AGENTS } from '@/lib/agents/agent-registry'
 import { newUserBrowserTabId } from '@/lib/browser-api'
+import { leaveQuickChatView } from '@/lib/no-project-chat'
 import { openProjectCanvas } from '@/lib/open-project-canvas'
 import { openTerminalFromProfile, spawnTerminalInPane } from '@/lib/terminal-spawn'
 import { getDefaultCwdForProject } from '@/lib/worktree-context'
@@ -16,6 +17,9 @@ import { useBrowserSessionStore } from '@/stores/browser-session-store'
 import { useWorkspaceStore } from '@/stores/workspace-store'
 import type { Project } from '@/types/project'
 import type { TerminalProfile } from '@/types/settings'
+
+/** Log source: a project tab opener closed the quick chat view. */
+const SOURCE = 'tab-openers'
 
 interface UseTabOpenersOptions {
   activeProject: Project | undefined
@@ -67,6 +71,7 @@ export function useTabOpeners({
   const handleOpenCanvas = useCallback(() => {
     setIsCommandPaletteOpen(false)
     if (!activeProjectId) return
+    leaveQuickChatView(SOURCE)
     const projectPath = activeProject?.path
     if (!projectPath) {
       toast.error('The active project has no root folder to search for a .figcraft document.')
@@ -98,6 +103,7 @@ export function useTabOpeners({
   const handleLaunchAgent = useCallback(async () => {
     const paneId = useWorkspaceStore.getState().activePaneId
     if (!paneId || !activeProjectId) return
+    leaveQuickChatView(SOURCE)
     const cwd = getDefaultCwdForProject(activeProjectId)
     const result = await launchAgentInPane(
       paneId,
@@ -118,6 +124,7 @@ export function useTabOpeners({
     (paneId: string | undefined, shell?: ShellInfo) => {
       const targetPaneId = paneId ?? useWorkspaceStore.getState().activePaneId
       if (!targetPaneId) return
+      leaveQuickChatView(SOURCE)
       if (shell) {
         handleCreateTerminalInPane(targetPaneId, shell.path)
       } else {
@@ -130,6 +137,7 @@ export function useTabOpeners({
   const handleOpenTerminalProfile = useCallback(
     async (profile: TerminalProfile) => {
       if (!activeProjectId) return
+      leaveQuickChatView(SOURCE)
       const cwd = profile.cwd || resolveWorkingCopyCwd(activeProjectId, 'Opening a terminal')
       if (cwd === null) return
       const outcome = await openTerminalFromProfile(activeProjectId, profile, {
@@ -150,6 +158,7 @@ export function useTabOpeners({
   const handleNewBrowserTab = useCallback((paneId?: string) => {
     const resolvedPaneId = paneId ?? useWorkspaceStore.getState().activePaneId
     if (resolvedPaneId) {
+      leaveQuickChatView(SOURCE)
       const browserTabId = newUserBrowserTabId()
       useBrowserSessionStore.getState().createTab(browserTabId)
       useWorkspaceStore.getState().addBrowserTab(browserTabId, resolvedPaneId)
@@ -168,6 +177,7 @@ export function useTabOpeners({
       if (resolvedPaneId && activeProject?.path) {
         const cwd = resolveWorkingCopyCwd(activeProjectId, 'Opening Git')
         if (!cwd) return
+        leaveQuickChatView(SOURCE)
         // Reuse-by-(type, cwd): activating the existing tab instead of
         // minting `git-${randomUUID()}` per click (QA: 4 clicks → 4 tabs).
         useWorkspaceStore.getState().addGitTab(cwd, resolvedPaneId)
@@ -193,6 +203,7 @@ export function useTabOpeners({
         return
       }
       // Same path as the New terminal action: project/app default shell + env.
+      leaveQuickChatView(SOURCE)
       void handleCreateTerminalInPane(paneId, undefined, cwd)
     }
     window.addEventListener(WORKTREE_EVENTS.OPEN_TERMINAL, onOpenTerminal)
@@ -216,6 +227,7 @@ export function useTabOpeners({
       // reflects the full repo, not a transient worktree binding.
       const resolvedCwd = getDefaultCwdForProject(activeProjectId)
       if (!resolvedCwd) return
+      leaveQuickChatView(SOURCE)
       // Reuse-by-(type, cwd): repeated opens activate the existing
       // git-history tab for this repo instead of stacking duplicates.
       useWorkspaceStore.getState().addGitHistoryTab(resolvedCwd, resolvedPaneId)

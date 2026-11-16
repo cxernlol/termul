@@ -1,7 +1,7 @@
 import type { ShellInfo } from '@shared/types/ipc.types'
 import { lazy, Suspense } from 'react'
 import { CreateSnapshotModal } from '@/components/CreateSnapshotModal'
-import { openNewChat } from '@/components/chat/new-chat/open-new-chat'
+import { openNewChat, openNewQuickChat } from '@/components/chat/new-chat/open-new-chat'
 import { NewProjectModal } from '@/components/NewProjectModal'
 import { ProjectBusyDialog } from '@/components/ProjectBusyDialog'
 import type { useCommandPaletteData } from '@/layouts/workspace-layout/use-command-palette-data'
@@ -151,6 +151,7 @@ export function WorkspaceModals({
             terminalProfiles={terminalProfiles}
             onOpenTerminalProfile={handleOpenTerminalProfile}
             onNewChat={() => void openNewChat({ reason: 'command-palette' })}
+            onNewQuickChat={() => void openNewQuickChat('command-palette-quick')}
             onLaunchAgent={handleLaunchAgent}
             onNewBrowserTab={handleNewBrowserTab}
             onOpenCanvas={handleOpenCanvas}

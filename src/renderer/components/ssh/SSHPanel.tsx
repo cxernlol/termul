@@ -144,7 +144,7 @@ export function SSHPanel({
             aria-label="Show addresses"
             aria-pressed={showAddresses}
           >
-            {showAddresses ? <Eye size={12} /> : <EyeOff size={12} />}
+            {showAddresses ? <Eye size={14} /> : <EyeOff size={14} />}
           </button>
         </div>
         <div className="flex items-center">
@@ -196,7 +196,7 @@ export function SSHPanel({
                 size="xs"
                 onClick={() => dialogs.openForm(null)}
               >
-                <Plus aria-hidden="true" />
+                <Plus size={14} aria-hidden="true" />
                 Add host
               </Button>
               {desktop && (

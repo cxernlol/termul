@@ -286,16 +286,16 @@ describe('ShellRail', () => {
       expect(props.onShortcutsOpenChange).toHaveBeenCalledWith(true)
     })
 
-    it('puts the one 28px toggle right after the centered Troupe mark (Paper rail header)', () => {
+    it('puts the centered Troupe mark at the start and the one 28px toggle at the end', () => {
       for (const tauri of [true, false]) {
         tauriRef.current = tauri
         const { unmount } = renderRail()
         const header = screen.getByTestId('rail-header')
         expect(header).toHaveClass('h-11')
         expect(header).not.toHaveClass('pt-2')
-        // The mark sits in a 48px slot: its center is the icon column (x = 24).
+        // The mark sits in a 56px slot: its center is the icon column (x = 28).
         const slot = within(header).getByTestId('rail-header-mark-slot')
-        expect(slot).toHaveClass('w-12', 'justify-center')
+        expect(slot).toHaveClass('w-14', 'justify-center')
         expect(within(slot).getByTestId('shell-brand-mark')).toBeInTheDocument()
 
         const toggles = screen.getAllByRole('button', { name: 'Expand or collapse projects' })
@@ -303,11 +303,13 @@ describe('ShellRail', () => {
         expect(toggles[0]).toHaveAttribute('aria-pressed', 'true')
         expect(toggles[0]).toHaveAttribute('data-testid', 'rail-toggle')
         expect(toggles[0]).toHaveClass('size-7')
-        // The toggle is the header's only control, 4px after the mark.
+        // The toggle is the header's only control, at its end: its 14px glyph
+        // ends 24px from the Rail edge, on the row actions' right edge.
         const headerButtons = within(header).getAllByRole('button')
         expect(headerButtons).toEqual([toggles[0]])
-        expect(slot.nextElementSibling).toBe(toggles[0])
-        expect(toggles[0]).toHaveClass('ml-1')
+        expect(header.lastElementChild).toContainElement(toggles[0])
+        expect(header.lastElementChild).toHaveClass('mr-[17px]')
+        expect(slot.nextElementSibling).toBeNull()
         unmount()
       }
     })
@@ -319,11 +321,12 @@ describe('ShellRail', () => {
         renderRail()
         const header = screen.getByTestId('rail-header')
         const clearance = within(header).getByTestId('traffic-light-clearance')
-        expect(clearance.nextElementSibling).toBe(within(header).getByTestId('shell-brand-mark'))
-        expect(within(header).queryByTestId('rail-header-mark-slot')).not.toBeInTheDocument()
-        expect(within(header).getByTestId('shell-brand-mark').nextElementSibling).toBe(
-          screen.getByTestId('rail-toggle')
+        // The mark follows the clearance; the toggle stays at the header's end.
+        expect(clearance.nextElementSibling?.firstElementChild).toBe(
+          within(header).getByTestId('shell-brand-mark')
         )
+        expect(within(header).queryByTestId('rail-header-mark-slot')).not.toBeInTheDocument()
+        expect(header.lastElementChild).toContainElement(screen.getByTestId('rail-toggle'))
       } finally {
         macRef.current = false
       }
@@ -345,7 +348,8 @@ describe('ShellRail', () => {
       expect(screen.queryByText('Settings')).not.toBeInTheDocument()
 
       const footer = settings.parentElement as HTMLElement
-      expect(footer).toHaveClass('gap-0.5', 'pl-2.5', 'pr-1.5', 'pt-1', 'pb-2')
+      // 12px start: the first 32px button is centred on the icon column (x = 28).
+      expect(footer).toHaveClass('gap-0.5', 'pl-3', 'pr-1.5', 'pt-1', 'pb-2')
       // No spacer pushes Theme and Shortcuts to the right.
       expect(footer.querySelector('.flex-1')).toBeNull()
       for (const button of within(footer).getAllByRole('button')) {
@@ -483,11 +487,11 @@ describe('ShellRail', () => {
         ]
       })
 
-    it('is the expanded Rail without labels: nav, Projects, chats, footer, 48px wide', () => {
+    it('is the expanded Rail without labels: nav, Projects, chats, footer, 56px wide', () => {
       seedChats()
       renderRail()
       const nav = screen.getByRole('navigation', { name: 'Projects' })
-      expect(screen.getByTestId('shell-rail')).toHaveStyle({ width: '48px' })
+      expect(screen.getByTestId('shell-rail')).toHaveStyle({ width: '56px' })
       expect(
         within(nav)
           .getAllByRole('button')

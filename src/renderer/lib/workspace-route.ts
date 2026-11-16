@@ -1,3 +1,5 @@
+import { create } from 'zustand'
+
 /**
  * True for the routes that render the pane workspace (`/` and the chat route
  * `/c/<id>`). Any other route (for example `/snapshots`) swaps the pane area
@@ -26,3 +28,12 @@ export function returnToWorkspaceRoute(pathname: string, navigate: (to: string) 
   navigate('/')
   return true
 }
+
+/**
+ * Whether the router is on a workspace route, for code outside the router
+ * (the Rail's chat rows). `WorkspaceLayout` writes it. A routed page such as
+ * Snapshots shows no chat, so no Rail chat row is the open one there.
+ */
+export const useWorkspaceRouteStore = create<{ onWorkspaceRoute: boolean }>(() => ({
+  onWorkspaceRoute: true
+}))

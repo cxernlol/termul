@@ -39,7 +39,7 @@ export const RailHoverPanelTrigger = HoverCardPrimitive.Trigger
 
 /**
  * The panel: 240px, radius 10, 4px padding, 1px between rows. It opens at
- * x = 52 (Rail edge + 4) and, by default, 4px above its trigger so its first
+ * x = 60 (Rail edge + 4) and, by default, 4px above its trigger so its first
  * row lines up with the trigger row. Rendered in a portal; `forceMount`
  * keeps the portal and the panel mounted while closed.
  */
@@ -121,7 +121,7 @@ export interface RailHoverTooltipContentProps {
 
 /**
  * Tooltip of a collapsed Rail icon: 28px, radius 8, the label in 12px medium,
- * then the shortcut keycap. Opens at x = 52, centred on the icon. Put it
+ * then the shortcut keycap. Opens at x = 60, centred on the icon. Put it
  * inside a Radix `Tooltip` root after its trigger.
  */
 export function RailHoverTooltipContent({

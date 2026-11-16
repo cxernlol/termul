@@ -1,10 +1,11 @@
-import { useEffect, useLayoutEffect } from 'react'
+import { useEffect, useLayoutEffect, useMemo } from 'react'
 import { useShallow } from 'zustand/shallow'
 import { useChatReadMarker } from '@/hooks/use-chat-read-marker'
 import { resolveMobileActiveLeaf } from '@/hooks/use-mobile-active-leaf'
 import { useMobileWebShell } from '@/hooks/use-mobile-web-shell'
 import { startChatActivitySync } from '@/lib/chat-activity-sync'
 import { useChatActivityStore } from '@/stores/chat-activity-store'
+import { useQuickChatSessionId } from '@/stores/quick-chat-store'
 import { getAllLeafPanes, useWorkspaceStore } from '@/stores/workspace-store'
 import type { LeafNode, PaneNode } from '@/types/workspace.types'
 
@@ -37,16 +38,33 @@ export function activeChatSessionIds(
 }
 
 /**
+ * The chats on screen: an open quick chat covers the pane tree, so it is the
+ * only one. Otherwise the panes' active chats.
+ */
+export function viewingSessionIds(
+  quickSessionId: string | null,
+  paneSessionIds: string[]
+): string[] {
+  return quickSessionId ? [quickSessionId] : paneSessionIds
+}
+
+/**
  * The one per-renderer mount of the host's chat activity: it mirrors the
  * `chat_activity` watch every chat list reads, tells the store which chats this
- * renderer shows (their "New activity" dot stays hidden here), and reports
+ * renderer shows (their "New activity" dot stays hidden here; an open quick
+ * chat is the only one shown), and reports
  * those chats read so the dot clears on every surface. Called from
  * `WorkspaceLayout`, which serves both `TauriApp.tsx` and `App.tsx`.
  */
 export function useShellUnreadTracker(): void {
   const mobile = useMobileWebShell()
-  const activeSessionIds = useWorkspaceStore(
+  const paneSessionIds = useWorkspaceStore(
     useShallow((state) => activeChatSessionIds(state.root, state.activePaneId, mobile))
+  )
+  const quickSessionId = useQuickChatSessionId()
+  const activeSessionIds = useMemo(
+    () => viewingSessionIds(quickSessionId, paneSessionIds),
+    [quickSessionId, paneSessionIds]
   )
   useEffect(() => startChatActivitySync(), [])
   const activeKey = activeSessionIds.join('\u0000')

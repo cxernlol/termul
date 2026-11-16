@@ -1,6 +1,7 @@
 import { useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAgentChatProjectSignals } from '@/hooks/use-agent-chat-attention'
+import { leaveQuickChatView } from '@/lib/no-project-chat'
 import { useAgentChatLifetimeStore } from '@/stores/agent-chat-lifetime-store'
 import { useProjectsWithActivity, useProjectsWithErrors } from '@/stores/terminal-store'
 import { useWorkspaceStore } from '@/stores/workspace-store'
@@ -59,6 +60,7 @@ export function useProjectRail({
     (projectId: string) => {
       const sessionId = firstNeedsYouSessionId[projectId]
       if (sessionId && projectId === activeProjectId) {
+        leaveQuickChatView('project-rail.needs-you')
         useWorkspaceStore.getState().addAgentChatTab(sessionId)
         return
       }

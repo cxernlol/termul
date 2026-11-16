@@ -2,7 +2,9 @@ import { act, renderHook } from '@testing-library/react'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { mockSessionIndexEntry } from '@/lib/test-utils/acp'
 import { resetChatActivity, seedChatActivity } from '@/lib/test-utils/chat-activity'
+import { useWorkspaceRouteStore } from '@/lib/workspace-route'
 import { useAcpStore } from '@/stores/acp-store'
+import { useQuickChatStore } from '@/stores/quick-chat-store'
 import { resetShellLayoutStoreForTests, useShellLayoutStore } from '@/stores/shell-layout-store'
 import { useWorkspaceStore } from '@/stores/workspace-store'
 import type { Project } from '@/types/project'
@@ -75,6 +77,24 @@ describe('useProjectChats', () => {
     const { result } = renderHook(() => useProjectChats(project))
     expect(result.current.openChatId).toBeNull()
     act(() => openTab('a'))
+    expect(result.current.openChatId).toBe('a')
+  })
+
+  it('reports no open project chat while a quick chat covers the panes', () => {
+    const { result } = renderHook(() => useProjectChats(project))
+    act(() => openTab('a'))
+    act(() => useQuickChatStore.setState({ view: { mode: 'chat', sessionId: 'quick-1' } }))
+    expect(result.current.openChatId).toBeNull()
+    act(() => useQuickChatStore.setState({ view: { mode: 'closed' } }))
+    expect(result.current.openChatId).toBe('a')
+  })
+
+  it('reports no open project chat on a routed page such as Snapshots', () => {
+    const { result } = renderHook(() => useProjectChats(project))
+    act(() => openTab('a'))
+    act(() => useWorkspaceRouteStore.setState({ onWorkspaceRoute: false }))
+    expect(result.current.openChatId).toBeNull()
+    act(() => useWorkspaceRouteStore.setState({ onWorkspaceRoute: true }))
     expect(result.current.openChatId).toBe('a')
   })
 })

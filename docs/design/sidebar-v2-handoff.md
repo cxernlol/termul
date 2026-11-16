@@ -49,7 +49,8 @@ All other V2 screens use the same expanded sidebar. The old icon-stack collapsed
 
 | Part | Value |
 |---|---|
-| Structure | Same rows and the same vertical metrics as the expanded sidebar. Labels, meta and status hidden. Icons centred in a 32px row. |
+| Structure | Same rows and the same vertical metrics as the expanded sidebar. Labels, meta and status hidden. Each row is a 28px wide fill at x = 14..42 (`RAIL_COLLAPSED_ROW_CLASS`), on the icon column: a 16px icon stays at x = 20, where the expanded row draws it, so icons do not move on a toggle. The section divider and the footer align to the same column. |
+| Toggle motion | `rail/rail-motion.ts`, CSS only (collapsible-sidebar pattern). Width: 200ms `ease-out` (`cubic-bezier(0.23, 1, 0.32, 1)`) both ways. Collapse: the rows keep their expanded layout while labels and meta fade out (150ms, `opacity` + `display` with `allow-discrete`), then the collapsed parts fade in (150ms). Expand: the expanded rows mount at once and labels fade in from `@starting-style` (150ms). The phase is `data-rail-motion` on the Rail nav. No transition under reduced motion or during a resize drag. |
 | Header row (44) | Only the macOS traffic lights. The open-sidebar toggle sits in the tab bar right of them (tab bar padding-left 24). |
 | Nav icons | Same y as expanded: 65 / 94 / 123 / 152 (row centres, from the window top). |
 | "Projects" header | A 20×1 divider in `border`, at the header y. |

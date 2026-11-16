@@ -133,8 +133,10 @@ export function TitleBarShortcutsPopover({
           }}
         >
           {/* The keyboard body sits low in its 24px box (a cable runs to the
-              top): 1px up lines it up with the Palette glyph beside it. */}
-          <Keyboard size={16} className="-translate-y-px" />
+              top): 1px up lines it up with the Palette glyph beside it. It also
+              fills its box edge to edge, so at 16px it reads larger than its
+              neighbours: 14px matches their optical size. */}
+          <Keyboard size={14} className="-translate-y-px" />
         </button>
       </RailTooltip>
 

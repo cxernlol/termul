@@ -1,6 +1,8 @@
-let navigateFn: ((path: string) => void) | null = null
+type RouterNavigate = (path: string, options?: { replace?: boolean }) => void
 
-export function setRouterNavigate(fn: ((path: string) => void) | null): void {
+let navigateFn: RouterNavigate | null = null
+
+export function setRouterNavigate(fn: RouterNavigate | null): void {
   navigateFn = fn
 }
 
@@ -15,11 +17,16 @@ export function isChatRouteCurrent(sessionId: string): boolean {
   return path === `/c/${sessionId}`
 }
 
-export function navigateToChatSession(sessionId: string): void {
+/**
+ * Put `#/c/<sessionId>` on the route. With `replace`, the current history
+ * entry changes in place: a launch placeholder that becomes its real session
+ * must not leave a dead `#/c/launch-…` entry for Back to land on.
+ */
+export function navigateToChatSession(sessionId: string, options?: { replace?: boolean }): void {
   if (!navigateFn) return
-  if (!isChatRouteCurrent(sessionId)) {
-    navigateFn(`/c/${sessionId}`)
-  }
+  if (isChatRouteCurrent(sessionId)) return
+  if (options?.replace) navigateFn(`/c/${sessionId}`, { replace: true })
+  else navigateFn(`/c/${sessionId}`)
 }
 
 /**

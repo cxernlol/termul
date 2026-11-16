@@ -15,9 +15,9 @@ describe('getTrafficLightInset', () => {
     expect(getTrafficLightInset(platform(false), false)).toBeNull()
   })
 
-  it('pads the main top row by 24px so the expand toggle lands at x = 72 (Paper 2.3)', () => {
+  it('pads the main top row by 16px so the expand toggle lands at x = 72 (Paper 2.3)', () => {
     expect(TRAFFIC_LIGHT_CLEARANCE_PX).toBe(76)
-    // 48 (collapsed Rail) + 24 = 72
-    expect(getTrafficLightInset(platform(true), false)?.mainStartPx).toBe(24)
+    // 56 (collapsed Rail) + 16 = 72
+    expect(getTrafficLightInset(platform(true), false)?.mainStartPx).toBe(16)
   })
 })

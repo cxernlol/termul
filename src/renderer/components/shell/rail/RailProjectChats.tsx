@@ -40,6 +40,7 @@ import {
   RailHoverPanelProjectRow,
   RailHoverPanelTrigger
 } from './rail-hover-panel'
+import { RAIL_BLOCK_FADE_CLASS } from './rail-motion'
 import { RAIL_WORKTREE_CHIP_HEIGHT, RailWorktreeChip, usePickedWorktree } from './worktree-switcher'
 
 /**
@@ -311,6 +312,9 @@ export function RailProjectChats({
       total={cards.length}
       pinnedIndex={openIndex === -1 ? undefined : openIndex}
       data-testid={peek ? 'rail-chat-peek-chats' : 'rail-project-chats'}
+      // The chat icons sit right of the icon column, so the list fades out
+      // as one block and fades back in on the other density.
+      className={peek ? undefined : RAIL_BLOCK_FADE_CLASS}
     >
       <RailChatList aria-label={`Chats in ${project.name}`}>
         {cards.map((card, index) => {

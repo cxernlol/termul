@@ -33,6 +33,7 @@ function renderGroup(): void {
 describe('OlderChatsGroup', () => {
   beforeEach(() => {
     openHistory.mockReset()
+    openHistory.mockResolvedValue(undefined)
     deleteHistory.mockReset()
     useQuickChatStore.setState({ view: { mode: 'closed' } })
     useAcpStore.setState({

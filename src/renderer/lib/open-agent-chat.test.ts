@@ -20,8 +20,8 @@ const {
   mockOpenHistorySession: vi.fn(async () => undefined),
   acpRef: {
     current: {
-      sessions: {} as Record<string, { projectId: string }>,
-      sessionIndex: [] as Array<{ id: string; projectId: string }>,
+      sessions: {} as Record<string, { projectId: string; kind?: 'quick' }>,
+      sessionIndex: [] as Array<{ id: string; projectId: string; kind?: 'quick' }>,
       openHistorySession: undefined as unknown as typeof mockOpenHistorySession
     }
   },
@@ -85,6 +85,7 @@ import { projectSwitch } from '@/lib/project-switch/coordinator'
 import { getTabFocusedSessionId, setTabFocusedSessionId } from '@/lib/web-tab-session'
 import { useAgentChatLifetimeStore } from '@/stores/agent-chat-lifetime-store'
 import { useProjectStore } from '@/stores/project-store'
+import { useQuickChatStore } from '@/stores/quick-chat-store'
 import { openAgentChatInOwnProject, openAgentChatPlaced } from './open-agent-chat'
 
 describe('openAgentChatInOwnProject', () => {
@@ -94,6 +95,7 @@ describe('openAgentChatInOwnProject', () => {
     acpRef.current.sessionIndex = []
     wsRef.root = { type: 'leaf', id: 'pane-1', tabs: [], activeTabId: null }
     useProjectStore.setState({ activeProjectId: 'pa' })
+    useQuickChatStore.setState({ view: { mode: 'closed' } })
     useAgentChatLifetimeStore.setState({ retainedByProject: {}, focusSessionByProject: {} })
   })
 
@@ -108,11 +110,39 @@ describe('openAgentChatInOwnProject', () => {
     expect(mockAddAgentChatTab).toHaveBeenCalledWith('s-unknown')
   })
 
-  it('opens a chat stamped unassigned in place (it names no project to switch to)', () => {
+  it('opens an older unassigned chat read-only in the quick view, not as a project tab', () => {
     acpRef.current.sessionIndex = [{ id: 's-stray', projectId: '__unassigned__' }]
     expect(openAgentChatInOwnProject('s-stray', 'test')).toBe('opened')
-    expect(mockAddAgentChatTab).toHaveBeenCalledWith('s-stray')
+    expect(mockAddAgentChatTab).not.toHaveBeenCalled()
+    expect(useQuickChatStore.getState().view).toEqual({
+      mode: 'chat',
+      sessionId: 's-stray',
+      readOnly: true
+    })
     expect(useProjectStore.getState().activeProjectId).toBe('pa')
+  })
+
+  it('opens a quick chat in the quick view, not as a project tab', () => {
+    acpRef.current.sessionIndex = [{ id: 's-quick', projectId: '__unassigned__', kind: 'quick' }]
+    expect(openAgentChatInOwnProject('s-quick', 'test')).toBe('opened')
+    expect(mockAddAgentChatTab).not.toHaveBeenCalled()
+    expect(useQuickChatStore.getState().view).toEqual({ mode: 'chat', sessionId: 's-quick' })
+  })
+
+  it('rejects a placement for a quick chat with its own message', () => {
+    acpRef.current.sessionIndex = [{ id: 's-quick', projectId: '__unassigned__', kind: 'quick' }]
+    expect(openAgentChatPlaced('s-quick', 'test', { paneId: 'pane-1', zone: 'center' })).toBe(
+      'rejected'
+    )
+    expect(mockAddAgentChatTab).not.toHaveBeenCalled()
+    expect(mockToastInfo).toHaveBeenCalledWith('A chat with no project cannot open in a pane.')
+  })
+
+  it('closes the quick view before it opens a project chat', () => {
+    useQuickChatStore.setState({ view: { mode: 'chat', sessionId: 's-quick' } })
+    expect(openAgentChatInOwnProject('s-a', 'test')).toBe('opened')
+    expect(useQuickChatStore.getState().view).toEqual({ mode: 'closed' })
+    expect(mockAddAgentChatTab).toHaveBeenCalledWith('s-a')
   })
 
   it('switches to the owning project instead of adding the tab here', () => {

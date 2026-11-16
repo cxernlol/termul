@@ -50,10 +50,12 @@ describe('composer elevation family', () => {
 })
 
 describe('composer edge', () => {
-  it('casts no shadow or fade above the composer', () => {
+  it('fades the list into the panel fill above the composer, never a dark band', () => {
     const list = readFileSync(join(__dirname, 'ChatMessageList.tsx'), 'utf8')
-    expect(list).not.toMatch(/bg-gradient-to-t/)
-    expect(list).not.toMatch(/bottom-0[^"]*bg-gradient/)
+    const panel = readFileSync(join(__dirname, 'AgentChatPanel.tsx'), 'utf8')
+    // The fade colour must match the panel fill, or it reads as a drop shadow.
+    expect(list).toMatch(/bottom-0[^"]*bg-gradient-to-t from-terminal-bg to-transparent/)
+    expect(panel).toMatch(/relative isolate flex h-full flex-col bg-terminal-bg/)
     expect(COMPOSER_CARD_CLASS).toContain('shadow-composer')
   })
 })

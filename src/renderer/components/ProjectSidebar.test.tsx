@@ -368,8 +368,9 @@ describe('ProjectSidebar', () => {
     expect(root).not.toHaveClass('bg-background')
     expect(root).not.toHaveClass('bg-sidebar')
     expect(screen.getByText('Projects')).toHaveClass('label-panel')
+    // The same 20px section button as the Groups and Quick chats headers.
     expect(screen.getByRole('button', { name: 'Add project or folder group' })).toHaveClass(
-      'size-7'
+      'size-5'
     )
   })
 
@@ -378,7 +379,7 @@ describe('ProjectSidebar', () => {
 
     const activeRow = screen.getByTestId('project-item-1').querySelector('[data-project-row]')
     const idleRow = screen.getByTestId('project-item-2').querySelector('[data-project-row]')
-    expect(activeRow).toHaveClass('h-7.5', 'rounded-md')
+    expect(activeRow).toHaveClass('h-7.5', 'rounded-lg')
     expect(
       within(screen.getByTestId('project-item-1')).getByRole('button', { name: /^Project:/ })
     ).toHaveAttribute('aria-current', 'page')
@@ -951,7 +952,7 @@ describe('ProjectSidebar: Mono-style alignment and groups', () => {
     renderWithRouter({ projects: railProjects.slice(0, 2) })
 
     const row = screen.getByTestId('project-item-1').querySelector('[data-project-row]')
-    expect(row).toHaveClass('gap-2', 'px-3', 'rounded-md')
+    expect(row).toHaveClass('gap-2', 'px-3', 'rounded-lg')
     const iconColumn = row?.querySelector('[data-rail-icon-column]')
     expect(iconColumn).toHaveClass('size-4', 'shrink-0')
   })

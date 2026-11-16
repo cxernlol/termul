@@ -7,7 +7,10 @@ import {
   useNativeWebviewOccluded
 } from '@/hooks/use-native-webview-occlusion'
 import type { SSHWorkspaceState } from '@/layouts/workspace-layout/use-ssh-workspace'
+import { mockSessionIndexEntry } from '@/lib/test-utils/acp'
+import { useAcpStore } from '@/stores/acp-store'
 import { useProjectStore } from '@/stores/project-store'
+import { useQuickChatStore } from '@/stores/quick-chat-store'
 import { resetShellLayoutStoreForTests, useShellLayoutStore } from '@/stores/shell-layout-store'
 import { useThemePickerStore } from '@/stores/theme-picker-store'
 import { ShellFrame, type ShellFrameProps } from './ShellFrame'
@@ -332,6 +335,30 @@ describe('ShellFrame', () => {
       expect(screen.queryByTestId('top-row-start-slot')).not.toBeInTheDocument()
     })
 
+    it('gives an open quick chat the fallback bar with its title and the expand toggle', () => {
+      useAcpStore.setState({
+        sessions: {},
+        sessionIndex: [
+          mockSessionIndexEntry({
+            id: 'quick-1',
+            title: 'hello',
+            projectId: '__unassigned__',
+            kind: 'quick'
+          })
+        ]
+      })
+      useQuickChatStore.setState({ view: { mode: 'chat', sessionId: 'quick-1' } })
+      useShellLayoutStore.setState({ railExpanded: false })
+      renderFrame(withProject, '/c/quick-1')
+      const bar = screen.getByTestId('top-row-fallback-bar')
+      expect(bar).toContainElement(
+        screen.getByRole('button', { name: 'Expand or collapse projects' })
+      )
+      expect(screen.getByTestId('top-row-fallback-title')).toHaveTextContent('hello')
+      useQuickChatStore.setState({ view: { mode: 'closed' } })
+      useShellLayoutStore.setState({ railExpanded: true })
+    })
+
     it('keeps the controls in the corner in panes mode, with no fallback bar', () => {
       renderFrame(withProject)
       expect(screen.queryByTestId('top-row-fallback-bar')).not.toBeInTheDocument()
@@ -366,7 +393,7 @@ describe('ShellFrame', () => {
       useShellLayoutStore.setState({ railExpanded: false })
       const { unmount } = renderFrame()
       expect(screen.getByRole('main').style.marginTop).toBe('')
-      expect(screen.getByTestId('top-row-start-slot')).toHaveStyle({ paddingLeft: '24px' })
+      expect(screen.getByTestId('top-row-start-slot')).toHaveStyle({ paddingLeft: '16px' })
       unmount()
 
       useShellLayoutStore.setState({ railExpanded: true })

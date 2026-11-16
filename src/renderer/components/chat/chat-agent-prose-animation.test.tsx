@@ -2,6 +2,7 @@ import { act, render } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { AgentProse } from './chat-agent-prose'
+import { MAX_WORD_DELAY_MS } from './chat-markdown-word'
 
 interface WordTiming {
   text: string
@@ -91,6 +92,17 @@ describe('AgentProse streaming word animation', () => {
     const after = [...view.container.querySelectorAll('[data-sd-animate]')]
     expect(after.slice(0, nodes.length)).toEqual(nodes)
     expect(wordTimings(view.container).slice(0, before.length)).toEqual(before)
+  })
+
+  it('caps the wait of a large burst so its tail does not stay invisible', async () => {
+    // One commit of 300 new words, as when a block mounts again mid-stream.
+    const burst = Array.from({ length: 300 }, (_, i) => `w${i}`).join(' ')
+    const view = renderProse(burst, true)
+    await settle()
+
+    const words = wordTimings(view.container)
+    expect(words.length).toBe(300)
+    for (const word of words) expect(word.delay).toBeLessThanOrEqual(MAX_WORD_DELAY_MS)
   })
 
   it('drops the animation wrappers once the turn settles', async () => {

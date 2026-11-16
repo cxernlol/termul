@@ -11,10 +11,12 @@ import { liveSwitchSources } from '@/stores/acp-store/shared-state'
  * outside the current worktree scope would otherwise come back as its own
  * row. Project scoping keeps a malformed cross-project edge from deleting
  * another project's transcript; in-flight switch targets are swept too.
+ * Returns the ids it deletes, so a caller can close a view of any of them.
  */
-export function deleteConversation(chatId: string, logSource: string): void {
+export function deleteConversation(chatId: string, logSource: string): ReadonlySet<string> {
   const { sessionIndex, deleteHistorySession } = useAcpStore.getState()
-  for (const memberId of conversationDeleteIds(sessionIndex, chatId, liveSwitchSources)) {
+  const deletedIds = new Set(conversationDeleteIds(sessionIndex, chatId, liveSwitchSources))
+  for (const memberId of deletedIds) {
     void deleteHistorySession(memberId).catch(() => {
       // Ids only: never the chat title, prompt text or error text.
       void logFrontendError({
@@ -25,4 +27,5 @@ export function deleteConversation(chatId: string, logSource: string): void {
       toast.error('Could not delete that chat. Try again.')
     })
   }
+  return deletedIds
 }

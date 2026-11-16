@@ -20,6 +20,11 @@ interface RailChatMenuProps {
   onRequestDelete: (entry: ProjectChatEntry) => void
   /** Quick chats only: store a local alias. */
   onRename?: (entry: ProjectChatEntry) => void
+  /**
+   * A quick or older chat. It has no project pane, so "Open in split" and
+   * "Open terminal here" (both open in a project pane) are not shown.
+   */
+  noProject?: boolean
   onOpenChange?: (open: boolean) => void
   /** The row's `RailChatRowFrame` (`asChild` trigger). */
   children: ReactNode
@@ -36,6 +41,7 @@ export function RailChatMenu({
   actions,
   onRequestDelete,
   onRename,
+  noProject = false,
   onOpenChange,
   children
 }: RailChatMenuProps): React.JSX.Element {
@@ -45,13 +51,17 @@ export function RailChatMenu({
       <ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
       <ContextMenuContent className="w-56" data-testid="rail-chat-menu">
         <ReloadChatMenuItem sessionId={entry.id} iconClassName="size-3.5" />
-        <ContextMenuItem onSelect={() => actions.onOpenInSplit(entry)}>
-          <Columns2 className={ICON} /> Open in split
-        </ContextMenuItem>
+        {!noProject && (
+          <ContextMenuItem onSelect={() => actions.onOpenInSplit(entry)}>
+            <Columns2 className={ICON} /> Open in split
+          </ContextMenuItem>
+        )}
         <ContextMenuSeparator />
-        <ContextMenuItem disabled={!cwd} onSelect={() => void actions.onOpenTerminal(entry)}>
-          <Terminal className={ICON} /> Open terminal here
-        </ContextMenuItem>
+        {!noProject && (
+          <ContextMenuItem disabled={!cwd} onSelect={() => void actions.onOpenTerminal(entry)}>
+            <Terminal className={ICON} /> Open terminal here
+          </ContextMenuItem>
+        )}
         <ContextMenuItem
           disabled={!cwd}
           onSelect={() => {

@@ -14,6 +14,12 @@ import { newChatKind } from '@/components/shell/open-new-chat'
 import type { SessionId } from '@/lib/acp-api'
 import { persistenceApi } from '@/lib/api'
 import { logFrontendError } from '@/lib/log-api'
+import {
+  adoptQuickChat,
+  focusQuickChatComposer,
+  leaveQuickChatView,
+  showNoProjectChat
+} from '@/lib/no-project-chat'
 import { getActiveWorktreeForProject, getDefaultCwdForProject } from '@/lib/worktree-context'
 import {
   type AgentOptionsCacheEntry,
@@ -40,6 +46,9 @@ export type NewChatReason =
   | 'stopped-chat'
   | 'github-handoff'
   | 'worktree-failed'
+  | 'quick-chats-header'
+  | 'command-palette-quick'
+  | 'mobile-drawer-quick'
 
 export interface OpenNewChatRequest {
   /** The pane the chat opens in; absent means the focused pane. */
@@ -193,16 +202,18 @@ const inFlight = new Map<string, Promise<OpenNewChatResult>>()
  * agent nobody configured never spawns, #840), or the agent needs a sign-in.
  */
 /**
- * No active project: the same empty chat as a project New chat (last agent
- * and its saved model), persisted as a quick chat. The host owns the folder.
- * This path does not open the agent launcher.
+ * A new quick chat: the same empty chat as a project New chat (last agent and
+ * its saved model), persisted as a quick chat. The host owns the folder. This
+ * path does not open the agent launcher. The Quick chats `+` and the palette
+ * call it directly; New chat calls it only when no project exists.
  */
-function openQuickNewChat(reason: NewChatReason): Promise<OpenNewChatResult> {
+export function openNewQuickChat(reason: NewChatReason): Promise<OpenNewChatResult> {
   const view = useQuickChatStore.getState().view
   if (view.mode === 'chat' && !view.readOnly && isEmptyStartChat(view.sessionId)) {
     const session = useAcpStore.getState().sessions[view.sessionId]
     if (session?.kind === 'quick') {
       log('info', `New chat (reason=${reason}) focused the empty quick chat ${view.sessionId}`)
+      focusQuickChatComposer()
       return Promise.resolve({ kind: 'focused', sessionId: view.sessionId })
     }
   }
@@ -244,7 +255,8 @@ async function startQuick(reason: NewChatReason): Promise<OpenNewChatResult> {
     configOptions: shown.configOptions,
     kind: 'quick'
   })
-  useQuickChatStore.getState().openChat(placeholderId)
+  showNoProjectChat(placeholderId, 'quick', SOURCE)
+  focusQuickChatComposer()
   const workspace = useWorkspaceStore.getState()
   if (workspace.agentLauncherPaneId) workspace.hideAgentLauncher()
   log(
@@ -260,12 +272,7 @@ async function startQuick(reason: NewChatReason): Promise<OpenNewChatResult> {
       pending: hasPendingLauncherOptions(picks) ? picks : null,
       initialText: null,
       initialBlocks: null,
-      adoptSession: (from, to) => {
-        const current = useQuickChatStore.getState().view
-        if (current.mode === 'chat' && current.sessionId === from) {
-          useQuickChatStore.getState().openChat(to)
-        }
-      }
+      adoptSession: (from, to) => adoptQuickChat(from, to, SOURCE)
     })
     .then((sessionId) => log('info', `Quick chat ${placeholderId} started as ${sessionId}`))
     .catch((err: unknown) => {
@@ -285,12 +292,15 @@ export function openNewChat(request: OpenNewChatRequest): Promise<OpenNewChatRes
   const explicitProject = request.projectId !== undefined
   const projectId = explicitProject ? request.projectId : useProjectStore.getState().activeProjectId
   if (newChatKind(projectId ?? '') === 'quick') {
-    return openQuickNewChat(request.reason)
+    return openNewQuickChat(request.reason)
   }
   if (!paneId || !projectId) {
     log('warn', `New chat (reason=${request.reason}) skipped: no pane or no active project`)
     return Promise.resolve({ kind: 'skipped' })
   }
+  // The project chat (or the launcher) goes in the project tree. A quick chat
+  // on top of it would hide the result.
+  leaveQuickChatView(SOURCE)
   const existing = emptyChatInPane(paneId, projectId)
   if (existing) {
     if (workspace.agentLauncherPaneId === paneId) workspace.hideAgentLauncher()

@@ -235,12 +235,12 @@ describe('ChatMessage', () => {
     expect(screen.getByTestId('streamdown')).toHaveAttribute('data-mode', 'streaming')
   })
 
-  it('uses Streamdown blurIn while a live reply streams', () => {
+  it('uses Streamdown fadeIn while a live reply streams', () => {
     useReducedMotionMock.mockReturnValue(false)
     render(<ChatMessage message={agentMessage(true)} isLast />)
 
     const streamdown = screen.getByTestId('streamdown')
-    expect(streamdown).toHaveAttribute('data-animated', 'blurIn')
+    expect(streamdown).toHaveAttribute('data-animated', 'fadeIn')
     expect(streamdown).toHaveAttribute('data-animated-duration', '350')
     expect(streamdown).toHaveAttribute('data-animated-stagger', '12')
     expect(streamdown).toHaveAttribute('data-animated-easing', 'cubic-bezier(0.22, 1, 0.36, 1)')

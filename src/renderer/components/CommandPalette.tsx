@@ -1,6 +1,7 @@
 import { AnimatePresence, motion } from 'framer-motion'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { CommandPaletteChats } from '@/components/CommandPaletteChats'
+import { CommandPaletteQuickChats } from '@/components/CommandPaletteQuickChats'
 import {
   Bot,
   Bug,
@@ -50,6 +51,8 @@ interface CommandPaletteProps {
   onOpenTerminalProfile?: (profile: TerminalProfile) => void
   /** A new empty chat in the active pane. */
   onNewChat?: () => void
+  /** A chat with no project. The host owns its folder. */
+  onNewQuickChat?: () => void
   onLaunchAgent?: () => void
   onSaveSnapshot?: () => void
   onNewBrowserTab?: () => void
@@ -117,6 +120,7 @@ export function CommandPalette({
   terminalProfiles,
   onOpenTerminalProfile,
   onNewChat,
+  onNewQuickChat,
   onLaunchAgent,
   onSaveSnapshot,
   onNewBrowserTab,
@@ -194,6 +198,19 @@ export function CommandPalette({
               keywords: ['agent', 'ai', 'claude', 'codex', 'prompt', 'chat', 'new'],
               shortcut: getShortcutLabel?.('newTerminal'),
               execute: onNewChat
+            }
+          ]
+        : []),
+      ...(onNewQuickChat
+        ? [
+            {
+              id: 'new-quick-chat',
+              category: 'workspace' as const,
+              icon: <Bot aria-hidden="true" size={16} />,
+              label: 'New quick chat',
+              description: 'Start a chat that has no project',
+              keywords: ['agent', 'ai', 'chat', 'quick', 'scratch', 'no project', 'new'],
+              execute: onNewQuickChat
             }
           ]
         : []),
@@ -368,6 +385,7 @@ export function CommandPalette({
       terminalProfiles,
       onOpenTerminalProfile,
       onNewChat,
+      onNewQuickChat,
       onLaunchAgent,
       onSaveSnapshot,
       onNewBrowserTab,
@@ -598,6 +616,14 @@ export function CommandPalette({
               <CommandList className="max-h-[52vh] px-1 py-1">
                 <CommandEmpty>No commands found.</CommandEmpty>
 
+                {/* Chat matches first. They show only for a real text match, and
+                    cmdk 1.1 does not reorder groups by score (its group lookup
+                    misses), so render order is the rank. */}
+                {chatsProject && query.trim() !== '' && (
+                  <CommandPaletteChats project={chatsProject} query={query} onDone={onClose} />
+                )}
+                {query.trim() !== '' && <CommandPaletteQuickChats query={query} onDone={onClose} />}
+
                 {pinnedCommands.length > 0 && query === '' && (
                   <CommandGroup heading="Pinned">
                     {pinnedCommands.map((cmd) => renderCommandItem(cmd, 'pinned'))}
@@ -615,10 +641,6 @@ export function CommandPalette({
                     {categoryCommands.map((cmd) => renderCommandItem(cmd))}
                   </CommandGroup>
                 ))}
-
-                {chatsProject && query.trim() !== '' && (
-                  <CommandPaletteChats project={chatsProject} query={query} onDone={onClose} />
-                )}
               </CommandList>
 
               {/* Story 11 (QA F9): ↑↓/↵/Esc kbd hints are dead affordances

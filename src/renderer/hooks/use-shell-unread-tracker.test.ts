@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { LeafNode, PaneNode, SplitNode } from '@/types/workspace.types'
-import { activeChatSessionIds } from './use-shell-unread-tracker'
+import { activeChatSessionIds, viewingSessionIds } from './use-shell-unread-tracker'
 
 function chatLeaf(id: string, sessionId: string | null, extra: LeafNode['tabs'] = []): LeafNode {
   const tabs: LeafNode['tabs'] = [...extra]
@@ -71,5 +71,15 @@ describe('activeChatSessionIds', () => {
     const git: LeafNode['tabs'] = [{ type: 'git', id: 'git-1', cwd: '/x' }]
 
     expect(activeChatSessionIds(chatLeaf('a', null, git), 'a', true)).toEqual([])
+  })
+})
+
+describe('viewingSessionIds', () => {
+  it('counts only the open quick chat, which covers the panes', () => {
+    expect(viewingSessionIds('quick-1', ['sa', 'sb'])).toEqual(['quick-1'])
+  })
+
+  it('counts the panes when no quick chat is open', () => {
+    expect(viewingSessionIds(null, ['sa', 'sb'])).toEqual(['sa', 'sb'])
   })
 })

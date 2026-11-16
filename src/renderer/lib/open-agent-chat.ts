@@ -1,5 +1,6 @@
 import { toast } from 'sonner'
 import { logFrontendError } from '@/lib/log-api'
+import { leaveQuickChatView, noProjectChatKind, showNoProjectChat } from '@/lib/no-project-chat'
 import { projectSwitch } from '@/lib/project-switch/coordinator'
 import { releaseFocusNotOfProject } from '@/lib/release-stale-focus'
 import { sessionProjectId, useAcpStore } from '@/stores/acp-store'
@@ -64,6 +65,9 @@ function openAgentChatAtPlacement(sessionId: string, placement: AgentChatPlaceme
  *
  * With a `placement` the tab lands in that pane or split instead; a chat owned
  * by another project is rejected (no tab, no project switch, no retain).
+ *
+ * A quick or older chat (no project) opens in the quick view. With a
+ * `placement` it is rejected. A project chat closes the quick view first.
  */
 export function openAgentChatInOwnProject(
   sessionId: string,
@@ -71,6 +75,22 @@ export function openAgentChatInOwnProject(
   placement?: AgentChatPlacement
 ): OpenAgentChatOutcome {
   const acp = useAcpStore.getState()
+  // A quick or older chat has no project tree. It opens in the quick view,
+  // never as a tab in the active project.
+  const noProject = noProjectChatKind(acp, sessionId)
+  if (noProject) {
+    if (placement) {
+      void logFrontendError({
+        level: 'info',
+        source,
+        message: `Rejected placement of ${noProject} chat ${sessionId}: it has no project`
+      })
+      return 'rejected'
+    }
+    showNoProjectChat(sessionId, noProject, source)
+    return 'opened'
+  }
+  leaveQuickChatView(source)
   const owner = sessionProjectId(acp, sessionId)
   const activeProjectId = useProjectStore.getState().activeProjectId
   if (!owner || owner === activeProjectId) {
@@ -121,7 +141,11 @@ export function openAgentChatPlaced(
 ): OpenAgentChatOutcome {
   const outcome = openAgentChatInOwnProject(sessionId, source, placement)
   if (outcome === 'rejected') {
-    toast.info('That chat belongs to another project.')
+    toast.info(
+      noProjectChatKind(useAcpStore.getState(), sessionId)
+        ? 'A chat with no project cannot open in a pane.'
+        : 'That chat belongs to another project.'
+    )
     return outcome
   }
   if (outcome === 'opened') {

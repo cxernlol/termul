@@ -38,8 +38,7 @@ import { installGlobalErrorForwarding } from './lib/log-api'
 import '@fontsource-variable/inter/index.css'
 import '@fontsource-variable/inter/wght-italic.css'
 import { registerServiceWorker } from './lib/pwa-register'
-// Streamdown keyframes load first. index.css then overrides sd-blurIn
-// so the chat stream resolves through a 1px blur.
+// Streamdown keyframes (sd-fadeIn for the chat stream) load before index.css.
 import 'streamdown/styles.css'
 import './index.css'
 

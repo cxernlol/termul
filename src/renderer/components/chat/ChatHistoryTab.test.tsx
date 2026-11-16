@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SessionIndexEntry } from '@/lib/acp-history-persistence'
 import { mockSessionIndexEntry } from '@/lib/test-utils/acp'
+import { useQuickChatStore } from '@/stores/quick-chat-store'
 import {
   _resetShellAnnouncerForTests,
   ANNOUNCE_DELAY_MS,
@@ -59,6 +60,7 @@ const {
 
 vi.mock('@/stores/acp-store', () => {
   const state = () => ({
+    sessions: {},
     sessionIndex: sessionIndexRef.current,
     openHistorySession: mockOpen,
     deleteHistorySession: mockDelete,
@@ -212,6 +214,23 @@ describe('ChatHistoryTab scoping', () => {
 
     render(<ChatHistoryTab />)
     expect(mockDiscover).not.toHaveBeenCalled()
+  })
+
+  it('opens a quick chat in the quick view, not as a tab in this project', () => {
+    sessionIndexRef.current = [
+      entry('q1', {
+        projectId: '__unassigned__',
+        cwd: '/home/me/.troupe/quick-chats/x',
+        kind: 'quick'
+      })
+    ]
+    mockOpen.mockResolvedValue(undefined)
+    render(<ChatHistoryTab />)
+    fireEvent.click(screen.getByText('q1'))
+    expect(mockOpen).toHaveBeenCalledWith('q1')
+    expect(mockAddTab).not.toHaveBeenCalled()
+    expect(useQuickChatStore.getState().view).toEqual({ mode: 'chat', sessionId: 'q1' })
+    useQuickChatStore.setState({ view: { mode: 'closed' } })
   })
 
   it('opens a visible chat via addAgentChatTab', () => {

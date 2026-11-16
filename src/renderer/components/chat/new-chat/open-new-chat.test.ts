@@ -34,7 +34,7 @@ import { useProjectStore } from '@/stores/project-store'
 import { useQuickChatStore } from '@/stores/quick-chat-store'
 import { useShellLayoutStore } from '@/stores/shell-layout-store'
 import { agentChatTabId, useWorkspaceStore } from '@/stores/workspace-store'
-import { newChatPlaceholderOptions, openNewChat } from './open-new-chat'
+import { newChatPlaceholderOptions, openNewChat, openNewQuickChat } from './open-new-chat'
 
 const config = (id: string) => ({ id, name: id, command: 'agent', args: [] })
 const entry = (id: string, status = 'ready') => ({
@@ -240,6 +240,34 @@ describe('openNewChat', () => {
       })
     )
     expect(useQuickChatStore.getState().view).toEqual({ mode: 'chat', sessionId: 'launch-q' })
+    useAcpStore.setState({
+      createLaunchPlaceholder: store.createLaunchPlaceholder,
+      finalizeChatLaunch: store.finalizeChatLaunch
+    } as never)
+  })
+
+  it('closes the open quick chat so a project New chat is visible', async () => {
+    useQuickChatStore.setState({ view: { mode: 'chat', sessionId: 'quick-1' } })
+    expect((await openNewChat({ reason: 'shortcut' })).kind).toBe('opened')
+    expect(launchChat).toHaveBeenCalledTimes(1)
+    expect(useQuickChatStore.getState().view).toEqual({ mode: 'closed' })
+  })
+
+  it('starts a quick chat from the Quick chats + while a project is active', async () => {
+    useQuickChatStore.setState({ view: { mode: 'closed' } })
+    const store = useAcpStore.getState()
+    const createLaunchPlaceholder = vi.fn(() => 'launch-q2')
+    const finalizeChatLaunch = vi.fn(async () => 'sess-q2')
+    useAcpStore.setState({ createLaunchPlaceholder, finalizeChatLaunch } as never)
+
+    const result = await openNewQuickChat('quick-chats-header')
+
+    expect(result).toEqual({ kind: 'opened', sessionId: 'launch-q2' })
+    expect(launchChat).not.toHaveBeenCalled()
+    expect(createLaunchPlaceholder).toHaveBeenCalledWith(
+      expect.objectContaining({ projectId: '__unassigned__', kind: 'quick' })
+    )
+    expect(useQuickChatStore.getState().view).toEqual({ mode: 'chat', sessionId: 'launch-q2' })
     useAcpStore.setState({
       createLaunchPlaceholder: store.createLaunchPlaceholder,
       finalizeChatLaunch: store.finalizeChatLaunch

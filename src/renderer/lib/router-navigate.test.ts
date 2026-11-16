@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { clearChatRoute, isChatRouteCurrent, setRouterNavigate } from './router-navigate'
+import {
+  clearChatRoute,
+  isChatRouteCurrent,
+  navigateToChatSession,
+  setRouterNavigate
+} from './router-navigate'
 
 describe('clearChatRoute', () => {
   afterEach(() => {
@@ -39,5 +44,27 @@ describe('isChatRouteCurrent', () => {
     expect(isChatRouteCurrent('s-1')).toBe(false)
     window.location.hash = '#/'
     expect(isChatRouteCurrent('s-1')).toBe(false)
+  })
+})
+
+describe('navigateToChatSession', () => {
+  it('pushes a new entry by default and replaces it on request', () => {
+    const navigate = vi.fn()
+    setRouterNavigate(navigate)
+    window.location.hash = '#/c/launch-1'
+    navigateToChatSession('sess-1')
+    expect(navigate).toHaveBeenLastCalledWith('/c/sess-1')
+    navigateToChatSession('sess-2', { replace: true })
+    expect(navigate).toHaveBeenLastCalledWith('/c/sess-2', { replace: true })
+    setRouterNavigate(null)
+  })
+
+  it('does nothing when the route already names the session', () => {
+    const navigate = vi.fn()
+    setRouterNavigate(navigate)
+    window.location.hash = '#/c/sess-1'
+    navigateToChatSession('sess-1', { replace: true })
+    expect(navigate).not.toHaveBeenCalled()
+    setRouterNavigate(null)
   })
 })

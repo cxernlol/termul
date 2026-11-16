@@ -3,7 +3,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { OlderChatsGroup } from '@/components/shell/OlderChatsGroup'
 import { QuickChatsGroup } from '@/components/shell/QuickChatsGroup'
-import { PANEL_HEADER_CLASS, PANEL_ICON_BUTTON_CLASS } from '@/components/ui/panel-styles'
 import { dialogApi, shellApi } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import { useProjectActions, useProjectStore } from '@/stores/project-store'
@@ -13,6 +12,7 @@ import { ConfirmDialog } from './ConfirmDialog'
 import { NewGroupModal } from './NewGroupModal'
 import { NewWorktreeModal } from './NewWorktreeModal'
 import { useRailCollapsed } from './shell/rail/rail-density'
+import { RAIL_BLOCK_FADE_CLASS } from './shell/rail/rail-motion'
 import { useOpenRailWorktreeSwitcher } from './shell/rail/worktree-switcher'
 import { AddProjectMenu } from './sidebar/add-project-menu'
 import { GroupContextMenuContent } from './sidebar/group-context-menu'
@@ -22,14 +22,11 @@ import {
 } from './sidebar/project-context-menu'
 import { ProjectList } from './sidebar/project-list'
 import { layoutRailProjects } from './sidebar/rail-project-order'
-import { RailSectionDivider } from './sidebar/rail-section-header'
+import { RAIL_SECTION_BUTTON_CLASS, RailSectionHeader } from './sidebar/rail-section-header'
 import { SSHResizableSection } from './sidebar/ssh-section'
 import type { ColorPickerState, ProjectSidebarProps } from './sidebar/types'
 import { useProjectRail } from './sidebar/use-project-rail'
 import { useRailImportChats } from './sidebar/use-rail-import-chats'
-
-/** Projects header icon button: the panel button plus a 14px glyph. */
-const HEADER_ICON_BUTTON = `${PANEL_ICON_BUTTON_CLASS} cursor-pointer [&_svg]:size-3.5`
 
 /**
  * The shell Rail's Projects section: header with one `+` menu, search, the
@@ -323,19 +320,19 @@ export function ProjectSidebar({
 
   return (
     <div className="flex min-h-0 w-full flex-1 flex-col">
-      {/* Header with inline + button. Collapsed Rail: a divider at its y. */}
-      {!railSections && collapsed && <RailSectionDivider data-testid="rail-section-projects" />}
-      {!railSections && !collapsed && (
-        <div className={cn(PANEL_HEADER_CLASS, 'pt-3 pl-4.5')} data-testid="rail-section-projects">
-          <span className="label-panel">Projects</span>
-          <div className="flex items-center">
+      {/* Header with inline + button. Collapsed Rail: a divider at its y. In
+          the list's 8px inset like the Groups and Quick chats headers, so its
+          label, its + and its collapsed divider line up with theirs. */}
+      {!railSections && (
+        <div className="px-2">
+          <RailSectionHeader label="Projects">
             <AddProjectMenu
               onNewProject={onNewProject}
               onNewGroup={() => setNewGroupModal({})}
               onImportChats={onImportChats}
-              buttonClassName={HEADER_ICON_BUTTON}
+              buttonClassName={RAIL_SECTION_BUTTON_CLASS}
             />
-          </div>
+          </RailSectionHeader>
         </div>
       )}
 
@@ -384,11 +381,13 @@ export function ProjectSidebar({
 
       {/* SSH Connections - Resizable. Hidden on the collapsed Rail. */}
       {!collapsed && (
-        <SSHResizableSection
-          onSSHConnect={onSSHConnect}
-          onSelectProfile={onSelectSSHProfile}
-          activeProfileId={activeSSHProfileId}
-        />
+        <div className={cn('flex shrink-0 flex-col', RAIL_BLOCK_FADE_CLASS)}>
+          <SSHResizableSection
+            onSSHConnect={onSSHConnect}
+            onSelectProfile={onSelectSSHProfile}
+            activeProfileId={activeSSHProfileId}
+          />
+        </div>
       )}
 
       <OlderChatsGroup />

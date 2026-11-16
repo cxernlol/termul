@@ -5,7 +5,7 @@
 import type { StateCreator } from 'zustand'
 import { commitDiffTabId, diffTabIdentity } from '@/lib/diff-tab-identity'
 import { logFrontendError } from '@/lib/log-api'
-import { navigateToChatSession } from '@/lib/router-navigate'
+import { isChatRouteCurrent, navigateToChatSession } from '@/lib/router-navigate'
 import {
   AGENT_BROWSER_SPLIT_SIZES,
   agentChatTabId,
@@ -478,7 +478,9 @@ export const createTabsSlice: StateCreator<WorkspaceState, [], [], TabsSliceStat
       activePaneId: resolveActivePaneId(fullscreenPaneId, pane.id),
       agentLauncherPaneId: agentLauncherPaneId === pane.id ? null : agentLauncherPaneId
     })
-    navigateToChatSession(toSessionId)
+    // The placeholder's route becomes the session's route: replace the entry,
+    // so Back does not land on a launch id that no longer exists.
+    navigateToChatSession(toSessionId, { replace: isChatRouteCurrent(fromSessionId) })
   },
 
   renameEditorTab: (fromPath: string, toPath: string): void => {

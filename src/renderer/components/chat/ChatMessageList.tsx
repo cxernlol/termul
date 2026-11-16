@@ -1,6 +1,7 @@
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { useEffect, useMemo, useRef } from 'react'
 import {
+  BOTTOM_THRESHOLD_PX,
   MessageScroller,
   MessageScrollerButton,
   MessageScrollerContent,
@@ -37,6 +38,14 @@ import { TurnActivity } from './TurnActivity'
 import { isSubagentCall } from './tool-call-summary'
 import { type EnterTracker, useEnterTracker } from './use-enter-tracker'
 import { WorktreeCreationCard } from './WorktreeCreationCard'
+
+/**
+ * Space above the first row and below the last. It lives in the virtualizer
+ * (`paddingStart`/`paddingEnd`), not as CSS padding on the viewport: the
+ * virtualizer must see the same end as the DOM, or its pinned bottom and
+ * `scrollHeight` differ by this amount and the two pull the scroll apart.
+ */
+const LIST_PADDING_Y_PX = 24
 
 /** Reports the live item count to the scroller so the jump button can badge unread. */
 function ItemCountReporter({ count }: { count: number }): null {
@@ -110,14 +119,54 @@ function VirtualizedTimeline({
   statusLine,
   live
 }: TimelineRenderProps): React.JSX.Element {
-  const { viewportEl, pinned } = useMessageScroller()
+  const { viewportEl, pinned, setEndScroller } = useMessageScroller()
+  // The virtualizer is the only scroll writer for the live edge. `anchorTo:
+  // 'end'` keeps a pinned viewport pinned while the last row grows, follows
+  // appended rows only when the reader was at the end, and holds the visible
+  // row in place when older history is prepended (keys must stay stable).
   const virtualizer = useVirtualizer({
     count: groupedItems.length,
     getScrollElement: () => viewportEl,
     estimateSize: () => 120,
     overscan: 6,
-    getItemKey: (i) => groupedItems[i]?.key ?? i
+    getItemKey: (i) => groupedItems[i]?.key ?? i,
+    paddingStart: LIST_PADDING_Y_PX,
+    paddingEnd: LIST_PADDING_Y_PX,
+    anchorTo: 'end',
+    followOnAppend: true,
+    scrollEndThreshold: BOTTOM_THRESHOLD_PX
   })
+
+  // The jump-to-latest button and viewport resizes go through the virtualizer,
+  // so they land on the measured end, not on an estimated scrollHeight.
+  useEffect(() => {
+    setEndScroller((behavior) =>
+      virtualizer.scrollToEnd({ behavior: behavior === 'smooth' ? 'smooth' : 'auto' })
+    )
+    return () => setEndScroller(null)
+  }, [virtualizer, setEndScroller])
+
+  // Open a session at its live edge. The list stays mounted across session
+  // switches, and new keys give `anchorTo: 'end'` nothing to anchor to.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: sessionId retriggers the jump on a session switch
+  useEffect(() => {
+    if (viewportEl) virtualizer.scrollToEnd()
+  }, [sessionId, viewportEl, virtualizer])
+
+  // `followOnAppend` follows only when the count grows. A coalesced flush can
+  // append rows and trim the same number from the head of the live window
+  // (`trimLiveWindow`), so the count stays and the new tail would stay below
+  // the fold. Follow that case too, but only for a reader at the live edge;
+  // history browsing keeps its place. A session switch is the effect above.
+  const lastItemKey = groupedItems[groupedItems.length - 1]?.key
+  const tailRef = useRef({ sessionId, count: groupedItems.length, lastKey: lastItemKey })
+  useEffect(() => {
+    const before = tailRef.current
+    tailRef.current = { sessionId, count: groupedItems.length, lastKey: lastItemKey }
+    if (before.sessionId !== sessionId || !pinned) return
+    if (lastItemKey === before.lastKey || groupedItems.length > before.count) return
+    virtualizer.scrollToEnd()
+  }, [sessionId, groupedItems.length, lastItemKey, pinned, virtualizer])
 
   // A Background row in the status pill asks to show its card: bring the row
   // holding it into the virtual window; the card scrolls itself into place.
@@ -136,15 +185,6 @@ function VirtualizedTimeline({
     if (index >= 0) virtualizer.scrollToIndex(index, { align: 'center' })
   }, [revealTarget, virtualizer])
 
-  // Stick-to-bottom while streaming: only auto-follow when the reader is
-  // pinned to the live edge (followOnAppend — do NOT pull a reader who has
-  // scrolled up to read history back down).
-  useEffect(() => {
-    if (pinned && groupedItems.length > 0) {
-      virtualizer.scrollToIndex(groupedItems.length - 1, { align: 'end' })
-    }
-  }, [groupedItems.length, pinned, virtualizer])
-
   // Reverse-infinite-scroll: lazy-load older messages ONLY on genuine reader
   // intent — the viewport must be scrollable and the reader must have scrolled
   // up off the live edge (not pinned). Without this gate, the first paint (and
@@ -153,7 +193,8 @@ function VirtualizedTimeline({
   // and re-runs the effect, cascading until the whole transcript is back in the
   // live window and undoing the bound. The store guards concurrent loads and is
   // idempotent at the history head; this local flag avoids spamming on rapid
-  // range notifications. The reader's position is preserved across the prepend.
+  // range notifications. `anchorTo: 'end'` keeps the reader's position across
+  // the prepend.
   const loadingOlderRef = useRef(false)
   const startIndex = virtualizer.range?.startIndex
   useEffect(() => {
@@ -161,29 +202,13 @@ function VirtualizedTimeline({
     if (groupedItems.length === 0 || loadingOlderRef.current) return
     if (viewportEl === null || pinned) return
     if (viewportEl.scrollHeight <= viewportEl.clientHeight) return
-    const prevScrollHeight = viewportEl.scrollHeight
-    const prevScrollTop = viewportEl.scrollTop
-    // Cancel on dependency change (e.g. session switch) so a load that resolves
-    // after the reader moved to another chat never adjusts the new viewport.
-    let cancelled = false
     loadingOlderRef.current = true
     void useAcpStore
       .getState()
       .loadOlderMessages(sessionId, 50)
-      .then(() => {
-        if (cancelled) return
-        // Restore the reader's position after older rows are prepended above.
-        requestAnimationFrame(() => {
-          if (cancelled || !viewportEl) return
-          viewportEl.scrollTop = prevScrollTop + (viewportEl.scrollHeight - prevScrollHeight)
-        })
-      })
       .finally(() => {
         loadingOlderRef.current = false
       })
-    return () => {
-      cancelled = true
-    }
   }, [startIndex, groupedItems.length, sessionId, viewportEl, pinned])
 
   // When the reader returns to the live edge, drop the per-session backfill
@@ -278,7 +303,7 @@ function VirtualizedTimeline({
   const virtualItems = virtualizer.getVirtualItems()
   if (viewportEl === null || virtualItems.length === 0) {
     return (
-      <MessageScrollerContent live={live} className="mx-auto w-full max-w-3xl">
+      <MessageScrollerContent live={live} className="mx-auto w-full max-w-3xl py-4">
         {groupedItems.map((item, index) => (
           <MessageScrollerItem
             key={item.key}
@@ -366,14 +391,15 @@ export function ChatMessageList({
 
   return (
     <SelectionContextLayer className="relative min-h-0 flex-1" onAdd={onAddSelectionContext}>
-      {/* Top edge fade: content dissolves into the header. No bottom fade: a
-          strip above the composer reads as a drop shadow; the viewport clip
-          ends the list cleanly at the dock. */}
+      {/* Edge fades: content dissolves into the header and the composer dock.
+          Both use `terminal-bg`, the panel fill, so the bottom fade does not
+          read as a shadow above the composer. */}
       <div className="pointer-events-none absolute inset-x-0 top-0 z-10 h-6 bg-gradient-to-b from-terminal-bg to-transparent" />
-      <MessageScrollerProvider autoScroll>
+      <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 h-6 bg-gradient-to-t from-terminal-bg to-transparent" />
+      <MessageScrollerProvider autoScroll followContent={false}>
         <ItemCountReporter count={stableItems.length} />
         <MessageScroller>
-          <MessageScrollerViewport className={cn(CHAT_GUTTER_X, STATUS_RAIL_GUTTER_X, 'py-4')}>
+          <MessageScrollerViewport className={cn(CHAT_GUTTER_X, STATUS_RAIL_GUTTER_X)}>
             <VirtualizedTimeline
               sessionId={sessionId}
               groupedItems={stableItems}

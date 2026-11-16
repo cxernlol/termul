@@ -1,5 +1,9 @@
 import { ChevronDown, ChevronRight, Folder, MoreHorizontal } from '@/components/icons'
 import { useRailCollapsed } from '@/components/shell/rail/rail-density'
+import {
+  RAIL_COLLAPSED_ROW_CLASS,
+  RAIL_LABEL_FADE_CLASS
+} from '@/components/shell/rail/rail-motion'
 import { RailTooltip } from '@/components/shell/rail-button'
 import { RAIL_ICON_BOX_CLASS, RAIL_ROW_INSET_CLASS } from '@/components/shell/rail-layout'
 import { ContextMenu, ContextMenuTrigger } from '@/components/ui/context-menu'
@@ -41,8 +45,8 @@ export function RailGroupRow(props: RailGroupRowProps): React.JSX.Element {
 /**
  * Group row of the collapsed Rail (Sidebar V2): the expanded row's height
  * with only the folder icon (the chevron on hover or focus, always when the
- * group is open), centred. A click folds the group; right-click opens its
- * menu. The name is the button's accessible name.
+ * group is open), in a 30px square fill on the icon column, so the icon
+ * keeps its expanded x. A click folds the group; right-click opens its menu. The name is the button's accessible name.
  */
 function RailGroupIconRow({
   group,
@@ -65,7 +69,8 @@ function RailGroupIconRow({
           data-group-id={group.id}
           data-testid={`rail-group-row-${group.id}`}
           className={cn(
-            'group flex h-8 w-full cursor-pointer select-none items-center justify-center rounded-lg',
+            'group flex h-7.5 cursor-pointer select-none items-center rounded-lg',
+            RAIL_COLLAPSED_ROW_CLASS,
             'transition-colors duration-150 ease-out',
             FOCUS_RING_CLASS,
             isDragOver
@@ -80,7 +85,7 @@ function RailGroupIconRow({
             )}
           >
             <Folder
-              size={16}
+              size={14}
               className={group.color ? getColorClasses(group.color).text : 'text-muted-foreground'}
             />
           </span>
@@ -176,7 +181,7 @@ function RailGroupLabelRow({
                   )}
                 >
                   <Folder
-                    size={16}
+                    size={14}
                     className={
                       group.color ? getColorClasses(group.color).text : 'text-muted-foreground'
                     }
@@ -193,7 +198,12 @@ function RailGroupLabelRow({
                   <Chevron size={12} />
                 </span>
               </span>
-              <span className="min-w-0 flex-1 truncate font-medium text-foreground">
+              <span
+                className={cn(
+                  'min-w-0 flex-1 truncate font-medium whitespace-nowrap text-foreground',
+                  RAIL_LABEL_FADE_CLASS
+                )}
+              >
                 {group.name}
               </span>
             </button>

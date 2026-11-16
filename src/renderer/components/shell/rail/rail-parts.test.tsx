@@ -39,11 +39,14 @@ describe('RailNav / RailNavRow', () => {
     expect(screen.getByTestId('nav')).toHaveClass('gap-px', 'px-2', 'pt-2', 'pb-2.5')
   })
 
-  it('renders a 28px row with a 14px icon, the fading label and no Kbd chip', () => {
+  it('renders a 30px row with a 14px icon in the 16px box, the fading label and no Kbd chip', () => {
     const { button } = renderNav()
-    expect(button).toHaveClass('h-7', 'px-3', 'gap-2', 'text-xs', 'text-secondary-foreground')
+    expect(button).toHaveClass('h-7.5', 'px-3', 'gap-2', 'text-xs', 'text-secondary-foreground')
     expect(button.querySelector('kbd')).toBeNull()
-    expect(button.querySelector('[data-rail-icon-column]')).toHaveClass('size-3.5')
+    expect(button.querySelector('[data-rail-icon-column]')).toHaveClass(
+      'size-4',
+      '[&_svg]:size-3.5'
+    )
     expect(within(button).getByText('Search')).toHaveClass('fade-end', 'min-w-0', 'flex-1')
   })
 
@@ -128,7 +131,7 @@ describe('RailChatGroup parts', () => {
     expect(rows()).toHaveLength(5)
     const more = screen.getByRole('button', { name: 'Show 3 more' })
     expect(more).toHaveAttribute('aria-expanded', 'false')
-    expect(more).toHaveClass('h-7', 'pl-14', 'text-muted-foreground')
+    expect(more).toHaveClass('h-7.5', 'pl-14', 'text-muted-foreground')
 
     fireEvent.click(more)
     expect(rows()).toHaveLength(8)
@@ -177,7 +180,7 @@ describe('icon-only density (collapsed Rail)', () => {
       </TooltipProvider>
     )
 
-  it('keeps the 28px nav row, centres the 14px icon and draws no label', () => {
+  it('keeps the 30px nav row as a square fill, centres the icon and draws no label', () => {
     collapsed(
       <RailNav data-testid="nav">
         <RailNavRow label="Search" icon={<Search />} shortcut="Ctrl+K" onClick={vi.fn()} />
@@ -185,10 +188,16 @@ describe('icon-only density (collapsed Rail)', () => {
     )
     expect(screen.getByTestId('nav')).toHaveClass('gap-px', 'px-2', 'pt-2', 'pb-2.5')
     const row = screen.getByRole('button', { name: 'Search' })
-    expect(row).toHaveClass('h-7', 'justify-center', 'rounded-md', 'hover:bg-foreground/[0.06]')
+    expect(row).toHaveClass(
+      'h-7.5',
+      'w-7.5',
+      'justify-center',
+      'rounded-lg',
+      'hover:bg-foreground/[0.06]'
+    )
     expect(row).not.toHaveClass('px-3')
     expect(row).toHaveTextContent('')
-    expect(row.querySelector('[data-rail-icon-column]')).toHaveClass('size-3.5')
+    expect(row.querySelector('[data-rail-icon-column]')).toHaveClass('size-4')
   })
 
   it('shows the hover tooltip: label and shortcut keycap, 28px, radius 8', async () => {
@@ -221,7 +230,8 @@ describe('icon-only density (collapsed Rail)', () => {
       </RailChatGroup>
     )
     const row = screen.getByRole('button', { name: 'Chat a' })
-    expect(row).toHaveClass('h-7.5', 'justify-center', 'rounded-md', 'keycap')
+    // The same 30px square fill and radius as every collapsed Rail row.
+    expect(row).toHaveClass('h-7.5', 'w-7.5', 'justify-center', 'rounded-lg', 'keycap')
     expect(screen.queryByText('Chat a')).toBeNull()
   })
 

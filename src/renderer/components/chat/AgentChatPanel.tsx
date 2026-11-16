@@ -310,7 +310,7 @@ export function AgentChatPanel({
       // conversation timeline keeps the latest message visible above the OSK.
       // We locate the inner MessageScrollerViewport (it has
       // `data-slot="message-scroller-viewport"`) and scroll it to the bottom.
-      // The MessageScrollerProvider's auto-scroll already handles streaming;
+      // The list's virtualizer keeps the live edge pinned while streaming;
       // this handles the OSK-open transition case.
       const root = rootRef.current
       if (root) {

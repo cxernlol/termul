@@ -41,6 +41,7 @@ import { getAllLeafPanes } from '@/stores/workspace-store/tree'
 import type { Project } from '@/types/project'
 import { logRailEvent } from '../shell-log'
 import { useCreateWorktree } from '../use-create-worktree'
+import { RAIL_BLOCK_FADE_CLASS, RAIL_COLLAPSED_ROW_CLASS } from './rail-motion'
 
 const ROW_CLASS =
   'flex h-8 min-w-0 flex-1 items-center gap-2 rounded-lg px-2.5 text-left text-xs text-foreground transition-colors duration-150 ease-out'
@@ -155,7 +156,12 @@ export function RailWorktreeChip({
   if (collapsed) {
     return (
       <div
-        className="flex h-4.5 items-center justify-center text-muted-foreground"
+        key="collapsed"
+        className={cn(
+          'flex h-4.5 items-center text-muted-foreground',
+          RAIL_COLLAPSED_ROW_CLASS,
+          RAIL_BLOCK_FADE_CLASS
+        )}
         title={`Worktree: ${label}`}
         data-testid={`rail-worktree-chip-${project.id}`}
       >
@@ -166,7 +172,11 @@ export function RailWorktreeChip({
   }
   return (
     <div
-      className="flex h-4.5 min-w-0 items-start pr-3 pl-9"
+      key="expanded"
+      className={cn(
+        'flex h-4.5 min-w-0 items-start pr-3 pl-9 whitespace-nowrap',
+        RAIL_BLOCK_FADE_CLASS
+      )}
       data-testid={`rail-worktree-chip-${project.id}`}
     >
       <span

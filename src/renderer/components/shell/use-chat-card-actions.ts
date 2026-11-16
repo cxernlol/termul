@@ -2,6 +2,7 @@ import { useCallback } from 'react'
 import { toast } from 'sonner'
 import type { ProjectChatEntry } from '@/components/sidebar/project-chat-row'
 import { logFrontendError } from '@/lib/log-api'
+import { leaveQuickChatView, openNoProjectChat } from '@/lib/no-project-chat'
 import { useAcpStore } from '@/stores/acp-store'
 import { useWorkspaceStore } from '@/stores/workspace-store'
 
@@ -33,7 +34,10 @@ export function useChatCardActions(): ChatCardActions {
       }
       try {
         const opening = openHistorySession(entry.id)
-        addAgentChatTab(entry.id)
+        if (!openNoProjectChat(entry.id, LOG_SOURCE)) {
+          leaveQuickChatView(LOG_SOURCE)
+          addAgentChatTab(entry.id)
+        }
         void opening.catch(fail)
       } catch (error) {
         fail(error)

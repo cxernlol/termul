@@ -12,7 +12,10 @@ import { cn } from '@/lib/utils'
  * pinned to the bottom; surface a jump-to-latest control otherwise.
  */
 
-const BOTTOM_THRESHOLD_PX = 48
+export const BOTTOM_THRESHOLD_PX = 48
+
+/** Scrolls the list to its live edge. A virtualizer registers one to own the end. */
+export type EndScroller = (behavior: ScrollBehavior) => void
 
 interface MessageScrollerContextValue {
   registerViewport: (el: HTMLDivElement | null) => void
@@ -25,6 +28,11 @@ interface MessageScrollerContextValue {
   /** Report the current item count so unread can be derived. */
   setItemCount: (n: number) => void
   scrollToEnd: (behavior?: ScrollBehavior) => void
+  /**
+   * Hands "scroll to the end" to the list (null gives it back). A virtualized
+   * list must own it: it knows the real end before every row is measured.
+   */
+  setEndScroller: (scroller: EndScroller | null) => void
 }
 
 const MessageScrollerContext = React.createContext<MessageScrollerContextValue | null>(null)
@@ -39,9 +47,17 @@ function useMessageScroller(): MessageScrollerContextValue {
 
 function MessageScrollerProvider({
   autoScroll = true,
+  followContent = true,
   children
 }: {
   autoScroll?: boolean
+  /**
+   * Follow the live edge when the content grows. Turn it off when a
+   * virtualizer pins the end itself (`anchorTo: 'end'`): two scroll writers
+   * that react to the same resize move the viewport against each other.
+   * Viewport resizes (panel resize, on-screen keyboard) still follow.
+   */
+  followContent?: boolean
   children: React.ReactNode
 }): React.JSX.Element {
   const [viewportEl, setViewportEl] = React.useState<HTMLDivElement | null>(null)
@@ -51,6 +67,10 @@ function MessageScrollerProvider({
   const [seenCount, setSeenCount] = React.useState(0)
   const pinnedRef = React.useRef(pinned)
   pinnedRef.current = pinned
+  const endScrollerRef = React.useRef<EndScroller | null>(null)
+  const setEndScroller = React.useCallback((scroller: EndScroller | null) => {
+    endScrollerRef.current = scroller
+  }, [])
 
   // While pinned to the live edge, everything is "seen". Unread is whatever
   // arrived since the reader last sat at the bottom.
@@ -62,7 +82,8 @@ function MessageScrollerProvider({
   const scrollToEnd = React.useCallback(
     (behavior: ScrollBehavior = 'smooth') => {
       if (!viewportEl) return
-      viewportEl.scrollTo({ top: viewportEl.scrollHeight, behavior })
+      if (endScrollerRef.current) endScrollerRef.current(behavior)
+      else viewportEl.scrollTo({ top: viewportEl.scrollHeight, behavior })
       setPinned(true)
       setShowButton(false)
     },
@@ -84,23 +105,27 @@ function MessageScrollerProvider({
 
     const follow = (): void => {
       if (autoScroll && pinnedRef.current) {
-        viewportEl.scrollTop = viewportEl.scrollHeight
+        if (endScrollerRef.current) endScrollerRef.current('auto')
+        else viewportEl.scrollTop = viewportEl.scrollHeight
       }
       update()
     }
 
-    const content = viewportEl.firstElementChild
     const ro = new ResizeObserver(follow)
     ro.observe(viewportEl)
-    if (content) ro.observe(content)
+    const content = viewportEl.firstElementChild
+    // Without content following, a content resize only refreshes the pinned state.
+    const contentRo = new ResizeObserver(followContent ? follow : update)
+    if (content) contentRo.observe(content)
 
     update()
 
     return () => {
       viewportEl.removeEventListener('scroll', onScroll)
       ro.disconnect()
+      contentRo.disconnect()
     }
-  }, [viewportEl, autoScroll])
+  }, [viewportEl, autoScroll, followContent])
 
   const value = React.useMemo<MessageScrollerContextValue>(
     () => ({
@@ -110,9 +135,10 @@ function MessageScrollerProvider({
       showButton,
       newCount,
       setItemCount,
-      scrollToEnd
+      scrollToEnd,
+      setEndScroller
     }),
-    [viewportEl, pinned, showButton, newCount, scrollToEnd]
+    [viewportEl, pinned, showButton, newCount, scrollToEnd, setEndScroller]
   )
 
   return <MessageScrollerContext.Provider value={value}>{children}</MessageScrollerContext.Provider>

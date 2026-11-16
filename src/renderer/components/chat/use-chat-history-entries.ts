@@ -13,10 +13,12 @@ import {
   scopeSessionIndex
 } from '@/lib/acp-history-persistence'
 import { activeWorktreeOf } from '@/lib/active-worktree'
+import { leaveQuickChatView, openNoProjectChat } from '@/lib/no-project-chat'
 import { foldEntries, sessionChainIndex, UNTITLED_PATTERN } from '@/lib/session-chain'
 import { chatsMatchAnnouncement } from '@/lib/shell-announcements'
 import { useAcpStore } from '@/stores/acp-store'
 import { useActiveProject } from '@/stores/project-store'
+import { useQuickChatStore } from '@/stores/quick-chat-store'
 import { useShellAnnouncerStore } from '@/stores/shell-announcer-store'
 import { useWorktreePick } from '@/stores/shell-layout-store'
 import { useWorkspaceStore } from '@/stores/workspace-store'
@@ -309,14 +311,21 @@ export function useChatHistoryEntries({
           // first render shows the branded preload, then reconnect in the
           // background just like local mirrors.
           const opening = openDiscoveredSession(entry.agentId, entry.id, entry.cwd, activeProjectId)
+          leaveQuickChatView('chat-history')
           addAgentChatTab(entry.id)
           void opening.catch(() => {
             toast.error('Could not open that chat. Try again.')
+          })
+        } else if (openNoProjectChat(entry.id, 'chat-history')) {
+          // A quick or older chat opens in the quick view, not in this pane.
+          void openHistorySession(entry.id).catch(() => {
+            toast.error('Could not reconnect. Try again.')
           })
         } else {
           // Register the restore synchronously before focusing the tab so its
           // first render cannot miss the branded preload. Reconnect continues
           // in the background after the local transcript becomes usable.
+          leaveQuickChatView('chat-history')
           const opening = openHistorySession(entry.id)
           addAgentChatTab(entry.id)
           void opening.catch(() => {
@@ -331,7 +340,16 @@ export function useChatHistoryEntries({
     [addAgentChatTab, openHistorySession, openDiscoveredSession, activeProjectId, onSessionOpened]
   )
 
-  const deleteEntry = useCallback((id: string) => deleteConversation(id, logSource), [logSource])
+  const deleteEntry = useCallback(
+    (id: string) => {
+      const deletedIds = deleteConversation(id, logSource)
+      // A deleted quick chat (the row or any session folded into it) must not
+      // stay on screen in the quick view.
+      const view = useQuickChatStore.getState().view
+      if (view.mode === 'chat' && deletedIds.has(view.sessionId)) leaveQuickChatView(logSource)
+    },
+    [logSource]
+  )
 
   return {
     mergedEntries,

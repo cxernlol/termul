@@ -8,17 +8,16 @@ export const TRAFFIC_LIGHT_CLEARANCE_PX = 76
 
 /**
  * Where the shell steps aside for the macOS traffic lights while the Rail is
- * collapsed. The collapsed Rail (48px) sits under the lights, so the main
- * area's top row only pads its start by 24px (Paper 2.3: tab bar
- * `padding-left: 24`), which puts the expand-Rail toggle at x = 72, just
- * right of the lights. Nothing moves down.
+ * collapsed. The collapsed Rail (56px) sits under the lights, so the main
+ * area's top row only pads its start by 16px, which puts the expand-Rail
+ * toggle at x = 72 (Paper 2.3), just right of the lights. Nothing moves down.
  */
 export interface TrafficLightInset {
   /** Start padding of the main area's top row (the bar that touches the Rail). */
   mainStartPx: number
 }
 
-const INSET: TrafficLightInset = { mainStartPx: 24 }
+const INSET: TrafficLightInset = { mainStartPx: 16 }
 
 /**
  * The one place that decides the inset: `null` unless the traffic lights are

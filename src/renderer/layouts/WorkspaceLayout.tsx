@@ -8,6 +8,7 @@ import { useEditorPersistence } from '@/hooks/use-editor-persistence'
 import { useFileWatcher } from '@/hooks/use-file-watcher'
 import { useMobileWebShell } from '@/hooks/use-mobile-web-shell'
 import { useProjectSwitch } from '@/hooks/use-project-switch'
+import { useQuickChatRouteSync } from '@/hooks/use-quick-chat-route-sync'
 import { useShellUnreadTracker } from '@/hooks/use-shell-unread-tracker'
 import { useWorktreeShortcuts } from '@/hooks/use-worktree-shortcuts'
 import { useWorkspaceOverlayBackStack } from '@/layouts/use-workspace-overlay-back-stack'
@@ -40,7 +41,6 @@ import {
   useProjects,
   useProjectsLoaded
 } from '@/stores/project-store'
-import { useQuickChatStore } from '@/stores/quick-chat-store'
 import { useTerminals } from '@/stores/terminal-store'
 import { useActiveTab, useWorkspaceStore } from '@/stores/workspace-store'
 
@@ -109,7 +109,6 @@ export default function WorkspaceLayout(): React.JSX.Element {
   const handleSelectProject = useCallback(
     (id: string) => {
       selectProject(id)
-      useQuickChatStore.getState().close()
       ssh.selectSSHProfile(null) // Leave the SSH workspace when switching to a project
     },
     [selectProject, ssh.selectSSHProfile]
@@ -170,6 +169,9 @@ export default function WorkspaceLayout(): React.JSX.Element {
 
   // Determine if we should show the terminal area (only on workspace dashboard)
   const isWorkspaceRoute = isWorkspaceRoutePath(location.pathname)
+  // Back/Forward, a typed URL or a routed page (Snapshots) while a quick
+  // chat is open: the quick view follows the route.
+  useQuickChatRouteSync(location.pathname)
 
   useWorkspaceKeyboard({
     activeTab,

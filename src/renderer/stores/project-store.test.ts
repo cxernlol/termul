@@ -33,6 +33,7 @@ import { _resetProjectPrefsForTests, getProjectPrefs } from '@/lib/project-prefs
 import { ProjectBusyError } from '@/lib/project-registry-api'
 import { useProjectBusyStore } from './project-busy-store'
 import { useProjectStore } from './project-store'
+import { useQuickChatStore } from './quick-chat-store'
 
 describe('project-store', () => {
   beforeEach(() => {
@@ -92,6 +93,13 @@ describe('project-store', () => {
 
       const { activeProjectId } = useProjectStore.getState()
       expect(activeProjectId).toBe('2')
+    })
+
+    it('closes an open quick chat, also when the active project is selected again', () => {
+      const active = useProjectStore.getState().activeProjectId
+      useQuickChatStore.setState({ view: { mode: 'chat', sessionId: 'quick-1' } })
+      useProjectStore.getState().selectProject(active)
+      expect(useQuickChatStore.getState().view).toEqual({ mode: 'closed' })
     })
 
     it('should update isActive property on projects', () => {

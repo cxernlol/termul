@@ -81,12 +81,13 @@ const STREAMDOWN_COMPONENTS = {
   table: ChatMarkdownTable
 } as const
 
-// Streamdown blurIn, tuned to the streaming-text tokens.
+// Streamdown fadeIn, tuned to the streaming-text tokens.
 // Duration = --stream-fade. Easing = --stream-ease. Word gap = --stream-gap.
-// The 1px blur lives in the sd-blurIn keyframe (--stream-blur).
+// Opacity only: an animated `filter` gives every word its own render surface,
+// and a long reply then holds hundreds of layers that Chromium drops tiles for.
 // Active only while isAnimating is true. Settled markdown is not replayed.
 const STREAMDOWN_ANIMATED = {
-  animation: 'blurIn',
+  animation: 'fadeIn',
   duration: 350,
   easing: 'cubic-bezier(0.22, 1, 0.36, 1)',
   sep: 'word',

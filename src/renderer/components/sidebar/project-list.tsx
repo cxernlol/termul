@@ -3,6 +3,7 @@ import type { Dispatch, MutableRefObject, ReactNode, SetStateAction } from 'reac
 import { openNewChat } from '@/components/chat/new-chat/open-new-chat'
 import { ChevronDown, ChevronRight, FolderPlus } from '@/components/icons'
 import { useRailCollapsed } from '@/components/shell/rail/rail-density'
+import { RAIL_BLOCK_FADE_CLASS } from '@/components/shell/rail/rail-motion'
 import { RailTooltip } from '@/components/shell/rail-button'
 import { logRailEvent } from '@/components/shell/shell-log'
 import { CollapseExpandMotion } from '@/components/ui/collapse-expand-motion'
@@ -212,7 +213,12 @@ export function ProjectList({
     >
       {projects.length === 0 ? (
         collapsed ? null : (
-          <div className="flex flex-col items-center justify-center p-6 text-center opacity-60">
+          <div
+            className={cn(
+              'flex flex-col items-center justify-center p-6 text-center opacity-60',
+              RAIL_BLOCK_FADE_CLASS
+            )}
+          >
             <p className="text-sm text-muted-foreground">No projects yet</p>
             <p className="text-xs text-muted-foreground mt-1">
               Create your first project to get started
@@ -344,7 +350,9 @@ export function ProjectList({
 
           {/* Archived Projects Section (not on the collapsed Rail) */}
           {!collapsed && archivedProjects.length > 0 && (
-            <div className="mt-2 flex flex-col gap-0.5">
+            <div
+              className={cn('mt-2 flex flex-col gap-0.5 whitespace-nowrap', RAIL_BLOCK_FADE_CLASS)}
+            >
               <button
                 onClick={() => setShowArchived(!showArchived)}
                 className={`label-panel flex h-8 w-full items-center gap-1.5 rounded-md pl-1 pr-1.5 transition-colors duration-150 ease-out hover:bg-foreground/[0.03] hover:text-foreground focus-visible:ring-inset disabled:cursor-default disabled:hover:bg-transparent ${FOCUS_RING_CLASS}`}

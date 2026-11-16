@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, within } from '@testing-library/rea
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as appSettingsHooks from '@/hooks/use-app-settings'
 import { useGitStatusStore } from '@/stores/git-status-store'
+import { useQuickChatStore } from '@/stores/quick-chat-store'
 import { resetShellLayoutStoreForTests, useShellLayoutStore } from '@/stores/shell-layout-store'
 import type { Project } from '@/types/project'
 import { ShellToolStrip } from './ShellToolStrip'
@@ -71,6 +72,20 @@ beforeEach(() => {
 })
 
 describe('ShellToolStrip', () => {
+  it('hides the project views while a quick chat is open and keeps the tab buttons', () => {
+    useQuickChatStore.setState({ view: { mode: 'chat', sessionId: 'quick-1' } })
+    const { onNewTerminal } = renderStrip()
+    for (const name of ['Explorer', 'Changes', 'GitHub']) {
+      expect(within(strip()).queryByRole('button', { name })).not.toBeInTheDocument()
+    }
+    fireEvent.click(within(strip()).getByRole('button', { name: /New terminal/ }))
+    expect(onNewTerminal).toHaveBeenCalled()
+    useQuickChatStore.setState({ view: { mode: 'closed' } })
+    cleanup()
+    renderStrip()
+    expect(within(strip()).getByRole('button', { name: /Explorer/ })).toBeInTheDocument()
+  })
+
   it('starts below the window controls on Windows/Linux desktop only', () => {
     renderStrip()
     expect(strip()).toHaveClass('pt-[50px]')

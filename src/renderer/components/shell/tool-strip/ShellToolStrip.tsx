@@ -13,6 +13,7 @@ import { useUpdatePanelVisibility } from '@/hooks/use-app-settings'
 import { isTauriContext } from '@/lib/tauri-runtime'
 import { useFileExplorerVisible } from '@/stores/file-explorer-store'
 import { selectChangedFileCount, useGitStatusStore } from '@/stores/git-status-store'
+import { useQuickChatOpen } from '@/stores/quick-chat-store'
 import {
   type ShellLastColumnTab,
   useLastColumnTab,
@@ -53,6 +54,7 @@ export function ShellToolStrip({
   onNewBrowserTab
 }: ShellToolStripProps): React.JSX.Element {
   const desktop = isTauriContext()
+  const quickChatOpen = useQuickChatOpen()
   const platform = useTopRowPlatform()
   const dragRegion = platform.dragRegions ? true : undefined
   const projectId = activeProject?.id ?? ''
@@ -101,33 +103,37 @@ export function ShellToolStrip({
       // Windows/Linux: the strip starts below the window controls (44px row).
       className={platform.windowControls ? 'pt-[50px]' : undefined}
     >
-      <ToolStrip.Group>
-        {VIEWS.map(({ id, label, Icon }) => {
-          const open = viewOpen(id)
-          return (
-            <ToolStrip.Button
-              key={id}
-              id={toolStripButtonId(id)}
-              label={label}
-              active={open}
-              aria-pressed={open}
-              disabled={!viewEnabled(id)}
-              onClick={() => handleView(id)}
-              icon={<Icon size={14} aria-hidden />}
-              badge={
-                id === 'changes' && changedCount > 0 && !sshOpen ? (
-                  <CountBadge
-                    count={changedCount}
-                    max={99}
-                    data-testid="tool-strip-changes-badge"
-                    className="absolute -top-[3px] -right-1 h-4 min-w-4 text-4xs"
-                  />
-                ) : undefined
-              }
-            />
-          )
-        })}
-      </ToolStrip.Group>
+      {/* A quick chat has no project: no project views. New terminal and
+          New browser tab stay; they close the quick chat first. */}
+      {!quickChatOpen && (
+        <ToolStrip.Group>
+          {VIEWS.map(({ id, label, Icon }) => {
+            const open = viewOpen(id)
+            return (
+              <ToolStrip.Button
+                key={id}
+                id={toolStripButtonId(id)}
+                label={label}
+                active={open}
+                aria-pressed={open}
+                disabled={!viewEnabled(id)}
+                onClick={() => handleView(id)}
+                icon={<Icon size={14} aria-hidden />}
+                badge={
+                  id === 'changes' && changedCount > 0 && !sshOpen ? (
+                    <CountBadge
+                      count={changedCount}
+                      max={99}
+                      data-testid="tool-strip-changes-badge"
+                      className="absolute -top-[3px] -right-1 h-4 min-w-4 text-4xs"
+                    />
+                  ) : undefined
+                }
+              />
+            )
+          })}
+        </ToolStrip.Group>
+      )}
       <ToolStrip.Spacer data-tauri-drag-region={dragRegion} />
       <ToolStrip.Group className="pb-2">
         <TerminalStripButton

@@ -266,10 +266,9 @@
     --think-highlight: oklch(var(--foreground));
     --think-ease: ease-in-out;
 
-    /* Streaming word resolve (Streamdown blurIn). */
+    /* Streaming word fade (Streamdown fadeIn). */
     --stream-gap: 12ms;
     --stream-fade: 350ms;
-    --stream-blur: 1px;
     --stream-ease: cubic-bezier(0.22, 1, 0.36, 1);
 
     /* Accordion expand / collapse. Symmetric. */
@@ -1964,22 +1963,5 @@
     .termul-marquee {
       animation: none;
     }
-  }
-}
-
-/* Unlayered so this wins over streamdown/styles.css (imported first).
-   Streamdown prefixes the animation name: blurIn → sd-blurIn.
-   Blur settles from --stream-blur (1px). Duration and easing come from
-   the animated prop (--stream-fade, --stream-ease). The end state is
-   `filter: none` so settled words (kept by fill-mode `both`) do not each
-   hold a blur(0) filter and their own stacking context. */
-@keyframes sd-blurIn {
-  from {
-    opacity: 0;
-    filter: blur(var(--stream-blur));
-  }
-  to {
-    opacity: 1;
-    filter: none;
   }
 }

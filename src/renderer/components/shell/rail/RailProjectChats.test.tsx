@@ -327,7 +327,7 @@ describe('RailProjectChats on the collapsed Rail', () => {
     renderCollapsed()
     const more = screen.getByRole('button', { name: 'Show 2 more chats' })
     expect(more).toHaveTextContent('···')
-    expect(more).toHaveClass('h-7', 'justify-center')
+    expect(more).toHaveClass('h-7.5', 'justify-center')
     fireEvent.click(more)
     expect(rows().filter((row) => row.getAttribute('aria-label')?.startsWith('Chat'))).toHaveLength(
       7

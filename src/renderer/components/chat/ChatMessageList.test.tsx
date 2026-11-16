@@ -714,6 +714,7 @@ describe('ChatMessageList log live semantics', () => {
       getTotalSize: () => 200,
       measureElement: () => undefined,
       scrollToIndex: () => undefined,
+      scrollToEnd: () => undefined,
       range: { startIndex: 0, endIndex: 1 }
     })
     renderList()
@@ -747,5 +748,103 @@ describe('ChatMessageList log live semantics', () => {
       />
     )
     expect(screen.getByRole('log')).toHaveAttribute('aria-live', 'off')
+  })
+})
+
+describe('ChatMessageList scroll ownership', () => {
+  afterEach(() => {
+    virtualizerOverride.current = null
+  })
+
+  const items = [userItem, finalAgentItem]
+
+  function windowedVirtualizer(
+    seen: Array<Record<string, unknown>>,
+    scrollToEnd: (options?: { behavior?: string }) => void
+  ): (options: unknown) => unknown {
+    // One stable object, like the real hook returns across renders.
+    const instance = {
+      getVirtualItems: () => [
+        { index: 0, key: 'user-1', start: 16, end: 116, size: 100, lane: 0 },
+        { index: 1, key: 'agent-final', start: 116, end: 216, size: 100, lane: 0 }
+      ],
+      getTotalSize: () => 232,
+      measureElement: () => undefined,
+      scrollToIndex: () => undefined,
+      scrollToEnd,
+      range: { startIndex: 0, endIndex: 1 }
+    }
+    return (options) => {
+      seen.push(options as Record<string, unknown>)
+      return instance
+    }
+  }
+
+  it('lets an end-anchored virtualizer own the live edge and the list padding', () => {
+    const seen: Array<Record<string, unknown>> = []
+    virtualizerOverride.current = windowedVirtualizer(seen, () => undefined)
+    render(<ChatMessageList items={items} sessionId="session-1" showRunningIndicator={false} />)
+
+    expect(seen.at(-1)).toMatchObject({
+      anchorTo: 'end',
+      followOnAppend: true,
+      scrollEndThreshold: 48,
+      paddingStart: 24,
+      paddingEnd: 24
+    })
+    // The padding is the virtualizer's alone: CSS padding on the viewport
+    // would move the DOM end away from the virtualizer's end.
+    const viewport = document.querySelector('[data-slot="message-scroller-viewport"]')
+    expect(viewport?.className).not.toMatch(/\bpy-4\b/)
+  })
+
+  it('opens each session at its live edge through the virtualizer', () => {
+    const scrollToEnd = vi.fn()
+    virtualizerOverride.current = windowedVirtualizer([], scrollToEnd)
+    const { rerender } = render(
+      <ChatMessageList items={items} sessionId="session-1" showRunningIndicator={false} />
+    )
+    expect(scrollToEnd).toHaveBeenCalledTimes(1)
+
+    rerender(<ChatMessageList items={items} sessionId="session-2" showRunningIndicator={false} />)
+    expect(scrollToEnd).toHaveBeenCalledTimes(2)
+  })
+  it('follows a flush that trims the head and appends as many rows (count unchanged)', () => {
+    const scrollToEnd = vi.fn()
+    virtualizerOverride.current = windowedVirtualizer([], scrollToEnd)
+    const { rerender } = render(
+      <ChatMessageList items={items} sessionId="session-1" showRunningIndicator={false} />
+    )
+    expect(scrollToEnd).toHaveBeenCalledTimes(1)
+
+    const appended: TimelineItem = {
+      kind: 'message',
+      key: 'agent-next',
+      message: { ...(finalAgentItem as { message: object }).message, id: 'agent-next', seq: 5 }
+    } as TimelineItem
+    // The live window dropped `user-1` and gained `agent-next`: still 2 rows.
+    rerender(
+      <ChatMessageList
+        items={[finalAgentItem, appended]}
+        sessionId="session-1"
+        showRunningIndicator={false}
+      />
+    )
+    expect(scrollToEnd).toHaveBeenCalledTimes(2)
+
+    // A plain append (a new user row) grows the count: `followOnAppend` owns that case.
+    const grown: TimelineItem = {
+      ...userItem,
+      key: 'user-2',
+      message: { ...(userItem as { message: object }).message, id: 'user-2', seq: 6 }
+    } as TimelineItem
+    rerender(
+      <ChatMessageList
+        items={[finalAgentItem, appended, grown]}
+        sessionId="session-1"
+        showRunningIndicator={false}
+      />
+    )
+    expect(scrollToEnd).toHaveBeenCalledTimes(2)
   })
 })

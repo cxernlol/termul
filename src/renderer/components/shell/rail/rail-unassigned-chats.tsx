@@ -1,14 +1,19 @@
 import { useMemo, useState } from 'react'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
-import { Chat, ChevronDown, ChevronRight } from '@/components/icons'
+import { openNewQuickChat } from '@/components/chat/new-chat/open-new-chat'
+import { Chat, ChevronDown, ChevronRight, Plus } from '@/components/icons'
+import { RailTooltip } from '@/components/shell/rail-button'
 import { ChatRowTrail, type ProjectChatEntry } from '@/components/sidebar/project-chat-row'
-import { RailSectionHeader } from '@/components/sidebar/rail-section-header'
+import {
+  RAIL_SECTION_BUTTON_CLASS,
+  RailSectionHeader
+} from '@/components/sidebar/rail-section-header'
 import { FIELD_FOCUS_CLASS, FOCUS_RING_CLASS } from '@/components/ui/panel-styles'
-import { acpRenameQuickChat } from '@/lib/acp-api'
 import type { SessionIndexEntry } from '@/lib/acp-history-persistence'
 import { olderChats, quickSessions, UNTITLED_HOST_TITLE } from '@/lib/acp-history-persistence'
 import { isContextMenuKey, openContextMenuFrom } from '@/lib/context-menu-key'
-import { logFrontendError } from '@/lib/log-api'
+import { leaveQuickChatView, openNoProjectHistoryChat } from '@/lib/no-project-chat'
+import { renameQuickChat } from '@/lib/quick-chat-rename'
 import { cn } from '@/lib/utils'
 import { useAcpStore } from '@/stores/acp-store'
 import { useQuickChatStore } from '@/stores/quick-chat-store'
@@ -36,6 +41,11 @@ import {
   RailHoverPanelProjectRow,
   RailHoverPanelTrigger
 } from './rail-hover-panel'
+import {
+  RAIL_BLOCK_FADE_CLASS,
+  RAIL_COLLAPSED_ROW_CLASS,
+  RAIL_LABEL_FADE_CLASS
+} from './rail-motion'
 
 /** Newest first. A missing time sorts last. */
 function newestFirst(entries: SessionIndexEntry[]): SessionIndexEntry[] {
@@ -168,6 +178,7 @@ function UnassignedChatRow({
       actions={menuActions}
       onRename={rename ? onRenameStart : undefined}
       onRequestDelete={onRequestDelete}
+      noProject
     >
       <RailChatRowFrame>
         <RailChatRow
@@ -187,7 +198,7 @@ function UnassignedChatRow({
             aria-hidden="true"
             className={cn(RAIL_ICON_BOX_CLASS, 'relative text-muted-foreground')}
           >
-            <Chat size={16} />
+            <Chat size={14} />
             {collapsed && <RailChatStatusDot state={liveState} />}
           </span>
           <RailChatTitle>{entry.title}</RailChatTitle>
@@ -225,6 +236,8 @@ interface SectionProps {
   edgeInset?: boolean
   deleteTitle: string
   deleteMessage: (title: string) => string
+  /** A `+` on the header that starts a new chat. The section then shows when it is empty. */
+  onNew?: { label: string; run: () => void }
 }
 
 /**
@@ -241,7 +254,8 @@ function UnassignedSection({
   testId,
   edgeInset = false,
   deleteTitle,
-  deleteMessage
+  deleteMessage,
+  onNew
 }: SectionProps): React.JSX.Element | null {
   const collapsed = useRailCollapsed()
   const [open, setOpen] = useState(!startClosed)
@@ -258,40 +272,19 @@ function UnassignedSection({
   const deleteTarget = chats.find((chat) => chat.id === deleteId) ?? null
   const listId = `${testId}-list`
 
-  if (chats.length === 0) return null
+  // With a `+`, the header stays so a first quick chat can start. The
+  // collapsed Rail has no header button, so an empty section stays hidden.
+  if (chats.length === 0 && (!onNew || collapsed)) return null
 
   const onOpen = (id: string): void => {
     logRailEvent(`open ${readOnly ? 'older' : 'quick'} chat ${id}`)
-    if (readOnly) useQuickChatStore.getState().openOlderChat(id)
-    else useQuickChatStore.getState().openChat(id)
-    void useAcpStore.getState().openHistorySession(id)
+    openNoProjectHistoryChat(id, readOnly ? 'older' : 'quick', 'rail.no-project-chats')
   }
 
   const saveRename = (sessionId: string): void => {
-    const title = draft.trim()
     setEditingId(null)
-    if (!title) return
-    void acpRenameQuickChat(sessionId, title)
-      .then(() => {
-        useAcpStore.setState((state) => ({
-          sessionIndex: state.sessionIndex.map((entry) =>
-            entry.id === sessionId ? { ...entry, title } : entry
-          ),
-          sessions: state.sessions[sessionId]
-            ? {
-                ...state.sessions,
-                [sessionId]: { ...state.sessions[sessionId], title }
-              }
-            : state.sessions
-        }))
-      })
-      .catch((error: unknown) => {
-        void logFrontendError({
-          level: 'error',
-          source: 'quick-chat.rename',
-          message: `Could not rename quick chat ${sessionId}: ${error instanceof Error ? error.message : String(error)}`
-        })
-      })
+    const previous = chats.find((chat) => chat.id === sessionId)?.title ?? ''
+    renameQuickChat(sessionId, draft, previous)
   }
 
   const listProps = {
@@ -312,7 +305,7 @@ function UnassignedSection({
     onRequestDelete: (entry: ProjectChatEntry) => setDeleteId(entry.id)
   }
 
-  const rows = open ? <ChatList {...listProps} /> : null
+  const rows = open && chats.length > 0 ? <ChatList {...listProps} /> : null
   // A rename started from a collapsed icon has to stay in the expanded peek.
   const peek = open ? (
     <RailHoverPanel open={peekOpen || editingId !== null} onOpenChange={setPeekOpen}>
@@ -321,7 +314,7 @@ function UnassignedSection({
       </RailHoverPanelTrigger>
       <RailHoverPanelContent data-testid={`${testId}-peek`}>
         <RailDensityProvider density="expanded">
-          <RailHoverPanelProjectRow icon={<Chat size={16} />} name={label} />
+          <RailHoverPanelProjectRow icon={<Chat size={14} />} name={label} />
           <ChatList {...listProps} peek />
         </RailDensityProvider>
       </RailHoverPanelContent>
@@ -334,8 +327,9 @@ function UnassignedSection({
         <button
           type="button"
           className={cn(
-            'flex h-10 w-full items-center gap-1 text-left',
-            collapsed ? 'justify-center pt-3' : 'pt-3 pr-1.5 pl-2.5',
+            'flex h-10 items-center gap-1 text-left whitespace-nowrap',
+            collapsed ? cn(RAIL_COLLAPSED_ROW_CLASS, 'pt-3') : 'w-full pt-3 pr-1.5 pl-2.5',
+            RAIL_BLOCK_FADE_CLASS,
             FOCUS_RING_CLASS
           )}
           aria-expanded={open}
@@ -346,18 +340,32 @@ function UnassignedSection({
           {collapsed ? (
             <span aria-hidden="true" data-rail-section-divider className="h-px w-5 bg-border" />
           ) : (
-            <>
+            <span className={cn('flex min-w-0 items-center gap-1', RAIL_LABEL_FADE_CLASS)}>
               {open ? (
                 <ChevronDown size={14} aria-hidden="true" />
               ) : (
                 <ChevronRight size={14} aria-hidden="true" />
               )}
               <span className="label-panel min-w-0 truncate">{label}</span>
-            </>
+            </span>
           )}
         </button>
       ) : (
-        <RailSectionHeader label={label} />
+        <RailSectionHeader label={label}>
+          {onNew && (
+            <RailTooltip label={onNew.label}>
+              <button
+                type="button"
+                onClick={onNew.run}
+                className={RAIL_SECTION_BUTTON_CLASS}
+                aria-label={onNew.label}
+                data-testid={`${testId}-new`}
+              >
+                <Plus size={14} />
+              </button>
+            </RailTooltip>
+          )}
+        </RailSectionHeader>
       )}
       {/* A long "Show more" list scrolls inside the section, so the Rail keeps its rows. */}
       {collapsed ? (
@@ -380,7 +388,7 @@ function UnassignedSection({
           void useAcpStore.getState().deleteHistorySession(id)
           const view = useQuickChatStore.getState().view
           if (view.mode === 'chat' && view.sessionId === id) {
-            useQuickChatStore.getState().close()
+            leaveQuickChatView('rail.no-project-chats.delete')
           }
         }}
         onCancel={() => setDeleteId(null)}
@@ -389,7 +397,7 @@ function UnassignedSection({
   )
 }
 
-/** Quick chats under Projects. Hidden when there are none. */
+/** Quick chats under Projects. The header `+` starts one, so the header shows with no chats. */
 export function QuickChatsGroup(): React.JSX.Element | null {
   const sessionIndex = useAcpStore((state) => state.sessionIndex)
   const chats = useMemo(() => newestFirst(quickSessions(sessionIndex)), [sessionIndex])
@@ -399,6 +407,10 @@ export function QuickChatsGroup(): React.JSX.Element | null {
       chats={chats}
       rename
       testId="quick-chats-group"
+      onNew={{
+        label: 'New quick chat',
+        run: () => void openNewQuickChat('quick-chats-header')
+      }}
       deleteTitle="Delete quick chat"
       deleteMessage={(title) =>
         `Delete “${title}”? Files the agent created in this chat’s folder are deleted too.`

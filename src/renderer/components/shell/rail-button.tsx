@@ -45,7 +45,7 @@ interface RailTooltipProps {
  * The one tooltip for every Rail control: the name, and an optional muted
  * hint and shortcut under it. Use it instead of a native `title`. On the
  * collapsed Rail it is the hover panel tooltip (label + shortcut keycap) at
- * x = 52.
+ * x = 60.
  */
 export function RailTooltip({
   label,
