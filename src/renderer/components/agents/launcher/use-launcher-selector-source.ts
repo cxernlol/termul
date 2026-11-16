@@ -64,6 +64,7 @@ export function useLauncherSelectorSource({
       entries: supportedAgents,
       currentConfigId: selectedEntry ? tabId(selectedEntry) : null,
       armedConfigId: null,
+      emptyChat: false,
       blocked: false,
       turnBusy: false,
       installingConfigId,

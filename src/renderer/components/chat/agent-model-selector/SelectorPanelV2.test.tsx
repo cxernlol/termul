@@ -164,6 +164,7 @@ function source(over: Partial<SelectorSource> = {}): SelectorSource {
     entries: [entry(CURSOR), entry(CLAUDE)],
     currentConfigId: CURSOR.id,
     armedConfigId: null,
+    emptyChat: false,
     blocked: false,
     turnBusy: false,
     installingConfigId: null,

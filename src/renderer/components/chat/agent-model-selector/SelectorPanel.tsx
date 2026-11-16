@@ -213,7 +213,11 @@ export function SelectorPanel(props: SelectorPanelProps): React.JSX.Element {
               onCancelAndSwitch={state.cancelAndSwitch}
             />
           ) : (
-            <Hint>{`Switches to ${nameOf(viewId)} on the next send`}</Hint>
+            <Hint>
+              {sw.emptyChat
+                ? `Starts this chat on ${nameOf(viewId)}`
+                : `Switches to ${nameOf(viewId)} on the next send`}
+            </Hint>
           )}
         </>
       )

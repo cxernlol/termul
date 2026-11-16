@@ -305,7 +305,11 @@ export function MobileModelSheet(props: MobileModelSheetProps): React.JSX.Elemen
               onCancelAndSwitch={state.cancelAndSwitch}
             />
           ) : (
-            <Hint>{`Switches to ${nameOf(state.viewId)} on the next send`}</Hint>
+            <Hint>
+              {sw.emptyChat
+                ? `Starts this chat on ${nameOf(state.viewId)}`
+                : `Switches to ${nameOf(state.viewId)} on the next send`}
+            </Hint>
           )}
         </>
       )

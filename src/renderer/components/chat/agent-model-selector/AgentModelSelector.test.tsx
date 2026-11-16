@@ -46,8 +46,10 @@ const {
   mockResolvedAgents,
   mockIsMobile,
   subscribeListeners,
-  acpStateRef
+  acpStateRef,
+  mockReplaceEmptyChat
 } = vi.hoisted(() => ({
+  mockReplaceEmptyChat: vi.fn(async () => {}),
   mockArmAgentSwitch: vi.fn(async (_sessionId: string, _toConfigId: string) => true),
   mockSetSwitchPendingOption: vi.fn(async () => {}),
   mockCancelAgentSwitch: vi.fn(),
@@ -110,6 +112,11 @@ vi.mock('@/stores/acp-store', async () => {
   }
   return { useAcpStore, agentReuseKey }
 })
+
+vi.mock('@/components/chat/new-chat/open-new-chat', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/components/chat/new-chat/open-new-chat')>()),
+  replaceEmptyChat: mockReplaceEmptyChat
+}))
 
 vi.mock('@/stores/acp-store/model-catalog', () => ({ readModelCatalog: async () => null }))
 
@@ -244,6 +251,8 @@ function seed(
     },
     configToLiveAgent: { 'acp-registry:cursor\0/work': 'agent-1' },
     sessionIndex: [],
+    // A started chat: a pick on another agent arms the switch for the next send.
+    messages: { 'session-1': [{ id: 'm1', role: 'user', blocks: [] }] },
     promptQueues: {},
     pendingPermissions: {},
     pendingQuestions: {},
@@ -819,6 +828,27 @@ describe('AgentModelSelector panel', () => {
 })
 
 describe('AgentModelSelector agent tabs (switch logic moved from AgentSwitchPicker)', () => {
+  it('moves an empty chat to the other agent at once, with no armed switch', async () => {
+    seed([readyEntry(CLAUDE)])
+    acpStateRef.current.messages = { 'session-1': [] }
+    acpStateRef.current.agentOptionsCache = { [CLAUDE.id]: CLAUDE_MODELS }
+    renderSelector()
+    open()
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Claude Agent' }))
+    expect(screen.getByText('Starts this chat on Claude Agent')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Claude Haiku' }))
+
+    await waitFor(() => {
+      expect(mockReplaceEmptyChat).toHaveBeenCalledWith(
+        'session-1',
+        CLAUDE.id,
+        expect.objectContaining({ modelId: 'haiku' })
+      )
+    })
+    expect(mockArmAgentSwitch).not.toHaveBeenCalled()
+  })
+
   it('arms by the STORE id with the model chosen on another tab', async () => {
     seed([readyEntry(CLAUDE)])
     acpStateRef.current.agentOptionsCache = { [CLAUDE.id]: CLAUDE_MODELS }
@@ -1590,6 +1620,7 @@ describe('phone Select model sheet', () => {
       entries: [readyEntry(CURSOR), readyEntry(CLAUDE)],
       currentConfigId: CURSOR.id,
       armedConfigId: null,
+      emptyChat: false,
       blocked: false,
       turnBusy: false,
       installingConfigId: null,

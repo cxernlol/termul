@@ -27,6 +27,13 @@ An armed switch does nothing until you send. Cancel it (the ✕ on the pill) to
 stay with the current agent; closing the picker without picking cancels
 nothing.
 
+An empty chat (no messages, nothing queued, no turn) has nothing to hand off,
+so nothing is armed. A model pick on another agent's tab replaces it at once
+(`replaceEmptyChat` in `new-chat/open-new-chat.ts`): a new empty chat on that
+agent, with the picked model, takes the same tab (or the quick chat view), and
+the old empty chat is deleted. No switch record, separator, or handoff turn is
+written. The picker hint reads "Starts this chat on *agent*".
+
 ## What happens on the wire
 
 The new agent gets a fresh session whose first prompt carries a structured

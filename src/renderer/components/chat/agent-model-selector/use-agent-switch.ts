@@ -32,7 +32,7 @@ export interface SwitchModelPick {
 }
 
 /** The pending options a model pick arms: the model, then its values. */
-async function pendingForModelPick(
+export async function pendingForModelPick(
   configId: string,
   pick: SwitchModelPick
 ): Promise<{ modelId: string; configValues?: OptionValues }> {

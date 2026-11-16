@@ -34,7 +34,12 @@ import { useProjectStore } from '@/stores/project-store'
 import { useQuickChatStore } from '@/stores/quick-chat-store'
 import { useShellLayoutStore } from '@/stores/shell-layout-store'
 import { agentChatTabId, useWorkspaceStore } from '@/stores/workspace-store'
-import { newChatPlaceholderOptions, openNewChat, openNewQuickChat } from './open-new-chat'
+import {
+  newChatPlaceholderOptions,
+  openNewChat,
+  openNewQuickChat,
+  replaceEmptyChat
+} from './open-new-chat'
 
 const config = (id: string) => ({ id, name: id, command: 'agent', args: [] })
 const entry = (id: string, status = 'ready') => ({
@@ -494,5 +499,73 @@ describe('newChatPlaceholderOptions (the effort a new chat shows before it start
     const { pending } = await request.beforeStart()
     expect(pending.modelId).toBe('haiku')
     expect(pending.configValues.effort).toBeUndefined()
+  })
+})
+
+describe('replaceEmptyChat (another agent picked in an empty chat)', () => {
+  function stubLaunch(): {
+    createLaunchPlaceholder: ReturnType<typeof vi.fn>
+    finalizeChatLaunch: ReturnType<typeof vi.fn>
+    closeSession: ReturnType<typeof vi.fn>
+    deleteHistorySession: ReturnType<typeof vi.fn>
+    armAgentSwitch: ReturnType<typeof vi.fn>
+  } {
+    const stubs = {
+      createLaunchPlaceholder: vi.fn(() => 'launch-r'),
+      finalizeChatLaunch: vi.fn(async () => 'sess-r'),
+      closeSession: vi.fn(async () => {}),
+      deleteHistorySession: vi.fn(async () => {}),
+      armAgentSwitch: vi.fn(async () => true)
+    }
+    useAcpStore.setState(stubs as never)
+    return stubs
+  }
+
+  it('moves the empty chat to the new agent in the same tab, with no armed switch', async () => {
+    const tabId = agentChatTabId('s-empty')
+    pane([{ type: 'agent-chat', id: tabId, sessionId: 's-empty' }], tabId)
+    useAcpStore.setState({
+      sessions: {
+        's-empty': { id: 's-empty', projectId: 'p1', cwd: '/work', status: 'active' }
+      },
+      messages: { 's-empty': [] }
+    } as never)
+    const stubs = stubLaunch()
+
+    await replaceEmptyChat('s-empty', 'cfg-b', { modelId: 'glm-flash', modelConfigId: null })
+
+    expect(stubs.createLaunchPlaceholder).toHaveBeenCalledWith(
+      expect.objectContaining({ configId: 'cfg-b', cwd: '/work', projectId: 'p1' })
+    )
+    expect(stubs.finalizeChatLaunch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        placeholderId: 'launch-r',
+        configId: 'cfg-b',
+        pending: expect.objectContaining({ modelId: 'glm-flash' })
+      })
+    )
+    const leaf = useWorkspaceStore.getState().root as { tabs: { sessionId: string }[] }
+    expect(leaf.tabs.map((t) => t.sessionId)).toEqual(['launch-r'])
+    expect(stubs.deleteHistorySession).toHaveBeenCalledWith('s-empty')
+    expect(stubs.armAgentSwitch).not.toHaveBeenCalled()
+  })
+
+  it('keeps a chat that started while the pick was read', async () => {
+    useAcpStore.setState({
+      sessions: {
+        's-empty': { id: 's-empty', projectId: 'p1', cwd: '/work', status: 'active' }
+      },
+      messages: { 's-empty': [] }
+    } as never)
+    const stubs = stubLaunch()
+    readComposerOptions.mockImplementation(async () => {
+      useAcpStore.setState({ messages: { 's-empty': [{ id: 'm', role: 'user', blocks: [] }] } })
+      return null
+    })
+
+    await replaceEmptyChat('s-empty', 'cfg-b', { modelId: 'glm-flash', modelConfigId: null })
+
+    expect(stubs.createLaunchPlaceholder).not.toHaveBeenCalled()
+    expect(stubs.deleteHistorySession).not.toHaveBeenCalled()
   })
 })

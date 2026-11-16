@@ -1,5 +1,7 @@
 import { useMemo } from 'react'
 import { toast } from 'sonner'
+import { chatNotStarted } from '@/components/chat/new-chat/chat-not-started'
+import { isEmptyStartChat, replaceEmptyChat } from '@/components/chat/new-chat/open-new-chat'
 import type { StoredAgentConfig } from '@/lib/acp-agents-persistence'
 import type { PrepareChatError } from '@/lib/agents/acp-spawn-errors'
 import type { SupportedAcpAgentEntry } from '@/lib/agents/supported-acp-agents'
@@ -37,6 +39,11 @@ export interface SelectorSource {
   currentConfigId: string | null
   /** Armed switch target (chat only). */
   armedConfigId: string | null
+  /**
+   * The chat has not started (chat only): a pick on another agent's tab moves
+   * it to that agent at once instead of arming a switch.
+   */
+  emptyChat: boolean
   blocked: boolean
   turnBusy: boolean
   installingConfigId: string | null
@@ -67,6 +74,7 @@ export function useSessionSelectorSource(sessionId: string): SelectorSource {
   const projectId = useAcpStore((s) => s.sessions?.[sessionId]?.projectId ?? '')
   const liveModels = useAcpStore((s) => s.sessions?.[sessionId]?.models ?? null)
   const liveOptions = useAcpStore((s) => s.sessions?.[sessionId]?.configOptions ?? null)
+  const emptyChat = useAcpStore((s) => chatNotStarted(s, sessionId))
 
   return useMemo<SelectorSource>(
     () => ({
@@ -76,6 +84,7 @@ export function useSessionSelectorSource(sessionId: string): SelectorSource {
       entries: sw.entries,
       currentConfigId: sw.currentConfigId,
       armedConfigId: sw.armedConfigId,
+      emptyChat,
       blocked: sw.blocked,
       turnBusy: sw.turnBusy,
       installingConfigId: sw.installingConfigId,
@@ -92,6 +101,11 @@ export function useSessionSelectorSource(sessionId: string): SelectorSource {
           .catch(() => toast.error('Could not switch model. Try again.'))
       },
       pickOtherModel: (configId, pick) => {
+        // An empty chat has nothing to hand off, so it moves at once.
+        if (isEmptyStartChat(sessionId)) {
+          void replaceEmptyChat(sessionId, configId, pick)
+          return
+        }
         void sw.armWithModel(configId, pick)
       },
       cancelThenSwitch: sw.cancelThenSwitch,
@@ -99,6 +113,6 @@ export function useSessionSelectorSource(sessionId: string): SelectorSource {
       modelStatus: null,
       updateAgentIds: null
     }),
-    [sessionId, sw, cwd, projectId, liveModels, liveOptions]
+    [sessionId, sw, cwd, projectId, liveModels, liveOptions, emptyChat]
   )
 }
