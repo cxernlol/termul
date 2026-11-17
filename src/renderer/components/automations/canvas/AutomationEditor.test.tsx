@@ -474,6 +474,90 @@ describe('AutomationEditor', () => {
     expect(edgeCount()).toBe(2)
   })
 
+  it('keeps Ctrl+Z working after a step is added from the menu', async () => {
+    open()
+    const add = screen.getByRole('button', { name: 'Add a step' })
+    add.focus()
+    fireEvent.click(add)
+    const menu = screen.getByRole('dialog', { name: 'Add a step' })
+    // The search field takes focus when the menu opens; picking a row unmounts it.
+    expect(menu).toContainElement(document.activeElement as HTMLElement)
+    const http = within(menu).getByRole('button', { name: 'HTTP' })
+    http.focus()
+    fireEvent.click(http)
+    expect(card('http')).toBeInTheDocument()
+    // The popover's own close-time focus handling runs a task later; the editor keeps focus past it.
+    await act(() => new Promise((resolve) => setTimeout(resolve, 0)))
+
+    expect(document.activeElement).toBe(screen.getByTestId('automation-editor'))
+    fireEvent.keyDown(document.activeElement as Element, { key: 'z', ctrlKey: true })
+    expect(document.querySelector('.react-flow__node[data-id="http"]')).toBeNull()
+  })
+
+  it('keeps Ctrl+Z working after a toolbar button it presses turns disabled', () => {
+    open()
+    const editor = screen.getByTestId('automation-editor')
+    const tools = within(screen.getByRole('toolbar', { name: 'Canvas tools' }))
+    fireEvent.click(handle('check', 'true'))
+    fireEvent.click(handle('shape', 'in'))
+    expect(edgeCount()).toBe(3)
+
+    // A click focuses the button; undoing the only edit disables it under the focus.
+    const undo = tools.getByRole('button', { name: 'Undo' })
+    undo.focus()
+    fireEvent.click(undo)
+    expect(edgeCount()).toBe(2)
+    const redo = tools.getByRole('button', { name: 'Redo' })
+    redo.focus()
+    fireEvent.click(redo)
+    expect(edgeCount()).toBe(3)
+    expect(redo).toBeDisabled()
+
+    expect(document.activeElement).toBe(editor)
+    fireEvent.keyDown(document.activeElement as Element, { key: 'z', ctrlKey: true })
+    expect(edgeCount()).toBe(2)
+    fireEvent.keyDown(document.activeElement as Element, {
+      key: 'z',
+      ctrlKey: true,
+      shiftKey: true
+    })
+    expect(edgeCount()).toBe(3)
+  })
+
+  it('leaves focus alone when a toolbar button it presses stays enabled', () => {
+    open()
+    const tools = within(screen.getByRole('toolbar', { name: 'Canvas tools' }))
+    fireEvent.click(handle('check', 'true'))
+    fireEvent.click(handle('shape', 'in'))
+    fireEvent.click(handle('check', 'false'))
+    fireEvent.click(handle('shape', 'in'))
+    const undo = tools.getByRole('button', { name: 'Undo' })
+    undo.focus()
+    fireEvent.click(undo)
+    expect(undo).toBeEnabled()
+    // A keyboard user pressing Undo again stays on it.
+    expect(document.activeElement).toBe(undo)
+  })
+
+  it('leaves focus alone when a toolbar button turns disabled after the user left it', async () => {
+    open()
+    const editor = screen.getByTestId('automation-editor')
+    const tools = within(screen.getByRole('toolbar', { name: 'Canvas tools' }))
+    fireEvent.click(handle('check', 'true'))
+    fireEvent.click(handle('shape', 'in'))
+    const undo = tools.getByRole('button', { name: 'Undo' })
+    undo.focus()
+    // The user clicks somewhere outside the editor that takes no focus.
+    act(() => undo.blur())
+    await act(() => Promise.resolve())
+    expect(document.activeElement).toBe(document.body)
+
+    // A later update disables the button the user already left.
+    fireEvent.keyDown(editor, { key: 'z', ctrlKey: true })
+    expect(undo).toBeDisabled()
+    expect(document.activeElement).toBe(document.body)
+  })
+
   it('Enter on a menu row adds that row; Enter in the search field adds the top match', () => {
     open()
     fireEvent.click(screen.getByRole('button', { name: 'Add a step' }))

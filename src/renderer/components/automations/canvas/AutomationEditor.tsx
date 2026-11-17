@@ -23,6 +23,7 @@ import { TriggerInspector } from './inspector/TriggerInspector'
 import { AddNodeMenu } from './palette/AddNodeMenu'
 import { chainPort, NODE_KINDS, newNode } from './palette/node-kinds'
 import { TRIGGER } from './ports'
+import { useFocusFallback } from './use-focus-fallback'
 
 const NO_CHAIN = (Object.keys(NODE_KINDS) as NodeKind[]).filter((kind) => chainPort(kind) === null)
 
@@ -95,6 +96,8 @@ export function AutomationEditor({
   const root = useRef<HTMLDivElement>(null)
   // Undo and redo listen on the editor root, so it takes focus when the editor opens.
   useEffect(() => root.current?.focus({ preventScroll: true }), [])
+  // ...and takes it back when an add-menu pick or a disabled toolbar button drops it.
+  const focusFallback = useFocusFallback(root)
   const [focus, setFocus] = useState<{ id: string; nonce: number } | null>(null)
   const [inspected, setInspected] = useState<string | null>(null)
   const automation = draft.base
@@ -261,6 +264,7 @@ export function AutomationEditor({
       tabIndex={-1}
       ref={root}
       className="flex h-full min-h-0 flex-col bg-background outline-none"
+      {...focusFallback}
       onPointerDownCapture={(event) => {
         const host = event.currentTarget
         // React bubbles events from portals (the add menu) here too; those keep their own focus.
