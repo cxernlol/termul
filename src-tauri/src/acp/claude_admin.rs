@@ -251,10 +251,11 @@ fn run_account(service: &ClaudeAgentService, args: &[String]) -> ExitCode {
         ["login", id] => service.run_account_cli_login(id),
         ["rename", id, name] => service.rename_account(id, name),
         ["remove", id] => match tokio::runtime::Runtime::new() {
-            Ok(runtime) => runtime.block_on(service.remove_account(id)).map(|moved| {
+            Ok(runtime) => runtime.block_on(service.remove_account(id)).map(|removed| {
                 println!(
-                    "Removed. {} projects moved to the default account.",
-                    moved.len()
+                    "Removed. {} projects moved to the default account; {} chats follow their project.",
+                    removed.moved_project_ids.len(),
+                    removed.moved_chat_ids.len()
                 );
             }),
             Err(error) => Err(format!("could not start runtime: {error}")),

@@ -5,6 +5,7 @@
 //! The sign-in link and the code are never logged.
 
 use super::*;
+use crate::acp::claude_accounts::RemovedAccount;
 use crate::acp::{LinkCodeError, SignInCheck};
 
 #[derive(Debug, Deserialize)]
@@ -361,9 +362,10 @@ pub(super) async fn handle_rename_claude_account(
     }
 }
 
-/// `remove_claude_account { accountId }` → `{ movedProjectIds }`, the Projects
-/// that moved to the Default Account. The built-in Account is refused. An
-/// Account that is already gone answers `{ movedProjectIds: [] }`, so a repeat
+/// `remove_claude_account { accountId }` → `{ movedProjectIds, movedChatIds }`,
+/// the Projects that moved to the Default Account and the chats that had the
+/// Account as their own and now follow their Project. The built-in Account is
+/// refused. An Account that is already gone answers empty lists, so a repeat
 /// (a second click, another client) converges instead of failing.
 pub(super) async fn handle_remove_claude_account(
     id: String,
@@ -383,13 +385,18 @@ pub(super) async fn handle_remove_claude_account(
     let account = parsed.account_id;
     let service = acp.claude_agent();
     match service.remove_account(&account).await {
-        Ok(moved) => {
-            info!(account = %account, moved = moved.len(), "Claude account removed over ws");
-            WsReply::ok(id, Some(json!({ "movedProjectIds": moved })))
+        Ok(removed) => {
+            info!(
+                account = %account,
+                moved_projects = removed.moved_project_ids.len(),
+                moved_chats = removed.moved_chat_ids.len(),
+                "Claude account removed over ws"
+            );
+            WsReply::ok(id, Some(json!(removed)))
         }
         Err(_) if matches!(service.has_account(&account), Ok(false)) => {
             info!(account = %account, "Claude account already removed");
-            WsReply::ok(id, Some(json!({ "movedProjectIds": [] })))
+            WsReply::ok(id, Some(json!(RemovedAccount::default())))
         }
         Err(error) => {
             warn!(account = %account, error = %error, "remove_claude_account failed");

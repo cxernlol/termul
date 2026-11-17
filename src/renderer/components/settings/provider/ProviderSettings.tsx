@@ -10,7 +10,7 @@ import { claudeAccountsApi, isClaudeLoginCancelled } from '@/lib/claude-accounts
 import { getColorClasses } from '@/lib/colors'
 import { cn } from '@/lib/utils'
 import { READ_ONLY_SERVER_REASON } from '@/lib/write-gate'
-import { applyProjectClaudeAccount } from '@/stores/claude-account-switch'
+import { applyRemovedClaudeAccount } from '@/stores/claude-account-switch'
 import { useProjectStore } from '@/stores/project-store'
 import type { ProjectColor } from '@/types/project'
 import { AccountGroupFooter } from './AccountGroupFooter'
@@ -132,11 +132,9 @@ export function ProviderSettings(): React.JSX.Element {
         : []
     setRemoveBusy(true)
     try {
-      const moved = await claudeAccountsApi.remove(account.id)
+      const removed = await claudeAccountsApi.remove(account.id)
       // Their open Claude chats still run on the removed Account.
-      for (const projectId of new Set([...moved, ...followers])) {
-        void applyProjectClaudeAccount(projectId)
-      }
+      void applyRemovedClaudeAccount(removed, followers)
       setRemoving(null)
       await reload()
       toast.success(`${account.name} was removed`)

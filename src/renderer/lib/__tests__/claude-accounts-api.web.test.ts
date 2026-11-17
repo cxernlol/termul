@@ -57,7 +57,7 @@ beforeEach(() => {
   transport.setClaudeAutoSwitch.mockResolvedValue(undefined)
   transport.addClaudeAccount.mockResolvedValue({ id: 'abc', name: 'Work', createdAt: 1 })
   transport.renameClaudeAccount.mockResolvedValue(undefined)
-  transport.removeClaudeAccount.mockResolvedValue(['p1'])
+  transport.removeClaudeAccount.mockResolvedValue({ movedProjectIds: ['p1'], movedChatIds: ['s1'] })
   transport.startClaudeLinkLogin.mockResolvedValue('https://claude.com/cai/oauth/authorize')
   transport.finishClaudeLinkLogin.mockResolvedValue(undefined)
   transport.cancelClaudeLogin.mockResolvedValue(true)
@@ -159,7 +159,10 @@ describe.each([
 
   it('renames and removes an account through the ACP transport', async () => {
     await claudeAccountsApi.rename('abc', 'Office')
-    await expect(claudeAccountsApi.remove('abc')).resolves.toEqual(['p1'])
+    await expect(claudeAccountsApi.remove('abc')).resolves.toEqual({
+      movedProjectIds: ['p1'],
+      movedChatIds: ['s1']
+    })
     expect(transport.renameClaudeAccount).toHaveBeenCalledWith('abc', 'Office')
     expect(transport.removeClaudeAccount).toHaveBeenCalledWith('abc')
     expect(mockInvoke).not.toHaveBeenCalled()

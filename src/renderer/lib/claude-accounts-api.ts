@@ -15,7 +15,8 @@
 import type {
   ClaudeAccount,
   ClaudeAccountsSnapshot,
-  ClaudeAccountUsage
+  ClaudeAccountUsage,
+  RemovedClaudeAccount
 } from '@shared/types/claude-accounts.types'
 import { WS_ERROR_CODES } from '@shared/types/web-protocol.types'
 import { invoke } from '@tauri-apps/api/core'
@@ -177,7 +178,7 @@ export const claudeAccountsApi = {
   rename: (accountId: string, name: string): Promise<void> =>
     logged('rename', () => getAcpTransport().renameClaudeAccount(accountId, name)),
 
-  /** Resolves to the ids of the Projects that moved to the Default Account. */
-  remove: (accountId: string): Promise<string[]> =>
+  /** Resolves to the Projects and chats that moved off the removed Account. */
+  remove: (accountId: string): Promise<RemovedClaudeAccount> =>
     logged('remove', () => getAcpTransport().removeClaudeAccount(accountId))
 }

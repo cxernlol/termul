@@ -30,7 +30,11 @@ export function ClaudeLimitWarning({ sessionId }: { sessionId: string }): React.
         </ComposerDockMessage>
         <ComposerDockActions>
           {choices.length > 0 && (
-            <AccountChoiceMenu choices={choices} onSelect={(choice) => void switchTo(choice)}>
+            <AccountChoiceMenu
+              choices={choices}
+              onSelect={(choice) => void switchTo(choice)}
+              projectAccountName={state.ctx.ownAccount ? state.ctx.projectAccount.name : null}
+            >
               <button type="button" className={ACCOUNT_MENU_TRIGGER_CLASS}>
                 <span className="font-medium text-foreground">Switch account</span>
                 <ChevronDown

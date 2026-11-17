@@ -133,6 +133,8 @@ class FakeWebSocket {
   projectRequests: Array<{ type: string; payload: Record<string, unknown> }> = []
   /** When set, the project registry stubs reply with this instead of ok. */
   projectErr: { code: string; message: string; details?: unknown } | null = null
+  /** Fields a host with per-chat Claude Accounts adds to its replies; an older host sends none. */
+  claudeChatFields: { chatAccounts?: unknown; movedChatIds?: unknown } = {}
   /** CAP-11 compat: when true, `list_agents` replies with bare id strings
    * (the pre-CAP-11 server shape) instead of summary objects. */
   listAgentsAsStrings = false
@@ -535,6 +537,33 @@ class FakeWebSocket {
       })
       return
     }
+    if (req.type === 'list_claude_accounts') {
+      const { chatAccounts } = this.claudeChatFields
+      this.emitReply({
+        id: req.id,
+        ok: true,
+        payload: {
+          accounts: [{ id: 'default', name: 'Default', builtin: true, signedIn: true }],
+          defaultAccountId: 'default',
+          projectAccounts: { p1: 'default' },
+          autoSwitch: true,
+          ...(chatAccounts === undefined ? {} : { chatAccounts })
+        }
+      })
+      return
+    }
+    if (req.type === 'remove_claude_account') {
+      const { movedChatIds } = this.claudeChatFields
+      this.emitReply({
+        id: req.id,
+        ok: true,
+        payload: {
+          movedProjectIds: ['p1'],
+          ...(movedChatIds === undefined ? {} : { movedChatIds })
+        }
+      })
+      return
+    }
     // Claude Account choice: an `expectedAccountId` of `stale` loses the
     // compare-and-set, like a project another client already switched.
     if (
@@ -925,6 +954,32 @@ describe('WsAcpTransport', () => {
         },
         { type: 'set_claude_auto_switch', payload: { enabled: false } }
       ])
+      transport.dispose()
+    })
+
+    it('reads the chat accounts and the moved chats, and an older host as having none', async () => {
+      const { transport, socket } = await connected()
+
+      await expect(transport.listClaudeAccounts()).resolves.toEqual({
+        accounts: [{ id: 'default', name: 'Default', builtin: true, signedIn: true }],
+        defaultAccountId: 'default',
+        projectAccounts: { p1: 'default' },
+        autoSwitch: true,
+        chatAccounts: {}
+      })
+      await expect(transport.removeClaudeAccount('ab12')).resolves.toEqual({
+        movedProjectIds: ['p1'],
+        movedChatIds: []
+      })
+
+      socket().claudeChatFields = { chatAccounts: { s1: 'ab12', bad: 7 }, movedChatIds: ['s1'] }
+      await expect(transport.listClaudeAccounts()).resolves.toMatchObject({
+        chatAccounts: { s1: 'ab12' }
+      })
+      await expect(transport.removeClaudeAccount('ab12')).resolves.toEqual({
+        movedProjectIds: ['p1'],
+        movedChatIds: ['s1']
+      })
       transport.dispose()
     })
 

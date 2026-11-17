@@ -18,7 +18,8 @@ import type { AcpCatalog } from '@shared/types/acp-catalog.types'
 import type {
   ClaudeAccount,
   ClaudeAccountsSnapshot,
-  ClaudeAccountUsage
+  ClaudeAccountUsage,
+  RemovedClaudeAccount
 } from '@shared/types/claude-accounts.types'
 import type {
   CodexAccount,
@@ -261,7 +262,8 @@ export function createInvokeAcpTransport(): AcpTransport {
     renameClaudeAccount: async (accountId, name) => {
       await invoke('claude_accounts_rename', { accountId, name })
     },
-    removeClaudeAccount: (accountId) => invoke<string[]>('claude_accounts_remove', { accountId }),
+    removeClaudeAccount: (accountId) =>
+      invoke<RemovedClaudeAccount>('claude_accounts_remove', { accountId }),
     startClaudeLinkLogin: (accountId) =>
       invoke<string>('claude_accounts_start_link_login', { accountId }),
     finishClaudeLinkLogin: async (accountId, code, options) => {

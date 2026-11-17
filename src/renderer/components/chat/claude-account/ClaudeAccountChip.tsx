@@ -1,6 +1,7 @@
+import type { ClaudeAccountView, ClaudeRateLimit } from '@shared/types/claude-accounts.types'
 import { useState } from 'react'
 import { toast } from 'sonner'
-import { Check, ExternalLink } from '@/components/icons'
+import { Check, ExternalLink, Pin } from '@/components/icons'
 import { toastAccountChoiceError } from '@/components/settings/provider/account-choice-error'
 import {
   type AccountReadiness,
@@ -25,9 +26,15 @@ import {
   usageTone
 } from '@/lib/claude-usage-format'
 import { cn } from '@/lib/utils'
-import { switchProjectClaudeAccount } from '@/stores/claude-account-switch'
+import {
+  type ChatSwitchToast,
+  chatSwitchToast,
+  showChatSwitchToast,
+  switchChatClaudeAccount,
+  switchProjectClaudeAccount
+} from '@/stores/claude-account-switch'
 import { useSettingsModalStore } from '@/stores/settings-modal-store'
-import { type ChatClaudeAccount, useChatClaudeAccount } from './use-chat-claude-account'
+import { useChatClaudeAccount } from './use-chat-claude-account'
 import {
   type AccountChoice,
   type ProjectClaudeAccount,
@@ -45,36 +52,114 @@ const DOT_TONE = { normal: 'ok', warning: 'warning', critical: 'critical' } as c
 const spoken = (r: UsageReading): string =>
   `${r.label.charAt(0).toLowerCase()}${r.label.slice(1)} ${r.percent}% used`
 
-/** Composer chip for a Claude chat. */
-export function ClaudeAccountChip({ sessionId }: { sessionId: string }): React.JSX.Element | null {
-  return <AccountChip ctx={useChatClaudeAccount(sessionId)} />
+/** What the chip's menu chooses: the Account of one chat or of a Project. */
+interface AccountScope {
+  label: string
+  /** The row that clears the explicit choice. */
+  follow: { label: string; account: ClaudeAccountView | null }
+  /** The explicit choice; `null` while following. */
+  chosenId: string | null
+  /** The chat runs its own Account, not its Project's. */
+  chatOnly: boolean
+  /** The note shown when the pick is the choice already made. */
+  unchanged: string
+  /** Apply the choice; resolves the toast to show, or `null` when nothing changed. */
+  choose: (
+    accountId: string | null,
+    next: ClaudeAccountView | undefined
+  ) => Promise<ChatSwitchToast | null>
 }
 
-/** The same chip before a chat exists (the agent launcher). */
+/**
+ * Composer chip for a Claude chat. The menu sets the Account of this chat
+ * only; "Follow project" returns it to its Project's Account.
+ */
+export function ClaudeAccountChip({ sessionId }: { sessionId: string }): React.JSX.Element | null {
+  const ctx = useChatClaudeAccount(sessionId)
+  if (!ctx) return null
+  return (
+    <AccountChip
+      ctx={ctx}
+      rateLimit={ctx.rateLimit}
+      scope={{
+        label: 'Account for this chat',
+        follow: { label: 'Follow project', account: ctx.projectAccount },
+        chosenId: ctx.ownAccount ? ctx.current.account.id : null,
+        chatOnly: ctx.ownAccount,
+        unchanged: ctx.ownAccount
+          ? `This chat already uses ${ctx.current.account.name}`
+          : 'This chat already follows the project',
+        choose: async (accountId, next) => {
+          const moved = await switchChatClaudeAccount(
+            {
+              sessionId,
+              projectId: ctx.projectId,
+              runsOn: ctx.current.account.id,
+              ownAccountId: ctx.ownAccount ? ctx.current.account.id : null,
+              projectAccountId: ctx.projectAccount.id
+            },
+            accountId
+          )
+          return chatSwitchToast(moved, accountId === null ? null : (next?.name ?? accountId))
+        }
+      }}
+    />
+  )
+}
+
+/**
+ * The chip before a chat exists (the agent launcher). The menu switches the
+ * Project's Account; open Claude chats that follow the Project restart on it.
+ */
 export function ProjectClaudeAccountChip({
   projectId
 }: {
   projectId: string
 }): React.JSX.Element | null {
-  return <AccountChip ctx={useProjectClaudeAccount(projectId)} />
+  const ctx = useProjectClaudeAccount(projectId)
+  if (!ctx) return null
+  return (
+    <AccountChip
+      ctx={ctx}
+      rateLimit={null}
+      scope={{
+        label: 'Account for this project',
+        follow: { label: 'Follow default', account: ctx.defaultAccount },
+        chosenId: ctx.explicit ? ctx.current.account.id : null,
+        chatOnly: false,
+        unchanged: ctx.explicit
+          ? `This project already uses ${ctx.current.account.name}`
+          : 'This project already follows the default account',
+        choose: async (accountId, next) => {
+          await switchProjectClaudeAccount(projectId, accountId)
+          return {
+            kind: 'success',
+            title: next ? `This project now uses ${next.name}` : 'Account changed'
+          }
+        }
+      }}
+    />
+  )
 }
 
 /**
- * Which Account the Project uses and how much of its 5-hour window is used,
- * plus any other window near its limit. The menu switches the Project's
- * Account; open Claude chats of the Project restart on it.
+ * Which Account is in use and how much of its 5-hour window is used, plus any
+ * other window near its limit.
  */
 function AccountChip({
-  ctx
+  ctx,
+  rateLimit,
+  scope
 }: {
-  ctx: (ProjectClaudeAccount & Partial<Pick<ChatClaudeAccount, 'rateLimit'>>) | null
-}): React.JSX.Element | null {
+  ctx: ProjectClaudeAccount
+  rateLimit: ClaudeRateLimit | null
+  scope: AccountScope
+}): React.JSX.Element {
   const openAppSettings = useSettingsModalStore((s) => s.openApp)
   const [switching, setSwitching] = useState(false)
-  if (!ctx) return null
 
   const signedOut = accountReadiness(ctx.current.account, ctx.current.usage) !== 'ready'
-  const used = signedOut ? null : fiveHourUsage(ctx.current.usage, ctx.rateLimit ?? null)
+  const used = signedOut ? null : fiveHourUsage(ctx.current.usage, rateLimit)
   const segments = used
     ? [used.main, ...(used.other && used.other.tone !== 'normal' ? [used.other] : [])]
     : []
@@ -82,14 +167,19 @@ function AccountChip({
   const snapshot = ctx.accounts.snapshot
 
   const choose = async (accountId: string | null): Promise<void> => {
-    const nextId = accountId ?? snapshot?.defaultAccountId ?? null
-    const next = snapshot?.accounts.find((a) => a.id === nextId)
-    if (accountId === (ctx.explicit ? ctx.current.account.id : null)) return
+    if (accountId === scope.chosenId) {
+      toast.info(scope.unchanged)
+      return
+    }
+    const next =
+      accountId === null
+        ? (scope.follow.account ?? undefined)
+        : snapshot?.accounts.find((a) => a.id === accountId)
     setSwitching(true)
     try {
-      await switchProjectClaudeAccount(ctx.projectId, accountId)
+      const result = await scope.choose(accountId, next)
       await ctx.accounts.reload()
-      toast.success(next ? `This project now uses ${next.name}` : 'Account changed')
+      showChatSwitchToast(result)
     } catch (err) {
       toastAccountChoiceError(err, 'Could not switch the account')
       void ctx.accounts.reload()
@@ -106,7 +196,7 @@ function AccountChip({
     readiness: AccountReadiness
   ) => (
     <DropdownMenuItem
-      key={choiceId ?? 'follow-default'}
+      key={choiceId ?? 'follow'}
       disabled={readiness !== 'ready'}
       onSelect={() => void choose(choiceId)}
       className="flex items-center gap-2"
@@ -140,9 +230,11 @@ function AccountChip({
   }
 
   const name = ctx.current.account.name
-  const defaultReadiness = ctx.defaultAccount ? readinessOf(ctx.defaultAccount) : 'ready'
-  const defaultState =
-    defaultReadiness === 'ready' ? '' : ` · ${NOT_READY_REASON[defaultReadiness].toLowerCase()}`
+  const followed = scope.follow.account
+  const followReadiness = followed ? readinessOf(followed) : 'ready'
+  const followState =
+    followReadiness === 'ready' ? '' : ` · ${NOT_READY_REASON[followReadiness].toLowerCase()}`
+  const subject = scope.chatOnly ? 'Claude account for this chat only' : 'Claude account'
   return (
     <DropdownMenu
       onOpenChange={(open) => {
@@ -161,7 +253,7 @@ function AccountChip({
             "after:absolute after:-inset-1 after:content-['']",
             'hover:text-foreground data-[state=open]:text-foreground disabled:opacity-60'
           )}
-          aria-label={`Claude account: ${[name, ...segments.map(spoken)].join(', ')}. Change account`}
+          aria-label={`${subject}: ${[name, ...segments.map(spoken)].join(', ')}. Change account`}
         >
           {switching ? (
             <Spinner size={10} decorative />
@@ -169,6 +261,9 @@ function AccountChip({
             <StatusDot tone={signedOut ? 'signed-out' : DOT_TONE[tone]} />
           )}
           <span className="max-w-24 truncate">{name}</span>
+          {scope.chatOnly && (
+            <Pin size={11} className="shrink-0 text-muted-foreground" aria-hidden="true" />
+          )}
           {segments.map((segment, i) => (
             <span key={segment.short} className="flex items-center gap-1.5 tabular-nums">
               {i > 0 && <span aria-hidden>·</span>}
@@ -180,21 +275,21 @@ function AccountChip({
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="w-64">
-        <DropdownMenuLabel>Account for this project</DropdownMenuLabel>
-        {ctx.defaultAccount &&
+        <DropdownMenuLabel>{scope.label}</DropdownMenuLabel>
+        {followed &&
           row(
             null,
-            'Follow default',
-            `Uses ${ctx.defaultAccount.name}${defaultState}`,
-            !ctx.explicit,
-            defaultReadiness
+            scope.follow.label,
+            `Uses ${followed.name}${followState}`,
+            scope.chosenId === null,
+            followReadiness
           )}
         {(snapshot?.accounts ?? []).map((account) =>
           row(
             account.id,
             account.name,
             describe(account),
-            ctx.explicit && account.id === ctx.current.account.id,
+            account.id === scope.chosenId,
             readinessOf(account)
           )
         )}

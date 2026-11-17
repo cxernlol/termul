@@ -22,11 +22,11 @@ import type { StoredAgentConfig } from '@/lib/acp-agents-persistence'
 import type { McpToolInfo, ProbeStatus, SessionConfigOption } from '@/lib/acp-api'
 import type { StoredMcpServer } from '@/lib/acp-mcp-persistence'
 import type { RegistryAgent } from '@/lib/agents/acp-registry'
+import { CLAUDE_AGENT_CONFIG_ID } from '@/lib/agents/registry-config-id'
 import type { SupportedAcpAgentEntry } from '@/lib/agents/supported-acp-agents'
 import { cn } from '@/lib/utils'
 import { type AcpSession, useAcpStore } from '@/stores/acp-store'
 import type { OptionValues } from '@/stores/acp-store/composer-options'
-import { CLAUDE_AGENT_CONFIG_ID } from '@/stores/claude-account-switch'
 import { AgentUpdateCta } from './AgentUpdateCta'
 
 /** What the launcher's connectors controls need (the + sheet and the foot row). */

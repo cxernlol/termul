@@ -6,7 +6,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::{claude_cli_command, AccountResolution, ClaudeAccountStore, ClaudeAgentService};
-use crate::acp::claude_accounts::{ClaudeAccount, ClaudeAccountsSnapshot, BUILTIN_ACCOUNT_ID};
+use crate::acp::claude_accounts::{
+    ClaudeAccount, ClaudeAccountsSnapshot, RemovedAccount, BUILTIN_ACCOUNT_ID,
+};
 
 /// Upper bound for one sign-in; `claude auth login` waits for the browser
 /// callback or the pasted code until then.
@@ -284,8 +286,8 @@ impl ClaudeAgentService {
 
     /// Sign the Claude CLI out of the Account (removing its keychain entry),
     /// then remove the Account. A failed sign-out is logged; the Account is
-    /// still removed. Returns the Projects that moved to the default.
-    pub async fn remove_account(&self, id: &str) -> Result<Vec<String>, String> {
+    /// still removed. Returns the Projects and chats that moved.
+    pub async fn remove_account(&self, id: &str) -> Result<RemovedAccount, String> {
         let store = self.account_store()?;
         // A sign-in still running would write a login into the removed folder.
         if self.logins.stop(id).await {

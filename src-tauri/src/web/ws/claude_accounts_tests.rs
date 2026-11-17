@@ -315,11 +315,18 @@ async fn removing_an_account_moves_its_projects_and_a_repeat_converges() {
     )
     .await;
     assert!(reply.ok);
+    let reply = handle_set_chat_claude_account(
+        "2".into(),
+        &json!({ "projectId": "side", "sessionId": "chat-1", "accountId": "ab12" }),
+        &acp,
+    )
+    .await;
+    assert!(reply.ok);
     let remove = json!({ "accountId": "ab12" });
-    let reply = handle_remove_claude_account("2".into(), &remove, &acp).await;
+    let reply = handle_remove_claude_account("3".into(), &remove, &acp).await;
     assert_eq!(
         reply.payload.unwrap(),
-        json!({ "movedProjectIds": ["office"] })
+        json!({ "movedProjectIds": ["office"], "movedChatIds": ["chat-1"] })
     );
     let file = stored(&root);
     assert_eq!(file["accounts"].as_array().unwrap().len(), 1);
@@ -327,8 +334,15 @@ async fn removing_an_account_moves_its_projects_and_a_repeat_converges() {
         .get("projectAccounts")
         .is_none_or(|p| p.get("office").is_none()));
 
-    let repeat = handle_remove_claude_account("3".into(), &remove, &acp).await;
-    assert_eq!(repeat.payload.unwrap(), json!({ "movedProjectIds": [] }));
+    assert!(file
+        .get("chatAccounts")
+        .is_none_or(|c| c.get("chat-1").is_none()));
+
+    let repeat = handle_remove_claude_account("4".into(), &remove, &acp).await;
+    assert_eq!(
+        repeat.payload.unwrap(),
+        json!({ "movedProjectIds": [], "movedChatIds": [] })
+    );
 }
 
 #[tokio::test]

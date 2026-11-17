@@ -230,11 +230,16 @@ describe('acp-store: host agent reuse on web (#837)', () => {
     const state = useAcpStore.getState()
     // The session record points at the HOST agent (not a fresh spawn).
     expect(state.sessions['s-host']?.agentId).toBe(HOST_AGENT)
-    // The reuse key includes the session Project so a later prepare for that
-    // Project reuses the host process, and another Project does not.
+    // The host process is registered for this chat only: a later reopen of
+    // the chat reuses it, and a new chat or warm session of the Project does not.
+    expect(
+      state.configToLiveAgent[
+        `acp-registry:claude-acp${NUL}/w${NUL}project${NUL}p1${NUL}chat${NUL}s-host`
+      ]
+    ).toBe(HOST_AGENT)
     expect(
       state.configToLiveAgent['acp-registry:claude-acp' + NUL + '/w' + NUL + 'project' + NUL + 'p1']
-    ).toBe(HOST_AGENT)
+    ).toBeUndefined()
     // Store presence is seeded from the summary: status connected + the
     // summary capabilities (drives decideResume + capability gates).
     expect(state.agentStatus[HOST_AGENT]).toBe('connected')

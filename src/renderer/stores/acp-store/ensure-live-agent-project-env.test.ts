@@ -281,3 +281,39 @@ describe('ensureLiveAgent — one Agent process per chat, warm sessions included
     )
   })
 })
+
+describe('ensureLiveAgent — an agent opened for one existing chat', () => {
+  beforeEach(() => {
+    _resetDefiniteSpawnRejectionsForTesting()
+    _resetInFlightPreparedForTesting()
+    seedProjectStore([project()])
+  })
+
+  it('spawns for the chat, keys the agent to it, and a new chat does not reuse it', async () => {
+    const { state, get, set } = makeStore()
+    state.spawnAgent.mockResolvedValueOnce('agent-chat').mockResolvedValueOnce('agent-new')
+
+    expect(await ensureLiveAgent(get, set, 'cfg-1', '/work/app', { sessionId: 's1' })).toBe(
+      'agent-chat'
+    )
+    expect(state.spawnAgent.mock.calls[0]?.slice(1)).toEqual(['proj-1', 's1'])
+    expect(state.configToLiveAgent).toEqual({
+      'cfg-1\0/work/app\0project\0proj-1\0chat\0s1': 'agent-chat'
+    })
+
+    state.agentStatus['agent-chat'] = 'connected'
+    expect(await ensureLiveAgent(get, set, 'cfg-1', '/work/app')).toBe('agent-new')
+    expect(state.spawnAgent.mock.calls[1]?.slice(1)).toEqual(['proj-1', undefined])
+  })
+
+  it('reuses the chat agent for a later reopen of the same chat', async () => {
+    const { state, get, set } = makeStore()
+    state.configToLiveAgent[agentReuseKey('cfg-1', '/work/app', 'proj-1', 's1')] = 'agent-chat'
+    state.agentStatus['agent-chat'] = 'connected'
+
+    expect(await ensureLiveAgent(get, set, 'cfg-1', '/work/app', { sessionId: 's1' })).toBe(
+      'agent-chat'
+    )
+    expect(state.spawnAgent).not.toHaveBeenCalled()
+  })
+})

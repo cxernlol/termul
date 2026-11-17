@@ -22,6 +22,13 @@ export interface ClaudeAccountsState {
 
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error))
 
+const mountedLists = new Set<() => void>()
+
+/** Read the Account list again in every mounted {@link useClaudeAccounts}, e.g. after the host moved a chat. */
+export function reloadClaudeAccounts(): void {
+  for (const reload of mountedLists) reload()
+}
+
 /**
  * The Claude Account list and its usage, read on mount and every 5 minutes
  * while mounted. `usage: false` skips the usage reads; `enabled: false` reads
@@ -85,6 +92,15 @@ export function useClaudeAccounts(
       clearInterval(timer)
     }
   }, [reload, refreshUsage, withUsage, enabled])
+
+  useEffect(() => {
+    if (!enabled) return
+    const listener = (): void => void reload()
+    mountedLists.add(listener)
+    return () => {
+      mountedLists.delete(listener)
+    }
+  }, [reload, enabled])
 
   return { snapshot, usage, loading, error, refreshingUsage, reload, refreshUsage }
 }

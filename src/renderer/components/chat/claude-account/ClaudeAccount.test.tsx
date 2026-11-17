@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AcpTransportError } from '@/lib/acp-transport/types'
 import { useAcpStore } from '@/stores/acp-store'
 import { FRESH } from '@/stores/acp-store/testkit'
+import { useAgentChatLifetimeStore } from '@/stores/agent-chat-lifetime-store'
 import { UsageCard } from '../agent-model-selector/mobile/MobileUsageCard'
 import { ClaudeAccountChip } from './ClaudeAccountChip'
 import { ClaudeLimitNotice } from './ClaudeLimitNotice'
@@ -16,8 +17,8 @@ import { setSwitchingTo } from './use-claude-limit'
 const { api, switcher, openApp, admits } = vi.hoisted(() => ({
   openApp: vi.fn(),
   admits: { value: true },
-  api: { list: vi.fn(), usage: vi.fn(), setResume: vi.fn() },
-  switcher: { switchProjectClaudeAccount: vi.fn() }
+  api: { list: vi.fn(), usage: vi.fn(), setResume: vi.fn(), setChatAccount: vi.fn() },
+  switcher: { switchProjectClaudeAccount: vi.fn(), switchChatClaudeAccount: vi.fn() }
 }))
 
 vi.mock('@/lib/claude-accounts-api', () => ({ claudeAccountsApi: api }))
@@ -87,6 +88,9 @@ function seed(rateLimit?: ClaudeRateLimit): void {
   } as never)
 }
 
+const ticked = (row: HTMLElement): boolean =>
+  row.querySelector('[data-termul-icon="Check"]') !== null
+
 const limit = (
   status: string,
   percent: number,
@@ -109,15 +113,18 @@ beforeEach(() => {
       { id: 'cd34', name: 'Side', builtin: false, signedIn: true }
     ],
     defaultAccountId: 'default',
-    projectAccounts: {}
+    projectAccounts: {},
+    chatAccounts: {}
   })
   api.usage.mockResolvedValue([read('default', 100), read('ab12', 4), read('cd34', 40)])
   switcher.switchProjectClaudeAccount.mockResolvedValue(undefined)
+  switcher.switchChatClaudeAccount.mockResolvedValue('restarted')
   api.setResume.mockResolvedValue(undefined)
 })
 
 afterEach(() => {
   useClaudeResumeAt.setState({}, true)
+  useAgentChatLifetimeStore.setState({ retainedByProject: {} })
 })
 
 describe('ClaudeLimitNotice', () => {
@@ -149,22 +156,46 @@ describe('ClaudeLimitNotice', () => {
     ).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Switch and continue' }))
     await waitFor(() =>
-      expect(switcher.switchProjectClaudeAccount).toHaveBeenCalledWith('office', 'ab12', {
-        continueSessionIds: ['s1'],
-        expectedAccountId: 'default'
-      })
+      expect(switcher.switchChatClaudeAccount).toHaveBeenCalledWith(
+        {
+          sessionId: 's1',
+          projectId: 'office',
+          runsOn: 'default',
+          ownAccountId: null,
+          projectAccountId: 'default'
+        },
+        'ab12',
+        {
+          notice:
+            'You moved this chat from Claude account Personal to Work because Personal reached its 5-hour limit. Continue the task you were working on. Subagents and background commands that were running before the switch were stopped; restart the ones that are still needed.'
+        }
+      )
     )
-    expect(toast.success).toHaveBeenCalledWith('Switched to Work')
+    expect(switcher.switchProjectClaudeAccount).not.toHaveBeenCalled()
+    expect(toast.success).toHaveBeenCalledWith('This chat now uses Work')
   })
 
-  it('leaves a project the host already moved, and says so', async () => {
-    switcher.switchProjectClaudeAccount.mockResolvedValue(null)
+  it('leaves a chat the host already moved, and says so', async () => {
+    switcher.switchChatClaudeAccount.mockResolvedValue('lost')
     seed(limit('rejected', 100))
     render(<ClaudeLimitNotice sessionId="s1" />)
     fireEvent.click(await screen.findByRole('button', { name: 'Switch and continue' }))
     await waitFor(() =>
-      expect(toast.info).toHaveBeenCalledWith('The account of this project already changed', {
+      expect(toast.info).toHaveBeenCalledWith('The account of this chat already changed', {
         description: 'Troupe or another device switched it first.'
+      })
+    )
+    expect(toast.success).not.toHaveBeenCalled()
+  })
+
+  it('keeps the card and says the switch failed when the chat did not restart', async () => {
+    switcher.switchChatClaudeAccount.mockResolvedValue('failed')
+    seed(limit('rejected', 100))
+    render(<ClaudeLimitNotice sessionId="s1" />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Switch and continue' }))
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith('Could not restart this chat on Work', {
+        description: 'Send a message to continue.'
       })
     )
     expect(toast.success).not.toHaveBeenCalled()
@@ -255,11 +286,58 @@ describe('ClaudeLimitWarning', () => {
     fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false })
     fireEvent.click(await screen.findByRole('menuitem', { name: /work/i }))
     await waitFor(() =>
-      expect(switcher.switchProjectClaudeAccount).toHaveBeenCalledWith('office', 'ab12', {
-        continueSessionIds: undefined,
-        expectedAccountId: 'default'
-      })
+      expect(switcher.switchChatClaudeAccount).toHaveBeenCalledWith(
+        {
+          sessionId: 's1',
+          projectId: 'office',
+          runsOn: 'default',
+          ownAccountId: null,
+          projectAccountId: 'default'
+        },
+        'ab12',
+        {}
+      )
     )
+  })
+
+  it('says the chat runs its own account in the account menu, and not otherwise', async () => {
+    const accounts = [
+      { id: 'default', name: 'Personal', builtin: true, signedIn: true },
+      { id: 'ab12', name: 'Work', builtin: false, signedIn: true },
+      { id: 'cd34', name: 'Side', builtin: false, signedIn: true }
+    ]
+    const note = 'Set for this chat. The project uses Work.'
+    api.list.mockResolvedValue({
+      accounts,
+      defaultAccountId: 'default',
+      projectAccounts: { office: 'ab12' },
+      chatAccounts: { s1: 'default' }
+    })
+    seed(limit('allowed_warning', 84))
+    const { unmount } = render(<ClaudeLimitWarning sessionId="s1" />)
+    expect(await screen.findByText(/Personal has used 84%/)).toBeInTheDocument()
+    fireEvent.pointerDown(screen.getByRole('button', { name: /switch account/i }), {
+      button: 0,
+      ctrlKey: false
+    })
+    expect(await screen.findByText('Account for this chat')).toBeInTheDocument()
+    expect(screen.getByText(note)).toBeInTheDocument()
+    unmount()
+
+    api.list.mockResolvedValue({
+      accounts,
+      defaultAccountId: 'default',
+      projectAccounts: { office: 'cd34' },
+      chatAccounts: {}
+    })
+    render(<ClaudeLimitWarning sessionId="s1" />)
+    expect(await screen.findByText(/Side has used 84%/)).toBeInTheDocument()
+    fireEvent.pointerDown(screen.getByRole('button', { name: /switch account/i }), {
+      button: 0,
+      ctrlKey: false
+    })
+    expect(await screen.findByText('Account for this chat')).toBeInTheDocument()
+    expect(screen.queryByText(/Set for this chat/)).not.toBeInTheDocument()
   })
 
   it('warns from 80% of an allowed window', async () => {
@@ -304,7 +382,8 @@ describe('phone Select model sheet usage', () => {
     api.list.mockResolvedValue({
       accounts: [{ id: 'default', name: 'Personal', builtin: true, signedIn: false }],
       defaultAccountId: 'default',
-      projectAccounts: {}
+      projectAccounts: {},
+      chatAccounts: {}
     })
     seed()
     const onManageAccounts = vi.fn()
@@ -321,7 +400,7 @@ describe('phone Select model sheet usage', () => {
 })
 
 describe('ClaudeAccountChip', () => {
-  it('shows the project account and its usage, and switches from its menu', async () => {
+  it('shows the project account and its usage, and sets this chat account from its menu', async () => {
     seed()
     render(<ClaudeAccountChip sessionId="s1" />)
     const chip = await screen.findByRole('button', {
@@ -329,10 +408,169 @@ describe('ClaudeAccountChip', () => {
     })
     expect(chip).toHaveTextContent(/^Personal5h 100%$/)
     fireEvent.pointerDown(chip, { button: 0, ctrlKey: false })
+    expect(await screen.findByText('Account for this chat')).toBeInTheDocument()
+    const follow = screen.getByRole('menuitem', { name: /Follow project/ })
+    expect(follow).toHaveTextContent('Follow projectUses Personal')
+    expect(ticked(follow)).toBe(true)
+    fireEvent.click(screen.getByRole('menuitem', { name: /Work/ }))
+    await waitFor(() =>
+      expect(switcher.switchChatClaudeAccount).toHaveBeenCalledWith(
+        {
+          sessionId: 's1',
+          projectId: 'office',
+          runsOn: 'default',
+          ownAccountId: null,
+          projectAccountId: 'default'
+        },
+        'ab12'
+      )
+    )
+    expect(switcher.switchProjectClaudeAccount).not.toHaveBeenCalled()
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('This chat now uses Work'))
+  })
+
+  it('says a busy chat moves when its reply ends, not that it moved', async () => {
+    switcher.switchChatClaudeAccount.mockResolvedValue('pending')
+    seed()
+    render(<ClaudeAccountChip sessionId="s1" />)
+    fireEvent.pointerDown(await screen.findByRole('button', { name: /Claude account: Personal/ }), {
+      button: 0,
+      ctrlKey: false
+    })
     fireEvent.click(await screen.findByRole('menuitem', { name: /Work/ }))
     await waitFor(() =>
-      expect(switcher.switchProjectClaudeAccount).toHaveBeenCalledWith('office', 'ab12')
+      expect(toast.info).toHaveBeenCalledWith('This chat moves to Work when its reply ends')
     )
+    expect(toast.success).not.toHaveBeenCalled()
+  })
+
+  it('says the pick failed when the chat did not restart', async () => {
+    switcher.switchChatClaudeAccount.mockResolvedValue('failed')
+    seed()
+    render(<ClaudeAccountChip sessionId="s1" />)
+    fireEvent.pointerDown(await screen.findByRole('button', { name: /Claude account: Personal/ }), {
+      button: 0,
+      ctrlKey: false
+    })
+    fireEvent.click(await screen.findByRole('menuitem', { name: /Work/ }))
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith('Could not restart this chat on Work', {
+        description: 'Send a message to continue.'
+      })
+    )
+    expect(toast.success).not.toHaveBeenCalled()
+  })
+
+  it('shows a chat that runs its own account and returns it to the project', async () => {
+    api.list.mockResolvedValue({
+      accounts: [
+        { id: 'default', name: 'Personal', builtin: true, signedIn: true },
+        { id: 'ab12', name: 'Work', builtin: false, signedIn: true },
+        { id: 'cd34', name: 'Side', builtin: false, signedIn: true }
+      ],
+      defaultAccountId: 'default',
+      projectAccounts: { office: 'ab12' },
+      chatAccounts: { s1: 'cd34' }
+    })
+    api.setChatAccount.mockResolvedValue(true)
+    const actual = await vi.importActual<typeof import('@/stores/claude-account-switch')>(
+      '@/stores/claude-account-switch'
+    )
+    switcher.switchChatClaudeAccount.mockImplementation(actual.switchChatClaudeAccount)
+    seed()
+    // The chat is open here, and the restart reopens it on its new agent.
+    useAgentChatLifetimeStore.setState({ retainedByProject: { office: ['s1'] } })
+    const retryCrashedSession = vi.fn(async () => undefined)
+    useAcpStore.setState({ killAgent: vi.fn(async () => undefined), retryCrashedSession } as never)
+    render(<ClaudeAccountChip sessionId="s1" />)
+
+    const chip = await screen.findByRole('button', {
+      name: 'Claude account for this chat only: Side, 5-hour 40% used. Change account'
+    })
+    expect(chip).toHaveTextContent(/^Side5h 40%$/)
+    fireEvent.pointerDown(chip, { button: 0, ctrlKey: false })
+    const follow = await screen.findByRole('menuitem', { name: /Follow project/ })
+    expect(follow).toHaveTextContent('Follow projectUses Work')
+    expect(ticked(follow)).toBe(false)
+    expect(ticked(screen.getByRole('menuitem', { name: /Side/ }))).toBe(true)
+    expect(ticked(screen.getByRole('menuitem', { name: /^Work/ }))).toBe(false)
+
+    fireEvent.click(follow)
+    await waitFor(() =>
+      expect(api.setChatAccount).toHaveBeenCalledWith('office', 's1', null, {
+        expectedAccountId: 'cd34'
+      })
+    )
+    await waitFor(() =>
+      expect(toast.success).toHaveBeenCalledWith('This chat follows the project again')
+    )
+    expect(retryCrashedSession).toHaveBeenCalledWith('s1', { resend: false })
+  })
+
+  it('pins a chat that follows its project to the account it runs, without a restart', async () => {
+    api.setChatAccount.mockResolvedValue(true)
+    const killAgent = vi.fn(async () => undefined)
+    const actual = await vi.importActual<typeof import('@/stores/claude-account-switch')>(
+      '@/stores/claude-account-switch'
+    )
+    switcher.switchChatClaudeAccount.mockImplementation(actual.switchChatClaudeAccount)
+    seed()
+    useAcpStore.setState({ killAgent } as never)
+    render(<ClaudeAccountChip sessionId="s1" />)
+    await openMenu()
+    fireEvent.click(screen.getByRole('menuitem', { name: /^Personal/ }))
+    await waitFor(() =>
+      expect(api.setChatAccount).toHaveBeenCalledWith('office', 's1', 'default', {
+        expectedAccountId: 'default'
+      })
+    )
+    await expect(switcher.switchChatClaudeAccount.mock.results[0]?.value).resolves.toBe('kept')
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('This chat now uses Personal'))
+    expect(killAgent).not.toHaveBeenCalled()
+  })
+
+  it('reads the accounts again when the host moves the chat to another account', async () => {
+    seed()
+    render(<ClaudeAccountChip sessionId="s1" />)
+    await screen.findByRole('button', { name: /^Claude account: Personal/ })
+    api.list.mockResolvedValue({
+      accounts: [
+        { id: 'default', name: 'Personal', builtin: true, signedIn: true },
+        { id: 'ab12', name: 'Work', builtin: false, signedIn: true },
+        { id: 'cd34', name: 'Side', builtin: false, signedIn: true }
+      ],
+      defaultAccountId: 'default',
+      projectAccounts: {},
+      chatAccounts: { s1: 'cd34' }
+    })
+    act(() =>
+      applyClaudeLimitAction({
+        sessionId: 's1',
+        projectId: 'office',
+        action: 'switched',
+        from: { id: 'default', name: 'Personal' },
+        to: { id: 'cd34', name: 'Side' },
+        fromAgentId: 'a1',
+        newAgentId: 'a2'
+      })
+    )
+    expect(
+      await screen.findByRole('button', {
+        name: 'Claude account for this chat only: Side, 5-hour 40% used. Change account'
+      })
+    ).toBeInTheDocument()
+  })
+
+  it('says so when the pick is the choice the chat already has', async () => {
+    seed()
+    render(<ClaudeAccountChip sessionId="s1" />)
+    await openMenu()
+    fireEvent.click(screen.getByRole('menuitem', { name: /Follow project/ }))
+    await waitFor(() =>
+      expect(toast.info).toHaveBeenCalledWith('This chat already follows the project')
+    )
+    expect(switcher.switchChatClaudeAccount).not.toHaveBeenCalled()
+    expect(toast.success).not.toHaveBeenCalled()
   })
 
   it('adds a weekly window only once it nears its limit', async () => {
@@ -357,7 +595,8 @@ describe('ClaudeAccountChip', () => {
     api.list.mockResolvedValue({
       accounts: [{ id: 'default', name: 'Personal', builtin: true, signedIn: false }],
       defaultAccountId: 'default',
-      projectAccounts: {}
+      projectAccounts: {},
+      chatAccounts: {}
     })
     seed(limit('allowed', 31))
     render(<ClaudeAccountChip sessionId="s1" />)
@@ -401,7 +640,7 @@ describe('ClaudeAccountChip', () => {
   async function openMenu(): Promise<void> {
     const chip = await screen.findByRole('button', { name: /Claude account: Personal/ })
     fireEvent.pointerDown(chip, { button: 0, ctrlKey: false })
-    await screen.findByRole('menuitem', { name: /Follow default/ })
+    await screen.findByRole('menuitem', { name: /Follow project/ })
   }
 
   it('does not switch to a signed-out account and says why', async () => {
@@ -412,7 +651,8 @@ describe('ClaudeAccountChip', () => {
         { id: 'cd34', name: 'Side', builtin: false, signedIn: true }
       ],
       defaultAccountId: 'default',
-      projectAccounts: {}
+      projectAccounts: {},
+      chatAccounts: {}
     })
     seed()
     render(<ClaudeAccountChip sessionId="s1" />)
@@ -423,9 +663,18 @@ describe('ClaudeAccountChip', () => {
     fireEvent.click(work)
     fireEvent.click(screen.getByRole('menuitem', { name: /Side/ }))
     await waitFor(() =>
-      expect(switcher.switchProjectClaudeAccount).toHaveBeenCalledWith('office', 'cd34')
+      expect(switcher.switchChatClaudeAccount).toHaveBeenCalledWith(
+        {
+          sessionId: 's1',
+          projectId: 'office',
+          runsOn: 'default',
+          ownAccountId: null,
+          projectAccountId: 'default'
+        },
+        'cd34'
+      )
     )
-    expect(switcher.switchProjectClaudeAccount).toHaveBeenCalledTimes(1)
+    expect(switcher.switchChatClaudeAccount).toHaveBeenCalledTimes(1)
   })
 
   it('does not switch to an account whose sign-in the host could not confirm', async () => {
@@ -435,7 +684,8 @@ describe('ClaudeAccountChip', () => {
         { id: 'ab12', name: 'Work', builtin: false, signedIn: null }
       ],
       defaultAccountId: 'default',
-      projectAccounts: {}
+      projectAccounts: {},
+      chatAccounts: {}
     })
     seed()
     render(<ClaudeAccountChip sessionId="s1" />)
@@ -444,33 +694,36 @@ describe('ClaudeAccountChip', () => {
     expect(work).toHaveAttribute('aria-disabled', 'true')
     expect(work).toHaveTextContent(/Could not check sign-in/)
     fireEvent.click(work)
-    expect(switcher.switchProjectClaudeAccount).not.toHaveBeenCalled()
+    expect(switcher.switchChatClaudeAccount).not.toHaveBeenCalled()
   })
 
-  it('does not follow a default account that is signed out', async () => {
+  it('does not follow a project account that is signed out', async () => {
     api.list.mockResolvedValue({
       accounts: [
         { id: 'default', name: 'Personal', builtin: true, signedIn: false },
         { id: 'ab12', name: 'Work', builtin: false, signedIn: true }
       ],
       defaultAccountId: 'default',
-      projectAccounts: { office: 'ab12' }
+      projectAccounts: {},
+      chatAccounts: { s1: 'ab12' }
     })
     seed()
     render(<ClaudeAccountChip sessionId="s1" />)
-    const chip = await screen.findByRole('button', { name: /Claude account: Work/ })
+    const chip = await screen.findByRole('button', {
+      name: /Claude account for this chat only: Work/
+    })
     fireEvent.pointerDown(chip, { button: 0, ctrlKey: false })
-    const follow = await screen.findByRole('menuitem', { name: /Follow default/ })
+    const follow = await screen.findByRole('menuitem', { name: /Follow project/ })
     expect(follow).toHaveAttribute('aria-disabled', 'true')
     expect(follow).toHaveTextContent(/Personal.*signed out/i)
     fireEvent.click(follow)
-    expect(switcher.switchProjectClaudeAccount).not.toHaveBeenCalled()
+    expect(switcher.switchChatClaudeAccount).not.toHaveBeenCalled()
   })
 
   it('shows the host reason and a way to sign in when the host refuses the account', async () => {
     const reason =
       'The Claude account "Work" is not signed in. Sign in to it in Settings → Accounts, then choose it again.'
-    switcher.switchProjectClaudeAccount.mockRejectedValue(
+    switcher.switchChatClaudeAccount.mockRejectedValue(
       new AcpTransportError('claude_account_signed_out', reason)
     )
     seed()
@@ -495,7 +748,8 @@ describe('ClaudeSignInAction', () => {
     api.list.mockResolvedValue({
       accounts: [{ id: 'default', name: 'Personal', builtin: true, signedIn: false }],
       defaultAccountId: 'default',
-      projectAccounts: {}
+      projectAccounts: {},
+      chatAccounts: {}
     })
     seed()
     render(<ClaudeSignInAction sessionId="s1" />)

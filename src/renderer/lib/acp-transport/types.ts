@@ -9,7 +9,8 @@ import type { AcpCatalog } from '@shared/types/acp-catalog.types'
 import type {
   ClaudeAccount,
   ClaudeAccountsSnapshot,
-  ClaudeAccountUsage
+  ClaudeAccountUsage,
+  RemovedClaudeAccount
 } from '@shared/types/claude-accounts.types'
 import type {
   CodexAccount,
@@ -307,7 +308,7 @@ export interface AcpTransport {
    * Remove an Account and resolve the ids of the Projects that moved to the
    * Default Account; `[]` when it was already gone.
    */
-  removeClaudeAccount(accountId: string): Promise<string[]>
+  removeClaudeAccount(accountId: string): Promise<RemovedClaudeAccount>
   /**
    * Start a link sign-in for one Account and resolve the Claude sign-in link.
    * A sign-in already running for the Account stops.

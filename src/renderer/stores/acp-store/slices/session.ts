@@ -54,6 +54,7 @@ import {
 } from '@/stores/workspace-store'
 import { pendingRestartVersionsAfterSpawn } from '../../agent-update-orchestration'
 import { dropPromptQueueForSession, moveQueuedPrompts } from '../../prompt-queue-orchestration'
+import { readReuseScope } from '../chat-reuse-scope'
 import { pruneRestoredChatTabs } from '../chat-tab-prune'
 import {
   addAdvertisedOptionsKeepingCurrent,
@@ -840,6 +841,11 @@ async function openHistorySessionInner(
   if (!isCurrentSessionReopen(id, reopenGeneration)) return
   if (!payload) throw new Error(`no persisted history for ${id}`)
   const meta = payload.metadata
+  // Read once, while the reopen loads; every agent this reopen registers is
+  // keyed with it.
+  const reuseScope = meta.agentConfigId
+    ? readReuseScope(meta.agentConfigId, id)
+    : Promise.resolve(undefined)
 
   // Rebase the process-wide seq counter so live events appended after the
   // restored transcript sort after it (nextSeq() returns > max restored seq).
@@ -855,7 +861,8 @@ async function openHistorySessionInner(
     const { adopted } = await adoptHostOwnedAgent(set, id, meta.agentConfigId, meta.cwd, {
       allowDesktop: true,
       isCurrent: () => !deletedMidOpen() && isCurrentSessionReopen(id, reopenGeneration),
-      projectId: meta.projectId
+      projectId: meta.projectId,
+      reuseScope: await reuseScope
     })
     if (!adopted) return false
     if (deletedMidOpen() || !isCurrentSessionReopen(id, reopenGeneration)) return true
@@ -1097,7 +1104,8 @@ async function openHistorySessionInner(
       {
         allowDesktop: turnLive,
         isCurrent: () => !deletedMidOpen() && isCurrentSessionReopen(id, reopenGeneration),
-        projectId: meta.projectId
+        projectId: meta.projectId,
+        reuseScope: await reuseScope
       }
     )
     if (deletedMidOpen() || !isCurrentSessionReopen(id, reopenGeneration)) return
@@ -1177,6 +1185,7 @@ async function openHistorySessionInner(
         silentSpawnFailure: true,
         surfaceDefiniteRejection: true,
         projectId: meta.projectId ?? undefined,
+        sessionId: await reuseScope,
         holder: 'chat'
       })
     } catch (err) {

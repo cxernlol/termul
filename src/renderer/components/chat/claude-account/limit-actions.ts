@@ -2,10 +2,14 @@ import type { ClaudeLimitActionEvent } from '@shared/types/claude-accounts.types
 import { useEffect } from 'react'
 import { toast } from 'sonner'
 import { create } from 'zustand'
+import { reloadClaudeAccounts } from '@/hooks/use-claude-accounts'
 import { ACP_EVENTS, onAcpEvent } from '@/lib/acp-api'
+import { CLAUDE_AGENT_CONFIG_ID } from '@/lib/agents/registry-config-id'
 import { logFrontendError } from '@/lib/log-api'
+import { agentReuseKey, reuseScopeFor } from '@/stores/acp-reuse-keys'
 import { renewAgentCredentials, useAcpStore } from '@/stores/acp-store'
-import { CLAUDE_AGENT_CONFIG_ID } from '@/stores/claude-account-switch'
+import { readOwnChatAccount } from '@/stores/acp-store/chat-reuse-scope'
+import { recordCurrentLaunch } from '@/stores/acp-store/shared-state'
 
 /** When the host continues each chat after its limit resets, epoch ms. */
 export const useClaudeResumeAt = create<Record<string, number>>(() => ({}))
@@ -20,9 +24,12 @@ function setResumeAt(sessionId: string, at: number | null): void {
 type FollowEvent = Extract<ClaudeLimitActionEvent, { action: 'switched' | 'resumed' }>
 
 /**
- * Point the chat at the agent the host moved it to. `waiting` when the chat
- * still runs on the replaced agent but this client has not seen the new one
- * connect yet (that status arrives on its own channel).
+ * Point the chat at the agent the host moved it to. A chat on its own Account
+ * gets that agent under its reuse key, so a reopen finds it, not the replaced
+ * one.
+ * `waiting` when the chat still runs on the replaced agent but this client
+ * has not seen the new one connect yet (that status arrives on its own
+ * channel).
  */
 function followAgent(e: FollowEvent): 'followed' | 'waiting' | 'stale' {
   const state = useAcpStore.getState()
@@ -36,11 +43,22 @@ function followAgent(e: FollowEvent): 'followed' | 'waiting' | 'stale' {
       const { rateLimit: _cleared, ...rest } = usage
       sessionUsage = { ...s.sessionUsage, [e.sessionId]: rest }
     }
+    const chatKey = agentReuseKey(
+      CLAUDE_AGENT_CONFIG_ID,
+      session.cwd,
+      session.projectId,
+      e.sessionId
+    )
+    // The chat keeps a key of its own when the replaced agent had one. A chat
+    // that gains its own Account in this move is keyed once the host says so
+    // (`keyToChatIfOwnAccount`): a restart onto the Project's Account gives none.
+    const ownKey = s.configToLiveAgent[chatKey] === e.fromAgentId
     return {
       sessions: {
         ...s.sessions,
         [e.sessionId]: { ...session, agentId: e.newAgentId, status: 'active' }
       },
+      ...(ownKey ? { configToLiveAgent: { ...s.configToLiveAgent, [chatKey]: e.newAgentId } } : {}),
       sessionUsage
     }
   })
@@ -68,14 +86,42 @@ function dropPending(sessionId: string): void {
   }
 }
 
+/**
+ * Register the agent a host switch moved the chat to. A chat on its own
+ * Account gets it under its chat key. A chat that follows its Project was
+ * restarted because its agent ran an older Account than the Project's, so the
+ * Project's launch is renewed (the old process is never reused) and the new
+ * agent becomes the Project's.
+ */
+async function keyFollowedAgent(e: FollowEvent): Promise<void> {
+  const chatScope = reuseScopeFor(e.sessionId, await readOwnChatAccount(e.sessionId))
+  const session = useAcpStore.getState().sessions[e.sessionId]
+  if (session?.agentId !== e.newAgentId) return
+  if (chatScope === undefined && session.projectId) {
+    renewAgentCredentials(CLAUDE_AGENT_CONFIG_ID, session.projectId)
+  }
+  // A later Project account change must retire this agent like any other.
+  recordCurrentLaunch(
+    useAcpStore.getState(),
+    e.newAgentId,
+    CLAUDE_AGENT_CONFIG_ID,
+    session.cwd,
+    session.projectId
+  )
+  const key = agentReuseKey(CLAUDE_AGENT_CONFIG_ID, session.cwd, session.projectId, chatScope)
+  useAcpStore.setState((s) => ({
+    configToLiveAgent: { ...s.configToLiveAgent, [key]: e.newAgentId }
+  }))
+}
+
 function followed(e: FollowEvent): void {
+  if (e.action === 'switched') void keyFollowedAgent(e)
   void logFrontendError({
     level: 'info',
     source: 'claudeLimit.follow',
     message: `Chat ${e.sessionId} follows host agent ${e.newAgentId} (${e.action})`
   })
   if (e.action === 'switched') {
-    renewAgentCredentials(CLAUDE_AGENT_CONFIG_ID, e.projectId)
     toast.success(`${e.from.name} reached its limit. Continued on ${e.to.name}.`)
   }
 }
@@ -134,6 +180,11 @@ export function applyClaudeLimitAction(e: ClaudeLimitActionEvent, eventSeq?: num
       return
     }
     case 'switched':
+      setResumeAt(e.sessionId, null)
+      // The host gave the chat its own Account; lists read before show the old one.
+      reloadClaudeAccounts()
+      follow(e)
+      return
     case 'resumed':
       setResumeAt(e.sessionId, null)
       follow(e)

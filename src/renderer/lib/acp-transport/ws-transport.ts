@@ -12,7 +12,8 @@ import type { AcpCatalog } from '@shared/types/acp-catalog.types'
 import type {
   ClaudeAccount,
   ClaudeAccountsSnapshot,
-  ClaudeAccountUsage
+  ClaudeAccountUsage,
+  RemovedClaudeAccount
 } from '@shared/types/claude-accounts.types'
 import type {
   CodexAccount,
@@ -1067,7 +1068,11 @@ export class WsAcpTransport implements AcpTransport {
   }
 
   async listClaudeAccounts(): Promise<ClaudeAccountsSnapshot> {
-    return this.request<ClaudeAccountsSnapshot>('list_claude_accounts', {})
+    // A host older than per-chat Accounts sends no `chatAccounts`.
+    const reply = await this.request<
+      Omit<ClaudeAccountsSnapshot, 'chatAccounts'> & { chatAccounts?: unknown }
+    >('list_claude_accounts', {})
+    return { ...reply, chatAccounts: stringRecord(reply.chatAccounts) }
   }
 
   async listClaudeUsage(force = false): Promise<ClaudeAccountUsage[]> {
@@ -1125,17 +1130,24 @@ export class WsAcpTransport implements AcpTransport {
     await this.request('rename_claude_account', { accountId, name })
   }
 
-  async removeClaudeAccount(accountId: string): Promise<string[]> {
-    const reply = await this.request<{ movedProjectIds?: unknown }>('remove_claude_account', {
-      accountId
-    })
+  async removeClaudeAccount(accountId: string): Promise<RemovedClaudeAccount> {
+    const reply = await this.request<{ movedProjectIds?: unknown; movedChatIds?: unknown }>(
+      'remove_claude_account',
+      { accountId }
+    )
     if (!Array.isArray(reply.movedProjectIds)) {
       throw new AcpTransportError(
         'protocol',
         'malformed remove_claude_account reply (missing movedProjectIds)'
       )
     }
-    return reply.movedProjectIds.filter((id): id is string => typeof id === 'string')
+    const ids = (list: unknown[]): string[] =>
+      list.filter((id): id is string => typeof id === 'string')
+    return {
+      movedProjectIds: ids(reply.movedProjectIds),
+      // A host older than per-chat Accounts sends no `movedChatIds`.
+      movedChatIds: Array.isArray(reply.movedChatIds) ? ids(reply.movedChatIds) : []
+    }
   }
 
   async startClaudeLinkLogin(accountId: string): Promise<string> {
@@ -2820,6 +2832,14 @@ export class WsAcpTransport implements AcpTransport {
 }
 
 /** The host's `{ receipt: "in_progress" }` answer to a resend of a running command. */
+/** The string entries of a JSON object; anything else reads as `{}`. */
+function stringRecord(value: unknown): Record<string, string> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return {}
+  return Object.fromEntries(
+    Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === 'string')
+  )
+}
+
 function isInProgressReceipt(payload: unknown): boolean {
   return (
     typeof payload === 'object' &&

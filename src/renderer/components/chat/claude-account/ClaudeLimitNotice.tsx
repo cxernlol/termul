@@ -29,6 +29,7 @@ function ChosenAccountActions({
   onChoose,
   exhaustedName,
   reset,
+  projectAccountName,
   onSwitch
 }: {
   choices: AccountChoice[]
@@ -36,6 +37,8 @@ function ChosenAccountActions({
   onChoose: (choice: AccountChoice) => void
   exhaustedName: string
   reset: string | null
+  /** The Project's Account, when the chat runs its own instead. */
+  projectAccountName: string | null
   onSwitch: () => void
 }): React.JSX.Element {
   const chosenPercent = choicePercent(chosen)
@@ -46,6 +49,7 @@ function ChosenAccountActions({
         choices={choices}
         selectedId={chosen.account.id}
         onSelect={onChoose}
+        projectAccountName={projectAccountName}
         exhausted={{
           name: exhaustedName,
           note: reset ? sentence(reset).slice(0, -1) : 'Resets soon'
@@ -174,6 +178,7 @@ export function ClaudeLimitNotice({ sessionId }: { sessionId: string }): React.J
           onChoose={(choice) => setChosenId(choice.account.id)}
           exhaustedName={name}
           reset={reset}
+          projectAccountName={ctx.ownAccount ? ctx.projectAccount.name : null}
           onSwitch={() => void switchTo(chosen)}
         />
       </>

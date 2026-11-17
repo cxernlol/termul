@@ -690,9 +690,11 @@ export function _handoffOnlyTurnIdsForTesting(): ReadonlySet<string> {
  *
  * Adoption seeds the store's agent presence (`agents` + `agentStatus`) from
  * the summary's capabilities and registers the reuse key
- * (`agentReuseKey(configId, cwd, projectId)`) → host agent id, so every later
- * `ensureLiveAgent`/`prepareChat` for that config, cwd, and Project reuses the
- * host process.
+ * (`agentReuseKey(configId, cwd, projectId, reuseScope)`) → host agent id, so
+ * a later reopen of this chat reuses the host process. `reuseScope` is the
+ * chat id when the chat runs its own Claude Account (`readReuseScope`): no
+ * other chat or warm session reuses that owner. Without it, every later
+ * `ensureLiveAgent`/`prepareChat` for that config, cwd, and Project reuses it.
  *
  * Desktop skips the lookup by default (`isTauriContext()`): the desktop store
  * already owns its agents in memory. A reload while a turn is still running
@@ -711,7 +713,12 @@ export async function adoptHostOwnedAgent(
   sessionId: SessionId,
   configId: string,
   cwd: string,
-  options?: { allowDesktop?: boolean; isCurrent?: () => boolean; projectId?: string | null }
+  options?: {
+    allowDesktop?: boolean
+    isCurrent?: () => boolean
+    projectId?: string | null
+    reuseScope?: string
+  }
 ): Promise<{
   adopted: AgentId | null
   listingTrusted: boolean
@@ -756,7 +763,7 @@ export async function adoptHostOwnedAgent(
     message: `Reusing host agent ${match.id} that owns session ${sessionId} instead of spawning a duplicate`
   })
   const projectId = resolveSpawnProject(trimmedCwd, options?.projectId)?.id ?? ''
-  const reuseKey = agentReuseKey(configId, trimmedCwd, projectId || undefined)
+  const reuseKey = agentReuseKey(configId, trimmedCwd, projectId || undefined, options?.reuseScope)
   set((s) => ({
     agents: {
       ...s.agents,
@@ -807,6 +814,12 @@ export type EnsureLiveAgentOptions = {
    * agent. Without it, the Project whose folder holds `cwd` is used.
    */
   projectId?: string
+  /**
+   * The existing chat the agent is spawned to open, when that chat runs its
+   * own Claude Account (`reuseScopeFor`). The agent belongs to that chat (its
+   * reuse key names it) and the host starts it with the chat's Account.
+   */
+  sessionId?: string
   /** What the caller puts on the agent; omit for helpers (commit message, prewarm) that may share one. */
   holder?: AgentHolder
 }
@@ -837,7 +850,8 @@ function currentLaunch(
   state: Pick<AcpState, 'agentConfigs'>,
   configId: string,
   cwd: string,
-  projectId?: string | null
+  projectId?: string | null,
+  sessionId?: string
 ): {
   config: AcpState['agentConfigs'][number]
   project: Pick<Project, 'id' | 'envVars'> | null
@@ -858,7 +872,7 @@ function currentLaunch(
     config,
     project,
     projectId: resolvedProjectId,
-    reuseKey: agentReuseKey(configId, cwd, resolvedProjectId || undefined),
+    reuseKey: agentReuseKey(configId, cwd, resolvedProjectId || undefined, sessionId),
     env,
     signature: spawnSignature(config, env, configId, resolvedProjectId)
   }
@@ -882,6 +896,22 @@ export function runsCurrentLaunch(
 }
 
 /**
+ * Record that `agentId`, started by the host, runs the launch a new chat of
+ * `configId` in `cwd` would get now, so a later credential renewal retires it
+ * instead of counting it as current.
+ */
+export function recordCurrentLaunch(
+  state: Pick<AcpState, 'agentConfigs'>,
+  agentId: AgentId,
+  configId: string,
+  cwd: string,
+  projectId?: string | null
+): void {
+  const launch = currentLaunch(state, configId, cwd.trim(), projectId)
+  if (launch) liveAgentSignatures.set(agentId, launch.signature)
+}
+
+/**
  * Return a connected agent process for `configId + cwd`, spawning at most one
  * in-flight process per reuse key. Registers `inFlightWarms` synchronously so
  * concurrent `prewarmAgent`, `prepareChat`, and `startChat` cannot race a
@@ -896,7 +926,7 @@ export function ensureLiveAgent(
 ): Promise<AgentId | null> {
   const trimmedCwd = cwd.trim()
   if (trimmedCwd.length === 0) return Promise.resolve(null)
-  const launch = currentLaunch(get(), configId, trimmedCwd, options.projectId)
+  const launch = currentLaunch(get(), configId, trimmedCwd, options.projectId, options.sessionId)
   if (!launch) return Promise.resolve(null)
   const { config, project, projectId, reuseKey, env, signature } = launch
   const currentAgentId = get().configToLiveAgent[reuseKey]
@@ -995,7 +1025,8 @@ export function ensureLiveAgent(
           env,
           allowTerminal: config.allowTerminal
         },
-        projectId || undefined
+        projectId || undefined,
+        options.sessionId
       )
       definiteSpawnRejections.delete(reuseKey)
       if (get().agentConfigs.some((c) => c.id === configId)) {

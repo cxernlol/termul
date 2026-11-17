@@ -1,9 +1,9 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import type { SessionInfo } from '@/lib/acp-api'
+import { CLAUDE_AGENT_CONFIG_ID } from '@/lib/agents/registry-config-id'
 import { type ImportableSessions, useAcpStore } from '@/stores/acp-store'
 import type { ImportSessionOutcome } from '@/stores/acp-store/types'
-import { CLAUDE_AGENT_CONFIG_ID } from '@/stores/claude-account-switch'
 import { ImportChatsDialog } from './ImportChatsDialog'
 
 const mocks = vi.hoisted(() => ({

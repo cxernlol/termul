@@ -298,9 +298,10 @@ export const WS_REQUEST_TYPES = [
   'add_claude_account',
   // `{ accountId, name }` → `{}`.
   'rename_claude_account',
-  // `{ accountId }` → `{ movedProjectIds }`, the Projects that moved to the
-  // Default Account; `[]` when the Account was already gone. The built-in
-  // Account is refused.
+  // `{ accountId }` → `RemovedClaudeAccount` (`{ movedProjectIds,
+  // movedChatIds }`): the Projects that moved to the Default Account and the
+  // chats that had the Account as their own; empty when the Account was
+  // already gone. The built-in Account is refused.
   'remove_claude_account',
   // Link sign-in: `start` `{ accountId }` → `{ url }` (the Claude sign-in
   // link; replaces a running sign-in of the Account). `finish` `{ accountId,

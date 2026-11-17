@@ -862,11 +862,13 @@ export const createPromptSlice: StateCreator<AcpState, [], [], PromptSliceState>
     // the handoff instead of a normal turn on the old agent.
     const armed = get().sessions[sessionId]?.switching
     if (armed) {
-      return get().switchAgent(sessionId, armed.toConfigId, {
-        pendingText: text,
-        wireBlocks: [{ type: 'text', text }],
-        displayBlocks: [{ type: 'text', text }]
-      })
+      return get()
+        .switchAgent(sessionId, armed.toConfigId, {
+          pendingText: text,
+          wireBlocks: [{ type: 'text', text }],
+          displayBlocks: [{ type: 'text', text }]
+        })
+        .then(() => undefined)
     }
     return runPromptTurn(set, get, sessionId, [{ type: 'text', text }], (session, turnId) =>
       acpApi.sendPrompt(session.agentId, sessionId, text, turnId)
@@ -884,10 +886,12 @@ export const createPromptSlice: StateCreator<AcpState, [], [], PromptSliceState>
     // than re-deriving the pending draft from the wire text.
     const armed = get().sessions[sessionId]?.switching
     if (armed) {
-      return get().switchAgent(sessionId, armed.toConfigId, {
-        wireBlocks: blocks,
-        displayBlocks: options?.displayBlocks ?? blocks
-      })
+      return get()
+        .switchAgent(sessionId, armed.toConfigId, {
+          wireBlocks: blocks,
+          displayBlocks: options?.displayBlocks ?? blocks
+        })
+        .then(() => undefined)
     }
     return runPromptTurn(
       set,

@@ -8,9 +8,9 @@ import { useProjectStore } from '@/stores/project-store'
 import type { Project } from '@/types/project'
 import { ProviderSettings } from './ProviderSettings'
 
-const { api, toast, admits, applyProjectClaudeAccount } = vi.hoisted(() => ({
+const { api, toast, admits, applyRemovedClaudeAccount } = vi.hoisted(() => ({
   admits: { value: true },
-  applyProjectClaudeAccount: vi.fn(),
+  applyRemovedClaudeAccount: vi.fn(),
   api: {
     signInFlow: vi.fn(),
     startLinkLogin: vi.fn(),
@@ -36,7 +36,7 @@ vi.mock('@/lib/claude-accounts-api', async () => {
   return { ...actual, claudeAccountsApi: api }
 })
 vi.mock('sonner', () => ({ toast }))
-vi.mock('@/stores/claude-account-switch', () => ({ applyProjectClaudeAccount }))
+vi.mock('@/stores/claude-account-switch', () => ({ applyRemovedClaudeAccount }))
 vi.mock('@/hooks/use-server-admits-remote-writes', () => ({
   useServerAdmitsRemoteWrites: () => admits.value
 }))
@@ -100,11 +100,11 @@ beforeEach(() => {
   api.login.mockResolvedValue(undefined)
   api.cancelLogin.mockResolvedValue(true)
   api.rename.mockResolvedValue(undefined)
-  api.remove.mockResolvedValue(['office'])
+  api.remove.mockResolvedValue({ movedProjectIds: ['office'], movedChatIds: [] })
   api.setDefault.mockResolvedValue(undefined)
   api.setAutoSwitch.mockResolvedValue(undefined)
   api.add.mockResolvedValue({ id: 'cd34', name: 'Side', createdAt: 1 })
-  applyProjectClaudeAccount.mockResolvedValue([])
+  applyRemovedClaudeAccount.mockResolvedValue(undefined)
 })
 
 describe('ProviderSettings', () => {
@@ -205,8 +205,26 @@ describe('ProviderSettings', () => {
     expect(screen.getByText('m-pos')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
     await waitFor(() => expect(api.remove).toHaveBeenCalledWith('ab12'))
-    await waitFor(() => expect(applyProjectClaudeAccount).toHaveBeenCalledWith('office'))
-    expect(applyProjectClaudeAccount).toHaveBeenCalledOnce()
+    await waitFor(() =>
+      expect(applyRemovedClaudeAccount.mock.calls).toEqual([
+        [{ movedProjectIds: ['office'], movedChatIds: [] }, []]
+      ])
+    )
+  })
+
+  it('restarts the chats that had a removed account as their own', async () => {
+    api.list.mockResolvedValue({ ...SNAPSHOT, projectAccounts: {}, chatAccounts: { s9: 'ab12' } })
+    api.remove.mockResolvedValue({ movedProjectIds: [], movedChatIds: ['s9'] })
+    render(<ProviderSettings />)
+    await screen.findByTestId('claude-account-ab12')
+    openMenu('Work')
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Remove' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove' }))
+    await waitFor(() =>
+      expect(applyRemovedClaudeAccount.mock.calls).toEqual([
+        [{ movedProjectIds: [], movedChatIds: ['s9'] }, []]
+      ])
+    )
   })
 
   it('restarts the chats of the projects that followed a removed default account', async () => {
@@ -222,16 +240,16 @@ describe('ProviderSettings', () => {
       defaultAccountId: 'ab12',
       projectAccounts: {}
     })
-    api.remove.mockResolvedValue([])
+    api.remove.mockResolvedValue({ movedProjectIds: [], movedChatIds: [] })
     render(<ProviderSettings />)
     await screen.findByTestId('claude-account-ab12')
     openMenu('Work')
     fireEvent.click(await screen.findByRole('menuitem', { name: 'Remove' }))
     fireEvent.click(await screen.findByRole('button', { name: 'Remove' }))
-    await waitFor(() => expect(applyProjectClaudeAccount).toHaveBeenCalledTimes(2))
-    expect(applyProjectClaudeAccount.mock.calls.map(([id]) => id).sort()).toEqual([
-      'office',
-      'side'
+    await waitFor(() => expect(applyRemovedClaudeAccount).toHaveBeenCalledOnce())
+    expect(applyRemovedClaudeAccount.mock.calls[0]).toEqual([
+      { movedProjectIds: [], movedChatIds: [] },
+      ['office', 'side']
     ])
   })
 

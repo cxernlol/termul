@@ -29,6 +29,8 @@ interface AccountChoiceMenuProps {
   onSelect: (choice: AccountChoice) => void
   /** The Account at its limit, listed last and disabled. */
   exhausted?: { name: string; note: string } | null
+  /** The Project's Account, when the chat runs its own instead. */
+  projectAccountName?: string | null
   /** The trigger button (rendered with `asChild`). */
   children: React.ReactElement
 }
@@ -42,6 +44,7 @@ export function AccountChoiceMenu({
   selectedId = null,
   onSelect,
   exhausted = null,
+  projectAccountName = null,
   children
 }: AccountChoiceMenuProps): React.JSX.Element {
   const openAppSettings = useSettingsModalStore((s) => s.openApp)
@@ -49,7 +52,12 @@ export function AccountChoiceMenu({
     <DropdownMenu>
       <DropdownMenuTrigger asChild>{children}</DropdownMenuTrigger>
       <DropdownMenuContent align="start" side="top" sideOffset={4} className="min-w-72">
-        <DropdownMenuLabel>Account for this project</DropdownMenuLabel>
+        <DropdownMenuLabel>Account for this chat</DropdownMenuLabel>
+        {projectAccountName !== null && (
+          <p className="px-2 pb-1.5 text-xs text-muted-foreground">
+            Set for this chat. The project uses {projectAccountName}.
+          </p>
+        )}
         {choices.map((choice) => {
           const percent = choicePercent(choice)
           const tone = usageTone(choice.window?.percent ?? 0)

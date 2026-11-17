@@ -1,4 +1,4 @@
-use super::{chosen_account, links, ClaudeAccountStore, BUILTIN_ACCOUNT_ID};
+use super::{chosen_account, links, ClaudeAccountStore, RemovedAccount, BUILTIN_ACCOUNT_ID};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -211,11 +211,24 @@ fn removing_an_account_or_deleting_a_chat_drops_the_chat_choice() {
         .unwrap();
     s.set_chat_account("office", "chat-2", Some(&work.id), None)
         .unwrap();
-    s.remove(&spare.id).unwrap();
+    s.set_project_account("office", Some(&work.id), None)
+        .unwrap();
+    assert_eq!(
+        s.remove(&spare.id).unwrap(),
+        RemovedAccount {
+            moved_project_ids: vec![],
+            moved_chat_ids: vec!["chat-1".to_string()],
+        }
+    );
     assert_eq!(
         s.snapshot().unwrap().chat_profiles,
         BTreeMap::from([("chat-2".to_string(), work.id.clone())])
     );
+    assert_eq!(
+        s.resolve(Some("office"), Some("chat-1")).account_name,
+        "Work"
+    );
+    s.set_project_account("office", None, None).unwrap();
     s.forget_chat("chat-2").unwrap();
     s.forget_chat("chat-unknown").unwrap();
     assert_eq!(s.snapshot().unwrap().chat_profiles, BTreeMap::new());
@@ -263,8 +276,9 @@ fn remove_moves_projects_back_and_keeps_shared_data() {
     let dir = s.config_dir(&work.id).unwrap();
     fs::write(dir.join(".claude.json"), b"{}").unwrap();
 
-    let moved = s.remove(&work.id).unwrap();
-    assert_eq!(moved, vec!["office".to_string()]);
+    let removed = s.remove(&work.id).unwrap();
+    assert_eq!(removed.moved_project_ids, vec!["office".to_string()]);
+    assert_eq!(removed.moved_chat_ids, Vec::<String>::new());
     assert!(!dir.exists());
     assert!(f.shared.join("projects").join("keep.jsonl").is_file());
     assert!(f.shared.join("settings.json").is_file());

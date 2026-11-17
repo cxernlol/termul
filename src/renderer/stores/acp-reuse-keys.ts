@@ -1,15 +1,17 @@
 /**
  * Single owner of the agent reuse-key format.
  *
- * Canonical keys are `configId\0cwd` (two NUL-separated segments) — see
- * {@link agentReuseKey}. A Project-scoped canonical key inserts a `project`
- * marker: `configId\0cwd\0project\0projectId`. The marker keeps that key
- * distinct from a detached key, whose extra segment is an agent id.
- * Two writers emit a DETACHED key by appending the agent id
- * (`configId\0cwd\0agentId`, or `configId\0cwd\0project\0projectId\0agentId`)
- * to keep a superseded agent process resolvable for live chat history, model
- * changes, and cleanup, while guaranteeing the key is NEVER reused for a new
- * chat preparation.
+ * A canonical key is `configId\0cwd`, followed by two optional marker pairs:
+ * `\0project\0projectId` for a Project-scoped key and `\0chat\0chatId` for
+ * an agent opened for one existing chat that runs its own Claude Account (see
+ * {@link agentReuseKey}). A chat key is live, not detached, but a new chat or
+ * warm session never looks it up because those build their key without a chat.
+ * The markers keep these keys distinct from a detached key, which appends one
+ * more segment, the agent id
+ * (`configId\0cwd[\0project\0projectId][\0chat\0chatId]\0agentId`), to keep
+ * a superseded agent process resolvable for live chat history, model changes,
+ * and cleanup, while guaranteeing the key is NEVER reused for a new chat
+ * preparation.
  * Detached keys are produced by `ensureLiveAgent` (Factory session isolation)
  * and `detachAgentForNewCredentials`.
  *
@@ -24,11 +26,11 @@
 
 const NUL = '\0'
 
-/**
- * Marker segment that distinguishes a Project-scoped canonical key from a
- * detached key. The following segment is the Project id.
- */
+/** Marker segment of a Project-scoped key; the following segment is the Project id. */
 const PROJECT_SEGMENT = 'project'
+
+/** Marker segment of a chat's own key; the following segment is the chat (session) id. */
+const CHAT_SEGMENT = 'chat'
 
 /**
  * Canonical reuse key for a configured agent + working directory: the identity
@@ -41,12 +43,39 @@ const PROJECT_SEGMENT = 'project'
  * `renewAgentCredentials` bumps the credential epoch for that config and
  * project after an account switch, so a process spawned on the old home is
  * not reused.
+ *
+ * `chatId` names the existing chat the agent was opened for when that chat
+ * runs its own Claude Account ({@link reuseScopeFor}). That agent belongs to
+ * the chat, so no other chat or warm session reuses it.
  */
-export function agentReuseKey(configId: string, cwd: string, projectId?: string | null): string {
-  const base = `${configId}${NUL}${cwd.trim()}`
+export function agentReuseKey(
+  configId: string,
+  cwd: string,
+  projectId?: string | null,
+  chatId?: string | null
+): string {
+  let key = `${configId}${NUL}${cwd.trim()}`
   const project = projectId?.trim() ?? ''
-  if (project.length === 0) return base
-  return `${base}${NUL}${PROJECT_SEGMENT}${NUL}${project}`
+  if (project.length > 0) key += `${NUL}${PROJECT_SEGMENT}${NUL}${project}`
+  const chat = chatId?.trim() ?? ''
+  if (chat.length > 0) key += `${NUL}${CHAT_SEGMENT}${NUL}${chat}`
+  return key
+}
+
+/**
+ * The chat id an agent opened for existing chat `sessionId` is keyed to. A
+ * chat that runs its own Claude Account gets a process of its own (its id);
+ * a chat that follows its Project runs the Project's Account, so it shares
+ * the Project's agents like a new chat (none). `ownAccountId` is the chat's
+ * own Account, `null` when it follows its Project, and `undefined` when the
+ * Accounts could not be read: that chat also gets its own process, so it
+ * never runs on another Account.
+ */
+export function reuseScopeFor(
+  sessionId: string,
+  ownAccountId: string | null | undefined
+): string | undefined {
+  return ownAccountId === null ? undefined : sessionId
 }
 
 /** Recover the `configId` from an {@link agentReuseKey} (split on first NUL). */
@@ -68,50 +97,46 @@ export function detachedReuseKey(reuseKey: string, agentId: string): string {
  * True when `key` carries a detached agent-id segment. Only meaningful for
  * `configToLiveAgent` keys — prepare-chat keys ALWAYS have a third segment
  * (the `mcpKey`), which is not a detach marker (see the module docstring).
- * A `project` marker segment is canonical, not detached.
+ * `project` and `chat` marker pairs are canonical, not detached.
  */
 export function isDetachedReuseKey(key: string): boolean {
-  const parts = key.split(NUL)
-  // `configId\0cwd\0project\0projectId` is canonical. Detached appends agentId.
-  if (parts[2] === PROJECT_SEGMENT) return parts.length > 4
-  return parts.length > 2
+  return parseReuseKey(key).detachedAgentId !== undefined
 }
 
 /** A reuse key parsed into its segments. */
 export interface ParsedReuseKey {
   configId: string
   cwd: string
-  /**
-   * Project id for a Project-scoped key (`configId\0cwd\0project\0projectId`).
-   * Absent on the two-segment canonical key.
-   */
+  /** Project id of a Project-scoped key (`…\0project\0projectId`). */
   projectId?: string
+  /** Chat id of a key for one existing chat (`…\0chat\0chatId`). */
+  chatId?: string
   /**
-   * The detached agent id, present only for detached keys
-   * (`configId\0cwd\0agentId`, or with a Project segment before the agent id).
-   * When parsing a prepare-chat key instead, this field carries the `mcpKey`
-   * segment — callers know which domain their key belongs to and must not
-   * treat a prepare key as detached.
+   * The detached agent id, present only for detached keys: the one segment
+   * after the canonical key. When parsing a prepare-chat key instead, this
+   * field carries the `mcpKey` segment — callers know which domain their key
+   * belongs to and must not treat a prepare key as detached.
    */
   detachedAgentId?: string
 }
 
 /**
- * Parse a reuse key, explicitly modeling the optional detached segment so
- * consumers never re-derive segments with ad-hoc `split('\0')` calls (which is
- * how the corrupted-cwd prepare bug slipped in — see `completeBrowserAuth`).
+ * Parse a reuse key, explicitly modeling the optional segments so consumers
+ * never re-derive them with ad-hoc `split('\0')` calls (which is how the
+ * corrupted-cwd prepare bug slipped in — see `completeBrowserAuth`).
  */
 export function parseReuseKey(key: string): ParsedReuseKey {
   const parts = key.split(NUL)
-  const configId = parts[0] ?? ''
-  const cwd = parts[1] ?? ''
-  if (parts.length <= 2) return { configId, cwd }
-  if (parts[2] === PROJECT_SEGMENT) {
-    const projectId = parts[3] ?? ''
-    const detachedAgentId = parts[4]
-    return detachedAgentId !== undefined
-      ? { configId, cwd, projectId, detachedAgentId }
-      : { configId, cwd, projectId }
+  const parsed: ParsedReuseKey = { configId: parts[0] ?? '', cwd: parts[1] ?? '' }
+  let next = 2
+  if (parts[next] === PROJECT_SEGMENT) {
+    parsed.projectId = parts[next + 1] ?? ''
+    next += 2
   }
-  return { configId, cwd, detachedAgentId: parts[2] }
+  if (parts[next] === CHAT_SEGMENT) {
+    parsed.chatId = parts[next + 1] ?? ''
+    next += 2
+  }
+  if (next < parts.length) parsed.detachedAgentId = parts[next]
+  return parsed
 }

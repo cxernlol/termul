@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import type { SessionInfo } from '@/lib/acp-api'
+import { CLAUDE_AGENT_CONFIG_ID } from '@/lib/agents/registry-config-id'
 import { logFrontendError } from '@/lib/log-api'
 import { useAcpStore } from '@/stores/acp-store'
 import type { ImportSessionOutcome } from '@/stores/acp-store/types'
-import { CLAUDE_AGENT_CONFIG_ID } from '@/stores/claude-account-switch'
 
 export type ImportChatsPhase =
   | { kind: 'loading' }

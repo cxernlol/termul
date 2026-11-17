@@ -127,6 +127,16 @@ pub struct AccountResolution {
     pub config_dir: Option<PathBuf>,
 }
 
+/// What removing an Account moved, so clients restart the chats that ran it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemovedAccount {
+    /// Projects that used the Account and now follow the Default Account.
+    pub moved_project_ids: Vec<String>,
+    /// Chats that had the Account as their own and now follow their Project.
+    pub moved_chat_ids: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct StoreFile {
@@ -324,9 +334,9 @@ impl ClaudeAccountStore {
 
     /// Remove an Account and its directory. Projects that used it, and the
     /// default when it pointed at it, return to the built-in Account; chats
-    /// that used it follow their Project again. Returns the ids of the
-    /// Projects that moved.
-    pub fn remove(&self, id: &str) -> Result<Vec<String>, String> {
+    /// that used it follow their Project again. Returns the Projects and
+    /// chats that moved.
+    pub fn remove(&self, id: &str) -> Result<RemovedAccount, String> {
         if id == BUILTIN_ACCOUNT_ID {
             return Err("The built-in account cannot be removed".to_string());
         }
@@ -348,13 +358,26 @@ impl ClaudeAccountStore {
         for project in &moved {
             file.project_profiles.remove(project);
         }
+        let moved_chats: Vec<String> = file
+            .chat_profiles
+            .iter()
+            .filter(|(_, account)| account.as_str() == id)
+            .map(|(chat, _)| chat.clone())
+            .collect();
         file.chat_profiles.retain(|_, account| account.as_str() != id);
         self.save(&file)?;
         if let Some(dir) = self.account_dir(id) {
             remove_account_dir(&dir);
         }
-        log::info!("[claude-accounts] profile removed; projects moved to the default");
-        Ok(moved)
+        log::info!(
+            "[claude-accounts] profile removed; {} projects moved to the default, {} chats follow their project",
+            moved.len(),
+            moved_chats.len()
+        );
+        Ok(RemovedAccount {
+            moved_project_ids: moved,
+            moved_chat_ids: moved_chats,
+        })
     }
 
     pub fn set_default(&self, id: &str) -> Result<(), String> {

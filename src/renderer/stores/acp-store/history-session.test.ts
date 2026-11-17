@@ -1554,6 +1554,91 @@ describe('acp-store', () => {
     expect(useAcpStore.getState().sessions['s-cold-start'].status).toBe('active')
   })
 
+  describe('reopening a Claude chat from history', () => {
+    const CLAUDE = 'acp-registry:claude-acp'
+    const projectKey = agentReuseKey(CLAUDE, '/w', 'p1')
+
+    async function reopen(id: string, chatAccounts: Record<string, string>): Promise<unknown[][]> {
+      useAcpStore.setState((s) => ({
+        agentConfigs: [
+          { id: CLAUDE, name: 'Claude Agent', command: 'node', args: [], env: {} },
+          ...s.agentConfigs
+        ],
+        configToLiveAgent: { [projectKey]: 'agent-project' },
+        agents: { 'agent-project': { id: 'agent-project', capabilities: { loadSession: true } } },
+        agentStatus: { 'agent-project': 'connected' }
+      }))
+      const { loadSessionPayload } = await import('@/lib/acp-history-persistence')
+      ;(loadSessionPayload as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+        metadata: {
+          id,
+          agentId: 'agent-project',
+          agentConfigId: CLAUDE,
+          title: 'Closed chat',
+          cwd: '/w',
+          projectId: 'p1',
+          createdAt: 1,
+          lastActivityAt: 2,
+          messageCount: 1,
+          status: 'closed'
+        },
+        messages: [
+          {
+            id: 'm1',
+            role: 'user',
+            blocks: [{ type: 'text', text: 'prior' }],
+            streaming: false,
+            timestamp: 0
+          }
+        ]
+      })
+      vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+        if (cmd === 'claude_accounts_list') {
+          return {
+            accounts: [
+              { id: 'default', name: 'Default', builtin: true, signedIn: true },
+              { id: 'side', name: 'Side', builtin: false, signedIn: true }
+            ],
+            defaultAccountId: 'default',
+            projectAccounts: {},
+            chatAccounts,
+            autoSwitch: true
+          }
+        }
+        if (cmd === 'acp_spawn_agent') {
+          return { agentId: 'agent-chat', capabilities: { loadSession: true }, authMethods: [] }
+        }
+        if (cmd === 'acp_load_session') return undefined
+        throw new Error(`unexpected invoke command: ${cmd}`)
+      })
+      await useAcpStore.getState().openHistorySession(id)
+      return vi.mocked(invoke).mock.calls
+    }
+
+    it('reopens a chat that follows its project on the connected project agent, with no spawn', async () => {
+      const calls = await reopen('s-follows', {})
+
+      expect(calls.map(([cmd]) => cmd)).toEqual(['claude_accounts_list', 'acp_load_session'])
+      expect(useAcpStore.getState().sessions['s-follows'].agentId).toBe('agent-project')
+      expect(useAcpStore.getState().sessions['s-follows'].status).toBe('active')
+      expect(useAcpStore.getState().configToLiveAgent).toEqual({ [projectKey]: 'agent-project' })
+    })
+
+    it('reopens a chat on its own account on an agent spawned for it and keyed to it', async () => {
+      const calls = await reopen('s-own', { 's-own': 'side' })
+
+      expect(calls.find(([cmd]) => cmd === 'acp_spawn_agent')?.[1]).toMatchObject({
+        projectId: 'p1',
+        sessionId: 's-own'
+      })
+      expect(useAcpStore.getState().sessions['s-own'].agentId).toBe('agent-chat')
+      expect(useAcpStore.getState().configToLiveAgent).toEqual({
+        [projectKey]: 'agent-project',
+        [agentReuseKey(CLAUDE, '/w', 'p1', 's-own')]: 'agent-chat'
+      })
+    })
+  })
+
   describe('markResumeFailed', () => {
     function setSession(patch: {
       status: 'active' | 'closed' | 'error'

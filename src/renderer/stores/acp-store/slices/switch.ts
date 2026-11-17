@@ -230,7 +230,7 @@ export const createSwitchSlice: StateCreator<AcpState, [], [], SwitchSliceState>
     if (!oldSession) throw new Error(`unknown session ${sessionId}`)
     // Double-send race guard: the second send while an execution is running
     // is ignored (the first owns the switch — its outcome is already decided).
-    if (inFlightAgentSwitches.has(sessionId)) return
+    if (inFlightAgentSwitches.has(sessionId)) return null
     inFlightAgentSwitches.add(sessionId)
     try {
       const cwd = oldSession.cwd
@@ -268,7 +268,7 @@ export const createSwitchSlice: StateCreator<AcpState, [], [], SwitchSliceState>
           source: 'acp.switchAgent.failure',
           message: `Switch blocked for session ${sessionId} (busy gate) → config ${toConfigId}: ${blocked}`
         })
-        return
+        return null
       }
       if (!config) {
         setSwitchRejection(set, sessionId, `unknown agent config ${toConfigId}`)
@@ -278,14 +278,14 @@ export const createSwitchSlice: StateCreator<AcpState, [], [], SwitchSliceState>
           source: 'acp.switchAgent.failure',
           message: `Switch failed for session ${sessionId}: unknown config ${toConfigId}`
         })
-        return
+        return null
       }
       // A stopped chat has no owner: a same-config switch continues it in a new
       // session (a Claude account that cannot resume the old one, #1303).
       if (toConfigId === oldConfigId && oldSession.status !== 'closed') {
         setSwitchRejection(set, sessionId, 'that agent already owns this chat')
         clearSwitching()
-        return
+        return null
       }
 
       // The pending user message: prefer the caller-provided wire/display pair
@@ -470,7 +470,8 @@ export const createSwitchSlice: StateCreator<AcpState, [], [], SwitchSliceState>
         // 1. Ensure a live agent for the target config (fresh spawn on a NEW
         //    configId; one-process-per-open-chat detaches same-config cases).
         newAgentId = await ensureLiveAgent(get, set, toConfigId, cwd, {
-          projectId: oldSession.projectId
+          projectId: oldSession.projectId,
+          sessionId: pending?.accountChatId
         })
         if (!newAgentId) throw new Error(`failed to spawn agent for config ${toConfigId}`)
 
@@ -621,6 +622,7 @@ export const createSwitchSlice: StateCreator<AcpState, [], [], SwitchSliceState>
           source: 'acp.switchAgent.success',
           message: `Switched session ${sessionId} (config ${oldConfigId ?? '?'}) to config ${toConfigId}, new session ${newSessionId}${markerWarned ? ' (marker write failed — non-blocking)' : ''}`
         })
+        return newSessionId
       } catch (err) {
         // Dispatch-phase failure (step 5 threw AFTER the marker was recorded
         // and the tab remapped): the switch DURABLY happened — the new session
@@ -668,7 +670,7 @@ export const createSwitchSlice: StateCreator<AcpState, [], [], SwitchSliceState>
             source: 'acp.switchAgent.failure',
             message: `Handoff dispatch failed for session ${sessionId} → config ${toConfigId}, new session ${newSessionId} (switch already durable): ${err instanceof Error ? err.message : String(err)}`
           })
-          return
+          return dispatchTarget
         }
         // Rollback: the ORIGINAL session stays live and usable (agent attached,
         // transcript intact, no marker recorded, `switching` cleared). Never
@@ -685,6 +687,7 @@ export const createSwitchSlice: StateCreator<AcpState, [], [], SwitchSliceState>
           source: 'acp.switchAgent.failure',
           message: `Switch failed for session ${sessionId} → config ${toConfigId}: ${err instanceof Error ? err.message : String(err)}`
         })
+        return null
       }
     } finally {
       inFlightAgentSwitches.delete(sessionId)
