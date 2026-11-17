@@ -37,6 +37,7 @@ import {
   useTerminalRenderer,
   useTerminalScreenReaderMode,
   useTerminalUrlOpenMode,
+  useTranslucentRail,
   useUiZoomLevel
 } from '@/stores/app-settings-store'
 import { useKeyboardShortcutsStore } from '@/stores/keyboard-shortcuts-store'
@@ -73,6 +74,7 @@ export function AppPreferencesModal(): React.JSX.Element {
   const isAurUpdater = isAurUpdateMode()
   const fontSize = useTerminalFontSize()
   const uiZoomLevel = useUiZoomLevel()
+  const translucentRail = useTranslucentRail()
   const bufferSize = useTerminalBufferSize()
   const terminalRenderer = useTerminalRenderer()
   const terminalScreenReaderMode = useTerminalScreenReaderMode()
@@ -146,6 +148,15 @@ export function AppPreferencesModal(): React.JSX.Element {
 
   const handleUiZoomChange = (value: number) => {
     updateSetting('uiZoomLevel', value)
+  }
+
+  const handleTranslucentRailToggle = async (enabled: boolean) => {
+    await updateSetting('translucentRail', enabled)
+    void logFrontendError({
+      level: 'info',
+      source: 'AppPreferences.translucentRail',
+      message: `Translucent sidebar ${enabled ? 'enabled' : 'disabled'}`
+    })
   }
 
   const handleBufferSizeChange = (value: number) => {
@@ -301,8 +312,10 @@ export function AppPreferencesModal(): React.JSX.Element {
         >
           <InterfaceSection
             uiZoomLevel={uiZoomLevel}
+            translucentRail={translucentRail}
             defaultProjectColor={defaultProjectColor}
             handleUiZoomChange={handleUiZoomChange}
+            handleTranslucentRailToggle={handleTranslucentRailToggle}
             handleDefaultProjectColorChange={handleDefaultProjectColorChange}
           />
           <NotificationsSection

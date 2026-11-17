@@ -195,6 +195,8 @@ export function FileTreeNode({
               <TreeEntryIcon
                 name={entry.name}
                 isDirectory={isDir}
+                isExpanded={isExpanded}
+                depth={depth}
                 className={cn(isIgnored && 'opacity-60', 'mr-1.5')}
               />
               {isRenaming ? (

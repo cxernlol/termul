@@ -12,14 +12,9 @@ const roles = selectTopRowRoles({
 })
 const platform: TopRowPlatform = { dragRegions: true, windowControls: false, trafficLights: true }
 
-function wrapper(mainStartInsetPx: number, railToggleInMain: boolean) {
+function wrapper(railToggleInMain: boolean) {
   return ({ children }: { children: React.ReactNode }) => (
-    <TopRowProvider
-      roles={roles}
-      platform={platform}
-      mainStartInsetPx={mainStartInsetPx}
-      railToggleInMain={railToggleInMain}
-    >
+    <TopRowProvider roles={roles} platform={platform} railToggleInMain={railToggleInMain}>
       {children}
     </TopRowProvider>
   )
@@ -31,10 +26,11 @@ beforeEach(() => {
 })
 
 describe('TopRowStartSlot', () => {
-  it('pads 24px past the traffic lights, then the expand toggle (x = 72, Paper 2.3)', () => {
-    render(<TopRowStartSlot />, { wrapper: wrapper(24, true) })
+  it('holds the expand toggle after the 6px bar padding, with no traffic-light inset', () => {
+    render(<TopRowStartSlot />, { wrapper: wrapper(true) })
     const slot = screen.getByTestId('top-row-start-slot')
-    expect(slot).toHaveStyle({ paddingLeft: '24px' })
+    expect(slot).toHaveClass('pl-1.5')
+    expect(slot.style.paddingLeft).toBe('')
     expect(
       within(slot).getByRole('button', { name: 'Expand or collapse projects' })
     ).toBeInTheDocument()
@@ -42,15 +38,8 @@ describe('TopRowStartSlot', () => {
     expect(screen.queryByRole('button', { name: 'Show side panel' })).toBeNull()
   })
 
-  it('uses the 6px bar padding without the traffic lights', () => {
-    render(<TopRowStartSlot />, { wrapper: wrapper(0, true) })
-    const slot = screen.getByTestId('top-row-start-slot')
-    expect(slot).toHaveClass('pl-1.5')
-    expect(slot.style.paddingLeft).toBe('')
-  })
-
-  it('renders nothing with the Rail expanded and no inset, or without a provider', () => {
-    const { unmount } = render(<TopRowStartSlot />, { wrapper: wrapper(0, false) })
+  it('renders nothing with the Rail expanded, or without a provider', () => {
+    const { unmount } = render(<TopRowStartSlot />, { wrapper: wrapper(false) })
     expect(screen.queryByTestId('top-row-start-slot')).toBeNull()
     unmount()
     render(<TopRowStartSlot />)
@@ -59,13 +48,10 @@ describe('TopRowStartSlot', () => {
 
   it('reports its visibility', () => {
     expect(
-      renderHook(() => useTopRowStartSlotVisible(), { wrapper: wrapper(0, false) }).result.current
+      renderHook(() => useTopRowStartSlotVisible(), { wrapper: wrapper(false) }).result.current
     ).toBe(false)
     expect(
-      renderHook(() => useTopRowStartSlotVisible(), { wrapper: wrapper(0, true) }).result.current
-    ).toBe(true)
-    expect(
-      renderHook(() => useTopRowStartSlotVisible(), { wrapper: wrapper(24, false) }).result.current
+      renderHook(() => useTopRowStartSlotVisible(), { wrapper: wrapper(true) }).result.current
     ).toBe(true)
   })
 })

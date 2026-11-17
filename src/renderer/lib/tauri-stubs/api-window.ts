@@ -25,6 +25,15 @@ export type Monitor = {
   scaleFactor: number
 }
 
+// String values match `@tauri-apps/api/window`; only the members the app uses.
+export enum Effect {
+  Sidebar = 'sidebar'
+}
+
+export enum EffectState {
+  FollowsWindowActiveState = 'followsWindowActiveState'
+}
+
 function createWindowStub() {
   return {
     show: () => tauriUnavailable('window.show'),
@@ -47,6 +56,9 @@ function createWindowStub() {
     startResizeDragging: () => tauriUnavailable('window.startResizeDragging'),
     startDragging: () => tauriUnavailable('window.startDragging'),
     setFocus: () => tauriUnavailable('window.setFocus'),
+    setEffects: (_effects: unknown) => tauriUnavailable('window.setEffects'),
+    clearEffects: () => tauriUnavailable('window.clearEffects'),
+    setTheme: (_theme: unknown) => tauriUnavailable('window.setTheme'),
     onFocusChanged: async () => () => {},
     onResized: async () => () => {},
     onMoved: async () => () => {},

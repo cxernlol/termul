@@ -62,6 +62,7 @@ mod ssh;
 mod trackers;
 mod updater_api;
 pub mod web;
+mod window_chrome;
 // Main-window show safety net + Wayland detection (gh-719).
 mod window_visibility;
 // Main-window WebView2 crash recovery; the pure decision logic is also
@@ -2087,6 +2088,8 @@ pub fn run() {
             get_default_shell,
             get_home_directory,
             window_visibility::is_wayland_session,
+            // Collapsed Rail: the macOS traffic lights hide
+            window_chrome::set_traffic_lights_hidden,
             suspend_app_menu,
             restore_app_menu,
             reveal_log_dir_command,

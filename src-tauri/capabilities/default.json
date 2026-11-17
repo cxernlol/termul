@@ -20,6 +20,8 @@
     "core:window:allow-is-maximized",
     "core:window:allow-set-position",
     "core:window:allow-set-size",
+    "core:window:allow-set-effects",
+    "core:window:allow-set-theme",
     "core:webview:default",
     "core:webview:allow-set-webview-zoom",
     "store:default",

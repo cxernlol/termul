@@ -4,21 +4,27 @@ import { SettingsCard, SettingsGroup } from '@/components/settings/SettingsGroup
 import { SettingsSection } from '@/components/settings/SettingsLayout'
 import { SettingsRow, settingsDescriptionId } from '@/components/settings/SettingsRow'
 import { SettingsStepper } from '@/components/settings/SettingsStepper'
+import { SettingsSwitchRow } from '@/components/settings/SettingsSwitchRow'
+import { isTranslucentRailSupported } from '@/hooks/use-translucent-rail'
 import { isTauriContext } from '@/lib/tauri-runtime'
 import type { ProjectColor } from '@/types/project'
 import { UI_ZOOM_DEFAULT, UI_ZOOM_MAX, UI_ZOOM_MIN, UI_ZOOM_STEP } from '@/types/settings'
 
 interface InterfaceSectionProps {
   uiZoomLevel: number
+  translucentRail: boolean
   defaultProjectColor: ProjectColor
   handleUiZoomChange: (value: number) => void
+  handleTranslucentRailToggle: (enabled: boolean) => void
   handleDefaultProjectColorChange: (value: ProjectColor) => void
 }
 
 export function InterfaceSection({
   uiZoomLevel,
+  translucentRail,
   defaultProjectColor,
   handleUiZoomChange,
+  handleTranslucentRailToggle,
   handleDefaultProjectColorChange
 }: InterfaceSectionProps): React.JSX.Element {
   // Web (#858): Ctrl+=/-/0 are the browser zoom keys; the web defaults use Alt.
@@ -49,6 +55,15 @@ export function InterfaceSection({
               resetLabel="Reset to 100%"
             />
           </SettingsRow>
+          {isTranslucentRailSupported() && (
+            <SettingsSwitchRow
+              id="translucent-rail"
+              label="Translucent sidebar"
+              description="Show the desktop through the project sidebar, like Finder. Chats, terminals and editors stay solid."
+              checked={translucentRail}
+              onToggle={handleTranslucentRailToggle}
+            />
+          )}
         </SettingsCard>
       </SettingsGroup>
       <SettingsGroup title="New projects">

@@ -62,6 +62,8 @@ export interface AppSettings {
   appearanceMode: 'light' | 'dark'
   /** Whole-UI zoom factor (1.0 = 100%). Scales the entire window like VS Code's window zoom. */
   uiZoomLevel: number
+  /** macOS desktop only: the Rail shows the native sidebar material (off by default). */
+  translucentRail: boolean
   /** ACP turn hard-cap timeout in seconds, or null = use the env var / Rust
    * default (unlimited by default). Set via App Preferences; pushed to the
    * Rust core. */
@@ -274,6 +276,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   colorTheme: 'termul',
   appearanceMode: 'dark',
   uiZoomLevel: UI_ZOOM_DEFAULT,
+  translucentRail: false,
   acpTurnTimeoutSecs: null,
   editorAutoSave: false,
   editorAutoSaveDelayMs: 1000,

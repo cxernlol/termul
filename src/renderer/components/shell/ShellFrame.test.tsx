@@ -388,29 +388,26 @@ describe('ShellFrame', () => {
       expect(dragRegions()).toHaveLength(0)
     })
 
-    it('keeps the main area at the top and pads the top row under the traffic lights', () => {
-      platformRef.mac = true
-      useShellLayoutStore.setState({ railExpanded: false })
-      const { unmount } = renderFrame()
-      expect(screen.getByRole('main').style.marginTop).toBe('')
-      expect(screen.getByTestId('top-row-start-slot')).toHaveStyle({ paddingLeft: '16px' })
-      unmount()
+    it('keeps the main area at the top and opens its top row with the expand toggle', () => {
+      // The macOS traffic lights hide while the Rail is collapsed, so no
+      // platform pads the slot for them.
+      for (const mac of [true, false]) {
+        platformRef.mac = mac
+        useShellLayoutStore.setState({ railExpanded: false })
+        const hidden = renderFrame()
+        expect(screen.getByRole('main').style.marginTop).toBe('')
+        const slot = screen.getByTestId('top-row-start-slot')
+        expect(slot.style.paddingLeft).toBe('')
+        expect(
+          within(slot).getByRole('button', { name: 'Expand or collapse projects' })
+        ).toBeInTheDocument()
+        hidden.unmount()
 
-      useShellLayoutStore.setState({ railExpanded: true })
-      const second = renderFrame()
-      expect(screen.queryByTestId('top-row-start-slot')).not.toBeInTheDocument()
-      second.unmount()
-
-      // Elsewhere there is no inset, but the collapsed Rail's expand toggle
-      // still opens the top row (Sidebar V2).
-      platformRef.mac = false
-      useShellLayoutStore.setState({ railExpanded: false })
-      renderFrame()
-      const slot = screen.getByTestId('top-row-start-slot')
-      expect(slot.style.paddingLeft).toBe('')
-      expect(
-        within(slot).getByRole('button', { name: 'Expand or collapse projects' })
-      ).toBeInTheDocument()
+        useShellLayoutStore.setState({ railExpanded: true })
+        const docked = renderFrame()
+        expect(screen.queryByTestId('top-row-start-slot')).not.toBeInTheDocument()
+        docked.unmount()
+      }
     })
 
     it('keeps workspaceMain mounted when the mode flips between fallback and panes', () => {

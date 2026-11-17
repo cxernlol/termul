@@ -1,41 +1,29 @@
 import { RailToggleButton } from '@/components/shell/RailToggleButton'
 import { useTopRow } from '@/components/shell/top-row-context'
-import { cn } from '@/lib/utils'
 
 /**
  * Whether {@link TopRowStartSlot} renders: the Rail is collapsed (the expand
- * toggle moves here) or the macOS traffic lights need clearance.
+ * toggle moves here).
  */
 export function useTopRowStartSlotVisible(): boolean {
-  const topRow = useTopRow()
-  return (topRow?.mainStartInsetPx ?? 0) > 0 || Boolean(topRow?.railToggleInMain)
+  return Boolean(useTopRow()?.railToggleInMain)
 }
 
 /**
  * Start of the top-row bar that touches the Rail (the leftmost top-edge tab
  * bar, the SSH header or the fallback bar, see `showPanelOwner`). With the
- * Rail collapsed it holds the expand-Rail toggle; under the macOS traffic
- * lights it pads its start by `mainStartInsetPx` (16px past the 56px Rail,
- * so the toggle lands at x = 72 as in Paper 2.3). Renders nothing when
- * neither applies.
+ * Rail collapsed it holds the expand-Rail toggle; it needs no room for the
+ * macOS traffic lights, which hide while the Rail is collapsed. Renders
+ * nothing with the Rail expanded.
  */
 export function TopRowStartSlot(): React.JSX.Element | null {
-  const topRow = useTopRow()
-  const inset = topRow?.mainStartInsetPx ?? 0
-  const railToggle = Boolean(topRow?.railToggleInMain)
-  if (!railToggle && inset === 0) return null
+  if (!useTopRowStartSlotVisible()) return null
   return (
-    <div
-      className={cn('flex h-full shrink-0 items-center', inset === 0 && 'pl-1.5')}
-      style={inset > 0 ? { paddingLeft: inset } : undefined}
-      data-testid="top-row-start-slot"
-    >
+    <div className="flex h-full shrink-0 items-center pl-1.5" data-testid="top-row-start-slot">
       {/* Fades in while the Rail's own toggle fades out (Rail collapse). */}
-      {railToggle && (
-        <span className="flex transition-opacity duration-150 ease-out starting:opacity-0 motion-reduce:transition-none">
-          <RailToggleButton />
-        </span>
-      )}
+      <span className="flex transition-opacity duration-150 ease-out starting:opacity-0 motion-reduce:transition-none">
+        <RailToggleButton />
+      </span>
     </div>
   )
 }

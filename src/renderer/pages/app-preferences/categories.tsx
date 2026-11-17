@@ -19,6 +19,7 @@ import {
 import { BROWSER_ANCHORS } from '@/components/settings/browser-policy-copy'
 import { rowId } from '@/components/settings/row-id'
 import type { SettingsCategory } from '@/components/settings/SettingsLayout'
+import { isTranslucentRailSupported } from '@/hooks/use-translucent-rail'
 import type { SettingsSearchEntry } from '@/lib/settings-search'
 import { isTauriContext } from '@/lib/tauri-runtime'
 
@@ -165,6 +166,13 @@ const ALL_APP_PREF_SEARCH_INDEX: SettingsSearchEntry[] = [
     description: 'Make everything larger or smaller (50–300%).',
     keywords: ['ui zoom', 'zoom', 'interface scale', 'window zoom', 'magnify'],
     anchorId: rowId('ui-zoom')
+  },
+  {
+    categoryId: 'interface',
+    label: 'Translucent sidebar',
+    description: 'Show the desktop through the project sidebar (macOS).',
+    keywords: ['translucent', 'transparent', 'vibrancy', 'glass', 'blur', 'sidebar', 'appearance'],
+    anchorId: rowId('translucent-rail')
   },
   {
     categoryId: 'interface',
@@ -446,13 +454,17 @@ const ALL_APP_PREF_SEARCH_INDEX: SettingsSearchEntry[] = [
 
 /** Search entries for the current runtime. */
 export function appPrefSearchIndex(): SettingsSearchEntry[] {
+  // The translucent sidebar row renders on macOS desktop only.
+  const entries = isTranslucentRailSupported()
+    ? ALL_APP_PREF_SEARCH_INDEX
+    : ALL_APP_PREF_SEARCH_INDEX.filter((entry) => entry.anchorId !== rowId('translucent-rail'))
   if (isTauriContext()) {
     // The Server page doesn't exist on desktop — its entries can't be in
     // the search index either.
-    return ALL_APP_PREF_SEARCH_INDEX.filter((entry) => entry.categoryId !== 'server')
+    return entries.filter((entry) => entry.categoryId !== 'server')
   }
   return [
-    ...ALL_APP_PREF_SEARCH_INDEX.filter((entry) => entry.categoryId !== 'updates'),
+    ...entries.filter((entry) => entry.categoryId !== 'updates'),
     {
       categoryId: 'diagnostics',
       label: 'Server version',

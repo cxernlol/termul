@@ -19,6 +19,8 @@ import { RailProjectItem } from './rail-project-item'
 import { RAIL_SECTION_BUTTON_CLASS, RailSectionHeader } from './rail-section-header'
 import { useDragLift } from './use-drag-lift'
 
+const INSTANT_LAYOUT = { layout: { duration: 0 } } as const
+
 export interface ProjectListProps {
   projects: Project[]
   activeProjectId: string
@@ -130,6 +132,11 @@ export function ProjectList({
   // The lift (opaque bg) holds until the row lands, and `relative` lets
   // Reorder's own zIndex apply, so neighbours never show through it.
   const { liftedId, lift, release, settle } = useDragLift()
+  const groupLift = useDragLift()
+  // Rows slide only during a reorder drag. On a project switch the chat list
+  // moves in one frame, so a sliding row would paint over the new chats.
+  const layoutTransition =
+    liftedId !== null || groupLift.liftedId !== null ? undefined : INSTANT_LAYOUT
   const renderProjectRow = (project: Project): React.JSX.Element => {
     return (
       <Reorder.Item
@@ -137,6 +144,7 @@ export function ProjectList({
         value={project}
         drag="y"
         layout="position"
+        transition={layoutTransition}
         data-dragging={liftedId === project.id || undefined}
         // `gap-px`: the active project's chats sit 1px under its row.
         className="relative flex list-none flex-col gap-px rounded-lg transition-shadow duration-[110ms] ease-out motion-reduce:transition-none data-[dragging]:bg-sidebar data-[dragging]:shadow-md data-[dragging]:duration-150"
@@ -267,6 +275,10 @@ export function ProjectList({
                     value={groupEntry}
                     drag="y"
                     layout="position"
+                    transition={layoutTransition}
+                    onDragStart={() => groupLift.lift(group.id)}
+                    onDragEnd={() => groupLift.release(group.id)}
+                    onDragTransitionEnd={() => groupLift.settle(group.id)}
                     className="list-none"
                   >
                     <div

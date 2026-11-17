@@ -54,6 +54,7 @@ import { useTerminalDetachedOutput } from './hooks/use-terminal-detached-output'
 import { useTerminalExitNotification } from './hooks/use-terminal-exit-notification'
 import { useTerminalIdleNotification } from './hooks/use-terminal-idle-notification'
 import { useTerminalRestore } from './hooks/use-terminal-restore'
+import { useTranslucentRailSync } from './hooks/use-translucent-rail'
 import { useAppliedUiZoomSync } from './hooks/use-ui-zoom'
 import { useUpdateCheck } from './hooks/use-updater'
 import { useVisibilityState } from './hooks/use-visibility-state'
@@ -95,6 +96,7 @@ function AppEffects(): null {
   useAppSettingsLoader()
   useAppliedColorThemeSync()
   useAppliedUiZoomSync()
+  useTranslucentRailSync()
   useKeyboardShortcutsLoader()
   useProjectRegistry()
   useShellLayoutHydration()

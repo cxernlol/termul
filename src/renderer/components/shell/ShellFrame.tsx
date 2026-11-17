@@ -8,7 +8,6 @@ import { WindowControls } from '@/components/shell/TopRowChrome'
 import { TopRowFallbackBar } from '@/components/shell/TopRowFallbackBar'
 import { ShellToolStrip } from '@/components/shell/tool-strip/ShellToolStrip'
 import { TopRowProvider } from '@/components/shell/top-row-context'
-import { getTrafficLightInset } from '@/components/shell/traffic-light-inset'
 import { useNativeWebviewOcclusion } from '@/hooks/use-native-webview-occlusion'
 import { PaneDndProvider } from '@/hooks/use-pane-dnd'
 import { ExplorerColumn } from '@/layouts/workspace-layout/ExplorerColumn'
@@ -56,8 +55,9 @@ export interface ShellFrameProps {
 
 /**
  * {@link TopRowProvider} plus the main area's start slot: with the Rail
- * collapsed the main area's top row starts with the expand toggle, padded
- * past the macOS traffic lights.
+ * collapsed the main area's top row starts with the expand toggle. The macOS
+ * traffic lights hide while the Rail is collapsed, so the slot needs no room
+ * for them.
  */
 function ShellTopRowProvider({
   roles,
@@ -70,14 +70,8 @@ function ShellTopRowProvider({
   railExpanded: boolean
   children: ReactNode
 }): React.JSX.Element {
-  const trafficLightInset = getTrafficLightInset(platform, railExpanded)
   return (
-    <TopRowProvider
-      roles={roles}
-      platform={platform}
-      mainStartInsetPx={trafficLightInset?.mainStartPx ?? 0}
-      railToggleInMain={!railExpanded}
-    >
+    <TopRowProvider roles={roles} platform={platform} railToggleInMain={!railExpanded}>
       {children}
     </TopRowProvider>
   )
@@ -150,7 +144,7 @@ export function ShellFrame({
 
   return (
     <ShellTopRowProvider roles={roles} platform={platform} railExpanded={railExpanded}>
-      <div className="h-screen flex flex-col overflow-hidden bg-background">
+      <div className="h-screen flex flex-col overflow-hidden bg-background" data-shell-frame="">
         <ResizeEdges />
         <div className="flex-1 flex overflow-hidden min-h-0 h-full">
           <ShellRail
@@ -170,9 +164,10 @@ export function ShellFrame({
             onToggleThemePicker={handleToggleThemePicker}
           />
 
-          {/* Shell row: main area | right panel | tool strip. */}
+          {/* Shell row: main area | right panel | tool strip. It paints its
+              own surface so a translucent Rail (macOS) stays the only glass. */}
           <div
-            className="relative flex-1 flex overflow-hidden min-h-0 min-w-0 h-full"
+            className="relative flex-1 flex overflow-hidden min-h-0 min-w-0 h-full bg-background"
             data-testid="shell-row"
           >
             <PaneDndProvider>

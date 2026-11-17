@@ -1,4 +1,5 @@
 import { useReducedMotion } from 'framer-motion'
+import { useEffect } from 'react'
 import { RailBody } from '@/components/shell/RailBody'
 import { RailDensityProvider } from '@/components/shell/rail/rail-density'
 import { RAIL_WIDTH_TRANSITION_CLASS, useRailMotion } from '@/components/shell/rail/rail-motion'
@@ -6,6 +7,7 @@ import { COLLAPSED_WIDTH, RAIL_HOVER_OPEN_DELAY } from '@/components/shell/rail-
 import { useRailResize } from '@/components/shell/use-rail-resize'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { useWorktreeReconciler } from '@/hooks/use-worktree-reconciler'
+import { setTrafficLightsHidden } from '@/lib/tauri-traffic-lights'
 import { cn } from '@/lib/utils'
 import { SHELL_LAYOUT_BOUNDS } from '@/stores/shell-layout-store'
 import { useSidebarVisible } from '@/stores/sidebar-store'
@@ -41,6 +43,9 @@ export interface ShellRailProps {
  * (200ms, strong ease-out) and the labels fade out before `display: none`, or
  * fade in from `@starting-style`. The phase is `data-rail-motion` on the nav.
  * Instant under reduced motion and while dragging the resize handle.
+ *
+ * macOS desktop: the traffic lights hide while the Rail is collapsed
+ * (`setTrafficLightsHidden`), so the main area needs no room for them.
  */
 export function ShellRail({
   projects,
@@ -65,6 +70,12 @@ export function ShellRail({
   // The reconciler keeps running while the Rail is collapsed (the expanded
   // sidebar variant does not run it).
   useWorktreeReconciler(activeProjectId)
+
+  // The lights come back if the Rail unmounts.
+  useEffect(() => {
+    void setTrafficLightsHidden(!expanded)
+  }, [expanded])
+  useEffect(() => () => void setTrafficLightsHidden(false), [])
 
   // Only an expand/collapse animates; a resize follows the pointer.
   const { phase, density } = useRailMotion(expanded, reducedMotion)

@@ -889,6 +889,13 @@
   mask-image: linear-gradient(to right, black calc(100% - 24px), transparent);
 }
 
+/* `fade-end` that ends before a project row's hover actions (two 20px
+   buttons and a 4px gap = 44px, plus 4px of air), so the actions need no
+   backdrop. */
+@utility fade-before-row-actions {
+  mask-image: linear-gradient(to right, black calc(100% - 68px), transparent calc(100% - 48px));
+}
+
 /* `fade-end` for a label whose box hugs its text (a centred title, a label
    next to a chevron): the fade shows only while the text overflows. The
    `useOverflowFade` hook sets `data-overflowing` on the element. */
@@ -1964,4 +1971,20 @@
       animation: none;
     }
   }
+}
+
+/* Translucent Rail (macOS desktop, opt-in, `use-translucent-rail.ts`): the
+   window is transparent and the native sidebar material sits behind the
+   webview. The page and the shell frame let it through only while the shell
+   is on screen; the shell row paints its own solid surface, so the Rail is the
+   only glass. A 60% background tint keeps Rail text and row states readable on
+   any wallpaper. Unlayered so it wins over the `bg-background` utilities. */
+html[data-translucent-rail]:has([data-shell-frame]),
+html[data-translucent-rail]:has([data-shell-frame]) body,
+html[data-translucent-rail] [data-shell-frame] {
+  background-color: transparent;
+}
+
+html[data-translucent-rail] [data-shell-frame] [data-rail-surface] {
+  background-color: oklch(var(--background) / 0.6);
 }

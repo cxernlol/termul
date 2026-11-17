@@ -1,0 +1,26 @@
+{
+	"$schema": "https://schema.tauri.app/config/2",
+	"app": {
+		"windows": [
+			{
+				"label": "main",
+				"url": "tauri-index.html",
+				"title": "Troupe",
+				"width": 1200,
+				"height": 800,
+				"minWidth": 800,
+				"minHeight": 600,
+				"decorations": true,
+				"titleBarStyle": "Overlay",
+				"hiddenTitle": true,
+				"trafficLightPosition": {
+					"x": 14,
+					"y": 24
+				},
+				"visible": false,
+				"transparent": true,
+				"dragDropEnabled": false
+			}
+		]
+	}
+}

@@ -51,6 +51,11 @@ vi.mock('@/lib/platform', async () => {
   }
 })
 
+const { setTrafficLightsHidden } = vi.hoisted(() => ({
+  setTrafficLightsHidden: vi.fn(async (_hidden: boolean) => {})
+}))
+vi.mock('@/lib/tauri-traffic-lights', () => ({ setTrafficLightsHidden }))
+
 vi.mock('@/hooks/use-worktree-reconciler', () => ({
   useWorktreeReconciler: (projectId: string) => reconcilerSpy(projectId)
 }))
@@ -646,6 +651,21 @@ describe('ShellRail', () => {
         source: 'Rail',
         message: '[rail] toggle rail failed: disk full'
       })
+    })
+
+    it('shows the traffic lights only while expanded, and again on unmount', () => {
+      const { unmount } = renderRail()
+      expect(setTrafficLightsHidden).toHaveBeenLastCalledWith(false)
+
+      act(() => useShellLayoutStore.getState().setRailExpanded(false))
+      expect(setTrafficLightsHidden).toHaveBeenLastCalledWith(true)
+
+      act(() => useShellLayoutStore.getState().setRailExpanded(true))
+      expect(setTrafficLightsHidden).toHaveBeenLastCalledWith(false)
+
+      act(() => useShellLayoutStore.getState().setRailExpanded(false))
+      unmount()
+      expect(setTrafficLightsHidden).toHaveBeenLastCalledWith(false)
     })
 
     it('keeps the worktree reconciler running while collapsed', () => {

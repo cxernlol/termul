@@ -197,18 +197,21 @@ describe('FileTreeNode redesign states', () => {
     )
   })
 
-  it('draws outline icons (Paper 3.2): a muted folder and a type-tinted file', () => {
+  it('draws Material icons: a folder that opens when expanded, and a typed file', () => {
+    const iconSrc = () =>
+      (screen.getByTestId('tree-entry-icon').querySelector('img') as HTMLImageElement).src
+
     const { rerender } = render(<FileTreeNode {...baseProps} entry={folder} selection="none" />)
-    const folderIcon = screen.getByTestId('tree-entry-icon')
-    expect(folderIcon.tagName.toLowerCase()).toBe('svg')
-    expect(folderIcon).toHaveAttribute('data-termul-icon', 'Folder')
-    expect(folderIcon).toHaveClass('text-muted-foreground')
-    expect(document.querySelector('img')).toBeNull()
+    const closedFolder = iconSrc()
+    expect(closedFolder).toMatch(/^data:image\/svg\+xml,/)
+
+    rerender(<FileTreeNode {...baseProps} entry={folder} selection="none" isExpanded />)
+    expect(iconSrc()).not.toBe(closedFolder)
 
     rerender(<FileTreeNode {...baseProps} entry={file} selection="none" />)
-    const fileIcon = screen.getByTestId('tree-entry-icon')
-    expect(fileIcon).toHaveAttribute('data-termul-icon', 'File')
-    expect(fileIcon).toHaveClass('text-project-blue')
+    const fileIcon = iconSrc()
+    expect(fileIcon).toMatch(/^data:image\/svg\+xml,/)
+    expect(fileIcon).not.toBe(closedFolder)
     expect(screen.getByText('app.ts')).toHaveClass('text-secondary-foreground')
   })
 

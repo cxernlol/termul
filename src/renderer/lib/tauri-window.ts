@@ -5,6 +5,8 @@
 export {
   availableMonitors,
   currentMonitor,
+  Effect,
+  EffectState,
   getCurrentWindow,
   LogicalPosition,
   LogicalSize,

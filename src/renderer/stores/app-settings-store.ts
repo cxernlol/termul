@@ -64,6 +64,9 @@ export const useTerminalUrlOpenMode = () =>
 export const useColorTheme = () => useAppSettingsStore((state) => state.settings.colorTheme)
 export const useAppearanceMode = () => useAppSettingsStore((state) => state.settings.appearanceMode)
 export const useUiZoomLevel = () => useAppSettingsStore((state) => state.settings.uiZoomLevel)
+// Strict `=== true`: a missing or corrupt persisted value stays off.
+export const useTranslucentRail = () =>
+  useAppSettingsStore((state) => state.settings.translucentRail === true)
 export const useAcpTurnTimeout = () =>
   useAppSettingsStore((state) => state.settings.acpTurnTimeoutSecs)
 export const useEditorAutoSave = () => useAppSettingsStore((state) => state.settings.editorAutoSave)

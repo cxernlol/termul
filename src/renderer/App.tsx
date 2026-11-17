@@ -76,6 +76,7 @@ import { usePreventNativeContextMenu } from './hooks/use-prevent-native-context-
 import { useProjectRegistry } from './hooks/use-project-registry'
 import { useShellLayoutHydration } from './hooks/use-shell-layout-hydration'
 import { useSmoothWheelScroll } from './hooks/use-smooth-wheel-scroll'
+import { useTranslucentRailSync } from './hooks/use-translucent-rail'
 import { useAppliedUiZoomSync } from './hooks/use-ui-zoom'
 import { useUpdateCheck } from './hooks/use-updater'
 import { useVisibilityState } from './hooks/use-visibility-state'
@@ -168,6 +169,7 @@ function AppEffects(): null {
   useAppSettingsLoader()
   useAppliedColorThemeSync()
   useAppliedUiZoomSync()
+  useTranslucentRailSync()
   useKeyboardShortcutsLoader()
   useProjectRegistry()
   useShellLayoutHydration()
