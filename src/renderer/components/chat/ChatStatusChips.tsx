@@ -391,7 +391,8 @@ function liveStatus(
  * Changes, each a segment shown only while its list has rows (Changes also
  * while its panel is open). A segment opens its own panel to its left, one at
  * a time; its mark says if something runs, failed or is new. The rail is
- * `absolute`: mount it as a direct child of the chat root.
+ * `absolute`: mount it as a direct child of the chat root (desktop) or of a
+ * zero-height anchor below the plan bar (phone shell).
  */
 export function ChatStatusChips({
   sessionId,

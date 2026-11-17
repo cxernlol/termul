@@ -2674,15 +2674,27 @@ describe('AgentChatPanel mobile dock wiring', () => {
       expect(root).not.toHaveAttribute('data-status-rail')
     })
 
-    it('hides the rail and drops the gutter while the keyboard is open on the phone', () => {
+    it('floats the rail below the plan bar on the phone, with no gutter', () => {
+      mobileRef.current = true
+      changedFilePathsRef.current = ['/repo/.worktrees/a/src/a.ts']
+      render(<AgentChatPanel sessionId="s1" isVisible />)
+      const anchor = rail().parentElement
+      expect(anchor).toHaveAttribute('data-status-rail-anchor')
+      expect(anchor?.className).toContain('h-0')
+      const root = anchor?.parentElement
+      expect(root?.className).toContain('@container')
+      // No gutter: the plan bar and the list keep their full width.
+      expect(root).not.toHaveAttribute('data-status-rail')
+    })
+
+    it('hides the rail while the keyboard is open on the phone', () => {
+      mobileRef.current = true
       changedFilePathsRef.current = ['/repo/.worktrees/a/src/a.ts']
       const { rerender } = render(<AgentChatPanel sessionId="s1" isVisible />)
-      const root = rail().parentElement
-      expect(root).toHaveAttribute('data-status-rail', 'shown')
+      expect(rail()).toBeInTheDocument()
 
       oskRef.current = OSK_OPEN
       rerender(<AgentChatPanel sessionId="s1" isVisible />)
-      expect(root).not.toHaveAttribute('data-status-rail')
       expect(screen.queryByRole('group', { name: 'Session status' })).toBeNull()
     })
   })
