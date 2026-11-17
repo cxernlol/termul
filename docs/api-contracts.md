@@ -572,7 +572,7 @@ The class column is the request's command class, defined in `src-tauri/src/web/c
 | `subscribe` | read | Binds the connection to a session log. Takes an optional `lastSeq` and `logEpoch` cursor and replies `{sessionId, replayed, logEpoch, headSeq}`. |
 | `recover_session_snapshot` | read | Returns `{sessionId, watermark, headSeq, logEpoch, events}` so a client can rebuild a session after a `gap` or a `stale` cursor. |
 | `get_session_cursor` | read | Returns the durable `{sessionId, watermark}` and, for a known session, `logEpoch` and `headSeq`. |
-| `list_persisted_sessions` | read | Returns the durable session index. Empty without durable history. |
+| `list_persisted_sessions` | read | Returns the durable session index. Empty without durable history. An entry has `startedBy`, the parent chat id, when an agent started the chat with the `start_chat` host tool. |
 | `open_persisted_session` | read | Subscribes to a persisted session like `subscribe`. `unsupported` when the host keeps no durable history. |
 | `get_session_payload` | read | Returns a session's full payload from the durable log. `not_found` for an unknown id. |
 | `get_session_payload_tail` | read | Returns the last `limit` messages of a session and their tool calls. |

@@ -17,6 +17,7 @@ pub mod claude_accounts;
 pub mod claude_admin;
 pub mod claude_agent;
 pub mod claude_limit;
+pub mod worker_chats;
 pub mod client;
 pub mod codex_accounts;
 pub mod codex_admin;
@@ -64,7 +65,7 @@ pub use chat_history_store::{
 };
 #[allow(unused_imports)]
 pub use claude_agent::{
-    ClaudeAgentService, ClaudeAuthMode, ClaudeAuthStatus, LinkCodeError, SignInCheck,
+    ClaudeAgentService, ClaudeAuthMode, ClaudeAuthStatus, LaunchChat, LinkCodeError, SignInCheck,
 };
 pub use codex_agent::{CodexAgentService, CodexSignInCheck};
 #[allow(unused_imports)]

@@ -16,7 +16,7 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 pub(crate) const MOCK_AGENT: &str = r#"
-import json, os, subprocess, sys, time
+import json, os, subprocess, sys, time, uuid
 
 def send(obj):
     sys.stdout.write(json.dumps(obj) + "\n")
@@ -66,8 +66,10 @@ for line in sys.stdin:
                                   "sessionCapabilities": {"close": {}, "resume": {}}},
             "authMethods": []}})
     elif method == "session/new":
+        time.sleep(float(os.environ.get("MOCK_SESSION_NEW_DELAY", "0")))
         sessions += 1
-        sid = "mock-%d" % sessions if os.environ.get("MOCK_SESSION_IDS") == "1" else "mock-1"
+        ids = os.environ.get("MOCK_SESSION_IDS")
+        sid = str(uuid.uuid4()) if ids == "unique" else "mock-%d" % sessions if ids == "1" else "mock-1"
         send({"jsonrpc": "2.0", "id": rid, "result": {"sessionId": sid}})
     elif method == "session/prompt":
         text = msg["params"]["prompt"][0].get("text", "")

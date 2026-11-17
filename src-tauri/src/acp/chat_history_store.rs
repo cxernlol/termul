@@ -67,6 +67,9 @@ pub struct ChatHistoryIndexEntry {
     /// records written before quick chats existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
+    /// The chat whose agent started this one (`start_chat`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_by: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

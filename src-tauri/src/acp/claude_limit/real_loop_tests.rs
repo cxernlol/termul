@@ -19,7 +19,7 @@ use crate::web::prompt_turn::{run_prompt_turn, PromptTurnRequest};
 use crate::web::sink::{AcpEvent, EventSink};
 use crate::web::WsRelaySink;
 
-const PROJECT: &str = "proj-1";
+pub(crate) const PROJECT: &str = "proj-1";
 const WAIT: Duration = Duration::from_secs(45);
 
 /// Usage per account dir name; the built-in account (no dir) reads `default`.
@@ -51,22 +51,22 @@ impl EventSink for Recorded {
     }
 }
 
-struct OpenChat {
-    agent_id: AgentId,
-    session_id: SessionId,
+pub(crate) struct OpenChat {
+    pub(crate) agent_id: AgentId,
+    pub(crate) session_id: SessionId,
 }
 
-struct Host {
+pub(crate) struct Host {
     dir: tempfile::TempDir,
-    acp: Arc<AcpManager>,
-    relay: Arc<WsRelaySink>,
-    persistence: Arc<SessionPersistence>,
-    accounts: HashMap<&'static str, String>,
+    pub(crate) acp: Arc<AcpManager>,
+    pub(crate) relay: Arc<WsRelaySink>,
+    pub(crate) persistence: Arc<SessionPersistence>,
+    pub(crate) accounts: HashMap<&'static str, String>,
     _serial: tokio::sync::MutexGuard<'static, ()>,
 }
 
 impl Host {
-    async fn start(usage: &[(&'static str, f64)], project_account: &str) -> Option<Self> {
+    pub(crate) async fn start(usage: &[(&'static str, f64)], project_account: &str) -> Option<Self> {
         let Some(python) = find_python() else {
             if std::env::var(SKIP_ENV).as_deref() == Ok("1") {
                 return None;
@@ -119,6 +119,7 @@ impl Host {
                 schedule,
                 Duration::ZERO,
                 inbox.clock,
+                inbox.limited,
             )
             .run(inbox.rx),
         );
@@ -132,7 +133,7 @@ impl Host {
         })
     }
 
-    fn state(&self) -> PathBuf {
+    pub(crate) fn state(&self) -> PathBuf {
         self.dir.path().join("state")
     }
 
@@ -142,7 +143,7 @@ impl Host {
 
     /// A chat on a new agent whose mock reads `env`; a host relaunch of the
     /// chat inherits it.
-    async fn open_chat_with(&self, env: &[(&str, &str)]) -> OpenChat {
+    pub(crate) async fn open_chat_with(&self, env: &[(&str, &str)]) -> OpenChat {
         let agent_id = self.spawn_agent(env).await;
         let session_id = self.open_session(&agent_id).await;
         OpenChat {
@@ -174,7 +175,7 @@ impl Host {
                 None,
                 SpawnScope {
                     project_id: Some(PROJECT.to_string()),
-                    chat_id: None,
+                    ..SpawnScope::default()
                 },
             )
             .await
@@ -182,7 +183,7 @@ impl Host {
             .agent_id
     }
 
-    fn cwd(&self) -> String {
+    pub(crate) fn cwd(&self) -> String {
         self.dir.path().to_string_lossy().to_string()
     }
 
@@ -249,7 +250,7 @@ impl Host {
             .to_string()
     }
 
-    async fn log_until(
+    pub(crate) async fn log_until(
         &self,
         session_id: &SessionId,
         done: impl Fn(&[(String, Value)]) -> bool,
@@ -310,7 +311,7 @@ fn write_managed_entrypoint(state: &Path, python: &str, dir: &Path) {
     .unwrap();
 }
 
-fn texts<'a>(records: &'a [(String, Value)], kind: &str) -> Vec<&'a str> {
+pub(crate) fn texts<'a>(records: &'a [(String, Value)], kind: &str) -> Vec<&'a str> {
     records
         .iter()
         .filter(|(k, _)| k == kind)
@@ -325,7 +326,7 @@ fn texts<'a>(records: &'a [(String, Value)], kind: &str) -> Vec<&'a str> {
         .collect()
 }
 
-fn actions(records: &[(String, Value)]) -> Vec<Value> {
+pub(crate) fn actions(records: &[(String, Value)]) -> Vec<Value> {
     records
         .iter()
         .filter(|(kind, _)| kind == "claude_limit_action")
@@ -333,7 +334,7 @@ fn actions(records: &[(String, Value)]) -> Vec<Value> {
         .collect()
 }
 
-fn now_secs() -> i64 {
+pub(crate) fn now_secs() -> i64 {
     i64::try_from(
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -343,7 +344,7 @@ fn now_secs() -> i64 {
     .unwrap()
 }
 
-fn has_config_dir_chunk(records: &[(String, Value)]) -> bool {
+pub(crate) fn has_config_dir_chunk(records: &[(String, Value)]) -> bool {
     texts(records, "message_chunk")
         .iter()
         .any(|text| text.starts_with("config_dir="))
@@ -583,6 +584,7 @@ async fn a_resume_due_after_a_restart_marks_the_chat_for_its_client() {
             Schedule::load(Some(path.clone())),
             Duration::ZERO,
             inbox.clock,
+            inbox.limited,
         )
         .run(inbox.rx),
     );

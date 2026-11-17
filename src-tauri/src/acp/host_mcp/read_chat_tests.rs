@@ -41,6 +41,7 @@ fn metadata() -> SessionMetadata {
         continued_from: None,
         kind: crate::acp::session_persistence::SessionKind::Project,
         quick_chat_id: None,
+        started_by: None,
     }
 }
 

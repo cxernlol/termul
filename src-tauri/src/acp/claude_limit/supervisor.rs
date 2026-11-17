@@ -1,19 +1,19 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tokio::sync::mpsc;
 
 use super::decide::{
-    self, Candidate, ChatHolder, LimitContext, LimitDecision, ResumePlan, SHORTEST_WINDOW,
+    self, ChatHolder, LimitContext, LimitDecision, ResumePlan, SHORTEST_WINDOW,
 };
 use super::relaunch::Relaunch;
 use super::schedule::{Schedule, ScheduledResume};
 use super::{
     resume_notice, switch_notice, window_name, AccountRef, ClaudeLimitAction,
-    ClaudeLimitActionEvent, Input, TurnClock, CLAUDE_CONFIG_ID,
+    ClaudeLimitActionEvent, Input, LimitedAccounts, TurnClock, CLAUDE_CONFIG_ID,
 };
-use crate::acp::claude_accounts::usage::{ClaudeAccountUsage, ClaudeRateLimit, ClaudeUsageStatus};
+use crate::acp::claude_accounts::usage::{ClaudeAccountUsage, ClaudeRateLimit};
 use crate::acp::claude_accounts::ClaudeAccountsSnapshot;
 use crate::acp::claude_agent::ClaudeLaunchAuth;
 use crate::acp::config::{AgentId, SessionId};
@@ -38,7 +38,7 @@ pub(super) struct Supervisor {
     pub(super) relay: Arc<WsRelaySink>,
     pub(super) schedule: Schedule,
     grace: Duration,
-    pub(super) limited_until: HashMap<String, SystemTime>,
+    limited: Arc<LimitedAccounts>,
     attempts: HashSet<Attempt>,
     clock: Arc<TurnClock>,
 }
@@ -50,13 +50,14 @@ impl Supervisor {
         schedule: Schedule,
         grace: Duration,
         clock: Arc<TurnClock>,
+        limited: Arc<LimitedAccounts>,
     ) -> Self {
         Self {
             acp,
             relay,
             schedule,
             grace,
-            limited_until: HashMap::new(),
+            limited,
             attempts: HashSet::new(),
             clock,
         }
@@ -184,17 +185,21 @@ impl Supervisor {
             return;
         }
         let now = SystemTime::now();
-        self.limited_until.insert(
-            agent_account.clone(),
+        self.limited.mark(
+            &agent_account,
             resets_at.map_or(now + SHORTEST_WINDOW, epoch),
         );
-        let candidates = decide::rank_alternatives(&candidates(&snapshot, &usage, &agent_account));
+        let candidates = decide::rank_alternatives(&decide::candidates(
+            &snapshot,
+            &usage,
+            Some(&agent_account),
+        ));
         let decision = decide::decide(&LimitContext {
             agent_account: &agent_account,
             chat_account: &chat_account,
             auto_switch: snapshot.auto_switch,
             candidates: &candidates,
-            limited_until: &self.limited_until,
+            limited_until: &self.limited.snapshot(),
             resets_at: resets_at.map(epoch),
             now,
         });
@@ -498,38 +503,8 @@ fn account_ref(snapshot: &ClaudeAccountsSnapshot, id: &str) -> AccountRef {
     }
 }
 
-fn candidates(
-    snapshot: &ClaudeAccountsSnapshot,
-    usage: &[ClaudeAccountUsage],
-    current: &str,
-) -> Vec<Candidate> {
-    snapshot
-        .profiles
-        .iter()
-        .filter(|account| account.id != current)
-        .map(|account| {
-            let read = usage.iter().find(|u| u.account_id == account.id);
-            Candidate {
-                account_id: account.id.clone(),
-                ready: account.signed_in == Some(true)
-                    && read.is_none_or(|u| u.status != ClaudeUsageStatus::SignedOut),
-                percent: most_used(read).map(|(percent, _)| percent),
-            }
-        })
-        .collect()
-}
-
-fn most_used(usage: Option<&ClaudeAccountUsage>) -> Option<(f64, Option<&str>)> {
-    let usage = usage.filter(|u| u.status == ClaudeUsageStatus::Ok)?;
-    usage
-        .windows
-        .iter()
-        .reduce(|top, w| if w.percent > top.percent { w } else { top })
-        .map(|w| (w.percent, w.resets_at.as_deref()))
-}
-
 fn primary_reset(usage: Option<&ClaudeAccountUsage>) -> Option<i64> {
-    let (_, reset) = most_used(usage)?;
+    let (_, reset) = decide::most_used(usage)?;
     chrono::DateTime::parse_from_rfc3339(reset?)
         .ok()
         .map(|at| at.timestamp())

@@ -47,6 +47,7 @@ pub(crate) fn host_entry_to_desktop(
         continued_from: entry.continued_from,
         kind: (entry.kind == crate::acp::session_persistence::SessionKind::Quick)
             .then(|| "quick".to_string()),
+        started_by: entry.started_by,
     }
 }
 

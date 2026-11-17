@@ -35,6 +35,7 @@ mod automation;
 mod canvas;
 mod mcp_install;
 mod read_chat;
+mod worker_chats;
 pub use ask::IdleSignal;
 use ask::PendingAsk;
 
@@ -121,6 +122,8 @@ pub struct HostPlanServer {
     exports: Arc<canvas::ExportClaims>,
     /// Answers `Automation` frames when set; otherwise the installed service.
     automation: std::sync::OnceLock<Arc<crate::automation::service::AutomationService>>,
+    /// Answers `StartChat` and `SendToChat` frames.
+    worker_chats: std::sync::OnceLock<Arc<crate::acp::worker_chats::WorkerChats>>,
 }
 
 impl HostPlanServer {
@@ -157,6 +160,7 @@ impl HostPlanServer {
             canvas,
             exports: Arc::default(),
             automation: std::sync::OnceLock::new(),
+            worker_chats: std::sync::OnceLock::new(),
         });
         let server_for_thread = Arc::clone(&server);
         let (port_tx, port_rx) = std::sync::mpsc::channel::<u16>();
@@ -669,6 +673,9 @@ impl HostPlanServer {
                     .await
             }
             FrameKind::ReadChat => self.read_chat(&real_session_id, req.read_chat).await,
+            FrameKind::StartChat => self.start_chat(&real_session_id, req.start_chat).await,
+            FrameKind::SendToChat => self.send_to_chat(&real_session_id, req.send_to_chat).await,
+            FrameKind::ListStartedChats => self.list_started_chats(&real_session_id).await,
             FrameKind::AskUser => {
                 let Some(input) = req.ask else {
                     return FrameReply::err("ask_user frame needs a question");

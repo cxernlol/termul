@@ -198,6 +198,8 @@ pub struct SessionCreationContext {
     /// Set when this session is a quick chat. The value is the host-minted
     /// folder id. The client does not choose it.
     pub quick_chat_id: Option<String>,
+    /// The chat whose agent started this one (`start_chat`).
+    pub started_by: Option<String>,
 }
 
 /// Commands sent from Tauri command handlers to an agent's driver thread.
@@ -219,6 +221,7 @@ enum AcpCommand {
         command_id: Option<String>,
         tool_allowlist: Option<crate::acp::session::ToolAllowlist>,
         quick_chat_id: Option<String>,
+        started_by: Option<String>,
         reply: oneshot::Sender<Result<NewSessionOutcome, String>>,
     },
     LoadSession {
@@ -425,12 +428,11 @@ pub struct SpawnOutcome {
 }
 
 /// What a spawn opens: the Project selects the Claude and Codex Account, and
-/// the chat, when the agent is started to open one existing chat, selects
-/// that chat's own Claude Account.
+/// the chat the agent is started for can select its own Claude Account.
 #[derive(Debug, Clone, Default)]
 pub struct SpawnScope {
     pub project_id: Option<String>,
-    pub chat_id: Option<SessionId>,
+    pub chat: crate::acp::claude_agent::LaunchChat,
 }
 
 /// Identity-rich summary of a live agent (CAP-11). Returned by the WS
@@ -795,11 +797,7 @@ impl AcpManager {
     ) -> Result<SpawnOutcome, String> {
         let launch_config = config.clone();
         let (host_auth_ready, claude) = self
-            .prepare_spawn_config(
-                &mut config,
-                scope.project_id.as_deref(),
-                scope.chat_id.as_ref().map(|chat| chat.0.as_str()),
-            )
+            .prepare_spawn_config(&mut config, scope.project_id.as_deref(), &scope.chat)
             .await?;
         let outcome = self
             .spawn_with_sinks(config, host_auth_ready, self.sinks.clone(), command_id)
@@ -826,6 +824,15 @@ impl AcpManager {
         self.claude_limit.get()
     }
 
+    /// Serve the `start_chat` and `send_to_chat` host tools with `chats`.
+    pub fn set_worker_chats(&self, chats: Arc<crate::acp::worker_chats::WorkerChats>) {
+        self.host_plan_server.set_worker_chats(chats);
+    }
+
+    pub(crate) fn sinks(&self) -> &[Arc<dyn EventSink>] {
+        &self.sinks
+    }
+
     /// [`spawn`](Self::spawn) whose agent fans its events out to `sinks`
     /// only, never to this manager's own sinks (the relay): a headless caller
     /// owns the agent's whole event stream and nothing reaches a renderer.
@@ -836,26 +843,30 @@ impl AcpManager {
         sinks: Vec<Arc<dyn EventSink>>,
     ) -> Result<SpawnOutcome, String> {
         let (host_auth_ready, _) = self
-            .prepare_spawn_config(&mut config, project_id, None)
+            .prepare_spawn_config(
+                &mut config,
+                project_id,
+                &crate::acp::claude_agent::LaunchChat::None,
+            )
             .await?;
         self.spawn_with_sinks(config, host_auth_ready, sinks, None)
             .await
     }
 
     /// Launch-arg normalization, the persisted Factory key, and the managed
-    /// Claude account of `chat_id` in `project_id` or the Codex account of
+    /// Claude account of `chat` in `project_id` or the Codex account of
     /// `project_id`. Returns host-auth readiness.
     async fn prepare_spawn_config(
         &self,
         config: &mut AgentConfig,
         project_id: Option<&str>,
-        chat_id: Option<&str>,
+        chat: &crate::acp::claude_agent::LaunchChat,
     ) -> Result<(bool, crate::acp::claude_agent::ClaudeLaunchAuth), String> {
         crate::acp::factory_key::normalize_launch_args(config);
         crate::acp::factory_key::inject(config)?;
         let claude = self
             .claude_agent
-            .prepare_managed_launch(config, project_id, chat_id)
+            .prepare_managed_launch(config, project_id, chat)
             .await?;
         let codex_ready = self
             .codex_agent
@@ -1316,6 +1327,7 @@ impl AcpManager {
                 command_id: context.command_id,
                 tool_allowlist: context.tool_allowlist,
                 quick_chat_id: context.quick_chat_id,
+                started_by: context.started_by,
                 reply,
             })
             .await

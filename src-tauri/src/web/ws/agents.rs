@@ -59,7 +59,9 @@ pub(super) async fn handle_spawn_agent(
             command_id,
             crate::acp::SpawnScope {
                 project_id: parsed.project_id,
-                chat_id: parsed.session_id,
+                chat: parsed
+                    .session_id
+                    .map_or(crate::acp::LaunchChat::None, crate::acp::LaunchChat::Existing),
             },
         )
         .await

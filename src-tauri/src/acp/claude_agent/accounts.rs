@@ -78,11 +78,15 @@ impl ClaudeAgentService {
     pub(super) fn resolve_account(
         &self,
         project_id: Option<&str>,
-        chat_id: Option<&str>,
+        chat: &super::LaunchChat,
     ) -> AccountResolution {
-        match &self.profile_store {
-            Some(store) => store.resolve(project_id, chat_id),
-            None => AccountResolution {
+        match (&self.profile_store, chat) {
+            (Some(store), super::LaunchChat::None) => store.resolve(project_id, None),
+            (Some(store), super::LaunchChat::Existing(chat_id)) => {
+                store.resolve(project_id, Some(&chat_id.0))
+            }
+            (Some(store), super::LaunchChat::New { account_id }) => store.resolve_id(account_id),
+            (None, _) => AccountResolution {
                 account_id: BUILTIN_ACCOUNT_ID.to_string(),
                 account_name: "Default".to_string(),
                 config_dir: None,

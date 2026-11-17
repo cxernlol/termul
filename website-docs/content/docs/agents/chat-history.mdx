@@ -77,6 +77,12 @@ The reference is a few lines of plain text: the chat's title, its chat ID, its p
 
 To copy only the ID, choose **Copy Chat ID** instead. On a phone, long-press a chat in **Recents** and tap **Copy chat reference**.
 
+## Let an agent start worker chats
+
+An agent can hand parts of a task to new chats with the `start_chat` tool. Each new chat works in the same project and folder. When the agent runs on one of your Claude accounts and automatic account switching is on, Troupe starts each new chat on the signed-in account with the most room, so parallel work does not use up one account. With switching off, the new chats use the project's account. The new chats appear in your chat list. Open one to watch it or talk to it.
+
+The agent that started them lists them with `list_started_chats`, follows them with `read_chat`, and sends more work with `send_to_chat`. A chat started this way cannot start chats of its own, and one chat can have six running at a time.
+
 ## Delete a chat
 
 1. Right-click the card and choose **Delete Chat**.

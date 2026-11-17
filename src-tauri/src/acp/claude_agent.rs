@@ -312,6 +312,18 @@ fn parse_auth_mode(value: &str) -> Result<ClaudeAuthMode, String> {
     }
 }
 
+/// The chat a managed Claude spawn opens, which picks its Account.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum LaunchChat {
+    /// No chat yet: the Project's Account, else the Default Account.
+    #[default]
+    None,
+    /// An existing chat: its own Account, else its Project's.
+    Existing(crate::acp::config::SessionId),
+    /// A chat the agent is started to create, on this Account.
+    New { account_id: String },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClaudeLaunchAuth {
     /// Not the host-installed Claude agent.
@@ -776,20 +788,19 @@ impl ClaudeAgentService {
         &self,
         config: &mut crate::acp::config::AgentConfig,
     ) -> Result<bool, String> {
-        self.prepare_managed_launch(config, None, None)
+        self.prepare_managed_launch(config, None, &LaunchChat::None)
             .await
             .map(|auth| auth.host_auth_ready())
     }
 
     /// [`prepare_managed_config`](Self::prepare_managed_config) for a spawn
-    /// that opens `chat_id` in `project_id`: in Claude Code mode the agent
-    /// runs with the config directory of the chat's Account (its own, else
-    /// the Project's, else the default).
+    /// that opens `chat` in `project_id`: in Claude Code mode the agent runs
+    /// with the config directory of the chat's Account (see [`LaunchChat`]).
     pub async fn prepare_managed_launch(
         &self,
         config: &mut crate::acp::config::AgentConfig,
         project_id: Option<&str>,
-        chat_id: Option<&str>,
+        chat: &LaunchChat,
     ) -> Result<ClaudeLaunchAuth, String> {
         if !self.is_managed_config(config) {
             // A config that claims the managed claude-acp identity but fails
@@ -809,7 +820,7 @@ impl ClaudeAgentService {
         }
         match self.auth_mode() {
             Ok(ClaudeAuthMode::ClaudeCode) => {
-                let account = self.resolve_account(project_id, chat_id);
+                let account = self.resolve_account(project_id, chat);
                 let (config_dir, source) = effective_config_dir(
                     &config.env,
                     account.config_dir.as_deref(),

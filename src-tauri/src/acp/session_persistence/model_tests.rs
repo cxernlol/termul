@@ -290,6 +290,7 @@ fn model_fields_serialize_camel_case_when_set() {
         continued_from: None,
         kind: SessionKind::Project,
         quick_chat_id: None,
+        started_by: None,
     })
     .unwrap();
     assert_eq!(json["modelId"], "m1");

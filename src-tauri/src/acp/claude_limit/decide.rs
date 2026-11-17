@@ -4,6 +4,9 @@
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime};
 
+use crate::acp::claude_accounts::usage::{ClaudeAccountUsage, ClaudeUsageStatus};
+use crate::acp::claude_accounts::ClaudeAccountsSnapshot;
+
 pub const SHORTEST_WINDOW: Duration = Duration::from_secs(5 * 60 * 60);
 
 #[derive(Debug, Clone, PartialEq)]
@@ -29,6 +32,56 @@ pub fn rank_alternatives(candidates: &[Candidate]) -> Vec<String> {
         .collect();
     ranked.sort_by(|a, b| a.1.total_cmp(&b.1));
     ranked.into_iter().map(|(id, _)| id.to_string()).collect()
+}
+
+/// Every Account of `snapshot` except `exclude`, with its readiness and the
+/// percent used of its most used window.
+#[must_use]
+pub fn candidates(
+    snapshot: &ClaudeAccountsSnapshot,
+    usage: &[ClaudeAccountUsage],
+    exclude: Option<&str>,
+) -> Vec<Candidate> {
+    snapshot
+        .profiles
+        .iter()
+        .filter(|account| Some(account.id.as_str()) != exclude)
+        .map(|account| {
+            let read = usage.iter().find(|u| u.account_id == account.id);
+            Candidate {
+                account_id: account.id.clone(),
+                ready: account.signed_in == Some(true)
+                    && read.is_none_or(|u| u.status != ClaudeUsageStatus::SignedOut),
+                percent: most_used(read).map(|(percent, _)| percent),
+            }
+        })
+        .collect()
+}
+
+/// The percent used of the most used window, and when it resets.
+#[must_use]
+pub fn most_used(usage: Option<&ClaudeAccountUsage>) -> Option<(f64, Option<&str>)> {
+    let usage = usage.filter(|u| u.status == ClaudeUsageStatus::Ok)?;
+    usage
+        .windows
+        .iter()
+        .reduce(|top, w| if w.percent > top.percent { w } else { top })
+        .map(|w| (w.percent, w.resets_at.as_deref()))
+}
+
+/// The first of the `ranked` Accounts that has not reached a limit, or whose
+/// limit has reset by `now`.
+#[must_use]
+pub fn first_with_room<'a>(
+    ranked: &'a [String],
+    limited_until: &HashMap<String, SystemTime>,
+    now: SystemTime,
+) -> Option<&'a String> {
+    ranked.iter().find(|id| {
+        limited_until
+            .get(id.as_str())
+            .is_none_or(|until| *until <= now)
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,12 +135,7 @@ pub fn decide(ctx: &LimitContext<'_>) -> LimitDecision {
             reason: IgnoreReason::AutoSwitchOff,
         };
     }
-    let has_room = |id: &&String| {
-        ctx.limited_until
-            .get(id.as_str())
-            .is_none_or(|until| *until <= ctx.now)
-    };
-    if let Some(to) = ctx.candidates.iter().find(has_room) {
+    if let Some(to) = first_with_room(ctx.candidates, ctx.limited_until, ctx.now) {
         return LimitDecision::Switch { to: to.clone() };
     }
     match ctx.resets_at {

@@ -64,6 +64,7 @@ fn host_entry_to_desktop_maps_renderer_shape() {
         continued_from: None,
         kind: crate::acp::session_persistence::SessionKind::Project,
         quick_chat_id: None,
+        started_by: None,
     };
     let desktop = host_entry_to_desktop(entry);
     assert_eq!(desktop.id, "s-1");
@@ -105,6 +106,7 @@ fn host_entry_to_desktop_maps_renderer_shape() {
         continued_from: None,
         kind: crate::acp::session_persistence::SessionKind::Project,
         quick_chat_id: None,
+        started_by: None,
     };
     let desktop = host_entry_to_desktop(bare);
     assert_eq!(desktop.agent_id, "");
@@ -150,6 +152,7 @@ fn host_entry_to_desktop_model_keys_match_ws_entry_serialization() {
         continued_from: None,
         kind: crate::acp::session_persistence::SessionKind::Project,
         quick_chat_id: None,
+        started_by: None,
     };
     let ws = serde_json::to_value(&entry).unwrap();
     let desktop = serde_json::to_value(host_entry_to_desktop(entry.clone())).unwrap();

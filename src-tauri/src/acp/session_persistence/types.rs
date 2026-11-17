@@ -180,6 +180,10 @@ pub struct SessionMetadata {
     /// `kind` is quick. The host derives the cwd from this id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quick_chat_id: Option<String>,
+    /// The chat whose agent started this one with the `start_chat` host
+    /// tool. Absent on chats a person started and on old records.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_by: Option<String>,
 }
 
 impl SessionMetadata {
@@ -262,6 +266,9 @@ pub struct SessionIndexEntry {
     /// Host-minted folder id. See [`SessionMetadata::quick_chat_id`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quick_chat_id: Option<String>,
+    /// See [`SessionMetadata::started_by`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_by: Option<String>,
 }
 
 impl From<&SessionMetadata> for SessionIndexEntry {
@@ -291,6 +298,7 @@ impl From<&SessionMetadata> for SessionIndexEntry {
             continued_from: metadata.continued_from.clone(),
             kind: metadata.kind,
             quick_chat_id: metadata.quick_chat_id.clone(),
+            started_by: metadata.started_by.clone(),
         }
     }
 }
@@ -338,6 +346,8 @@ pub struct SessionRegistration {
     /// The client `commandId` of the creating request (stamped on the record;
     /// see `SessionMetadata::command_id`). Never set for discovered sessions.
     pub command_id: Option<String>,
+    /// See [`SessionMetadata::started_by`].
+    pub started_by: Option<String>,
 }
 
 /// A session's current model id plus a display-name snapshot (CAP-3).

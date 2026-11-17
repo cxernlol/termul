@@ -502,6 +502,16 @@ impl ClaudeAccountStore {
     /// store falls back to the built-in Account so Claude chats keep working.
     #[must_use]
     pub fn resolve(&self, project_id: Option<&str>, chat_id: Option<&str>) -> AccountResolution {
+        self.resolve_with(|file| file.account_for(project_id, chat_id).to_string())
+    }
+
+    /// The Account `id`, for a spawn whose chat does not exist yet.
+    #[must_use]
+    pub fn resolve_id(&self, id: &str) -> AccountResolution {
+        self.resolve_with(|_| id.to_string())
+    }
+
+    fn resolve_with(&self, pick: impl FnOnce(&StoreFile) -> String) -> AccountResolution {
         let _guard = self.lock.lock();
         let file = match self.load() {
             Ok(file) => file,
@@ -510,7 +520,7 @@ impl ClaudeAccountStore {
                 return builtin_resolution(BUILTIN_ACCOUNT_NAME);
             }
         };
-        let id = file.account_for(project_id, chat_id).to_string();
+        let id = pick(&file);
         let name = file
             .entries
             .iter()

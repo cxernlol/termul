@@ -79,6 +79,13 @@ impl SessionPersistence {
     ) -> Result<Option<SessionControls>> {
         self.read_through::<CachedControls>(session_id).await
     }
+
+    /// The mode the session runs in now, from its newest controls record.
+    pub async fn current_mode_id(self: &Arc<Self>, session_id: &str) -> Option<String> {
+        let controls = self.last_controls_async(session_id).await.ok()??;
+        let mode = controls.modes?.get("currentModeId")?.as_str()?.to_string();
+        Some(mode)
+    }
 }
 
 /// Log which controls a payload restores: counts and seq only, never values.

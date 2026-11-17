@@ -192,6 +192,7 @@ pub use acp::host_mcp;
 pub use acp::claude_admin;
 pub use acp::codex_admin;
 pub use acp::claude_limit;
+pub use acp::worker_chats;
 // Codex Account store (PR1). The desktop and `troupe-server` reach it through
 // `AcpManager`; this re-export keeps the secret-free types part of the host
 // library surface the same way the Claude Account types are reachable.
@@ -1759,6 +1760,11 @@ pub fn run() {
                 &ws_relay,
                 claude_limit,
                 claude_limit_inbox,
+                tauri::async_runtime::handle().inner(),
+            );
+            acp::worker_chats::install(
+                &acp_manager,
+                &ws_relay,
                 tauri::async_runtime::handle().inner(),
             );
             // Attach the permission and question rendezvous: every `/ws` client

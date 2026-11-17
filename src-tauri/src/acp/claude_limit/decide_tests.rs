@@ -59,6 +59,34 @@ fn ranking_keeps_ready_accounts_with_room_least_used_first() {
     }
 }
 
+#[test]
+fn a_new_chat_takes_the_first_ranked_account_that_has_not_reached_a_limit() {
+    const NOW: u64 = 1_000;
+    let ranked: Vec<String> = ["spare", "work", "home"].map(String::from).to_vec();
+    type Case<'a> = (&'a str, Vec<(&'a str, u64)>, Option<&'a str>);
+    let cases: [Case<'_>; 4] = [
+        ("nothing limited", vec![], Some("spare")),
+        ("the roomiest one is limited", vec![("spare", NOW + 60)], Some("work")),
+        ("a limit that reset counts as room", vec![("spare", NOW)], Some("spare")),
+        (
+            "every account limited",
+            vec![("spare", NOW + 1), ("work", NOW + 1), ("home", NOW + 1)],
+            None,
+        ),
+    ];
+    for (name, limited, expected) in cases {
+        let limited: HashMap<String, SystemTime> = limited
+            .into_iter()
+            .map(|(id, until)| (id.to_string(), at(until)))
+            .collect();
+        assert_eq!(
+            first_with_room(&ranked, &limited, at(NOW)).map(String::as_str),
+            expected,
+            "{name}"
+        );
+    }
+}
+
 struct Case {
     name: &'static str,
     agent: &'static str,

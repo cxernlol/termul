@@ -412,15 +412,18 @@ The renderer reads history through `get_session_payload`, `get_session_payload_t
 
 ### Host MCP server
 
-Every `session/new` receives a host-side MCP server in its `mcp_servers` list (`AcpManager::new_session_with_context`). It gives every agent the same five tools whatever the agent's own tooling is.
+Every `session/new` receives a host-side MCP server in its `mcp_servers` list (`AcpManager::new_session_with_context`). It gives every agent the same tools whatever the agent's own tooling is. The main ones:
 
 - `plan` replaces the agent's todo tool and drives the plan panel through `acp:plan_update`.
 - `ask_user` asks the user a structured question and returns the answer.
 - `set_session_title` sets the chat title once and proposes a worktree branch slug.
 - `read_chat` reads any chat on the host by its chat ID, as plain text, a page of messages at a time. The user copies the ID with Copy Chat Reference in another chat or project. Durable history keeps no tool titles or output, so a tool call shows only its kind, changed paths and status.
+- `start_chat` starts a worker chat in the caller's project and folder and sends it a first message, with no client connected (`src-tauri/src/acp/worker_chats/`). The host starts a new agent from the caller's launch recipe. When the caller is a managed Claude chat on an Account and automatic account switching is on, the worker gets the signed-in Account with the most room, picked with the limit supervisor's ranking and written as the worker's own Account. Otherwise it follows its Project. The worker records the caller as `startedBy`. A worker cannot start chats itself, and one caller may have six workers running.
+- `send_to_chat` sends a follow-up to one of the caller's workers. It refuses while the worker is still answering, and when no live agent holds the worker.
+- `list_started_chats` lists the caller's workers with their status (working, idle or stopped).
 - `browser` drives the in-app browser pane. It works on the Windows desktop only, and other hosts report `capability_unavailable`. A consent prompt gates the first call of a session.
 
-Claude Code defers MCP tools behind tool search and shows the model only their names. So `plan` and `set_session_title` carry `_meta` `anthropic/alwaysLoad: true`, and the server `instructions` open with a paragraph that names `plan`, `set_session_title`, `ask_user` and `read_chat`. By default Claude Code keeps only the first 4096 UTF-16 code units of a server's instructions (`CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH` can change that), so all Troupe-owned text must fit before figcraft's guide (`CLAUDE_INSTRUCTIONS_BUDGET`, checked by a test).
+Claude Code defers MCP tools behind tool search and shows the model only their names. So `plan` and `set_session_title` carry `_meta` `anthropic/alwaysLoad: true`, and the server `instructions` open with a paragraph that names `plan`, `set_session_title`, `ask_user`, `read_chat`, `start_chat` and `send_to_chat`. By default Claude Code keeps only the first 4096 UTF-16 code units of a server's instructions (`CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH` can change that), so all Troupe-owned text must fit before figcraft's guide (`CLAUDE_INSTRUCTIONS_BUDGET`, checked by a test).
 
 The server has two halves, in `src-tauri/src/acp/host_mcp/`. The parent half is a TCP listener on `127.0.0.1` with an ephemeral port, shared by all sessions and started lazily. The child half is a stdio MCP server, the host binary itself started as `current_exe() --internal-mcp-plan-server` (`CHILD_ARG`). Both `main` functions, desktop and standalone, branch on that flag before any app setup. The child forwards each tool call to the parent as one frame over a fresh connection. A per-session random token in the frame identifies the session, and the parent ignores frames with an unknown token. The design needs no Tauri `AppHandle`, so it works the same in both binaries.
 

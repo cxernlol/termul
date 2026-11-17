@@ -420,6 +420,11 @@ fn main() -> ExitCode {
             claude_limit_inbox,
             &tokio::runtime::Handle::current(),
         );
+        termul_manager_lib::worker_chats::install(
+            &acp,
+            &ws_relay,
+            &tokio::runtime::Handle::current(),
+        );
         // Attach the permission and question rendezvous. The relay snapshots
         // `acp:permission_request` and `acp:question_request` events into them
         // (at-most-one per session, first-response-wins, TOCTOU). A ticket has

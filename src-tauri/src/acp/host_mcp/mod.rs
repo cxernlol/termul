@@ -32,6 +32,7 @@ pub mod mcp_install;
 pub mod parent;
 pub mod presence;
 pub mod read_chat;
+pub mod worker_chats;
 
 #[cfg(test)]
 mod automation_tools_tests;
@@ -89,7 +90,9 @@ list of your own. In the first turn, once the user's intent is clear, call `set_
 once with a short title and a kebab-case `branch` slug. When you need a decision or missing \
 details from the user, ask with the `ask_user` tool or your client's own question tool, not in \
 plain text. When the user gives you a Troupe chat ID or a copied chat reference, read that chat \
-with the `read_chat` tool. To install an MCP server from a link, a registry name, or \
+with the `read_chat` tool. To run a task in a parallel chat (a managed Claude chat goes on \
+the account with the most room), call `start_chat`, then use `read_chat` and `send_to_chat`. \
+To install an MCP server from a link, a registry name, or \
 JSON, read it with your own tools and call `mcp_install`. The user approves on a card in the chat.";
 
 /// The context budget Claude Code gives a server's `instructions`: it keeps
@@ -201,6 +204,12 @@ pub enum FrameKind {
     ReadChat,
     /// `mcp_install`: show the approval card, then plan and commit on approve.
     McpInstall,
+    /// `start_chat`: start a worker chat in the caller's project.
+    StartChat,
+    /// `send_to_chat`: a follow-up to one of the caller's worker chats.
+    SendToChat,
+    /// `list_started_chats`: the caller's worker chats and their status.
+    ListStartedChats,
 }
 
 /// One option the agent offers in an `ask_user` question.
@@ -408,6 +417,12 @@ pub struct FrameRequest {
     /// The catalog or import source of an `McpInstall` frame.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp_install: Option<crate::mcp_catalog::FormRequest>,
+    /// The task of a `StartChat` frame.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_chat: Option<worker_chats::StartChatInput>,
+    /// The chat and message of a `SendToChat` frame.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub send_to_chat: Option<worker_chats::SendToChatInput>,
 }
 
 /// Parent reply frame (one per connection). `result` carries the browser

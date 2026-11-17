@@ -506,6 +506,7 @@ impl SessionPersistence {
             continued_from: None,
             kind,
             quick_chat_id,
+            started_by: registration.started_by,
         };
         self.persist_metadata(&metadata)?;
         if let Err(error) = self.install_runtime(metadata.clone()) {
@@ -618,6 +619,7 @@ impl SessionPersistence {
             continued_from: None,
             kind: SessionKind::Project,
             quick_chat_id: None,
+            started_by: None,
         };
         if let Err(error) = self.persist_metadata(&metadata) {
             let _ = fs::remove_dir_all(self.session_dir(&metadata.storage_key)?);
@@ -695,6 +697,7 @@ impl SessionPersistence {
             continued_from: None,
             kind: SessionKind::Project,
             quick_chat_id: None,
+            started_by: None,
         };
         self.persist_metadata(&metadata)?;
         if let Err(error) = self.install_runtime(metadata.clone()) {

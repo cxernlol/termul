@@ -9,7 +9,7 @@ use super::supervisor::{scrub, Supervisor};
 use super::{AccountRef, ClaudeLimitAction};
 use crate::acp::config::{AgentId, SessionId};
 use crate::acp::manager::HostMove;
-use crate::acp::SpawnScope;
+use crate::acp::{LaunchChat, SpawnScope};
 use crate::logging::redact_session_id;
 use crate::web::prompt_turn::{
     accept_prompt_turn, complete_prompt_turn, PromptAdmission, PromptTurnRequest,
@@ -88,7 +88,7 @@ impl Supervisor {
                 None,
                 SpawnScope {
                     project_id: recipe.launch.project_id.clone(),
-                    chat_id: Some(session_id.clone()),
+                    chat: LaunchChat::Existing(session_id.clone()),
                 },
             )
             .await?;

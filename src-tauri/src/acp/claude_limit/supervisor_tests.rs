@@ -53,6 +53,7 @@ fn start() -> Host {
             Schedule::load(Some(path.clone())),
             Duration::ZERO,
             inbox.clock,
+            inbox.limited,
         )
         .run(inbox.rx),
     );
@@ -246,6 +247,7 @@ async fn a_due_resume_leaves_alone_a_turn_that_started_after_it_was_taken() {
         Schedule::load(Some(dir.path().join(SCHEDULE_FILE))),
         Duration::ZERO,
         inbox.clock,
+        inbox.limited,
     );
     let chat = SessionId("b".to_string());
     supervisor

@@ -138,6 +138,8 @@ fn title_frame_round_trips_with_kind_and_title() {
         automation_input: None,
         read_chat: None,
         mcp_install: None,
+        start_chat: None,
+        send_to_chat: None,
     };
     let value = serde_json::to_value(&frame).unwrap();
     assert_eq!(value["kind"], "set_title");
@@ -467,6 +469,8 @@ fn title_frame_carries_the_optional_branch_slug() {
         automation_input: None,
         read_chat: None,
         mcp_install: None,
+        start_chat: None,
+        send_to_chat: None,
     };
     let value = serde_json::to_value(&frame).unwrap();
     assert_eq!(value["branch"], "fix-login");
