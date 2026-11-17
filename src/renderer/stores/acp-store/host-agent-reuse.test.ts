@@ -31,6 +31,10 @@ vi.mock('@/lib/tauri-runtime', () => ({
 vi.mock('@/lib/log-api', () => ({
   logFrontendError: vi.fn()
 }))
+const { listClaudeAccounts } = vi.hoisted(() => ({ listClaudeAccounts: vi.fn() }))
+vi.mock('@/lib/claude-accounts-api', () => ({
+  claudeAccountsApi: { list: listClaudeAccounts }
+}))
 vi.mock('@/lib/acp-agents-persistence', async (orig) => {
   const actual = await orig<typeof import('@/lib/acp-agents-persistence')>()
   return {
@@ -185,6 +189,7 @@ function seededPayload(id: string): Record<string, unknown> {
 describe('acp-store: host agent reuse on web (#837)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    listClaudeAccounts.mockRejectedValue(new Error('accounts unreadable'))
     vi.mocked(isTauriContext).mockReturnValue(false)
     _resetAcpTransportForTests(null)
     _resetInFlightHistoryOpensForTesting()
@@ -577,6 +582,7 @@ describe('acp-store: host agent reuse on web (#837)', () => {
 describe('acp-store: reopening a chat its agent works in outside a turn', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    listClaudeAccounts.mockRejectedValue(new Error('accounts unreadable'))
     vi.mocked(isTauriContext).mockReturnValue(false)
     _resetAcpTransportForTests(null)
     _resetInFlightHistoryOpensForTesting()
@@ -786,5 +792,69 @@ describe('acp-store: reopening a chat its agent works in outside a turn', () => 
     expect(sessionBackgroundCommands(useAcpStore.getState().sessions['s-bg-late'])).toEqual([
       running
     ])
+  })
+
+  describe('on desktop, a chat the host started', () => {
+    const owner = {
+      id: HOST_AGENT,
+      name: 'Claude',
+      configId: 'acp-registry:claude-acp',
+      capabilities: { loadSession: true },
+      ownsSession: ['s-worker']
+    }
+
+    function openOnDesktop(
+      chatAccounts: Record<string, string>
+    ): ReturnType<typeof fakeWebTransport> {
+      vi.mocked(isTauriContext).mockReturnValue(true)
+      listClaudeAccounts.mockResolvedValue({
+        accounts: [{ id: 'acct-2' }],
+        chatAccounts,
+        projectAccounts: {}
+      })
+      const transport = fakeWebTransport([owner], { 's-worker': finishedPayload('s-worker') })
+      _setAcpTransportForTests(transport)
+      return transport
+    }
+
+    it('adopts the host agent keyed to the chat when the chat has its own account', async () => {
+      const transport = openOnDesktop({ 's-worker': 'acct-2' })
+
+      await useAcpStore.getState().openHistorySession('s-worker')
+
+      const state = useAcpStore.getState()
+      expect(transport.spawnAgent).not.toHaveBeenCalled()
+      expect(state.sessions['s-worker']?.agentId).toBe(HOST_AGENT)
+      expect(state.configToLiveAgent).toEqual({
+        [`acp-registry:claude-acp${NUL}/w${NUL}project${NUL}p1${NUL}chat${NUL}s-worker`]: HOST_AGENT
+      })
+    })
+
+    it('adopts the host agent under the project key when the chat follows its project', async () => {
+      const transport = openOnDesktop({})
+
+      await useAcpStore.getState().openHistorySession('s-worker')
+
+      const state = useAcpStore.getState()
+      expect(transport.spawnAgent).not.toHaveBeenCalled()
+      expect(state.sessions['s-worker']?.agentId).toBe(HOST_AGENT)
+      expect(state.configToLiveAgent).toEqual({
+        [`acp-registry:claude-acp${NUL}/w${NUL}project${NUL}p1`]: HOST_AGENT
+      })
+    })
+
+    it('does not ask the host when the store holds the chat agent', async () => {
+      const transport = openOnDesktop({})
+      const listing = vi.fn(transport.listAgentDetails)
+      ;(transport as unknown as { listAgentDetails: typeof listing }).listAgentDetails = listing
+      useAcpStore.setState((s) => ({
+        agents: { ...s.agents, [HOST_AGENT]: { id: HOST_AGENT, capabilities: null } },
+        agentStatus: { ...s.agentStatus, [HOST_AGENT]: 'connected' }
+      }))
+
+      await useAcpStore.getState().openHistorySession('s-worker')
+
+      expect(listing).not.toHaveBeenCalled()
+    })
   })
 })

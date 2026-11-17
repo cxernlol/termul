@@ -60,9 +60,9 @@ export function CommandPaletteChats({
             </span>
             <span className="flex min-w-0 flex-col">
               <span className="truncate text-xs font-medium leading-5">{entry.title}</span>
-              {(agentName || branch) && (
+              {(agentName || branch || entry.startedByLabel) && (
                 <span className="truncate text-2xs leading-4 text-muted-foreground">
-                  {[agentName, branch].filter(Boolean).join(' · ')}
+                  {[agentName, branch, entry.startedByLabel].filter(Boolean).join(' · ')}
                 </span>
               )}
             </span>

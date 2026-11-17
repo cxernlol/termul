@@ -10,11 +10,6 @@ import { useAcpStore } from '@/stores/acp-store'
  * Load the persisted chat-history index once at app mount. Payloads load lazily
  * when a chat is opened. The v2 wipe migration runs first (idempotent) so the
  * pre-`projectId` records are cleared before the index is read (ADR 0002).
- *
- * Web/remote: also watches the host's `chat_history` index. The watch sends
- * the full index on every (re)subscribe (first connect, reconnect, a missed
- * delta) and a `{ changed }` delta on each change, which the sidebar answers by
- * refetching. Desktop has no WS connection — the subscription is a no-op there.
  */
 export function useAcpHistory(): void {
   const loadSessionIndex = useAcpStore((s) => s.loadSessionIndex)
@@ -40,13 +35,23 @@ export function useAcpHistory(): void {
       })
     })()
 
-    // Web/remote: the `chat_history` watch rebuilds the index from the host's
-    // full state and refetches on a delta. Desktop never receives it.
-    if (isTauriContext()) return
+    const refetch = (source: string): void => {
+      void loadSessionIndex().catch((err) => {
+        void logFrontendError({
+          level: 'warn',
+          source,
+          message: `ACP history index refresh failed: ${String(err)}`
+        })
+      })
+    }
+    const refetchOnly = isTauriContext()
     const unsubscribe = getAcpTransport().watches?.subscribe<PersistedSessionSummary[], unknown>(
       'chat_history',
       {
         onState: (summaries) => {
+          // Desktop reads its index from its own store, so a full state (first
+          // subscribe, a reconnect, a missed delta) is a cue to read it again.
+          if (refetchOnly) return refetch('useAcpHistory.chatHistoryState')
           if (!Array.isArray(summaries)) return
           void applySessionIndexSnapshot(summaries.map(fromPersistedSessionSummary)).catch(
             (err) => {
@@ -58,15 +63,7 @@ export function useAcpHistory(): void {
             }
           )
         },
-        onDelta: () => {
-          void loadSessionIndex().catch((err) => {
-            void logFrontendError({
-              level: 'warn',
-              source: 'useAcpHistory.chatHistoryChanged',
-              message: `ACP history index refresh failed: ${String(err)}`
-            })
-          })
-        }
+        onDelta: () => refetch('useAcpHistory.chatHistoryChanged')
       }
     )
     return () => {

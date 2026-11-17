@@ -31,6 +31,7 @@ export interface ChatHistorySidebarEntry {
    * resurface as standalone rows. Absent on standalone chats.
    */
   chainIds?: string[]
+  startedByLabel?: string
   cwd?: string
   lastActivityAt: number
   /** When the chat was first indexed; never re-stamped. Absent or 0 when unknown. */

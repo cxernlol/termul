@@ -16,6 +16,7 @@ import { activeWorktreeOf } from '@/lib/active-worktree'
 import { leaveQuickChatView, openNoProjectChat } from '@/lib/no-project-chat'
 import { foldEntries, sessionChainIndex, UNTITLED_PATTERN } from '@/lib/session-chain'
 import { chatsMatchAnnouncement } from '@/lib/shell-announcements'
+import { startedByLabeler } from '@/lib/started-by'
 import { useAcpStore } from '@/stores/acp-store'
 import { useActiveProject } from '@/stores/project-store'
 import { useQuickChatStore } from '@/stores/quick-chat-store'
@@ -164,6 +165,7 @@ export function useChatHistoryEntries({
   const foldedScopedIndex = useMemo(() => foldEntries(scopedChain), [scopedChain])
 
   const mergedEntries = useMemo(() => {
+    const startedByLabelOf = startedByLabeler(sessionIndex)
     const entries: ChatHistorySidebarEntry[] = foldedScopedIndex.map((e) => ({
       id: e.id,
       title: e.title,
@@ -174,6 +176,7 @@ export function useChatHistoryEntries({
       agentConfigId: e.agentConfigId,
       agents: e.agents,
       chainIds: e.chainIds,
+      startedByLabel: startedByLabelOf(e),
       lastActivityAt: e.lastActivityAt,
       createdAt: e.createdAt,
       canOpen: true
@@ -209,7 +212,7 @@ export function useChatHistoryEntries({
     })
     const extras = extraEntries.filter((e) => !listed.has(e.id))
     return extras.length > 0 ? [...extras, ...merged] : merged
-  }, [foldedScopedIndex, extraEntries])
+  }, [foldedScopedIndex, extraEntries, sessionIndex])
 
   // Lazy rendering: keep all results in memory but only render a growing window
   // (a project can accumulate hundreds of sessions; rendering all rows is the cost).

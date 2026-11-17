@@ -602,7 +602,8 @@ describe('provider routing', () => {
     const hostFields = {
       modelId: 'claude-opus',
       modelName: 'Claude Opus',
-      continuedFrom: 'src-session'
+      continuedFrom: 'src-session',
+      startedBy: 'parent-session'
     }
     const wireSummary = {
       storageKey: 'opaque',
@@ -635,16 +636,19 @@ describe('provider routing', () => {
     expect(desktop.modelId).toBe('claude-opus')
     expect(desktop.modelName).toBe('Claude Opus')
     expect(desktop.continuedFrom).toBe('src-session')
+    expect(desktop.startedBy).toBe('parent-session')
     expect({
       id: web.id,
       modelId: web.modelId,
       modelName: web.modelName,
-      continuedFrom: web.continuedFrom
+      continuedFrom: web.continuedFrom,
+      startedBy: web.startedBy
     }).toEqual({
       id: desktop.id,
       modelId: desktop.modelId,
       modelName: desktop.modelName,
-      continuedFrom: desktop.continuedFrom
+      continuedFrom: desktop.continuedFrom,
+      startedBy: desktop.startedBy
     })
 
     // Round-trip back to the wire shape keeps the fields.
@@ -674,6 +678,7 @@ describe('provider routing', () => {
     for (const read of [desktop, web]) {
       expect(read.modelId).toBeUndefined()
       expect(read.modelName).toBeUndefined()
+      expect(read.startedBy).toBeUndefined()
     }
     expect(toPersistedSessionSummaries([web])[0].modelId).toBeUndefined()
   })

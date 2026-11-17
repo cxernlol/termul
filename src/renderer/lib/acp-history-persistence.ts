@@ -119,6 +119,7 @@ export interface SessionIndexEntry {
    * before the host stamped the field still fold.
    */
   continuedFrom?: string
+  startedBy?: string
   /**
    * `quick` for a chat with no project. Absent on project chats and on
    * sessions saved before quick chats existed. The unassigned project id is
@@ -394,7 +395,8 @@ export function toPersistedSessionSummaries(
     worktreeBranch: entry.worktreeBranch,
     modelId: entry.modelId,
     modelName: entry.modelName,
-    continuedFrom: entry.continuedFrom
+    continuedFrom: entry.continuedFrom,
+    startedBy: entry.startedBy
   }))
 }
 
@@ -602,6 +604,7 @@ export function fromPersistedSessionSummary(entry: PersistedSessionSummary): Ses
     modelId: entry.modelId,
     modelName: entry.modelName,
     continuedFrom: entry.continuedFrom,
+    startedBy: entry.startedBy,
     kind: entry.kind === 'quick' ? 'quick' : undefined
   }
 }

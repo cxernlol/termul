@@ -1120,6 +1120,7 @@ export function mergeSessionIndexEntries(
             // one it wins, so a stale local edge cannot hide a host
             // correction. `undefined` still falls through to the local stamp.
             continuedFrom: hostEntry.continuedFrom ?? entry.continuedFrom,
+            startedBy: hostEntry.startedBy ?? entry.startedBy,
             // A newer local row that forgot `kind` must not hide a quick chat.
             kind: entry.kind ?? hostEntry.kind,
             turnActive: mergeTurnActive(entry.turnActive, hostEntry.turnActive, true),

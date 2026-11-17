@@ -3,18 +3,21 @@ import { renderHook, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAcpHistory } from '../use-acp-history'
 
-const { mockSubscribe, loadSessionIndex, applySessionIndexSnapshot, state } = vi.hoisted(() => {
-  const loadSessionIndex = vi.fn()
-  const applySessionIndexSnapshot = vi.fn()
-  return {
-    mockSubscribe: vi.fn(),
-    loadSessionIndex,
-    applySessionIndexSnapshot,
-    state: { loadSessionIndex, applySessionIndexSnapshot }
+const { mockSubscribe, loadSessionIndex, applySessionIndexSnapshot, state, runtime } = vi.hoisted(
+  () => {
+    const loadSessionIndex = vi.fn()
+    const applySessionIndexSnapshot = vi.fn()
+    return {
+      mockSubscribe: vi.fn(),
+      loadSessionIndex,
+      applySessionIndexSnapshot,
+      state: { loadSessionIndex, applySessionIndexSnapshot },
+      runtime: { tauri: false }
+    }
   }
-})
+)
 
-vi.mock('@/lib/tauri-runtime', () => ({ isTauriContext: () => false }))
+vi.mock('@/lib/tauri-runtime', () => ({ isTauriContext: () => runtime.tauri }))
 vi.mock('@/lib/log-api', () => ({ logFrontendError: vi.fn(() => Promise.resolve()) }))
 vi.mock('@/lib/acp-transport', () => ({
   getAcpTransport: () => ({ watches: { subscribe: mockSubscribe } })
@@ -46,9 +49,10 @@ const summary = {
   status: 'closed'
 } as unknown as PersistedSessionSummary
 
-describe('useAcpHistory (web chat-history watch)', () => {
+describe('useAcpHistory chat-history watch', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    runtime.tauri = false
     loadSessionIndex.mockResolvedValue(undefined)
     applySessionIndexSnapshot.mockResolvedValue(undefined)
     mockSubscribe.mockReturnValue(vi.fn())
@@ -87,5 +91,19 @@ describe('useAcpHistory (web chat-history watch)', () => {
 
     unmount()
     expect(unsubscribe).toHaveBeenCalledTimes(1)
+  })
+
+  it('on desktop refetches on a full state and on a delta, and never installs the host state', async () => {
+    runtime.tauri = true
+    renderHook(() => useAcpHistory())
+    await waitFor(() => expect(loadSessionIndex).toHaveBeenCalledTimes(1))
+
+    // A reconnect or a missed delta arrives as one full state, with no delta after it.
+    handlers().onState([summary])
+    expect(applySessionIndexSnapshot).not.toHaveBeenCalled()
+    expect(loadSessionIndex).toHaveBeenCalledTimes(2)
+
+    handlers().onDelta()
+    expect(loadSessionIndex).toHaveBeenCalledTimes(3)
   })
 })

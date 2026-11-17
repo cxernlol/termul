@@ -7,6 +7,7 @@
 import type { ProjectChatEntry } from '@/components/sidebar/project-chat-row'
 import type { SessionIndexEntry } from '@/lib/acp-history-persistence'
 import { foldEntries, membersOf, sessionChainIndex } from '@/lib/session-chain'
+import { startedByLabeler } from '@/lib/started-by'
 import { pickedWorkingCopy, workingCopyOf } from '@/lib/working-copy'
 import type { Project } from '@/types/project'
 
@@ -96,6 +97,7 @@ export function buildChatCards({
   // the pick too — otherwise the out-of-scope member resurfaces standalone.
   const { projectChats, scoped } = projectChatScope({ sessionIndex, project, pick })
   const deleteIndex = sessionChainIndex(projectChats)
+  const startedByLabelOf = startedByLabeler(sessionIndex)
 
   return foldEntries(sessionChainIndex(scoped))
     .sort((a, b) => b.lastActivityAt - a.lastActivityAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
@@ -112,6 +114,7 @@ export function buildChatCards({
           agentConfigId: e.agentConfigId,
           agents: e.agents,
           chainIds: members.length > 1 ? members : undefined,
+          startedByLabel: startedByLabelOf(e),
           lastActivityAt: e.lastActivityAt,
           cwd: e.cwd,
           canOpen: true

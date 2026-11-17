@@ -245,6 +245,7 @@ export function foldEntries(ix: SessionChainIndex): FoldedSessionEntry[] {
         lastActivityAt: Math.max(...chain.map((member) => member.lastActivityAt)),
         lastSeq: Math.max(...chain.map((member) => member.lastSeq ?? 0)),
         agents: mergedAgentSequence(chain) ?? entry.agents,
+        startedBy: chain.find((member) => member.startedBy)?.startedBy,
         chainIds: membersOf(ix, entry.id)
       }
     })

@@ -225,6 +225,38 @@ describe('MobileRecentsList merged list', () => {
     expect(screen.queryByText('Index title')).not.toBeInTheDocument()
   })
 
+  it('names the chat that started a worker chat under its title, and nothing for an unknown parent', () => {
+    seedHistory([
+      { id: 'parent', title: 'Plan the refactor' },
+      { id: 'orphan', title: 'Orphan worker' }
+    ])
+    useAcpStore.setState((s) => ({
+      sessionIndex: [
+        ...s.sessionIndex.map((e) => (e.id === 'orphan' ? { ...e, startedBy: 'gone' } : e)),
+        mockSessionIndexEntry({
+          id: 'worker',
+          title: 'Split the parser',
+          projectId: 'p1',
+          cwd: '/work',
+          status: 'active',
+          startedBy: 'parent'
+        })
+      ]
+    }))
+    renderList()
+
+    const row = screen.getByRole('button', {
+      name: 'Split the parser, Started by Plan the refactor'
+    })
+    expect(within(row).getByText('Started by Plan the refactor')).toHaveClass(
+      'text-xs',
+      'text-muted-foreground'
+    )
+    expect(screen.getByRole('button', { name: 'Orphan worker' })).not.toHaveTextContent(
+      'Started by'
+    )
+  })
+
   it('shows the host status of an open chat this phone has not loaded yet', () => {
     seedHistory([{ id: 's1', title: 'Desktop chat' }])
     seedTabs([{ type: 'agent-chat', id: 'tab-1', sessionId: 's1' }], null)

@@ -53,6 +53,43 @@ describe('mergeSessionIndexEntries continuedFrom carry', () => {
   })
 })
 
+describe('mergeSessionIndexEntries startedBy carry', () => {
+  it('keeps the host parent when a newer local projection has none', () => {
+    const local = [indexEntry({ startedBy: undefined, lastActivityAt: NOW + 20 })]
+    const host = [indexEntry({ startedBy: 'parent', lastActivityAt: NOW + 10 })]
+    const [merged] = mergeSessionIndexEntries(local, host, new Set())
+    expect(merged.startedBy).toBe('parent')
+    expect(merged.lastActivityAt).toBe(NOW + 20)
+  })
+
+  it('carries the parent through an ordinary persist', () => {
+    const session = {
+      id: 's1',
+      agentId: 'a1',
+      title: 'Fix the login bug',
+      cwd: '/repo',
+      projectId: 'p1',
+      createdAt: NOW,
+      status: 'idle'
+    } as unknown as AcpSession
+    let written: SessionIndexEntry[] = []
+    persistSession(
+      {
+        sessions: { s1: session },
+        messages: { s1: [] },
+        toolCalls: {},
+        sessionIndex: [indexEntry({ startedBy: 'parent' })],
+        configToLiveAgent: {}
+      },
+      's1',
+      (entries) => {
+        written = entries
+      }
+    )
+    expect(written[0].startedBy).toBe('parent')
+  })
+})
+
 describe('persistSession continuedFrom carry', () => {
   it('carries the stamped edge through an ordinary persist', () => {
     const session = {

@@ -288,6 +288,7 @@ export function persistSession(
     // stamps it once; every other persist carries it forward so a normal
     // projection never drops the fold's lookup.
     continuedFrom: existingEntry?.continuedFrom,
+    startedBy: existingEntry?.startedBy,
     // A local projection must keep `kind: quick`. Dropping it hides the chat
     // from the Quick chats list until the next host refetch.
     kind: session.kind ?? existingEntry?.kind

@@ -44,6 +44,28 @@ describe('hasChatCards', () => {
 })
 
 describe('buildChatCards', () => {
+  it('names the parent of a worker chat, through an agent switch and across worktree picks', () => {
+    const cards = buildChatCards({
+      sessionIndex: [
+        entry('parent', { title: 'Plan the refactor' }),
+        ...[
+          entry('worker', { startedBy: 'parent', lastActivityAt: 3 }),
+          entry('switched', { continuedFrom: 'worker', lastActivityAt: 4 }),
+          entry('orphan', { startedBy: 'gone', lastActivityAt: 2 }),
+          entry('plain', { lastActivityAt: 1 })
+        ].map((e) => ({ ...e, cwd: '/repo/.termul/worktrees/feature' }))
+      ],
+      project: project(),
+      pick: '/repo/.termul/worktrees/feature',
+      agentNames
+    })
+    expect(cards.map((card) => [card.entry.id, card.entry.startedByLabel])).toEqual([
+      ['switched', 'Started by Plan the refactor'],
+      ['orphan', undefined],
+      ['plain', undefined]
+    ])
+  })
+
   it('lists Workspace chats of the project newest first, id as tie-break, excluding discovered', () => {
     const cards = buildChatCards({
       sessionIndex: [

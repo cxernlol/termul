@@ -1020,6 +1020,11 @@ export interface PersistedSessionSummary {
    * client can fold the chain into one history row without walking logs.
    */
   continuedFrom?: string
+  /**
+   * Session id of the chat whose agent started this one with the host's
+   * `start_chat` tool. Absent on chats a person started and on older hosts.
+   */
+  startedBy?: string
   /** `quick` for a chat with no project. Absent on older hosts and on project chats. */
   kind?: 'quick'
 }

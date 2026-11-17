@@ -119,8 +119,10 @@ function RailProjectChatRow({
             event.preventDefault()
             openContextMenuFrom(event.currentTarget)
           }}
-          title={collapsed ? undefined : entry.title}
-          aria-label={statusWord ? `${entry.title}, ${statusWord}` : entry.title}
+          title={
+            collapsed ? undefined : [entry.title, entry.startedByLabel].filter(Boolean).join('\n')
+          }
+          aria-label={[entry.title, entry.startedByLabel, statusWord].filter(Boolean).join(', ')}
           {...props}
         >
           <RailChatIcon>
