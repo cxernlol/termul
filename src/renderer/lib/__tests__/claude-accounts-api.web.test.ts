@@ -14,6 +14,7 @@ const { mockIsTauriContext, mockInvoke, transport } = vi.hoisted(() => ({
     listClaudeUsage: vi.fn(),
     setDefaultClaudeAccount: vi.fn(),
     setProjectClaudeAccount: vi.fn(),
+    setChatClaudeAccount: vi.fn(),
     setClaudeAutoSwitch: vi.fn(),
     addClaudeAccount: vi.fn(),
     renameClaudeAccount: vi.fn(),
@@ -42,6 +43,7 @@ const SNAPSHOT = {
   accounts: [{ id: 'default', name: 'Default', builtin: true, signedIn: true }],
   defaultAccountId: 'default',
   projectAccounts: {},
+  chatAccounts: {},
   autoSwitch: true
 }
 
@@ -51,6 +53,7 @@ beforeEach(() => {
   transport.listClaudeUsage.mockResolvedValue([])
   transport.setDefaultClaudeAccount.mockResolvedValue(undefined)
   transport.setProjectClaudeAccount.mockResolvedValue(true)
+  transport.setChatClaudeAccount.mockResolvedValue(true)
   transport.setClaudeAutoSwitch.mockResolvedValue(undefined)
   transport.addClaudeAccount.mockResolvedValue({ id: 'abc', name: 'Work', createdAt: 1 })
   transport.renameClaudeAccount.mockResolvedValue(undefined)
@@ -92,6 +95,19 @@ describe.each([
       claudeAccountsApi.setProjectAccount('p1', 'ab12', { expectedAccountId: 'default' })
     ).resolves.toBe(false)
     expect(transport.setProjectClaudeAccount).toHaveBeenCalledWith('p1', 'ab12', 'default')
+  })
+
+  it('sets and clears a chat account through the ACP transport with its compare-and-set', async () => {
+    transport.setChatClaudeAccount.mockResolvedValueOnce(true).mockResolvedValueOnce(false)
+    await expect(claudeAccountsApi.setChatAccount('p1', 's1', 'ab12')).resolves.toBe(true)
+    await expect(
+      claudeAccountsApi.setChatAccount('p1', 's1', null, { expectedAccountId: 'ab12' })
+    ).resolves.toBe(false)
+    expect(transport.setChatClaudeAccount.mock.calls).toEqual([
+      ['p1', 's1', 'ab12', undefined],
+      ['p1', 's1', null, 'ab12']
+    ])
+    expect(mockInvoke).not.toHaveBeenCalled()
   })
 
   it('adds an account through the ACP transport with a command id', async () => {

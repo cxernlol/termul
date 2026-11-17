@@ -424,6 +424,15 @@ pub struct SpawnOutcome {
     pub stable_namespace: Option<String>,
 }
 
+/// What a spawn opens: the Project selects the Claude and Codex Account, and
+/// the chat, when the agent is started to open one existing chat, selects
+/// that chat's own Claude Account.
+#[derive(Debug, Clone, Default)]
+pub struct SpawnScope {
+    pub project_id: Option<String>,
+    pub chat_id: Option<SessionId>,
+}
+
 /// Identity-rich summary of a live agent (CAP-11). Returned by the WS
 /// `list_agents` handler so
 /// clients can render/agent-route without a second lookup. `configId` and
@@ -767,24 +776,30 @@ impl AcpManager {
     /// synchronously from the response (CAP-4: the spawn response — not the
     /// async event — is the source of truth).
     pub async fn spawn(&self, config: AgentConfig) -> Result<SpawnOutcome, String> {
-        self.spawn_with_command_id(config, None, None).await
+        self.spawn_with_command_id(config, None, SpawnScope::default())
+            .await
     }
 
     /// [`spawn`](Self::spawn) stamping the client `commandId` on the agent, so
     /// a resent `spawn_agent` finds it ([`Self::spawn_outcome_by_command_id`]).
-    /// `project_id` selects the Claude Account of a managed Claude agent and
-    /// the Codex Account of `acp-registry:codex-acp`. The renderer reuse key
-    /// already includes that project id, and `renewAgentCredentials` bumps the
-    /// credential epoch after an account switch so a warm process is not reused.
+    /// `scope` selects the Claude Account of a managed Claude agent and the
+    /// Codex Account of `acp-registry:codex-acp`. The renderer reuse key
+    /// already includes the project id, and the chat id when the agent opens
+    /// one chat, and `renewAgentCredentials` bumps the credential epoch after
+    /// a project account switch so a warm process is not reused.
     pub async fn spawn_with_command_id(
         &self,
         mut config: AgentConfig,
         command_id: Option<String>,
-        project_id: Option<String>,
+        scope: SpawnScope,
     ) -> Result<SpawnOutcome, String> {
         let launch_config = config.clone();
         let (host_auth_ready, claude) = self
-            .prepare_spawn_config(&mut config, project_id.as_deref())
+            .prepare_spawn_config(
+                &mut config,
+                scope.project_id.as_deref(),
+                scope.chat_id.as_ref().map(|chat| chat.0.as_str()),
+            )
             .await?;
         let outcome = self
             .spawn_with_sinks(config, host_auth_ready, self.sinks.clone(), command_id)
@@ -793,7 +808,7 @@ impl AcpManager {
             &outcome.agent_id,
             AgentLaunch {
                 config: launch_config,
-                project_id,
+                project_id: scope.project_id,
                 claude,
             },
         );
@@ -820,23 +835,27 @@ impl AcpManager {
         project_id: Option<&str>,
         sinks: Vec<Arc<dyn EventSink>>,
     ) -> Result<SpawnOutcome, String> {
-        let (host_auth_ready, _) = self.prepare_spawn_config(&mut config, project_id).await?;
+        let (host_auth_ready, _) = self
+            .prepare_spawn_config(&mut config, project_id, None)
+            .await?;
         self.spawn_with_sinks(config, host_auth_ready, sinks, None)
             .await
     }
 
     /// Launch-arg normalization, the persisted Factory key, and the managed
-    /// Claude or Codex account of `project_id`. Returns host-auth readiness.
+    /// Claude account of `chat_id` in `project_id` or the Codex account of
+    /// `project_id`. Returns host-auth readiness.
     async fn prepare_spawn_config(
         &self,
         config: &mut AgentConfig,
         project_id: Option<&str>,
+        chat_id: Option<&str>,
     ) -> Result<(bool, crate::acp::claude_agent::ClaudeLaunchAuth), String> {
         crate::acp::factory_key::normalize_launch_args(config);
         crate::acp::factory_key::inject(config)?;
         let claude = self
             .claude_agent
-            .prepare_managed_launch(config, project_id)
+            .prepare_managed_launch(config, project_id, chat_id)
             .await?;
         let codex_ready = self
             .codex_agent
@@ -1613,6 +1632,18 @@ impl AcpManager {
     ) -> Result<(), String> {
         // The client treats the chat as closed whatever the agent answers.
         self.forget_launch_recipe(&session_id.0, Some(agent_id));
+        self.close_session_keeping_recipe(agent_id, session_id)
+            .await
+    }
+
+    /// [`close_session`](Self::close_session) for a host move of the chat to
+    /// another agent: the move reopens the chat from its launch recipe, so
+    /// the recipe stays.
+    pub(crate) async fn close_session_keeping_recipe(
+        &self,
+        agent_id: &AgentId,
+        session_id: SessionId,
+    ) -> Result<(), String> {
         let caps = self.capabilities(agent_id)?;
         gate_close_session(&caps)?;
         let tx = self.command_tx(agent_id)?;
@@ -2107,6 +2138,7 @@ impl AcpManager {
         session_id: &str,
     ) -> Result<(), SessionPersistenceError> {
         self.forget_launch_recipe(session_id, None);
+        self.claude_agent.forget_chat_account(session_id);
         if let Ok(metadata) = persistence.metadata(session_id) {
             if metadata.kind == crate::acp::session_persistence::SessionKind::Quick {
                 // `runtime_agent_id` is the agent from create. Reopen starts a

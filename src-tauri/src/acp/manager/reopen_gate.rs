@@ -3,11 +3,11 @@
 //! A client opens a chat by listing the live agents and adopting the one that
 //! holds it, or by spawning an agent and resuming the chat there. When the
 //! host moves a chat to a new agent (`claude_limit`), no agent holds the chat
-//! between the stop of the old agent and the resume on the new one, so a
+//! between the close on the old agent and the resume on the new one, so a
 //! client that looked then would start a second holder. Every reopen holds
-//! its chat's gate. A host move holds the gates of every chat it moves until
-//! the new agent has accepted their continuation turns, and `list_agents`
-//! waits for host moves, so the client finds the new holder.
+//! its chat's gate. A host move holds the gate of the chat it moves until the
+//! new agent has accepted its continuation turn, and `list_agents` waits for
+//! host moves, so the client finds the new holder.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -76,23 +76,25 @@ impl Drop for HeldChat {
     }
 }
 
-/// The chats the host is moving to a new agent. Reopens of them by anyone
-/// else wait until it drops.
+/// The chat the host is moving to a new agent. Reopens of it by anyone else
+/// wait until it drops.
 pub struct HostMove {
-    chats: Vec<HeldChat>,
+    chat: Option<HeldChat>,
     gates: Arc<ReopenGates>,
 }
 
 impl HostMove {
     #[must_use]
     pub fn holds(&self, session_id: &SessionId) -> bool {
-        self.chats.iter().any(|chat| chat.session_id == session_id.0)
+        self.chat
+            .as_ref()
+            .is_some_and(|chat| chat.session_id == session_id.0)
     }
 }
 
 impl Drop for HostMove {
     fn drop(&mut self) {
-        self.chats.clear();
+        drop(self.chat.take());
         self.gates.host_moves.send_modify(|moves| *moves -= 1);
     }
 }
@@ -117,18 +119,11 @@ impl AcpManager {
             .host_moves
             .send_modify(|moves| *moves += 1);
         let mut moving = HostMove {
-            chats: Vec::new(),
+            chat: None,
             gates: Arc::clone(&self.reopen_gates),
         };
-        self.add_to_host_move(&mut moving, session_id).await;
+        moving.chat = Some(self.reopen_gates.hold(&session_id.0).await);
         moving
-    }
-
-    /// Move another chat with `moving`.
-    pub async fn add_to_host_move(&self, moving: &mut HostMove, session_id: &SessionId) {
-        if !moving.holds(session_id) {
-            moving.chats.push(self.reopen_gates.hold(&session_id.0).await);
-        }
     }
 
     /// Wait until no host move is running, so a listing shows where each

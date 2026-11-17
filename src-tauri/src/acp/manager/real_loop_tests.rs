@@ -166,6 +166,9 @@ for line in sys.stdin:
         elif text == "crash":
             chunk("partial")
             sys.exit(3)
+        elif text == "pid":
+            chunk("pid=%d" % os.getpid(), msg["params"]["sessionId"])
+            send({"jsonrpc": "2.0", "id": rid, "result": {"stopReason": "end_turn"}})
         elif text == "hang":
             hung = rid  # answered only by session/cancel
         elif text == "ask":

@@ -77,7 +77,7 @@ pub use install::{
     InstallRequest, InstalledAgent, InstalledManifestFile,
 };
 #[allow(unused_imports)]
-pub use manager::{AcpManager, AgentSummary, SessionCreationContext, SpawnOutcome};
+pub use manager::{AcpManager, AgentSummary, SessionCreationContext, SpawnOutcome, SpawnScope};
 pub use project_registry::{FileProjectRegistry, ProjectRegistryError, RootCheck, VfsRoot};
 pub use session::AgentActivity;
 #[allow(unused_imports)]

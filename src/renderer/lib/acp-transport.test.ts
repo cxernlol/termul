@@ -537,15 +537,19 @@ class FakeWebSocket {
     }
     // Claude Account choice: an `expectedAccountId` of `stale` loses the
     // compare-and-set, like a project another client already switched.
-    if (req.type === 'set_project_claude_account' || req.type === 'set_claude_auto_switch') {
+    if (
+      req.type === 'set_project_claude_account' ||
+      req.type === 'set_chat_claude_account' ||
+      req.type === 'set_claude_auto_switch'
+    ) {
       const payload = req.payload as { expectedAccountId?: string }
       this.emitReply({
         id: req.id,
         ok: true,
         payload:
-          req.type === 'set_project_claude_account'
-            ? { applied: payload.expectedAccountId !== 'stale' }
-            : {}
+          req.type === 'set_claude_auto_switch'
+            ? {}
+            : { applied: payload.expectedAccountId !== 'stale' }
       })
       return
     }
@@ -886,6 +890,10 @@ describe('WsAcpTransport', () => {
       await expect(transport.setProjectClaudeAccount('p1', 'ab12')).resolves.toBe(true)
       await expect(transport.setProjectClaudeAccount('p1', 'ab12', 'default')).resolves.toBe(true)
       await expect(transport.setProjectClaudeAccount('p1', null, 'stale')).resolves.toBe(false)
+      await expect(transport.setChatClaudeAccount('p1', 's1', 'ab12', 'default')).resolves.toBe(
+        true
+      )
+      await expect(transport.setChatClaudeAccount('p1', 's1', null, 'stale')).resolves.toBe(false)
       await transport.setClaudeAutoSwitch(false)
 
       const sent = socket()
@@ -901,6 +909,19 @@ describe('WsAcpTransport', () => {
         {
           type: 'set_project_claude_account',
           payload: { projectId: 'p1', accountId: null, expectedAccountId: 'stale' }
+        },
+        {
+          type: 'set_chat_claude_account',
+          payload: {
+            projectId: 'p1',
+            sessionId: 's1',
+            accountId: 'ab12',
+            expectedAccountId: 'default'
+          }
+        },
+        {
+          type: 'set_chat_claude_account',
+          payload: { projectId: 'p1', sessionId: 's1', accountId: null, expectedAccountId: 'stale' }
         },
         { type: 'set_claude_auto_switch', payload: { enabled: false } }
       ])

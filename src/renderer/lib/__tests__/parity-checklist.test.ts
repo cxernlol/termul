@@ -2317,6 +2317,7 @@ describe('Claude Accounts parity (ADR-0004)', () => {
       'list_claude_usage',
       'set_default_claude_account',
       'set_project_claude_account',
+      'set_chat_claude_account',
       'set_claude_auto_switch',
       'set_claude_resume'
     ]) {
@@ -2383,10 +2384,12 @@ describe('Claude Accounts parity (ADR-0004)', () => {
     )
   })
 
-  it('the spawn sends the projectId that selects the account on every carrier', () => {
+  it('the spawn sends the projectId and chat that select the account on every carrier', () => {
     // Desktop and the browser share the /ws spawn_agent handler. The host
     // command file no longer has a per-domain spawn command.
-    expect(wsTransport).toMatch(/'spawn_agent',\s*\{ config, projectId: projectId \?\? null \}/)
+    expect(wsTransport).toMatch(
+      /'spawn_agent',\s*\{ config, projectId: projectId \?\? null, sessionId: sessionId \?\? null \}/
+    )
     expect(read('web', 'ws', 'agents.rs')).toMatch(/project_id: Option<String>/)
     expect(read('acp', 'manager', 'mod.rs')).toMatch(/project_id: Option<String>/)
   })

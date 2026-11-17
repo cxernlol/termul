@@ -62,7 +62,7 @@ fn ranking_keeps_ready_accounts_with_room_least_used_first() {
 struct Case {
     name: &'static str,
     agent: &'static str,
-    project: &'static str,
+    chat: &'static str,
     auto_switch: bool,
     candidates: Vec<&'static str>,
     limited: Vec<(&'static str, u64)>,
@@ -77,7 +77,7 @@ fn decision_table() {
         Case {
             name: "switches to the first candidate",
             agent: "a",
-            project: "a",
+            chat: "a",
             auto_switch: true,
             candidates: vec!["b", "c"],
             limited: vec![],
@@ -89,7 +89,7 @@ fn decision_table() {
         Case {
             name: "skips a candidate still limited",
             agent: "a",
-            project: "a",
+            chat: "a",
             auto_switch: true,
             candidates: vec!["b", "c"],
             limited: vec![("b", 2_000)],
@@ -101,7 +101,7 @@ fn decision_table() {
         Case {
             name: "a candidate whose limit already reset has room",
             agent: "a",
-            project: "a",
+            chat: "a",
             auto_switch: true,
             candidates: vec!["b"],
             limited: vec![("b", NOW)],
@@ -113,7 +113,7 @@ fn decision_table() {
         Case {
             name: "no room resumes at the reset",
             agent: "a",
-            project: "a",
+            chat: "a",
             auto_switch: true,
             candidates: vec!["b"],
             limited: vec![("b", 9_000)],
@@ -123,7 +123,7 @@ fn decision_table() {
         Case {
             name: "no room and no reset time does nothing",
             agent: "a",
-            project: "a",
+            chat: "a",
             auto_switch: true,
             candidates: vec![],
             limited: vec![],
@@ -135,7 +135,7 @@ fn decision_table() {
         Case {
             name: "switching off does nothing",
             agent: "a",
-            project: "a",
+            chat: "a",
             auto_switch: false,
             candidates: vec!["b"],
             limited: vec![],
@@ -145,9 +145,9 @@ fn decision_table() {
             },
         },
         Case {
-            name: "an agent on an older account restarts, switching on",
+            name: "an agent on an account the chat left restarts, switching on",
             agent: "a",
-            project: "b",
+            chat: "b",
             auto_switch: true,
             candidates: vec!["c"],
             limited: vec![],
@@ -155,9 +155,9 @@ fn decision_table() {
             expected: LimitDecision::Restart,
         },
         Case {
-            name: "an agent on an older account restarts, switching off",
+            name: "an agent on an account the chat left restarts, switching off",
             agent: "a",
-            project: "b",
+            chat: "b",
             auto_switch: false,
             candidates: vec![],
             limited: vec![],
@@ -174,7 +174,7 @@ fn decision_table() {
             .collect();
         let decision = decide(&LimitContext {
             agent_account: case.agent,
-            project_account: case.project,
+            chat_account: case.chat,
             auto_switch: case.auto_switch,
             candidates: &candidates,
             limited_until: &limited,
@@ -191,14 +191,14 @@ fn a_due_resume_never_touches_a_chat_that_left_the_limited_account() {
     let cases: [Case<'_>; 8] = [
         ("nobody holds the chat", ChatHolder::Nobody, Some("work"), Some("work"), ResumePlan::Start),
         ("nobody holds it, lookup failed", ChatHolder::Nobody, Some("work"), None, ResumePlan::Start),
-        ("the limited account, still the project's", ChatHolder::Account("work"), Some("work"), Some("work"), ResumePlan::Continue),
-        ("the limited account, project moved on", ChatHolder::Account("work"), Some("work"), Some("spare"), ResumePlan::Replace),
+        ("the limited account, still the chat's", ChatHolder::Account("work"), Some("work"), Some("work"), ResumePlan::Continue),
+        ("the limited account, chat moved on", ChatHolder::Account("work"), Some("work"), Some("spare"), ResumePlan::Replace),
         ("the lookup failed", ChatHolder::Account("work"), Some("work"), None, ResumePlan::Continue),
         ("the chat moved to another account", ChatHolder::Account("spare"), Some("work"), Some("spare"), ResumePlan::Skip),
         ("an agent the host cannot switch", ChatHolder::Other, Some("work"), Some("work"), ResumePlan::Skip),
         ("an entry with no account", ChatHolder::Account("spare"), None, Some("work"), ResumePlan::Replace),
     ];
-    for (name, holder, limited, project, want) in cases {
-        assert_eq!(plan_resume(holder, limited, project), want, "{name}");
+    for (name, holder, limited, chat, want) in cases {
+        assert_eq!(plan_resume(holder, limited, chat), want, "{name}");
     }
 }

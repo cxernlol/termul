@@ -40,7 +40,7 @@ pub enum IgnoreReason {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LimitDecision {
-    /// Move the project to `to` and continue the chat there.
+    /// Move the chat to `to` and continue it there.
     Switch {
         to: String,
     },
@@ -48,8 +48,9 @@ pub enum LimitDecision {
     ResumeAt {
         at: SystemTime,
     },
-    /// The chat's agent runs an account the project no longer uses (another
-    /// chat already moved the project): restart it on the project's account.
+    /// The chat's agent runs an account the chat no longer uses (a client
+    /// or the project choice moved it first): restart it on the chat's
+    /// account.
     Restart,
     Ignore {
         reason: IgnoreReason,
@@ -59,7 +60,9 @@ pub enum LimitDecision {
 pub struct LimitContext<'a> {
     /// The account the chat's agent was started with.
     pub agent_account: &'a str,
-    pub project_account: &'a str,
+    /// The account the chat runs on now: its own, else its project's, else
+    /// the default.
+    pub chat_account: &'a str,
     pub auto_switch: bool,
     pub candidates: &'a [String],
     /// Accounts that reached a limit, until their reset. A cached usage read
@@ -71,7 +74,7 @@ pub struct LimitContext<'a> {
 
 #[must_use]
 pub fn decide(ctx: &LimitContext<'_>) -> LimitDecision {
-    if ctx.agent_account != ctx.project_account {
+    if ctx.agent_account != ctx.chat_account {
         return LimitDecision::Restart;
     }
     if !ctx.auto_switch {
@@ -112,7 +115,7 @@ pub enum ResumePlan {
     Start,
     /// Continue on the agent that holds the chat.
     Continue,
-    /// The holder runs an older account than the project's: replace it.
+    /// The holder runs an older account than the chat's: replace it.
     Replace,
     /// The chat left the limited account since, or the host cannot tell:
     /// leave it alone.
@@ -120,13 +123,13 @@ pub enum ResumePlan {
 }
 
 /// What a due resume does. `limited_account` is the account that reached its
-/// limit; `project_account` is `None` when the account lookup failed, and
-/// then no agent is replaced.
+/// limit; `chat_account` is `None` when the account lookup failed, and then
+/// no agent is replaced.
 #[must_use]
 pub fn plan_resume(
     holder: ChatHolder<'_>,
     limited_account: Option<&str>,
-    project_account: Option<&str>,
+    chat_account: Option<&str>,
 ) -> ResumePlan {
     match holder {
         ChatHolder::Nobody => ResumePlan::Start,
@@ -134,8 +137,8 @@ pub fn plan_resume(
         ChatHolder::Account(running) if limited_account.is_some_and(|l| l != running) => {
             ResumePlan::Skip
         }
-        ChatHolder::Account(running) => match project_account {
-            Some(project) if project != running => ResumePlan::Replace,
+        ChatHolder::Account(running) => match chat_account {
+            Some(chat) if chat != running => ResumePlan::Replace,
             _ => ResumePlan::Continue,
         },
     }

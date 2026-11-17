@@ -25,12 +25,13 @@ pub enum SignInCheck {
     Skip,
 }
 
-/// Which Account a choice names: the one picked, or the Default Account a
-/// Project follows.
+/// Which Account a choice names: the one picked, the Default Account a
+/// Project follows, or the Account of the Project a chat follows.
 #[derive(Debug, Clone, Copy)]
 enum Choice {
     Account,
     FollowDefault,
+    FollowProject,
 }
 
 /// Error text of a cancelled login; the renderer treats it as a quiet stop.
@@ -72,9 +73,13 @@ impl ClaudeAgentService {
             .ok_or_else(|| "Claude accounts are not available on this host".to_string())
     }
 
-    pub(super) fn resolve_account(&self, project_id: Option<&str>) -> AccountResolution {
+    pub(super) fn resolve_account(
+        &self,
+        project_id: Option<&str>,
+        chat_id: Option<&str>,
+    ) -> AccountResolution {
         match &self.profile_store {
-            Some(store) => store.resolve(project_id),
+            Some(store) => store.resolve(project_id, chat_id),
             None => AccountResolution {
                 account_id: BUILTIN_ACCOUNT_ID.to_string(),
                 account_name: "Default".to_string(),
@@ -168,12 +173,7 @@ impl ClaudeAgentService {
         if let Some(expected) = expected {
             // A stale expectation loses before the sign-in probe, so the losing
             // client is not asked to sign in to an Account it no longer needs.
-            let snapshot = store.snapshot()?;
-            let current = snapshot
-                .project_profiles
-                .get(project_id.trim())
-                .unwrap_or(&snapshot.default_account_id);
-            if current != expected {
+            if store.snapshot()?.account_for(Some(project_id), None) != expected {
                 log::info!(
                     "[claude-accounts] project profile unchanged: the project no longer uses the expected profile"
                 );
@@ -191,6 +191,52 @@ impl ClaudeAgentService {
             }
         }
         store.set_project_account(project_id, account_id, expected)
+    }
+
+    /// Choose the Account of one chat; `None` makes it follow its Project
+    /// again, so the check probes the Account the Project resolves to.
+    /// `expected` makes the choice a compare-and-set on the Account the chat
+    /// runs on now; returns whether the choice applied.
+    pub async fn set_chat_account(
+        &self,
+        project_id: &str,
+        chat_id: &str,
+        account_id: Option<&str>,
+        expected: Option<&str>,
+        check: SignInCheck,
+    ) -> Result<bool, String> {
+        let store = self.account_store()?;
+        if let Some(expected) = expected {
+            if store.snapshot()?.account_for(Some(project_id), Some(chat_id)) != expected {
+                log::info!(
+                    "[claude-accounts] chat profile unchanged: the chat no longer uses the expected profile"
+                );
+                return Ok(false);
+            }
+        }
+        if check == SignInCheck::Required {
+            match account_id {
+                Some(id) => self.ensure_signed_in(store, id, Choice::Account).await?,
+                None => {
+                    let project_account =
+                        store.snapshot()?.account_for(Some(project_id), None).to_string();
+                    self.ensure_signed_in(store, &project_account, Choice::FollowProject)
+                        .await?;
+                }
+            }
+        }
+        store.set_chat_account(project_id, chat_id, account_id, expected)
+    }
+
+    /// Drop the Account choice of a deleted chat. A host without Accounts
+    /// has none.
+    pub fn forget_chat_account(&self, chat_id: &str) {
+        let Some(store) = &self.profile_store else {
+            return;
+        };
+        if let Err(error) = store.forget_chat(chat_id) {
+            log::warn!("[claude-accounts] could not drop the chat profile: {error}");
+        }
     }
 
     /// The spawn gate's rule, applied before an Account is chosen: only a
@@ -223,6 +269,7 @@ impl ClaudeAgentService {
         );
         let subject = match choice {
             Choice::FollowDefault => format!("The default Claude account \"{}\"", account.name),
+            Choice::FollowProject => format!("The project's Claude account \"{}\"", account.name),
             Choice::Account => format!("The Claude account \"{}\"", account.name),
         };
         let state = if matches!(status, Ok(Some(false))) {

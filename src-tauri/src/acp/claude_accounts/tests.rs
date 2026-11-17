@@ -1,4 +1,5 @@
-use super::{links, ClaudeAccountStore, BUILTIN_ACCOUNT_ID};
+use super::{chosen_account, links, ClaudeAccountStore, BUILTIN_ACCOUNT_ID};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -50,7 +51,7 @@ fn a_new_store_has_only_the_builtin_default_account() {
     assert!(snapshot.profiles[0].builtin);
     assert_eq!(snapshot.default_account_id, BUILTIN_ACCOUNT_ID);
     assert!(snapshot.project_profiles.is_empty());
-    assert_eq!(store(&f).resolve(Some("p1")).config_dir, None);
+    assert_eq!(store(&f).resolve(Some("p1"), None).config_dir, None);
 }
 
 #[cfg(unix)]
@@ -100,17 +101,17 @@ fn a_project_uses_its_account_and_others_use_the_default() {
         .unwrap();
     s.set_default(&personal.id).unwrap();
 
-    let office = s.resolve(Some("office"));
+    let office = s.resolve(Some("office"), None);
     assert_eq!(office.account_id, work.id);
     assert_eq!(office.account_name, "Work");
     assert_eq!(office.config_dir, s.config_dir(&work.id));
 
-    let other = s.resolve(Some("side-project"));
+    let other = s.resolve(Some("side-project"), None);
     assert_eq!(other.account_id, personal.id);
-    assert_eq!(s.resolve(None).account_id, personal.id);
+    assert_eq!(s.resolve(None, None).account_id, personal.id);
 
     s.set_project_account("office", None, None).unwrap();
-    assert_eq!(s.resolve(Some("office")).account_id, personal.id);
+    assert_eq!(s.resolve(Some("office"), None).account_id, personal.id);
 }
 
 #[test]
@@ -123,21 +124,104 @@ fn an_expected_account_applies_the_choice_only_while_the_project_uses_it() {
     assert!(s
         .set_project_account("office", Some(&work.id), Some(BUILTIN_ACCOUNT_ID))
         .unwrap());
-    assert_eq!(s.resolve(Some("office")).account_id, work.id);
+    assert_eq!(s.resolve(Some("office"), None).account_id, work.id);
     // A second client that saw the same limit loses and changes nothing.
     assert!(!s
         .set_project_account("office", Some(&personal.id), Some(BUILTIN_ACCOUNT_ID))
         .unwrap());
-    assert_eq!(s.resolve(Some("office")).account_id, work.id);
+    assert_eq!(s.resolve(Some("office"), None).account_id, work.id);
     assert!(s
         .set_project_account("office", None, Some(&work.id))
         .unwrap());
-    assert_eq!(s.resolve(Some("office")).account_id, BUILTIN_ACCOUNT_ID);
+    assert_eq!(s.resolve(Some("office"), None).account_id, BUILTIN_ACCOUNT_ID);
     // Without an expected account the choice always applies.
     assert!(s
         .set_project_account("office", Some(&personal.id), None)
         .unwrap());
-    assert_eq!(s.resolve(Some("office")).account_id, personal.id);
+    assert_eq!(s.resolve(Some("office"), None).account_id, personal.id);
+}
+
+#[test]
+fn a_chat_runs_its_own_account_else_its_projects_else_the_default() {
+    let projects = BTreeMap::from([("office".to_string(), "work".to_string())]);
+    let chats = BTreeMap::from([
+        ("chat-a".to_string(), "spare".to_string()),
+        ("chat-c".to_string(), "work".to_string()),
+    ]);
+    let cases = [
+        ("own choice wins over the project", Some("office"), Some("chat-a"), "spare"),
+        ("no own choice uses the project", Some("office"), Some("chat-b"), "work"),
+        ("no project choice uses the default", Some("side"), Some("chat-b"), "main"),
+        ("own choice outside a project", None, Some("chat-c"), "work"),
+        ("no chat uses the project", Some("office"), None, "work"),
+        ("nothing uses the default", None, None, "main"),
+        ("ids are trimmed", Some(" office "), Some(" chat-a "), "spare"),
+    ];
+    for (name, project, chat, want) in cases {
+        assert_eq!(
+            chosen_account("main", &projects, &chats, project, chat),
+            want,
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn a_chat_choice_is_a_compare_and_set_on_the_account_the_chat_runs() {
+    let f = fixture();
+    let s = store(&f);
+    let work = s.add("Work").unwrap();
+    let spare = s.add("Spare").unwrap();
+    s.set_project_account("office", Some(&work.id), None)
+        .unwrap();
+    // The chat follows the project, so the project's account is expected.
+    assert!(!s
+        .set_chat_account("office", "chat-1", Some(&spare.id), Some(BUILTIN_ACCOUNT_ID))
+        .unwrap());
+    assert!(s
+        .set_chat_account("office", "chat-1", Some(&spare.id), Some(&work.id))
+        .unwrap());
+    assert_eq!(s.resolve(Some("office"), Some("chat-1")).account_id, spare.id);
+    assert_eq!(s.resolve(Some("office"), Some("chat-2")).account_id, work.id);
+    assert_eq!(s.resolve(Some("office"), None).account_id, work.id);
+    // A project change leaves the chat on its own account.
+    s.set_project_account("office", None, None).unwrap();
+    assert_eq!(s.resolve(Some("office"), Some("chat-1")).account_id, spare.id);
+    assert!(s
+        .set_chat_account("office", "chat-1", None, Some(&spare.id))
+        .unwrap());
+    assert_eq!(
+        s.resolve(Some("office"), Some("chat-1")).account_id,
+        BUILTIN_ACCOUNT_ID
+    );
+    assert_eq!(s.snapshot().unwrap().chat_profiles, BTreeMap::new());
+    assert!(s.set_chat_account("office", "  ", None, None).is_err());
+    assert!(s
+        .set_chat_account("office", "chat-1", Some("ffff"), None)
+        .is_err());
+}
+
+#[test]
+fn removing_an_account_or_deleting_a_chat_drops_the_chat_choice() {
+    let f = fixture();
+    let s = store(&f);
+    let work = s.add("Work").unwrap();
+    let spare = s.add("Spare").unwrap();
+    s.set_chat_account("office", "chat-1", Some(&spare.id), None)
+        .unwrap();
+    s.set_chat_account("office", "chat-2", Some(&work.id), None)
+        .unwrap();
+    s.remove(&spare.id).unwrap();
+    assert_eq!(
+        s.snapshot().unwrap().chat_profiles,
+        BTreeMap::from([("chat-2".to_string(), work.id.clone())])
+    );
+    s.forget_chat("chat-2").unwrap();
+    s.forget_chat("chat-unknown").unwrap();
+    assert_eq!(s.snapshot().unwrap().chat_profiles, BTreeMap::new());
+    let stored: serde_json::Value =
+        serde_json::from_slice(&fs::read(f.state.join("claude-accounts.json")).unwrap()).unwrap();
+    assert_eq!(stored["chatAccounts"], serde_json::json!({}));
 }
 
 #[test]
@@ -202,7 +286,7 @@ fn rename_changes_the_name_and_rejects_duplicates() {
     let work = s.add("Work").unwrap();
     s.add("Personal").unwrap();
     s.rename(&work.id, "Office").unwrap();
-    assert_eq!(s.resolve(None).account_name, "Default");
+    assert_eq!(s.resolve(None, None).account_name, "Default");
     assert!(s
         .snapshot()
         .unwrap()
@@ -212,7 +296,7 @@ fn rename_changes_the_name_and_rejects_duplicates() {
     assert!(s.rename(&work.id, "personal").is_err());
     s.rename(BUILTIN_ACCOUNT_ID, "PERSONAL").unwrap_err();
     s.rename(BUILTIN_ACCOUNT_ID, "Main").unwrap();
-    assert_eq!(s.resolve(None).account_name, "Main");
+    assert_eq!(s.resolve(None, None).account_name, "Main");
 }
 
 #[cfg(unix)]
@@ -224,7 +308,7 @@ fn resolve_repairs_a_removed_link() {
     s.set_default(&work.id).unwrap();
     let dir = s.config_dir(&work.id).unwrap();
     fs::remove_file(dir.join("projects")).unwrap();
-    let _ = s.resolve(None);
+    let _ = s.resolve(None, None);
     assert!(is_link_to(
         &dir.join("projects"),
         &f.shared.join("projects")
@@ -690,7 +774,7 @@ fn a_damaged_store_fails_mutations_but_resolves_to_the_builtin_account() {
     fs::write(f.state.join("claude-accounts.json"), b"{not json").unwrap();
     let s = store(&f);
     assert!(s.add("Work").is_err());
-    let resolution = s.resolve(Some("p1"));
+    let resolution = s.resolve(Some("p1"), None);
     assert_eq!(resolution.account_id, BUILTIN_ACCOUNT_ID);
     assert_eq!(resolution.config_dir, None);
 }
@@ -720,7 +804,7 @@ fn a_stale_project_choice_falls_back_to_the_default() {
     let snapshot = s.snapshot().unwrap();
     assert_eq!(snapshot.default_account_id, BUILTIN_ACCOUNT_ID);
     assert!(snapshot.project_profiles.is_empty());
-    assert_eq!(s.resolve(Some("p1")).account_id, BUILTIN_ACCOUNT_ID);
+    assert_eq!(s.resolve(Some("p1"), None).account_id, BUILTIN_ACCOUNT_ID);
 }
 
 #[test]

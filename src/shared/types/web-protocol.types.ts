@@ -285,6 +285,10 @@ export const WS_REQUEST_TYPES = [
   'list_claude_usage',
   'set_default_claude_account',
   'set_project_claude_account',
+  // `{ projectId, sessionId, accountId | null, expectedAccountId? }` →
+  // `{ applied }`: the chat's own Account; `null` follows the Project again.
+  // `expectedAccountId` compares with the Account the chat resolves to now.
+  'set_chat_claude_account',
   // `{ enabled }` → `{}`: host-wide automatic switching at a usage limit.
   'set_claude_auto_switch',
   // `{ sessionId, at }` → `{}`: the host continues the chat at `at` (epoch
@@ -393,6 +397,7 @@ export const WS_COMMAND_CLASSES: Readonly<
   list_claude_usage: ['read', null],
   set_default_claude_account: ['idempotent', null],
   set_project_claude_account: ['idempotent', null],
+  set_chat_claude_account: ['idempotent', null],
   set_claude_auto_switch: ['idempotent', null],
   set_claude_resume: ['idempotent', null],
   add_claude_account: ['command', 'payload'],

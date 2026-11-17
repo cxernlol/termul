@@ -2276,6 +2276,7 @@ pub fn run() {
             acp::commands::claude_accounts_login,
             acp::commands::claude_accounts_set_default,
             acp::commands::claude_accounts_set_project,
+            acp::commands::claude_accounts_set_chat,
             acp::commands::claude_accounts_set_auto_switch,
             acp::commands::codex_accounts_list,
             acp::commands::codex_accounts_usage,

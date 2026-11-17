@@ -82,8 +82,10 @@ in the OS keychain.
 ## Claude accounts
 
 In Claude Code login mode, a host can hold several Claude subscription logins
-(Accounts). Each Project uses one Account; a Project with no choice uses the
-Default Account. The built-in Account uses the host's normal Claude config
+(Accounts). A chat uses its own Account when it has one, else its Project's
+Account, else the Default Account. A new chat starts on its Project's Account.
+The choices live in `claude-accounts.json` (`projectAccounts` and
+`chatAccounts`). The built-in Account uses the host's normal Claude config
 folder (`~/.claude`, or `CLAUDE_CONFIG_DIR` when the host sets it). See
 [ADR-0004](./adr/0004-claude-accounts-linked-config-dirs.md).
 
@@ -97,8 +99,22 @@ or refreshes the login tokens; Claude Code keeps them in its own credential
 store. The Account list (`<state dir>/claude-accounts.json`) holds names and
 ids only.
 
-When a Project's Account changes, each open Claude chat restarts on the new
-Account and resumes the same session. If the new Account cannot find the
+The account picker in a chat (`set_chat_claude_account`) moves only that chat:
+it restarts on a new agent with the chosen Account and resumes the same
+session. Other chats of the Project, including chats on the same agent, keep
+running. "Follow project" removes the chat's own choice. Choosing the Account
+the chat already runs on changes nothing. When a person moves a chat at its
+limit from the limit card, its held turn is cancelled and the chat continues
+with a short notice, worded like the host's, instead of the last prompt sent
+again. A chat that is opened
+again starts its agent with the chat id (`spawn_agent` `sessionId`), so the
+host starts it on the chat's Account. Such an agent belongs to that chat: the
+renderer registers it under a reuse key with the chat id, and no other chat or
+warm session takes it.
+
+When a Project's Account changes, each open Claude chat of the Project without
+its own Account restarts on the new Account and resumes the same session.
+Chats with their own Account stay where they are. If the new Account cannot find the
 session (the agent answers `session/resume` with `Resource not found`), the
 chat continues in a new session. That session starts from a summary of the
 conversation, the same handoff as an agent switch, and the earlier messages
@@ -146,18 +162,20 @@ A supervisor in the host (`src-tauri/src/acp/claude_limit/`) receives each
 inside a Project:
 
 - When automatic switching is on and another signed-in Account has room, the
-  host moves the Project to the Account with the most room. It stops the
-  chat's agent, starts a new one from the launch recipe the client's spawn
-  recorded, resumes the same session, and sends a short continuation notice as
-  a user prompt. The other durable chats of the stopped agent reopen on the
-  new agent. A chat whose turn the stop cut off, or that waited for its own
-  scheduled resume, also gets the notice.
+  host sets the chat's own Account to the Account with the most room, with a
+  compare-and-set on the Account the chat ran on. The Project's Account does
+  not change, and no other chat moves. The host takes the chat off its agent
+  (it stops the agent when no other durable chat runs on it, and otherwise
+  closes only this chat there), starts a new agent for the chat from the
+  launch recipe the client's spawn recorded, resumes the same session, and
+  sends a short continuation notice as a user prompt.
 - When no Account has room, the host schedules a resume at the reset time in
   `claude-limit-resumes.json` in the host state folder. The resume survives the
   agent being reaped and a host restart. A turn of the chat, closing it, or
   `set_claude_resume` with `at: null` cancels it.
-- When the agent runs an older Account than its Project (another chat moved
-  the Project first), the host restarts it on the Project's Account.
+- When the agent runs another Account than the chat now uses (a client moved
+  the chat, or the Project, first), the host restarts the chat on its
+  Account.
 
 Each step is recorded as `acp:claude_limit_action` in the chat's session log,
 and clients follow it. While the host moves a chat, a client that reopens it

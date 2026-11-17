@@ -1094,6 +1094,21 @@ export class WsAcpTransport implements AcpTransport {
     return reply?.applied !== false
   }
 
+  async setChatClaudeAccount(
+    projectId: string,
+    sessionId: string,
+    accountId: string | null,
+    expectedAccountId?: string
+  ): Promise<boolean> {
+    const reply = await this.request<{ applied?: boolean }>('set_chat_claude_account', {
+      projectId,
+      sessionId,
+      accountId,
+      ...(expectedAccountId ? { expectedAccountId } : {})
+    })
+    return reply?.applied !== false
+  }
+
   async setClaudeAutoSwitch(enabled: boolean): Promise<void> {
     await this.request('set_claude_auto_switch', { enabled })
   }
@@ -1225,11 +1240,12 @@ export class WsAcpTransport implements AcpTransport {
   async spawnAgent(
     config: AgentConfig,
     options?: CommandCallOptions,
-    projectId?: string | null
+    projectId?: string | null,
+    sessionId?: string | null
   ): Promise<SpawnAgentResult> {
     return this.request<SpawnAgentResult>(
       'spawn_agent',
-      { config, projectId: projectId ?? null },
+      { config, projectId: projectId ?? null, sessionId: sessionId ?? null },
       undefined,
       options
     )

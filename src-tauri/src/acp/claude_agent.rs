@@ -776,18 +776,20 @@ impl ClaudeAgentService {
         &self,
         config: &mut crate::acp::config::AgentConfig,
     ) -> Result<bool, String> {
-        self.prepare_managed_launch(config, None)
+        self.prepare_managed_launch(config, None, None)
             .await
             .map(|auth| auth.host_auth_ready())
     }
 
-    /// [`prepare_managed_config`](Self::prepare_managed_config) for a spawn in
-    /// `project_id`: in Claude Code mode the agent runs with the config
-    /// directory of that Project's Account.
+    /// [`prepare_managed_config`](Self::prepare_managed_config) for a spawn
+    /// that opens `chat_id` in `project_id`: in Claude Code mode the agent
+    /// runs with the config directory of the chat's Account (its own, else
+    /// the Project's, else the default).
     pub async fn prepare_managed_launch(
         &self,
         config: &mut crate::acp::config::AgentConfig,
         project_id: Option<&str>,
+        chat_id: Option<&str>,
     ) -> Result<ClaudeLaunchAuth, String> {
         if !self.is_managed_config(config) {
             // A config that claims the managed claude-acp identity but fails
@@ -807,7 +809,7 @@ impl ClaudeAgentService {
         }
         match self.auth_mode() {
             Ok(ClaudeAuthMode::ClaudeCode) => {
-                let account = self.resolve_account(project_id);
+                let account = self.resolve_account(project_id, chat_id);
                 let (config_dir, source) = effective_config_dir(
                     &config.env,
                     account.config_dir.as_deref(),

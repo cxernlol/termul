@@ -93,8 +93,8 @@ describe('web-protocol.types — event/request type registries (AC2)', () => {
     expect(WS_REQUEST_TYPES).toContain('get_session_payload')
   })
 
-  it('exports exactly 85 request types including chat MCP install approval', () => {
-    expect(WS_REQUEST_TYPES).toHaveLength(85)
+  it('exports exactly 86 request types including chat MCP install approval', () => {
+    expect(WS_REQUEST_TYPES).toHaveLength(86)
     const expected = [
       'send_prompt',
       'cancel_prompt',
@@ -175,6 +175,7 @@ describe('web-protocol.types — event/request type registries (AC2)', () => {
       'list_claude_usage',
       'set_default_claude_account',
       'set_project_claude_account',
+      'set_chat_claude_account',
       'set_claude_auto_switch',
       'set_claude_resume',
       'add_claude_account',

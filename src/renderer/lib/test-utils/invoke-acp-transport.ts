@@ -243,6 +243,13 @@ export function createInvokeAcpTransport(): AcpTransport {
         accountId,
         expectedAccountId: expectedAccountId ?? null
       }),
+    setChatClaudeAccount: (projectId, sessionId, accountId, expectedAccountId) =>
+      invoke<boolean>('claude_accounts_set_chat', {
+        projectId,
+        sessionId,
+        accountId,
+        expectedAccountId: expectedAccountId ?? null
+      }),
     setClaudeAutoSwitch: async (enabled) => {
       await invoke('claude_accounts_set_auto_switch', { enabled })
     },
@@ -285,10 +292,10 @@ export function createInvokeAcpTransport(): AcpTransport {
     removeCodexAccount: (accountId) => invoke<string[]>('codex_accounts_remove', { accountId }),
     startCodexAccountLogin: (accountId, config, options) =>
       invokeCommand<SpawnAgentResult>('codex_accounts_start_login', { accountId, config }, options),
-    spawnAgent: (config, options, projectId) =>
+    spawnAgent: (config, options, projectId, sessionId) =>
       invokeCommand<SpawnAgentResult>(
         'acp_spawn_agent',
-        { config, projectId: projectId ?? null },
+        { config, projectId: projectId ?? null, sessionId: sessionId ?? null },
         options
       ),
     killAgent: async (agentId) => {

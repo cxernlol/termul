@@ -1,35 +1,23 @@
-//! Moving a chat, and the other chats of its agent, to a new agent.
+//! Moving one chat to a new agent. The other chats of its old agent stay
+//! where they are.
 
 use std::sync::Arc;
-use std::time::SystemTime;
 
 use agent_client_protocol::schema::v1::{ContentBlock, TextContent};
 
 use super::supervisor::{scrub, Supervisor};
 use super::{AccountRef, ClaudeLimitAction};
-use crate::acp::claude_agent::ClaudeLaunchAuth;
 use crate::acp::config::{AgentId, SessionId};
 use crate::acp::manager::HostMove;
+use crate::acp::SpawnScope;
 use crate::logging::redact_session_id;
 use crate::web::prompt_turn::{
     accept_prompt_turn, complete_prompt_turn, PromptAdmission, PromptTurnRequest,
 };
 
-/// Another chat the stopped agent held.
-struct Sibling {
-    session_id: SessionId,
-    /// A turn of it was running when the agent stopped.
-    interrupted: bool,
-    reopened: Result<(), String>,
-}
-
-pub(super) struct Relaunched {
-    pub(super) agent_id: AgentId,
-    siblings: Vec<Sibling>,
-}
-
 pub(super) enum Relaunch {
-    Done(Relaunched),
+    /// The chat runs on this new agent.
+    Done(AgentId),
     /// Another agent than the one being replaced holds the chat now: a
     /// client opened it there.
     HeldElsewhere(AgentId),
@@ -46,20 +34,20 @@ impl Supervisor {
         notice: String,
     ) {
         let chat = redact_session_id(&session_id.0);
-        let mut moving = self.acp.begin_host_move(session_id).await;
-        match self.relaunch(&mut moving, session_id, Some(old_agent)).await {
-            Ok(Relaunch::Done(relaunched)) => {
-                let switched = ClaudeLimitAction::Switched {
-                    from,
-                    to,
-                    from_agent_id: old_agent.0.clone(),
-                    new_agent_id: relaunched.agent_id.0.clone(),
-                };
-                self.emit(session_id, project_id, switched.clone());
-                self.send_notice(&relaunched.agent_id, session_id, &notice)
-                    .await;
-                self.follow_siblings(project_id, relaunched, &switched, &notice)
-                    .await;
+        let moving = self.acp.begin_host_move(session_id).await;
+        match self.relaunch(&moving, session_id, Some(old_agent)).await {
+            Ok(Relaunch::Done(agent_id)) => {
+                self.emit(
+                    session_id,
+                    project_id,
+                    ClaudeLimitAction::Switched {
+                        from,
+                        to,
+                        from_agent_id: old_agent.0.clone(),
+                        new_agent_id: agent_id.0.clone(),
+                    },
+                );
+                self.send_notice(&agent_id, session_id, &notice).await;
             }
             Ok(Relaunch::HeldElsewhere(holder)) => log::info!(
                 "[claude-limit] chat {chat} is open on agent {holder} now; left there"
@@ -72,78 +60,14 @@ impl Supervisor {
                 self.emit(session_id, project_id, ClaudeLimitAction::Failed { reason });
             }
         }
+        drop(moving);
     }
 
-    /// Tell the clients of every other chat the stopped agent held where it
-    /// continues, and continue the ones whose turn the stop cut off or that
-    /// waited for their account to reset.
-    pub(super) async fn follow_siblings(
-        &mut self,
-        project_id: &str,
-        relaunched: Relaunched,
-        action: &ClaudeLimitAction,
-        notice: &str,
-    ) {
-        let new_account = self
-            .acp
-            .agent_launch(&relaunched.agent_id)
-            .and_then(|launch| match launch.claude {
-                ClaudeLaunchAuth::Account(id) => Some(id),
-                _ => None,
-            });
-        for sibling in relaunched.siblings {
-            match sibling.reopened {
-                Ok(()) => {
-                    self.emit(&sibling.session_id, project_id, action.clone());
-                    let waited = self.end_wait_on(&sibling.session_id, new_account.as_deref());
-                    if sibling.interrupted || waited {
-                        self.send_notice(&relaunched.agent_id, &sibling.session_id, notice)
-                            .await;
-                    }
-                }
-                Err(error) => self.emit(
-                    &sibling.session_id,
-                    project_id,
-                    ClaudeLimitAction::Failed {
-                        reason: format!(
-                            "Troupe restarted this chat's agent for another chat at its Claude limit, and this chat did not reopen ({error}). Send a message to continue."
-                        ),
-                    },
-                ),
-            }
-        }
-    }
-
-    /// A chat that waits for its account to reset continues now when it
-    /// reopened on another account with room: its scheduled resume goes.
-    fn end_wait_on(&mut self, session_id: &SessionId, new_account: Option<&str>) -> bool {
-        let Some(new_account) = new_account else {
-            return false;
-        };
-        let Some(entry) = self.schedule.get(&session_id.0) else {
-            return false;
-        };
-        let limited = self
-            .limited_until
-            .get(new_account)
-            .is_some_and(|until| *until > SystemTime::now());
-        if entry.account_id.as_deref() == Some(new_account) || limited {
-            return false;
-        }
-        self.schedule.remove(&session_id.0);
-        log::info!(
-            "[claude-limit] chat {} waited for its limit to reset and continues on the new account now",
-            redact_session_id(&session_id.0)
-        );
-        true
-    }
-
-    /// Stop `old_agent` (every chat it held) and open the chat, and the other
-    /// durable chats the old agent held, on a new agent from the recipe.
-    /// `moving` holds the chat; the other chats join it.
+    /// Take the chat off `old_agent` and open it on a new agent started from
+    /// its recipe with the chat's Account. `moving` holds the chat.
     pub(super) async fn relaunch(
         &self,
-        moving: &mut HostMove,
+        moving: &HostMove,
         session_id: &SessionId,
         old_agent: Option<&AgentId>,
     ) -> Result<Relaunch, String> {
@@ -154,77 +78,69 @@ impl Supervisor {
         if let Some(holder) = self.live_owner(session_id, old_agent).await {
             return Ok(Relaunch::HeldElsewhere(holder));
         }
-        let mut others = Vec::new();
         if let Some(old) = old_agent {
-            if self
-                .acp
-                .is_turn_active(old, session_id.clone())
-                .await
-                .unwrap_or(false)
-            {
-                if let Err(error) = self.acp.cancel_prompt(old, session_id.clone()).await {
-                    log::warn!(
-                        "[claude-limit] cancelling the held turn failed: {}",
-                        scrub(&error, session_id)
-                    );
-                }
-            }
-            for other in self.acp.agent_session_ids(old).await.unwrap_or_default() {
-                let other = SessionId(other);
-                let ephemeral = self
-                    .acp
-                    .is_ephemeral_session(old, other.clone())
-                    .await
-                    .unwrap_or(true);
-                if other == *session_id || ephemeral {
-                    continue;
-                }
-                self.acp.add_to_host_move(moving, &other).await;
-                if self.live_owner(&other, Some(old)).await.is_some() {
-                    continue;
-                }
-                let interrupted = self
-                    .acp
-                    .is_turn_active(old, other.clone())
-                    .await
-                    .unwrap_or(false);
-                others.push((other, interrupted));
-            }
-            if let Err(error) = self.acp.kill(old).await {
-                log::warn!("[claude-limit] stopping agent {old} failed: {error}");
-            }
+            self.release(old, session_id).await?;
         }
         let spawned = self
             .acp
             .spawn_with_command_id(
                 recipe.launch.config.clone(),
                 None,
-                recipe.launch.project_id.clone(),
+                SpawnScope {
+                    project_id: recipe.launch.project_id.clone(),
+                    chat_id: Some(session_id.clone()),
+                },
             )
             .await?;
-        let agent_id = spawned.agent_id;
-        self.reopen(moving, &agent_id, session_id).await?;
-        let mut siblings = Vec::new();
-        for (other, interrupted) in others {
-            let reopened = self.reopen(moving, &agent_id, &other).await;
-            match &reopened {
-                Ok(()) => log::info!(
-                    "[claude-limit] chat {} moved with the agent (turn cut off: {interrupted})",
-                    redact_session_id(&other.0)
-                ),
-                Err(error) => log::warn!(
-                    "[claude-limit] chat {} of the stopped agent did not reopen: {}",
-                    redact_session_id(&other.0),
-                    scrub(error, &other)
-                ),
+        self.reopen(moving, &spawned.agent_id, session_id).await?;
+        Ok(Relaunch::Done(spawned.agent_id))
+    }
+
+    /// Cancel the chat's held turn on `old`, then stop `old` when no other
+    /// durable chat runs on it, or close only this chat there so the others
+    /// keep their agent and their turns.
+    async fn release(&self, old: &AgentId, session_id: &SessionId) -> Result<(), String> {
+        if self
+            .acp
+            .is_turn_active(old, session_id.clone())
+            .await
+            .unwrap_or(false)
+        {
+            if let Err(error) = self.acp.cancel_prompt(old, session_id.clone()).await {
+                log::warn!(
+                    "[claude-limit] cancelling the held turn failed: {}",
+                    scrub(&error, session_id)
+                );
             }
-            siblings.push(Sibling {
-                session_id: other,
-                interrupted,
-                reopened,
-            });
         }
-        Ok(Relaunch::Done(Relaunched { agent_id, siblings }))
+        let mut shared = false;
+        for other in self.acp.agent_session_ids(old).await.unwrap_or_default() {
+            let other = SessionId(other);
+            if other != *session_id
+                && !self
+                    .acp
+                    .is_ephemeral_session(old, other.clone())
+                    .await
+                    .unwrap_or(true)
+            {
+                shared = true;
+                break;
+            }
+        }
+        if !shared {
+            if let Err(error) = self.acp.kill(old).await {
+                log::warn!("[claude-limit] stopping agent {old} failed: {error}");
+            }
+            return Ok(());
+        }
+        log::info!(
+            "[claude-limit] agent {old} keeps its other chats; closing only chat {} on it",
+            redact_session_id(&session_id.0)
+        );
+        self.acp
+            .close_session_keeping_recipe(old, session_id.clone())
+            .await
+            .map_err(|error| format!("the chat did not close on its old agent ({error})"))
     }
 
     async fn reopen(

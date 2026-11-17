@@ -4,8 +4,8 @@
 //! The built-in Account uses the shared Claude config directory itself
 //! (`~/.claude`, or the host's `CLAUDE_CONFIG_DIR`). Every other Account has a
 //! Troupe-owned directory under `<state dir>/claude-accounts/<id>` whose shared
-//! entries link back to the shared directory. Each Project uses one Account;
-//! a Project without a choice uses the Default Account.
+//! entries link back to the shared directory. A chat uses its own Account when
+//! it has one, else its Project's, else the Default Account.
 //!
 //! The store keeps no secrets: logins live in Claude Code's own credential
 //! store (OS keychain or `.credentials.json`), keyed by the config directory.
@@ -66,9 +66,44 @@ pub struct ClaudeAccountsSnapshot {
     // JSON key stays `projectAccounts`.
     #[serde(rename = "projectAccounts")]
     pub project_profiles: BTreeMap<String, String>,
+    /// Chat (session) id → Account id, only for chats with their own choice.
+    // JSON key stays `chatAccounts`.
+    #[serde(rename = "chatAccounts")]
+    pub chat_profiles: BTreeMap<String, String>,
     /// A chat at its Account's limit continues on the signed-in Account with
     /// the most room.
     pub auto_switch: bool,
+}
+
+impl ClaudeAccountsSnapshot {
+    /// The Account `chat_id` in `project_id` runs on; see [`chosen_account`].
+    #[must_use]
+    pub fn account_for(&self, project_id: Option<&str>, chat_id: Option<&str>) -> &str {
+        chosen_account(
+            &self.default_account_id,
+            &self.project_profiles,
+            &self.chat_profiles,
+            project_id,
+            chat_id,
+        )
+    }
+}
+
+/// The Account a spawn uses: the chat's own choice, else its Project's, else
+/// the Default Account. The store drops choices that name a removed Account,
+/// so every id this returns exists.
+#[must_use]
+pub fn chosen_account<'a>(
+    default_account_id: &'a str,
+    project_profiles: &'a BTreeMap<String, String>,
+    chat_profiles: &'a BTreeMap<String, String>,
+    project_id: Option<&str>,
+    chat_id: Option<&str>,
+) -> &'a str {
+    chat_id
+        .and_then(|chat| chat_profiles.get(chat.trim()))
+        .or_else(|| project_id.and_then(|project| project_profiles.get(project.trim())))
+        .map_or(default_account_id, String::as_str)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -104,6 +139,9 @@ struct StoreFile {
     // JSON key stays `projectAccounts`.
     #[serde(default, rename = "projectAccounts")]
     project_profiles: BTreeMap<String, String>,
+    // JSON key stays `chatAccounts`.
+    #[serde(default, rename = "chatAccounts")]
+    chat_profiles: BTreeMap<String, String>,
     /// Files written before the setting existed read as on.
     #[serde(default = "auto_switch_default")]
     auto_switch: bool,
@@ -124,12 +162,13 @@ impl StoreFile {
             }],
             default_account_id: BUILTIN_ACCOUNT_ID.to_string(),
             project_profiles: BTreeMap::new(),
+            chat_profiles: BTreeMap::new(),
             auto_switch: auto_switch_default(),
         }
     }
 
     /// Repair invariants after a load: the built-in Account exists, and the
-    /// default and every Project choice name an existing Account.
+    /// default and every Project and chat choice name an existing Account.
     fn normalize(&mut self) {
         if !self.entries.iter().any(|a| a.id == BUILTIN_ACCOUNT_ID) {
             self.entries
@@ -141,17 +180,21 @@ impl StoreFile {
         }
         let known: Vec<String> = self.entries.iter().map(|a| a.id.clone()).collect();
         self.project_profiles.retain(|_, id| known.contains(id));
+        self.chat_profiles.retain(|_, id| known.contains(id));
     }
 
     fn has_account(&self, id: &str) -> bool {
         self.entries.iter().any(|a| a.id == id)
     }
 
-    /// The Account a Project uses: its own choice, else the default.
-    fn project_account(&self, project_id: &str) -> &str {
-        self.project_profiles
-            .get(project_id)
-            .unwrap_or(&self.default_account_id)
+    fn account_for(&self, project_id: Option<&str>, chat_id: Option<&str>) -> &str {
+        chosen_account(
+            &self.default_account_id,
+            &self.project_profiles,
+            &self.chat_profiles,
+            project_id,
+            chat_id,
+        )
     }
 }
 
@@ -211,6 +254,7 @@ impl ClaudeAccountStore {
                 .collect(),
             default_account_id: file.default_account_id,
             project_profiles: file.project_profiles,
+            chat_profiles: file.chat_profiles,
             auto_switch: file.auto_switch,
         })
     }
@@ -279,8 +323,9 @@ impl ClaudeAccountStore {
     }
 
     /// Remove an Account and its directory. Projects that used it, and the
-    /// default when it pointed at it, return to the built-in Account. Returns
-    /// the ids of the Projects that moved.
+    /// default when it pointed at it, return to the built-in Account; chats
+    /// that used it follow their Project again. Returns the ids of the
+    /// Projects that moved.
     pub fn remove(&self, id: &str) -> Result<Vec<String>, String> {
         if id == BUILTIN_ACCOUNT_ID {
             return Err("The built-in account cannot be removed".to_string());
@@ -303,6 +348,7 @@ impl ClaudeAccountStore {
         for project in &moved {
             file.project_profiles.remove(project);
         }
+        file.chat_profiles.retain(|_, account| account.as_str() != id);
         self.save(&file)?;
         if let Some(dir) = self.account_dir(id) {
             remove_account_dir(&dir);
@@ -353,7 +399,7 @@ impl ClaudeAccountStore {
                 return Err(unknown_account(id));
             }
         }
-        if expected.is_some_and(|expected| file.project_account(project_id) != expected) {
+        if expected.is_some_and(|expected| file.account_for(Some(project_id), None) != expected) {
             log::info!(
                 "[claude-accounts] project profile unchanged: the project no longer uses the expected profile"
             );
@@ -373,10 +419,66 @@ impl ClaudeAccountStore {
         Ok(true)
     }
 
-    /// The Account a spawn for `project_id` uses. A damaged store falls back
-    /// to the built-in Account so Claude chats keep working.
+    /// Choose the Account of one chat of `project_id`. `None` makes the chat
+    /// follow its Project again. With `expected`, the choice applies only
+    /// while the chat still runs on that Account (its own, else its
+    /// Project's, else the default). Returns whether the choice applied.
+    pub fn set_chat_account(
+        &self,
+        project_id: &str,
+        chat_id: &str,
+        account_id: Option<&str>,
+        expected: Option<&str>,
+    ) -> Result<bool, String> {
+        let chat_id = chat_id.trim();
+        if chat_id.is_empty() {
+            return Err("A chat id is required".to_string());
+        }
+        let _guard = self.lock.lock();
+        let mut file = self.load()?;
+        if let Some(id) = account_id {
+            if !file.has_account(id) {
+                return Err(unknown_account(id));
+            }
+        }
+        if expected
+            .is_some_and(|expected| file.account_for(Some(project_id), Some(chat_id)) != expected)
+        {
+            log::info!(
+                "[claude-accounts] chat profile unchanged: the chat no longer uses the expected profile"
+            );
+            return Ok(false);
+        }
+        match account_id {
+            Some(id) => {
+                file.chat_profiles
+                    .insert(chat_id.to_string(), id.to_string());
+            }
+            None => {
+                file.chat_profiles.remove(chat_id);
+            }
+        }
+        self.save(&file)?;
+        log::info!("[claude-accounts] chat profile updated");
+        Ok(true)
+    }
+
+    /// Drop the choice of a deleted chat.
+    pub fn forget_chat(&self, chat_id: &str) -> Result<(), String> {
+        let _guard = self.lock.lock();
+        let mut file = self.load()?;
+        if file.chat_profiles.remove(chat_id.trim()).is_none() {
+            return Ok(());
+        }
+        self.save(&file)?;
+        log::info!("[claude-accounts] chat profile dropped with its chat");
+        Ok(())
+    }
+
+    /// The Account a spawn for `chat_id` in `project_id` uses. A damaged
+    /// store falls back to the built-in Account so Claude chats keep working.
     #[must_use]
-    pub fn resolve(&self, project_id: Option<&str>) -> AccountResolution {
+    pub fn resolve(&self, project_id: Option<&str>, chat_id: Option<&str>) -> AccountResolution {
         let _guard = self.lock.lock();
         let file = match self.load() {
             Ok(file) => file,
@@ -385,11 +487,7 @@ impl ClaudeAccountStore {
                 return builtin_resolution(BUILTIN_ACCOUNT_NAME);
             }
         };
-        let id = project_id
-            .map_or(file.default_account_id.as_str(), |project| {
-                file.project_account(project.trim())
-            })
-            .to_string();
+        let id = file.account_for(project_id, chat_id).to_string();
         let name = file
             .entries
             .iter()

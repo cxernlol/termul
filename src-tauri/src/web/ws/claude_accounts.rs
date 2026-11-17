@@ -27,6 +27,19 @@ pub(super) struct SetProjectClaudeAccountPayload {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub(super) struct SetChatClaudeAccountPayload {
+    project_id: String,
+    session_id: String,
+    /// `null` makes the chat follow its Project again.
+    #[serde(default)]
+    account_id: Option<String>,
+    /// Apply only while the chat still runs on this Account.
+    #[serde(default)]
+    expected_account_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(super) struct SetClaudeAutoSwitchPayload {
     enabled: bool,
 }
@@ -131,6 +144,51 @@ pub(super) async fn handle_set_project_claude_account(
                 account = parsed.account_id.as_deref().unwrap_or("default"),
                 applied,
                 "project Claude account set over ws"
+            );
+            WsReply::ok(id, Some(json!({ "applied": applied })))
+        }
+        Err(error) => choice_refused(id, error),
+    }
+}
+
+/// `set_chat_claude_account { projectId, sessionId, accountId | null,
+/// expectedAccountId? }` → `{ applied }`; `applied` is `false` when the chat
+/// no longer runs on `expectedAccountId`.
+pub(super) async fn handle_set_chat_claude_account(
+    id: String,
+    payload: &Value,
+    acp: &Arc<AcpManager>,
+) -> WsReply {
+    let parsed: SetChatClaudeAccountPayload = match serde_json::from_value(payload.clone()) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            return WsReply::err(
+                id,
+                WsErrorCode::Unsupported,
+                format!(
+                "malformed set_chat_claude_account payload (want projectId, sessionId, accountId): {error}"
+            ),
+            )
+        }
+    };
+    match acp
+        .claude_agent()
+        .set_chat_account(
+            &parsed.project_id,
+            &parsed.session_id,
+            parsed.account_id.as_deref(),
+            parsed.expected_account_id.as_deref(),
+            SignInCheck::Required,
+        )
+        .await
+    {
+        Ok(applied) => {
+            info!(
+                project = %parsed.project_id,
+                session = %crate::logging::redact_session_id(&parsed.session_id),
+                account = parsed.account_id.as_deref().unwrap_or("project"),
+                applied,
+                "chat Claude account set over ws"
             );
             WsReply::ok(id, Some(json!({ "applied": applied })))
         }

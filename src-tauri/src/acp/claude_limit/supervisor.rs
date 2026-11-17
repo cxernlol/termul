@@ -162,8 +162,10 @@ impl Supervisor {
                 return;
             }
         };
-        let project_account = project_account(&snapshot, &project_id);
-        let usage = if snapshot.auto_switch && agent_account == project_account {
+        let chat_account = snapshot
+            .account_for(Some(&project_id), Some(&session_id.0))
+            .to_string();
+        let usage = if snapshot.auto_switch && agent_account == chat_account {
             claude.accounts_usage(true).await.unwrap_or_else(|error| {
                 log::warn!("[claude-limit] usage read failed: {error}");
                 Vec::new()
@@ -189,7 +191,7 @@ impl Supervisor {
         let candidates = decide::rank_alternatives(&candidates(&snapshot, &usage, &agent_account));
         let decision = decide::decide(&LimitContext {
             agent_account: &agent_account,
-            project_account: &project_account,
+            chat_account: &chat_account,
             auto_switch: snapshot.auto_switch,
             candidates: &candidates,
             limited_until: &self.limited_until,
@@ -202,8 +204,9 @@ impl Supervisor {
         match decision {
             LimitDecision::Switch { to } => {
                 let applied = claude
-                    .set_project_account(
+                    .set_chat_account(
                         &project_id,
+                        &session_id.0,
                         Some(&to),
                         Some(&agent_account),
                         SignInCheck::Required,
@@ -217,11 +220,11 @@ impl Supervisor {
                             .await;
                     }
                     Ok(false) => log::info!(
-                        "[claude-limit] project of chat {chat} changed its account first; the chat continues there"
+                        "[claude-limit] chat {chat} changed its account first; it continues there"
                     ),
                     Err(error) => {
                         log::warn!(
-                            "[claude-limit] switching the project of chat {chat} failed: {}",
+                            "[claude-limit] switching the account of chat {chat} failed: {}",
                             scrub(&error, &session_id)
                         );
                         self.emit(&session_id, &project_id, ClaudeLimitAction::Failed { reason: error });
@@ -229,7 +232,7 @@ impl Supervisor {
                 }
             }
             LimitDecision::Restart => {
-                let (from, to) = (name(&agent_account), name(&project_account));
+                let (from, to) = (name(&agent_account), name(&chat_account));
                 let notice = switch_notice(&from.name, &to.name, window);
                 self.move_chat(&session_id, &project_id, &agent_id, from, to, notice)
                     .await;
@@ -338,12 +341,13 @@ impl Supervisor {
         };
         // Held before the owner is read, so a client reopen in flight lands
         // first and one that starts now waits for this resume.
-        let mut moving = self.acp.begin_host_move(&session_id).await;
+        let moving = self.acp.begin_host_move(&session_id).await;
         let claude = self.acp.claude_agent();
         let snapshot = claude.profile_list().await.ok();
-        let project_account = snapshot
-            .as_ref()
-            .map(|s| project_account(s, &entry.project_id));
+        let chat_account = snapshot.as_ref().map(|s| {
+            s.account_for(Some(&entry.project_id), Some(&entry.session_id))
+                .to_string()
+        });
         let owner = self.live_owner(&session_id, None).await;
         let from_agent_id = owner.as_ref().map(|agent| agent.0.clone()).or_else(|| {
             self.acp
@@ -368,14 +372,14 @@ impl Supervisor {
         let plan = decide::plan_resume(
             holder,
             entry.account_id.as_deref(),
-            project_account.as_deref(),
+            chat_account.as_deref(),
         );
         log::info!("[claude-limit] chat {chat} is due to continue: {plan:?}");
         if plan == ResumePlan::Skip || self.turn_started_since(&entry) {
             cancelled(self);
             return;
         }
-        let (agent_id, siblings) = match (plan, owner) {
+        let agent_id = match (plan, owner) {
             (ResumePlan::Continue, Some(agent)) => {
                 if self
                     .acp
@@ -396,10 +400,10 @@ impl Supervisor {
                     )
                     .await;
                 }
-                (agent, None)
+                agent
             }
-            (_, owner) => match self.relaunch(&mut moving, &session_id, owner.as_ref()).await {
-                Ok(Relaunch::Done(relaunched)) => (relaunched.agent_id.clone(), Some(relaunched)),
+            (_, owner) => match self.relaunch(&moving, &session_id, owner.as_ref()).await {
+                Ok(Relaunch::Done(relaunched)) => relaunched,
                 Ok(Relaunch::HeldElsewhere(holder)) => {
                     log::info!("[claude-limit] chat {chat} is open on agent {holder} now; left there");
                     cancelled(self);
@@ -424,7 +428,7 @@ impl Supervisor {
             &session_id,
             &entry.project_id,
             ClaudeLimitAction::Resumed {
-                from_agent_id: from_agent_id.clone(),
+                from_agent_id,
                 new_agent_id: agent_id.0.clone(),
             },
         );
@@ -436,14 +440,6 @@ impl Supervisor {
             .map_or_else(String::new, |at| at.format("%H:%M UTC").to_string());
         let notice = resume_notice(&account, window_name(entry.window.as_deref()), &reset);
         self.send_notice(&agent_id, &session_id, &notice).await;
-        if let Some(relaunched) = siblings {
-            let resumed = ClaudeLimitAction::Resumed {
-                from_agent_id,
-                new_agent_id: agent_id.0,
-            };
-            self.follow_siblings(&entry.project_id, relaunched, &resumed, &notice)
-                .await;
-        }
         drop(moving);
     }
 
@@ -488,14 +484,6 @@ pub(super) fn scrub(error: &str, session_id: &SessionId) -> String {
         return error.to_string();
     }
     error.replace(&session_id.0, &redact_session_id(&session_id.0))
-}
-
-fn project_account(snapshot: &ClaudeAccountsSnapshot, project_id: &str) -> String {
-    snapshot
-        .project_profiles
-        .get(project_id.trim())
-        .unwrap_or(&snapshot.default_account_id)
-        .clone()
 }
 
 fn account_ref(snapshot: &ClaudeAccountsSnapshot, id: &str) -> AccountRef {

@@ -14,7 +14,7 @@ use crate::acp::config::{AgentConfig, AgentId, SessionId};
 use crate::acp::manager::real_loop_tests::{find_python, MOCK_AGENT, SKIP_ENV, TIMEOUT_TEST_LOCK};
 use crate::acp::manager::SessionCreationContext;
 use crate::acp::session_persistence::SessionPersistence;
-use crate::acp::{AcpManager, SignInCheck};
+use crate::acp::{AcpManager, SignInCheck, SpawnScope};
 use crate::web::prompt_turn::{run_prompt_turn, PromptTurnRequest};
 use crate::web::sink::{AcpEvent, EventSink};
 use crate::web::WsRelaySink;
@@ -169,7 +169,14 @@ impl Host {
             allow_terminal: false,
         };
         self.acp
-            .spawn_with_command_id(config, None, Some(PROJECT.to_string()))
+            .spawn_with_command_id(
+                config,
+                None,
+                SpawnScope {
+                    project_id: Some(PROJECT.to_string()),
+                    chat_id: None,
+                },
+            )
             .await
             .expect("managed mock agent spawns")
             .agent_id
@@ -207,18 +214,39 @@ impl Host {
     }
 
     fn prompt_and_leave(&self, agent_id: &AgentId, session_id: &SessionId, text: &str) {
-        let blocks = vec![ContentBlock::Text(TextContent::new(text))];
-        let request = PromptTurnRequest {
-            agent_id: agent_id.clone(),
-            session_id: session_id.clone(),
-            content: blocks.clone(),
-            record_content: blocks,
-            turn_id: Some("client-turn".to_string()),
-        };
+        let request = prompt_request(agent_id, session_id, text);
         let (acp, relay) = (self.acp.clone(), self.relay.clone());
         tokio::spawn(async move {
             let _ = run_prompt_turn(&acp, &relay, request).await;
         });
+    }
+
+    /// A turn that ends on its own, run to its end.
+    async fn prompt(&self, agent_id: &AgentId, session_id: &SessionId, text: &str) {
+        run_prompt_turn(
+            &self.acp,
+            &self.relay,
+            prompt_request(agent_id, session_id, text),
+        )
+        .await
+        .expect("the turn ends");
+    }
+
+    /// The `pid=` chunk the mock answers a `pid` prompt with.
+    async fn agent_pid(&self, agent_id: &AgentId, session_id: &SessionId) -> String {
+        self.prompt(agent_id, session_id, "pid").await;
+        let records = self
+            .log_until(session_id, |records| {
+                texts(records, "message_chunk")
+                    .iter()
+                    .any(|text| text.starts_with("pid="))
+            })
+            .await;
+        texts(&records, "message_chunk")
+            .into_iter()
+            .find(|text| text.starts_with("pid="))
+            .unwrap()
+            .to_string()
     }
 
     async fn log_until(
@@ -246,6 +274,17 @@ impl Host {
             );
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
+    }
+}
+
+fn prompt_request(agent_id: &AgentId, session_id: &SessionId, text: &str) -> PromptTurnRequest {
+    let blocks = vec![ContentBlock::Text(TextContent::new(text))];
+    PromptTurnRequest {
+        agent_id: agent_id.clone(),
+        session_id: session_id.clone(),
+        content: blocks.clone(),
+        record_content: blocks,
+        turn_id: Some(format!("client-turn-{}", uuid::Uuid::new_v4())),
     }
 }
 
@@ -331,7 +370,11 @@ async fn a_chat_at_its_limit_continues_on_the_account_with_most_room_with_no_cli
 
     let (work, spare) = (&host.accounts["Work"], &host.accounts["Spare"]);
     let snapshot = host.acp.claude_agent().accounts_snapshot().await.unwrap();
-    assert_eq!(snapshot.project_profiles.get(PROJECT), Some(spare));
+    assert_eq!(snapshot.project_profiles.get(PROJECT), Some(work));
+    assert_eq!(
+        snapshot.chat_profiles,
+        std::collections::BTreeMap::from([(session_id.0.clone(), spare.clone())])
+    );
     let live_agents = host.acp.list_agents();
     assert_eq!(live_agents.len(), 1);
     let new_agent = live_agents[0].clone();
@@ -364,7 +407,7 @@ async fn a_chat_at_its_limit_continues_on_the_account_with_most_room_with_no_cli
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_chat_sharing_the_agent_follows_the_switch_and_continues_its_cut_off_turn() {
+async fn only_the_chat_at_its_limit_moves_and_its_sibling_keeps_its_agent_and_turn() {
     let Some(host) = Host::start(
         &[("default", 90.0), ("Work", 100.0), ("Spare", 10.0)],
         "Work",
@@ -379,25 +422,26 @@ async fn a_chat_sharing_the_agent_follows_the_switch_and_continues_its_cut_off_t
     } = host.open_chat().await;
     let sibling = host.open_session(&old_agent).await;
     assert_ne!(sibling, limited);
+    let pid_before = host.agent_pid(&old_agent, &sibling).await;
     host.prompt_and_leave(&old_agent, &sibling, "hang");
     host.log_until(&sibling, |records| {
-        !texts(records, "user_prompt").is_empty()
+        texts(records, "user_prompt").contains(&"hang")
     })
     .await;
     let resets_at = now_secs() + 3600;
     host.prompt_and_leave(&old_agent, &limited, &format!("limit:{resets_at}"));
 
-    let records = host.log_until(&sibling, has_config_dir_chunk).await;
+    let records = host.log_until(&limited, has_config_dir_chunk).await;
 
-    let live_agents = host.acp.list_agents();
-    assert_eq!(live_agents.len(), 1);
-    let new_agent = live_agents[0].clone();
-    assert_ne!(new_agent, old_agent);
     let (work, spare) = (&host.accounts["Work"], &host.accounts["Spare"]);
+    let mut live_agents = host.acp.list_agents();
+    assert_eq!(live_agents.len(), 2);
+    live_agents.retain(|agent| *agent != old_agent);
+    let new_agent = live_agents.pop().unwrap();
     assert_eq!(
         actions(&records),
         vec![serde_json::json!({
-            "sessionId": sibling.0,
+            "sessionId": limited.0,
             "projectId": PROJECT,
             "action": "switched",
             "from": {"id": work, "name": "Work"},
@@ -408,11 +452,38 @@ async fn a_chat_sharing_the_agent_follows_the_switch_and_continues_its_cut_off_t
     );
     assert_eq!(
         texts(&records, "user_prompt"),
-        vec!["hang", switch_notice("Work", "Spare", "5-hour").as_str()]
+        vec![
+            format!("limit:{resets_at}").as_str(),
+            switch_notice("Work", "Spare", "5-hour").as_str()
+        ]
     );
-    assert!(host.acp.owns_session(&new_agent, sibling.clone()).await.unwrap());
+    let spare_dir = host.state().join("claude-accounts").join(spare);
+    assert_eq!(
+        texts(&records, "message_chunk"),
+        vec![format!("config_dir={}", spare_dir.display()).as_str()]
+    );
     assert!(host.acp.owns_session(&new_agent, limited.clone()).await.unwrap());
+    assert!(!host.acp.owns_session(&old_agent, limited.clone()).await.unwrap());
+
+    let snapshot = host.acp.claude_agent().accounts_snapshot().await.unwrap();
+    assert_eq!(snapshot.project_profiles.get(PROJECT), Some(work));
+    assert_eq!(
+        snapshot.chat_profiles,
+        std::collections::BTreeMap::from([(limited.0.clone(), spare.clone())])
+    );
+    assert!(host.acp.owns_session(&old_agent, sibling.clone()).await.unwrap());
+    assert!(host
+        .acp
+        .is_turn_active(&old_agent, sibling.clone())
+        .await
+        .unwrap());
+    let sibling_log = host.log_until(&sibling, |_| true).await;
+    assert_eq!(actions(&sibling_log), Vec::<Value>::new());
+    assert_eq!(texts(&sibling_log, "user_prompt"), vec!["pid", "hang"]);
+    let third = host.open_session(&old_agent).await;
+    assert_eq!(host.agent_pid(&old_agent, &third).await, pid_before);
     let _ = host.acp.kill(&new_agent).await;
+    let _ = host.acp.kill(&old_agent).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -542,11 +613,6 @@ async fn a_resume_due_after_a_restart_marks_the_chat_for_its_client() {
     drop(handle);
 }
 
-fn schedule_file(host: &Host) -> Value {
-    serde_json::from_slice(&std::fs::read(host.state().join(super::SCHEDULE_FILE)).unwrap())
-        .unwrap()
-}
-
 /// Poll `found` until it returns a value.
 async fn eventually<T, F, Fut>(what: &str, found: F) -> T
 where
@@ -561,65 +627,6 @@ where
         assert!(tokio::time::Instant::now() < deadline, "never saw: {what}");
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_chat_waiting_for_its_reset_continues_when_a_sibling_moves_the_agent_to_room() {
-    let Some(host) = Host::start(
-        &[("default", 90.0), ("Work", 100.0), ("Spare", 10.0)],
-        "Work",
-    )
-    .await
-    else {
-        return;
-    };
-    let OpenChat {
-        agent_id: old_agent,
-        session_id: limited,
-    } = host.open_chat().await;
-    let waiting = host.open_session(&old_agent).await;
-    let waits_until = now_secs() + 3600;
-    host.set_resume(&waiting, Some(waits_until)).await;
-    let resets_at = now_secs() + 3600;
-    host.prompt_and_leave(&old_agent, &limited, &format!("limit:{resets_at}"));
-
-    let records = host.log_until(&waiting, has_config_dir_chunk).await;
-
-    let live_agents = host.acp.list_agents();
-    assert_eq!(live_agents.len(), 1);
-    let new_agent = live_agents[0].clone();
-    let (work, spare) = (&host.accounts["Work"], &host.accounts["Spare"]);
-    assert_eq!(
-        actions(&records),
-        vec![
-            serde_json::json!({
-                "sessionId": waiting.0,
-                "projectId": PROJECT,
-                "action": "resume_scheduled",
-                "at": waits_until * 1000,
-            }),
-            serde_json::json!({
-                "sessionId": waiting.0,
-                "projectId": PROJECT,
-                "action": "switched",
-                "from": {"id": work, "name": "Work"},
-                "to": {"id": spare, "name": "Spare"},
-                "fromAgentId": old_agent.0,
-                "newAgentId": new_agent.0,
-            }),
-        ]
-    );
-    assert_eq!(
-        texts(&records, "user_prompt"),
-        vec![switch_notice("Work", "Spare", "5-hour").as_str()]
-    );
-    let spare_dir = host.state().join("claude-accounts").join(spare);
-    assert_eq!(
-        texts(&records, "message_chunk"),
-        vec![format!("config_dir={}", spare_dir.display()).as_str()]
-    );
-    assert_eq!(schedule_file(&host)["resumes"], serde_json::json!([]));
-    let _ = host.acp.kill(&new_agent).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -679,8 +686,9 @@ async fn a_chat_a_client_reopened_after_its_own_switch_stays_on_the_clients_agen
     } = host.open_chat().await;
     host.acp
         .claude_agent()
-        .set_project_account(
+        .set_chat_account(
             PROJECT,
+            &session_id.0,
             Some(&host.accounts["Spare"]),
             None,
             SignInCheck::Skip,

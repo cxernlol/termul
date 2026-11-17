@@ -285,6 +285,18 @@ export interface AcpTransport {
     accountId: string | null,
     expectedAccountId?: string
   ): Promise<boolean>
+  /**
+   * The chat's own Account; `null` makes the chat follow its Project again.
+   * With `expectedAccountId` the host applies the choice only while the chat
+   * resolves to that Account (chat, then Project, then Default). Resolves
+   * whether the choice applied.
+   */
+  setChatClaudeAccount(
+    projectId: string,
+    sessionId: string,
+    accountId: string | null,
+    expectedAccountId?: string
+  ): Promise<boolean>
   setClaudeAutoSwitch(enabled: boolean): Promise<void>
   /** The host continues the chat at `at` (epoch ms) after its limit resets; `null` cancels. */
   setClaudeResume(sessionId: string, at: number | null): Promise<void>
@@ -350,11 +362,15 @@ export interface AcpTransport {
     config: AgentConfig,
     options?: CommandCallOptions
   ): Promise<SpawnAgentResult>
-  /** `projectId` selects the Claude Account of a managed Claude agent. */
+  /**
+   * `projectId` selects the Claude Account of a managed Claude agent;
+   * `sessionId`, the existing chat the agent opens, selects that chat's own.
+   */
   spawnAgent(
     config: AgentConfig,
     options?: CommandCallOptions,
-    projectId?: string | null
+    projectId?: string | null,
+    sessionId?: string | null
   ): Promise<SpawnAgentResult>
   killAgent(agentId: AgentId): Promise<void>
   listAgents(): Promise<AgentId[]>

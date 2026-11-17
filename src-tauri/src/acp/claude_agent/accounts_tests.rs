@@ -108,7 +108,7 @@ async fn a_project_account_exports_its_config_dir_and_probes_that_login() {
     let mut config = managed(&h.entrypoint);
     assert_eq!(
         h.service
-            .prepare_managed_launch(&mut config, Some("office"))
+            .prepare_managed_launch(&mut config, Some("office"), None)
             .await
             .unwrap(),
         ClaudeLaunchAuth::Account(work.id.clone())
@@ -126,7 +126,7 @@ async fn the_builtin_account_leaves_the_host_config_dir_alone() {
     let mut config = managed(&h.entrypoint);
     assert_eq!(
         h.service
-            .prepare_managed_launch(&mut config, Some("office"))
+            .prepare_managed_launch(&mut config, Some("office"), None)
             .await
             .unwrap(),
         ClaudeLaunchAuth::Account("default".to_string())
@@ -147,7 +147,7 @@ async fn a_signed_out_project_account_names_the_account() {
     let mut config = managed(&h.entrypoint);
     let error = h
         .service
-        .prepare_managed_launch(&mut config, Some("office"))
+        .prepare_managed_launch(&mut config, Some("office"), None)
         .await
         .unwrap_err();
     assert!(error.contains("\"Work\" is not signed in"), "{error}");
@@ -176,7 +176,7 @@ async fn a_project_env_config_dir_on_the_builtin_account_is_the_one_probed() {
     let mut config = with_env_config_dir(&h.entrypoint, work_dir().to_str().unwrap());
     assert_eq!(
         h.service
-            .prepare_managed_launch(&mut config, Some("office"))
+            .prepare_managed_launch(&mut config, Some("office"), None)
             .await
             .unwrap(),
         ClaudeLaunchAuth::Fixed
@@ -198,7 +198,7 @@ async fn a_project_env_config_dir_overrides_the_project_account() {
     let mut config = with_env_config_dir(&h.entrypoint, work_dir().to_str().unwrap());
     assert_eq!(
         h.service
-            .prepare_managed_launch(&mut config, Some("office"))
+            .prepare_managed_launch(&mut config, Some("office"), None)
             .await
             .unwrap(),
         ClaudeLaunchAuth::Fixed
@@ -216,7 +216,7 @@ async fn a_signed_out_project_env_config_dir_names_the_project_env() {
     let mut config = with_env_config_dir(&h.entrypoint, work_dir().to_str().unwrap());
     let error = h
         .service
-        .prepare_managed_launch(&mut config, Some("office"))
+        .prepare_managed_launch(&mut config, Some("office"), None)
         .await
         .unwrap_err();
     assert_eq!(
@@ -236,7 +236,7 @@ async fn a_relative_project_env_config_dir_falls_back_to_the_account_dir_for_pro
     let mut config = with_env_config_dir(&h.entrypoint, "relative/dir");
     assert_eq!(
         h.service
-            .prepare_managed_launch(&mut config, Some("office"))
+            .prepare_managed_launch(&mut config, Some("office"), None)
             .await
             .unwrap(),
         ClaudeLaunchAuth::Account(work.id.clone())
@@ -254,7 +254,7 @@ async fn a_relative_project_env_config_dir_without_an_account_uses_the_host_dir(
     let mut config = with_env_config_dir(&h.entrypoint, "relative/dir");
     assert_eq!(
         h.service
-            .prepare_managed_launch(&mut config, Some("office"))
+            .prepare_managed_launch(&mut config, Some("office"), None)
             .await
             .unwrap(),
         ClaudeLaunchAuth::Account("default".to_string())
@@ -485,7 +485,7 @@ async fn a_signed_out_spawn_carries_the_signed_out_tag() {
     let mut config = managed(&h.entrypoint);
     let error = h
         .service
-        .prepare_managed_launch(&mut config, Some("office"))
+        .prepare_managed_launch(&mut config, Some("office"), None)
         .await
         .unwrap_err();
     assert_eq!(

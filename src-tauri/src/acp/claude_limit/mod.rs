@@ -1,7 +1,7 @@
 //! The host acts when a managed Claude chat reaches its account's plan limit,
-//! with or without a client connected: it moves the chat's project to the
-//! signed-in account with the most room and continues the chat there, or
-//! continues it when the limit resets. The renderer only shows what happened
+//! with or without a client connected: it moves that chat alone to the
+//! signed-in account with the most room and continues it there, or continues
+//! it when the limit resets. The renderer only shows what happened
 //! (`acp:claude_limit_action`).
 
 use std::collections::HashMap;
