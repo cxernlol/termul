@@ -48,6 +48,7 @@ export interface SessionSnapshot {
   committedSubmit: boolean
   completionPending: boolean
   alternateScreen: boolean
+  heldPromptGeneration: number | null
   cwd?: string
 }
 
@@ -100,7 +101,11 @@ function reducePromptEvent(
       cwd
     }
   })
-  return reduced.state === input ? current : fromReducerState(reduced.state, cwd)
+  if (reduced.state === input) return current
+  const next = fromReducerState(reduced.state, cwd)
+  // The Submitting override only lets the prompt mount. A prompt held for the
+  // alternate screen keeps the accepted submit until the leave mounts it.
+  return next.mode === current.mode ? { ...next, committedSubmit: current.committedSubmit } : next
 }
 
 function reduceStartedOrFinished(
@@ -204,6 +209,24 @@ function commitSubmission(ctx: StoreContext, id: string, current: SessionSnapsho
     return
   token.committed = true
   commandDraftStore.submitAccepted(id)
+}
+
+/** A newer editor prompt after a submitted command accepts it and clears its draft. */
+function settlePromptSubmission(
+  ctx: StoreContext,
+  id: string,
+  current: SessionSnapshot,
+  next: SessionSnapshot
+): void {
+  if (
+    (current.phase === 'Submitting' ||
+      (current.phase === 'Executing' && current.committedSubmit)) &&
+    next.mode === 'Editor' &&
+    next.promptGeneration !== current.promptGeneration
+  ) {
+    commitSubmission(ctx, id, current)
+    commandDraftStore.submitAccepted(id)
+  }
 }
 
 function logSubmit(message: string): void {
@@ -328,15 +351,7 @@ function apply(ctx: StoreContext, id: string, event: SessionLifecycleInput): Ses
   if (kind === 'Desync') return applyDesync(ctx, id, event)
   if (kind === 'PromptReady') {
     const next = reducePromptEvent(sessionId, current, event)
-    if (
-      (current.phase === 'Submitting' ||
-        (current.phase === 'Executing' && current.committedSubmit)) &&
-      next.mode === 'Editor' &&
-      next.promptGeneration !== current.promptGeneration
-    ) {
-      commitSubmission(ctx, id, current)
-      commandDraftStore.submitAccepted(id)
-    }
+    settlePromptSubmission(ctx, id, current, next)
     return write(ctx, id, next)
   }
   if (kind === 'CommandStarted' || kind === 'CommandFinished') {
@@ -361,7 +376,15 @@ function applyScreen(
     reduced.state.alternateScreen === current.alternateScreen
   )
     return current
-  return write(ctx, id, fromReducerState(reduced.state, current.cwd))
+  const next = fromReducerState(reduced.state, current.cwd)
+  if (next.mode === 'Editor' && current.mode !== 'Editor') {
+    // A prompt held during the alternate screen mounts once the leave is parsed.
+    settlePromptSubmission(ctx, id, current, next)
+    logSubmit(
+      `editor mounted: held prompt after alternate screen generation=${next.promptGeneration}`
+    )
+  }
+  return write(ctx, id, next)
 }
 
 export function createSessionStore() {

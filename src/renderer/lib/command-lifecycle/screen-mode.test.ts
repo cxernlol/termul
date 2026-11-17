@@ -26,7 +26,8 @@ function editorSession(): SessionState {
     lastExitCode: null,
     committedSubmit: false,
     completionPending: true,
-    alternateScreen: false
+    alternateScreen: false,
+    heldPromptGeneration: null
   }
 }
 

@@ -25,6 +25,7 @@ function registeredSession(overrides: Partial<SessionState> = {}): SessionState 
     committedSubmit: false,
     completionPending: false,
     alternateScreen: false,
+    heldPromptGeneration: null,
     ...overrides
   }
 }
@@ -653,20 +654,43 @@ describe('reduceSession', () => {
     expect(result.writeDraft).toBe(false)
   })
 
-  it('a prompt inside the alternate screen keeps the PTY', () => {
+  it('a prompt inside the alternate screen keeps the PTY until the leave', () => {
     const entered = reduceSession(registeredSession({ mode: 'Editor', phase: 'AtPrompt' }), {
       type: 'AlternateScreenEnter'
     })
     expect(entered.state.alternateScreen).toBe(true)
     expect(entered.state.mode).toBe('PTY')
-    expectIgnored(entered.state, promptEvent(2))
     const prompt = reduceSession(entered.state, promptEvent(2))
+    expect(prompt.state.mode).toBe('PTY')
+    expect(prompt.state.heldPromptGeneration).toBe(2)
+    expect(prompt.writeDraft).toBe(false)
     const left = reduceSession(prompt.state, { type: 'AlternateScreenLeave' })
-    expect(left.state.alternateScreen).toBe(false)
+    expect(left.state).toMatchObject({
+      alternateScreen: false,
+      mode: 'Editor',
+      phase: 'AtPrompt',
+      promptGeneration: 2,
+      heldPromptGeneration: null
+    })
+    expect(left.writeDraft).toBe(false)
+  })
+
+  it('a held prompt is replaced by a newer one and dropped by a stale one', () => {
+    const entered = reduceSession(
+      registeredSession({ mode: 'PTY', phase: 'Executing', committedSubmit: true }),
+      { type: 'AlternateScreenEnter' }
+    )
+    const first = reduceSession(entered.state, promptEvent(2))
+    const second = reduceSession(first.state, promptEvent(3))
+    expect(second.state.heldPromptGeneration).toBe(3)
+    const prompt = promptEvent(4)
+    const unsuppressed = reduceSession(second.state, {
+      ...prompt,
+      frame: { ...prompt.frame, prompt_suppressed: false }
+    })
+    expect(unsuppressed.state.heldPromptGeneration).toBeNull()
+    const left = reduceSession(unsuppressed.state, { type: 'AlternateScreenLeave' })
     expect(left.state.mode).toBe('PTY')
-    const result = reduceSession(left.state, promptEvent(3))
-    expect(result.state.mode).toBe('Editor')
-    expect(result.writeDraft).toBe(false)
   })
 
   it('a prompt after process exit stays exited', () => {

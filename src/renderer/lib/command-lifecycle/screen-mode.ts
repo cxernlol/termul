@@ -15,7 +15,8 @@ export function initialSessionState(): SessionState {
     lastExitCode: null,
     committedSubmit: false,
     completionPending: false,
-    alternateScreen: false
+    alternateScreen: false,
+    heldPromptGeneration: null
   }
 }
 
