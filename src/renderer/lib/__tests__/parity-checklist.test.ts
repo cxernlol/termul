@@ -2317,7 +2317,8 @@ describe('Claude Accounts parity (ADR-0004)', () => {
       'list_claude_usage',
       'set_default_claude_account',
       'set_project_claude_account',
-      'set_claude_auto_switch'
+      'set_claude_auto_switch',
+      'set_claude_resume'
     ]) {
       expect(wsTransport).toContain(`'${request}'`)
       expect(dispatch).toContain(`"${request}" => handle_${request}`)

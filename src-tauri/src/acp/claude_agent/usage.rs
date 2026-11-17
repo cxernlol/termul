@@ -52,7 +52,7 @@ try {
 /// Runs the usage probe for one config dir (`None` = the host's own) and
 /// returns its raw stdout.
 #[async_trait::async_trait]
-pub(super) trait ClaudeUsageProbe: Send + Sync {
+pub(crate) trait ClaudeUsageProbe: Send + Sync {
     async fn probe(&self, config_dir: Option<&Path>) -> Result<String, String>;
 }
 

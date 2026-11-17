@@ -133,7 +133,37 @@ unknown reply shape yields no windows instead of an error.
 
 During a turn, the Claude ACP adapter also attaches the live rate-limit state
 (`allowed`, `allowed_warning`, or `rejected`, with reset time and percent) to
-`usage_update` events. Troupe forwards it as `rateLimit` on `acp:usage_update`.
+`usage_update` events. Troupe forwards a state that does not block the chat as
+`rateLimit` on `acp:usage_update`. A state that blocks the chat (`rejected`
+with no overage in use) travels only as `limitReached`, so a client from before
+the host switch never runs its own account switch on it.
+
+### At the limit
+
+The host acts on a blocking limit itself, with or without a client connected.
+A supervisor in the host (`src-tauri/src/acp/claude_limit/`) receives each
+`limitReached` from a managed `claude-acp` agent that runs on a Troupe Account
+inside a Project:
+
+- When automatic switching is on and another signed-in Account has room, the
+  host moves the Project to the Account with the most room. It stops the
+  chat's agent, starts a new one from the launch recipe the client's spawn
+  recorded, resumes the same session, and sends a short continuation notice as
+  a user prompt. The other durable chats of the stopped agent reopen on the
+  new agent. A chat whose turn the stop cut off, or that waited for its own
+  scheduled resume, also gets the notice.
+- When no Account has room, the host schedules a resume at the reset time in
+  `claude-limit-resumes.json` in the host state folder. The resume survives the
+  agent being reaped and a host restart. A turn of the chat, closing it, or
+  `set_claude_resume` with `at: null` cancels it.
+- When the agent runs an older Account than its Project (another chat moved
+  the Project first), the host restarts it on the Project's Account.
+
+Each step is recorded as `acp:claude_limit_action` in the chat's session log,
+and clients follow it. While the host moves a chat, a client that reopens it
+waits for the move and then finds it on the new agent. The launch recipe stays
+in memory only, and the host forgets it when the chat closes or its agent stops,
+unless the chat waits for a scheduled resume.
 
 `remove` signs the Claude CLI out of that Account, deletes its folder (never
 the shared folder), and moves its Projects back to the Default Account. The

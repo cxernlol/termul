@@ -171,6 +171,53 @@ pub(super) async fn handle_set_claude_auto_switch(
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub(super) struct SetClaudeResumePayload {
+    session_id: String,
+    /// Epoch milliseconds; `null` cancels the chat's scheduled resume.
+    at: Option<u64>,
+}
+
+/// `set_claude_resume { sessionId, at }` → `{}`: the host continues the chat
+/// at `at` after its Claude limit resets, or cancels that with `null`.
+pub(super) async fn handle_set_claude_resume(
+    id: String,
+    payload: &Value,
+    acp: &Arc<AcpManager>,
+) -> WsReply {
+    let parsed: SetClaudeResumePayload = match serde_json::from_value(payload.clone()) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            return WsReply::err(
+                id,
+                WsErrorCode::Unsupported,
+                format!("malformed set_claude_resume payload (want sessionId, at): {error}"),
+            )
+        }
+    };
+    let Some(limit) = acp.claude_limit() else {
+        return WsReply::err(
+            id,
+            WsErrorCode::Unsupported,
+            "this host does not continue Claude chats at a reset".to_string(),
+        );
+    };
+    let at = parsed
+        .at
+        .map(|ms| std::time::UNIX_EPOCH + std::time::Duration::from_millis(ms));
+    match limit
+        .set_resume(crate::acp::SessionId(parsed.session_id), at)
+        .await
+    {
+        Ok(()) => WsReply::ok(id, Some(json!({}))),
+        Err(error) => {
+            warn!(error = %error, "set_claude_resume failed");
+            WsReply::err(id, WsErrorCode::Unsupported, error)
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(super) struct AddClaudeAccountPayload {
     name: String,
 }

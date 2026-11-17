@@ -1098,6 +1098,10 @@ export class WsAcpTransport implements AcpTransport {
     await this.request('set_claude_auto_switch', { enabled })
   }
 
+  async setClaudeResume(sessionId: string, at: number | null): Promise<void> {
+    await this.request('set_claude_resume', { sessionId, at })
+  }
+
   async addClaudeAccount(name: string, options?: CommandCallOptions): Promise<ClaudeAccount> {
     return this.request<ClaudeAccount>('add_claude_account', { name }, undefined, options)
   }

@@ -29,7 +29,8 @@ pub use accounts::SignInCheck;
 pub use logins::LinkCodeError;
 
 use cli::{claude_cli_command, SystemClaudeRuntimeProbe};
-use usage::{ClaudeUsageProbe, SystemClaudeUsageProbe, UsageCache};
+pub(crate) use usage::ClaudeUsageProbe;
+use usage::{SystemClaudeUsageProbe, UsageCache};
 
 /// Extract the major version from Node's canonical `vMAJOR.MINOR.PATCH` output.
 pub fn parse_node_major(output: &str) -> Option<u64> {
@@ -311,6 +312,23 @@ fn parse_auth_mode(value: &str) -> Result<ClaudeAuthMode, String> {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClaudeLaunchAuth {
+    /// Not the host-installed Claude agent.
+    Unmanaged,
+    /// API-key mode, or a config dir the project env sets: switching the
+    /// project's account would not change it.
+    Fixed,
+    Account(String),
+}
+
+impl ClaudeLaunchAuth {
+    #[must_use]
+    pub fn host_auth_ready(&self) -> bool {
+        !matches!(self, Self::Unmanaged)
+    }
+}
+
 /// Which setting chose the Claude config dir of a managed agent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ConfigDirSource {
@@ -467,6 +485,14 @@ impl ClaudeAgentService {
         );
         service.profile_store = store;
         service
+    }
+
+    /// The host state dir that holds the account store; `None` without host
+    /// state.
+    #[must_use]
+    pub fn state_dir(&self) -> Option<&Path> {
+        self.profile_store.as_ref()?;
+        self.install_root.as_deref()?.parent()
     }
 
     #[must_use]
@@ -750,17 +776,19 @@ impl ClaudeAgentService {
         &self,
         config: &mut crate::acp::config::AgentConfig,
     ) -> Result<bool, String> {
-        self.prepare_managed_config_for_project(config, None).await
+        self.prepare_managed_launch(config, None)
+            .await
+            .map(|auth| auth.host_auth_ready())
     }
 
     /// [`prepare_managed_config`](Self::prepare_managed_config) for a spawn in
     /// `project_id`: in Claude Code mode the agent runs with the config
     /// directory of that Project's Account.
-    pub async fn prepare_managed_config_for_project(
+    pub async fn prepare_managed_launch(
         &self,
         config: &mut crate::acp::config::AgentConfig,
         project_id: Option<&str>,
-    ) -> Result<bool, String> {
+    ) -> Result<ClaudeLaunchAuth, String> {
         if !self.is_managed_config(config) {
             // A config that claims the managed claude-acp identity but fails
             // verification is a security-relevant boundary — log it. Custom
@@ -770,7 +798,7 @@ impl ClaudeAgentService {
                     "[acp-claude] config claims the managed claude-acp identity but failed host verification; treating as unmanaged"
                 );
             }
-            return Ok(false);
+            return Ok(ClaudeLaunchAuth::Unmanaged);
         }
         if let Err(reason) = self.runtime_probe.ensure_supported().await {
             log::warn!("[acp-claude] managed config rejected: {reason}");
@@ -837,12 +865,17 @@ impl ClaudeAgentService {
                     "[acp-claude] managed config uses the {} Claude profile",
                     source.label()
                 );
-                Ok(true)
+                Ok(match source {
+                    ConfigDirSource::ProjectEnv => ClaudeLaunchAuth::Fixed,
+                    ConfigDirSource::Host | ConfigDirSource::Linked => {
+                        ClaudeLaunchAuth::Account(account.account_id)
+                    }
+                })
             }
             Ok(ClaudeAuthMode::ApiKey) => match self.credentials.get(API_KEY_ACCOUNT) {
                 Ok(Some(key)) if !key.trim().is_empty() => {
                     config.env.insert(ANTHROPIC_API_KEY_ENV.to_string(), key);
-                    Ok(true)
+                    Ok(ClaudeLaunchAuth::Fixed)
                 }
                 Ok(_) => {
                     log::warn!(

@@ -286,6 +286,8 @@ export interface AcpTransport {
     expectedAccountId?: string
   ): Promise<boolean>
   setClaudeAutoSwitch(enabled: boolean): Promise<void>
+  /** The host continues the chat at `at` (epoch ms) after its limit resets; `null` cancels. */
+  setClaudeResume(sessionId: string, at: number | null): Promise<void>
   /** Add a signed-out Account; a same-id resend answers with the first one. */
   addClaudeAccount(name: string, options?: CommandCallOptions): Promise<ClaudeAccount>
   renameClaudeAccount(accountId: string, name: string): Promise<void>

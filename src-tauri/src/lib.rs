@@ -190,6 +190,7 @@ pub use acp::host_mcp;
 // through this path (mirrors how `onboard::run()` is dispatched).
 pub use acp::claude_admin;
 pub use acp::codex_admin;
+pub use acp::claude_limit;
 // Codex Account store (PR1). The desktop and `troupe-server` reach it through
 // `AcpManager`; this re-export keeps the secret-free types part of the host
 // library surface the same way the Claude Account types are reachable.
@@ -1725,6 +1726,8 @@ pub fn run() {
             // The shared-live web server (`remote/host.rs`) pulls both
             // `Arc<AcpManager>` and `Arc<WsRelaySink>` as Tauri state and serves
             // the desktop's live sessions to a browser/phone over the LAN.
+            let (claude_limit, claude_limit_inbox) =
+                acp::claude_limit::ClaudeLimitHandle::channel();
             let (ws_relay, acp_manager) = match &session_persistence {
                 Some(persistence) => {
                     let relay = Arc::new(WsRelaySink::with_persistence(
@@ -1732,7 +1735,7 @@ pub fn run() {
                         Arc::clone(persistence),
                     ));
                     let manager = Arc::new(AcpManager::with_persistence_and_host_agents(
-                        vec![relay.clone()],
+                        vec![relay.clone(), claude_limit.sink()],
                         Arc::clone(persistence),
                         Arc::clone(&claude_agent_service),
                         Arc::clone(&codex_agent_service),
@@ -1742,7 +1745,7 @@ pub fn run() {
                 None => {
                     let relay = Arc::new(WsRelaySink::new());
                     let manager = Arc::new(AcpManager::with_host_agents(
-                        vec![relay.clone()],
+                        vec![relay.clone(), claude_limit.sink()],
                         Arc::clone(&claude_agent_service),
                         Arc::clone(&codex_agent_service),
                     ));
@@ -1750,6 +1753,13 @@ pub fn run() {
                 }
             };
             host_perimeter::claim_for_process(acp_manager.host_plan_server_port());
+            acp::claude_limit::start(
+                &acp_manager,
+                &ws_relay,
+                claude_limit,
+                claude_limit_inbox,
+                tauri::async_runtime::handle().inner(),
+            );
             // Attach the permission and question rendezvous: every `/ws` client
             // (the desktop renderer's channel, a phone, a browser) answers
             // `acp:permission_request` and structured questions through them.

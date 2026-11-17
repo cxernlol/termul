@@ -1,9 +1,11 @@
 import { useState } from 'react'
 import { ChevronDown, Clock } from '@/components/icons'
+import { toastAccountChoiceError } from '@/components/settings/provider/account-choice-error'
 import { StatusDot } from '@/components/settings/provider/account-status'
 import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/spinner'
 import { useServerAdmitsRemoteWrites } from '@/hooks/use-server-admits-remote-writes'
+import { claudeAccountsApi } from '@/lib/claude-accounts-api'
 import { useSettingsModalStore } from '@/stores/settings-modal-store'
 import {
   COMPOSER_DOCK_TEXT_ACTION_CLASS,
@@ -14,13 +16,8 @@ import {
 } from '../composer/ComposerDock'
 import { ACCOUNT_MENU_TRIGGER_CLASS, AccountChoiceMenu } from './AccountChoiceMenu'
 import { choiceDotTone, choicePercent } from './account-choice'
-import {
-  formatClock,
-  isAtLimit,
-  useClaudeLimit,
-  useClaudeResumeStore,
-  windowName
-} from './use-claude-limit'
+import { useClaudeResumeAt } from './limit-actions'
+import { formatClock, isAtLimit, useClaudeLimit, windowName } from './use-claude-limit'
 import type { AccountChoice } from './use-project-claude-account'
 
 const sentence = (text: string): string => `${text[0].toUpperCase()}${text.slice(1)}.`
@@ -81,16 +78,21 @@ function ChosenAccountActions({
   )
 }
 
+function setResume(sessionId: string, at: number | null): void {
+  void claudeAccountsApi
+    .setResume(sessionId, at)
+    .catch((error) => toastAccountChoiceError(error, 'Could not change when the chat continues'))
+}
+
 /** "Continues at 14:05 · Cancel" while a resume is scheduled. */
 function ScheduledResume({ sessionId, at }: { sessionId: string; at: number }): React.JSX.Element {
-  const cancelResume = useClaudeResumeStore((s) => s.cancel)
   return (
     <span className="flex items-center gap-2 text-xs text-secondary-foreground">
       <Clock size={12} />
       Continues at {formatClock(at)}
       <button
         type="button"
-        onClick={() => cancelResume(sessionId)}
+        onClick={() => setResume(sessionId, null)}
         className="font-medium text-foreground underline-offset-2 hover:underline focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-focus-ring"
       >
         Cancel
@@ -109,7 +111,6 @@ function NoRoomActions({
   resetsAt: number | null
 }): React.JSX.Element {
   const openAppSettings = useSettingsModalStore((s) => s.openApp)
-  const schedule = useClaudeResumeStore((s) => s.schedule)
   const canAddAccount = useServerAdmitsRemoteWrites()
   return (
     <ComposerDockActions className="ml-0">
@@ -129,7 +130,7 @@ function NoRoomActions({
           type="button"
           size="xs"
           className="px-3"
-          onClick={() => schedule(sessionId, resetsAt * 1000)}
+          onClick={() => setResume(sessionId, resetsAt * 1000)}
         >
           <Clock />
           Continue when it resets
@@ -147,7 +148,7 @@ function NoRoomActions({
  */
 export function ClaudeLimitNotice({ sessionId }: { sessionId: string }): React.JSX.Element | null {
   const state = useClaudeLimit(sessionId)
-  const scheduledAt = useClaudeResumeStore((s) => s.at[sessionId] ?? null)
+  const scheduledAt = useClaudeResumeAt((s) => s[sessionId] ?? null)
   const [chosenId, setChosenId] = useState<string | null>(null)
   if (!state || !isAtLimit(state.limit)) return null
 

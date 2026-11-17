@@ -74,10 +74,14 @@ pub(crate) use gates::{
 };
 mod history;
 mod import_session_history;
+mod launch;
+pub use launch::{AgentLaunch, LaunchRecipe};
 mod import_steps;
 mod native_subagents;
 mod project_binding;
 mod reopen;
+mod reopen_gate;
+pub use reopen_gate::HostMove;
 mod sign_in;
 mod spawn_error;
 pub(crate) mod stderr_ring;
@@ -537,6 +541,10 @@ pub struct AcpManager {
     /// Host-wide Codex Account homes. Only `acp-registry:codex-acp` receives
     /// a `CODEX_HOME`. Test managers leave this inactive.
     codex_agent: Arc<crate::acp::codex_agent::CodexAgentService>,
+    launches: Mutex<HashMap<AgentId, AgentLaunch>>,
+    recipes: Mutex<HashMap<SessionId, LaunchRecipe>>,
+    claude_limit: std::sync::OnceLock<crate::acp::claude_limit::ClaudeLimitHandle>,
+    reopen_gates: Arc<reopen_gate::ReopenGates>,
 }
 
 impl AcpManager {
@@ -580,6 +588,10 @@ impl AcpManager {
             host_plan_server,
             claude_agent,
             codex_agent: Arc::new(crate::acp::codex_agent::CodexAgentService::without_host_state()),
+            launches: Mutex::new(HashMap::new()),
+            recipes: Mutex::new(HashMap::new()),
+            claude_limit: std::sync::OnceLock::new(),
+            reopen_gates: Arc::default(),
         }
     }
 
@@ -634,6 +646,10 @@ impl AcpManager {
             host_plan_server,
             claude_agent,
             codex_agent: Arc::new(crate::acp::codex_agent::CodexAgentService::without_host_state()),
+            launches: Mutex::new(HashMap::new()),
+            recipes: Mutex::new(HashMap::new()),
+            claude_limit: std::sync::OnceLock::new(),
+            reopen_gates: Arc::default(),
         }
     }
 
@@ -766,11 +782,33 @@ impl AcpManager {
         command_id: Option<String>,
         project_id: Option<String>,
     ) -> Result<SpawnOutcome, String> {
-        let host_auth_ready = self
+        let launch_config = config.clone();
+        let (host_auth_ready, claude) = self
             .prepare_spawn_config(&mut config, project_id.as_deref())
             .await?;
-        self.spawn_with_sinks(config, host_auth_ready, self.sinks.clone(), command_id)
-            .await
+        let outcome = self
+            .spawn_with_sinks(config, host_auth_ready, self.sinks.clone(), command_id)
+            .await?;
+        self.record_agent_launch(
+            &outcome.agent_id,
+            AgentLaunch {
+                config: launch_config,
+                project_id,
+                claude,
+            },
+        );
+        Ok(outcome)
+    }
+
+    pub fn set_claude_limit(&self, handle: crate::acp::claude_limit::ClaudeLimitHandle) {
+        if self.claude_limit.set(handle).is_err() {
+            log::warn!("[claude-limit] supervisor already installed; kept the first");
+        }
+    }
+
+    #[must_use]
+    pub fn claude_limit(&self) -> Option<&crate::acp::claude_limit::ClaudeLimitHandle> {
+        self.claude_limit.get()
     }
 
     /// [`spawn`](Self::spawn) whose agent fans its events out to `sinks`
@@ -782,7 +820,7 @@ impl AcpManager {
         project_id: Option<&str>,
         sinks: Vec<Arc<dyn EventSink>>,
     ) -> Result<SpawnOutcome, String> {
-        let host_auth_ready = self.prepare_spawn_config(&mut config, project_id).await?;
+        let (host_auth_ready, _) = self.prepare_spawn_config(&mut config, project_id).await?;
         self.spawn_with_sinks(config, host_auth_ready, sinks, None)
             .await
     }
@@ -793,18 +831,18 @@ impl AcpManager {
         &self,
         config: &mut AgentConfig,
         project_id: Option<&str>,
-    ) -> Result<bool, String> {
+    ) -> Result<(bool, crate::acp::claude_agent::ClaudeLaunchAuth), String> {
         crate::acp::factory_key::normalize_launch_args(config);
         crate::acp::factory_key::inject(config)?;
-        let claude_ready = self
+        let claude = self
             .claude_agent
-            .prepare_managed_config_for_project(config, project_id)
+            .prepare_managed_launch(config, project_id)
             .await?;
         let codex_ready = self
             .codex_agent
             .prepare_managed_config_for_project(config, project_id)
             .await?;
-        Ok(claude_ready || codex_ready)
+        Ok((claude.host_auth_ready() || codex_ready, claude))
     }
 
     /// The [`SpawnOutcome`] of the live agent spawned under `command_id`, or
@@ -1115,6 +1153,7 @@ impl AcpManager {
     /// driver stopped mid-query degrades to an empty set (logged) rather than
     /// failing the whole listing.
     pub async fn list_agent_summaries_with_ownership(&self) -> Vec<AgentSummary> {
+        self.host_moves_settled().await;
         let mut summaries = self.list_agent_summaries();
         for summary in &mut summaries {
             match self.agent_session_ids(&summary.id).await {
@@ -1219,6 +1258,9 @@ impl AcpManager {
         // Story 8: a promotable ephemeral session (warm pool) still gets the
         // plan tool — it becomes a durable chat on promotion, and plan-MCP
         // injection is `session/new`-time only.
+        let recipe_mcp = mcp_servers.clone();
+        let recipe_cwd = cwd.clone();
+        let recipe_directories = context.additional_directories.clone();
         let (combined_mcp_servers, plan_token): (Vec<McpServer>, Option<String>) =
             if !context.ephemeral || context.promotable {
                 let (port, token, provisional_sid) =
@@ -1270,6 +1312,13 @@ impl AcpManager {
                     self.host_plan_server
                         .bind_session(&token, &outcome.session_id.0);
                 }
+                self.record_launch_recipe(
+                    agent_id,
+                    &outcome.session_id.0,
+                    recipe_cwd,
+                    Some(recipe_mcp),
+                    recipe_directories,
+                );
                 Ok(outcome)
             }
             Err(e) => {
@@ -1302,10 +1351,34 @@ impl AcpManager {
             additional_directories,
             mcp_servers,
             false,
+            None,
         )
         .await
     }
 
+    /// [`Self::load_session`] of a chat `moving` holds.
+    pub async fn load_session_in_move(
+        &self,
+        moving: &HostMove,
+        agent_id: &AgentId,
+        session_id: SessionId,
+        cwd: String,
+        additional_directories: Vec<String>,
+        mcp_servers: Option<Vec<McpServer>>,
+    ) -> Result<SessionReopenOutcome, String> {
+        self.load_session_with(
+            agent_id,
+            session_id,
+            cwd,
+            additional_directories,
+            mcp_servers,
+            false,
+            Some(moving),
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
     async fn load_session_with(
         &self,
         agent_id: &AgentId,
@@ -1314,13 +1387,16 @@ impl AcpManager {
         additional_directories: Vec<String>,
         mcp_servers: Option<Vec<McpServer>>,
         import_history: bool,
+        moving: Option<&HostMove>,
     ) -> Result<SessionReopenOutcome, String> {
+        let _held = self.hold_unless_moving(moving, &session_id).await;
         self.reject_session_owned_by_other_mid_turn(agent_id, &session_id)
             .await?;
         let caps = self.capabilities(agent_id)?;
         gate_load_session(&caps)?;
         let directories = filter_additional_directories(&caps, &cwd, &additional_directories);
         let session_key = session_id.0.clone();
+        let recipe = (cwd.clone(), mcp_servers.clone(), additional_directories);
         // Resolve the command channel BEFORE a new plan token exists, so an
         // unknown agent returns without leaving a registered token behind.
         let tx = self.command_tx(agent_id)?;
@@ -1337,6 +1413,10 @@ impl AcpManager {
         })
         .await;
         self.settle_reopen_plan_token(&session_key, plan_token.as_deref(), reached_agent(&outcome));
+        if outcome.is_ok() {
+            let (cwd, mcp_servers, directories) = recipe;
+            self.record_launch_recipe(agent_id, &session_key, cwd, mcp_servers, directories);
+        }
         outcome
     }
 
@@ -1358,12 +1438,55 @@ impl AcpManager {
         additional_directories: Vec<String>,
         mcp_servers: Option<Vec<McpServer>>,
     ) -> Result<SessionReopenOutcome, String> {
+        self.resume_session_with(
+            agent_id,
+            session_id,
+            cwd,
+            additional_directories,
+            mcp_servers,
+            None,
+        )
+        .await
+    }
+
+    /// [`Self::resume_session`] of a chat `moving` holds.
+    pub async fn resume_session_in_move(
+        &self,
+        moving: &HostMove,
+        agent_id: &AgentId,
+        session_id: SessionId,
+        cwd: String,
+        additional_directories: Vec<String>,
+        mcp_servers: Option<Vec<McpServer>>,
+    ) -> Result<SessionReopenOutcome, String> {
+        self.resume_session_with(
+            agent_id,
+            session_id,
+            cwd,
+            additional_directories,
+            mcp_servers,
+            Some(moving),
+        )
+        .await
+    }
+
+    async fn resume_session_with(
+        &self,
+        agent_id: &AgentId,
+        session_id: SessionId,
+        cwd: String,
+        additional_directories: Vec<String>,
+        mcp_servers: Option<Vec<McpServer>>,
+        moving: Option<&HostMove>,
+    ) -> Result<SessionReopenOutcome, String> {
+        let _held = self.hold_unless_moving(moving, &session_id).await;
         self.reject_session_owned_by_other_mid_turn(agent_id, &session_id)
             .await?;
         let caps = self.capabilities(agent_id)?;
         gate_resume_session(&caps)?;
         let directories = filter_additional_directories(&caps, &cwd, &additional_directories);
         let session_key = session_id.0.clone();
+        let recipe = (cwd.clone(), mcp_servers.clone(), additional_directories);
         // Resolve the command channel BEFORE a new plan token exists, so an
         // unknown agent returns without leaving a registered token behind.
         let tx = self.command_tx(agent_id)?;
@@ -1379,6 +1502,10 @@ impl AcpManager {
         })
         .await;
         self.settle_reopen_plan_token(&session_key, plan_token.as_deref(), reached_agent(&outcome));
+        if outcome.is_ok() {
+            let (cwd, mcp_servers, directories) = recipe;
+            self.record_launch_recipe(agent_id, &session_key, cwd, mcp_servers, directories);
+        }
         outcome
     }
 
@@ -1484,6 +1611,8 @@ impl AcpManager {
         agent_id: &AgentId,
         session_id: SessionId,
     ) -> Result<(), String> {
+        // The client treats the chat as closed whatever the agent answers.
+        self.forget_launch_recipe(&session_id.0, Some(agent_id));
         let caps = self.capabilities(agent_id)?;
         gate_close_session(&caps)?;
         let tx = self.command_tx(agent_id)?;
@@ -1584,6 +1713,19 @@ impl AcpManager {
             return Err("prompt content must not be empty".to_string());
         }
         let tx = self.command_tx(agent_id)?;
+        // A turn of a durable chat (one with an accept hook) ends its
+        // scheduled resume. The driver runs the hook before the agent sees
+        // the prompt, so the signal precedes any limit the turn reaches.
+        let on_accept = match (on_accept, self.claude_limit.get()) {
+            (Some(hook), Some(limit)) => {
+                let (limit, session) = (limit.clone(), session_id.clone());
+                Some(Box::new(move || {
+                    limit.turn_started(session);
+                    hook();
+                }) as PromptAcceptHook)
+            }
+            (hook, _) => hook,
+        };
         let (accepted_tx, accepted_rx) = oneshot::channel();
         let (completion_tx, completion_rx) = oneshot::channel();
         tx.send(AcpCommand::SendPrompt {
@@ -1964,6 +2106,7 @@ impl AcpManager {
         persistence: &SessionPersistence,
         session_id: &str,
     ) -> Result<(), SessionPersistenceError> {
+        self.forget_launch_recipe(session_id, None);
         if let Ok(metadata) = persistence.metadata(session_id) {
             if metadata.kind == crate::acp::session_persistence::SessionKind::Quick {
                 // `runtime_agent_id` is the agent from create. Reopen starts a

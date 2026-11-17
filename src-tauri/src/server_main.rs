@@ -405,12 +405,21 @@ fn main() -> ExitCode {
                     Duration::from_secs(cfg.receipt_retention_secs),
                 )),
         );
+        let (claude_limit, claude_limit_inbox) =
+            termul_manager_lib::claude_limit::ClaudeLimitHandle::channel();
         let acp = Arc::new(AcpManager::with_persistence_and_host_agents(
-            vec![ws_relay.clone()],
+            vec![ws_relay.clone(), claude_limit.sink()],
             persistence,
             claude_agent,
             codex_agent,
         ));
+        termul_manager_lib::claude_limit::start(
+            &acp,
+            &ws_relay,
+            claude_limit,
+            claude_limit_inbox,
+            &tokio::runtime::Handle::current(),
+        );
         // Attach the permission and question rendezvous. The relay snapshots
         // `acp:permission_request` and `acp:question_request` events into them
         // (at-most-one per session, first-response-wins, TOCTOU). A ticket has

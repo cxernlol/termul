@@ -246,6 +246,9 @@ export function createInvokeAcpTransport(): AcpTransport {
     setClaudeAutoSwitch: async (enabled) => {
       await invoke('claude_accounts_set_auto_switch', { enabled })
     },
+    setClaudeResume: async (sessionId, at) => {
+      await invoke('claude_set_resume', { sessionId, at })
+    },
     addClaudeAccount: (name, options) =>
       invokeCommand<ClaudeAccount>('claude_accounts_add', { name }, options),
     renameClaudeAccount: async (accountId, name) => {

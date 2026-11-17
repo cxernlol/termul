@@ -62,7 +62,7 @@ impl ClaudeAgentService {
     }
 
     #[cfg(test)]
-    pub(super) fn set_usage_probe_for_test(&mut self, probe: Arc<dyn super::ClaudeUsageProbe>) {
+    pub(crate) fn set_usage_probe_for_test(&mut self, probe: Arc<dyn super::ClaudeUsageProbe>) {
         self.usage_probe = probe;
     }
 

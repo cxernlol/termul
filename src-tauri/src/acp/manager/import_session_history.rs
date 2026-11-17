@@ -25,6 +25,7 @@ impl AcpManager {
                 additional_directories,
                 None,
                 true,
+                None,
             )
             .await?;
         if outcome.answered_by_host {

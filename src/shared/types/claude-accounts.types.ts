@@ -80,3 +80,27 @@ export interface ClaudeAccountsSnapshot {
   /** A chat at its Account's limit continues on the signed-in Account with the most room. */
   autoSwitch: boolean
 }
+
+export interface ClaudeAccountRef {
+  id: string
+  name: string
+}
+
+/**
+ * `acp:claude_limit_action`: what the host did for a chat at its Account's
+ * limit. Mirrors the Rust `claude_limit::ClaudeLimitActionEvent`.
+ */
+export type ClaudeLimitActionEvent = { sessionId: string; projectId: string } & (
+  | {
+      action: 'switched'
+      from: ClaudeAccountRef
+      to: ClaudeAccountRef
+      fromAgentId: string
+      newAgentId: string
+    }
+  /** `at`: epoch milliseconds. */
+  | { action: 'resume_scheduled'; at: number }
+  | { action: 'resume_cancelled' }
+  | { action: 'resumed'; fromAgentId: string | null; newAgentId: string }
+  | { action: 'failed'; reason: string }
+)

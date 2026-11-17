@@ -182,6 +182,14 @@ pub struct ClaudeRateLimit {
     pub overage_in_use: bool,
 }
 
+impl ClaudeRateLimit {
+    /// The window is rejected and no paid overage carries the turn.
+    #[must_use]
+    pub fn blocks_chat(&self) -> bool {
+        self.status == "rejected" && !self.overage_in_use
+    }
+}
+
 /// Read the adapter's rate-limit `_meta`; `None` when absent or malformed.
 #[must_use]
 pub fn claude_rate_limit(meta: Option<&serde_json::Map<String, Value>>) -> Option<ClaudeRateLimit> {

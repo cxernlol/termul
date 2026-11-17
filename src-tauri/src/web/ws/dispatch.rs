@@ -180,6 +180,7 @@ pub(super) async fn route_request(req: WsRequest, env: &HandlerEnv) -> WsReply {
         "set_default_claude_account" => handle_set_default_claude_account(id, &req.payload, acp).await,
         "set_project_claude_account" => handle_set_project_claude_account(id, &req.payload, acp).await,
         "set_claude_auto_switch" => handle_set_claude_auto_switch(id, &req.payload, acp).await,
+        "set_claude_resume" => handle_set_claude_resume(id, &req.payload, acp).await,
         "add_claude_account" => handle_add_claude_account(id, &req.payload, acp).await,
         "rename_claude_account" => handle_rename_claude_account(id, &req.payload, acp).await,
         "remove_claude_account" => handle_remove_claude_account(id, &req.payload, acp).await,

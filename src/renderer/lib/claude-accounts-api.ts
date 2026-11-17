@@ -108,6 +108,10 @@ export const claudeAccountsApi = {
   setAutoSwitch: (enabled: boolean): Promise<void> =>
     logged('setAutoSwitch', () => getAcpTransport().setClaudeAutoSwitch(enabled)),
 
+  /** The host continues the chat at `at` (epoch ms) after its limit resets; `null` cancels. */
+  setResume: (sessionId: string, at: number | null): Promise<void> =>
+    logged('setResume', () => getAcpTransport().setClaudeResume(sessionId, at)),
+
   /** A lost reply is resent with the same command id, so it never adds twice. */
   add: (name: string): Promise<ClaudeAccount> =>
     logged('add', async () => {

@@ -3,14 +3,12 @@ import { useState } from 'react'
 import { toast } from 'sonner'
 import { create } from 'zustand'
 import { toastAccountChoiceError } from '@/components/settings/provider/account-choice-error'
+import { claudeAccountsApi } from '@/lib/claude-accounts-api'
 import { formatUsageReset } from '@/lib/claude-usage-format'
-import { logFrontendError } from '@/lib/log-api'
-import { restartClaudeSession, switchProjectClaudeAccount } from '@/stores/claude-account-switch'
+import { switchProjectClaudeAccount } from '@/stores/claude-account-switch'
+import { useClaudeResumeAt } from './limit-actions'
 import { type ChatClaudeAccount, useChatClaudeAccount } from './use-chat-claude-account'
 import type { AccountChoice } from './use-project-claude-account'
-
-/** Grace after a reset time before the prompt is sent again. */
-const RESUME_GRACE_MS = 15_000
 
 const WINDOW_NAMES: Record<string, string> = {
   five_hour: '5-hour',
@@ -32,48 +30,6 @@ export const isNearLimit = (limit: ClaudeRateLimit): boolean =>
 /** At the limit, and no paid overage covers the window. */
 export const isAtLimit = (limit: ClaudeRateLimit): boolean =>
   limit.status === 'rejected' && !limit.overageInUse
-
-/** "Continue when it resets" timers, by chat, kept outside the panel so a tab switch keeps them. */
-interface ResumeState {
-  at: Record<string, number>
-  timers: Record<string, ReturnType<typeof setTimeout>>
-  schedule: (sessionId: string, at: number) => void
-  cancel: (sessionId: string) => void
-}
-
-export const useClaudeResumeStore = create<ResumeState>((set, get) => ({
-  at: {},
-  timers: {},
-  schedule: (sessionId, at) => {
-    get().cancel(sessionId)
-    const timer = setTimeout(
-      () => {
-        set((s) => {
-          const { [sessionId]: _a, ...at } = s.at
-          const { [sessionId]: _t, ...timers } = s.timers
-          return { at, timers }
-        })
-        void logFrontendError({
-          level: 'info',
-          source: 'claudeLimit.resume',
-          message: `Limit window reset; continuing chat ${sessionId}`
-        })
-        void restartClaudeSession(sessionId, { resend: true, cancelTurn: true })
-      },
-      Math.max(0, at - Date.now() + RESUME_GRACE_MS)
-    )
-    set((s) => ({ at: { ...s.at, [sessionId]: at }, timers: { ...s.timers, [sessionId]: timer } }))
-  },
-  cancel: (sessionId) => {
-    const timer = get().timers[sessionId]
-    if (timer) clearTimeout(timer)
-    set((s) => {
-      const { [sessionId]: _a, ...at } = s.at
-      const { [sessionId]: _t, ...timers } = s.timers
-      return { at, timers }
-    })
-  }
-}))
 
 /**
  * Name of the Account each chat is switching to, from the card or from
@@ -110,7 +66,7 @@ export interface ClaudeLimit {
  */
 export function useClaudeLimit(sessionId: string): ClaudeLimit | null {
   const ctx = useChatClaudeAccount(sessionId)
-  const cancelResume = useClaudeResumeStore((s) => s.cancel)
+  const resumeAt = useClaudeResumeAt((s) => s[sessionId] ?? null)
   const switchingTo = useClaudeSwitchingStore((s) => s[sessionId] ?? null)
   const [, rerender] = useState(0)
   if (!ctx?.rateLimit) return null
@@ -120,16 +76,24 @@ export function useClaudeLimit(sessionId: string): ClaudeLimit | null {
   if (dismissed.has(key)) return null
 
   const projectId = ctx.projectId
+  const currentId = ctx.current.account.id
   const reloadAccounts = ctx.accounts.reload
   async function switchTo(target: AccountChoice): Promise<void> {
     if (useClaudeSwitchingStore.getState()[sessionId]) return
     setSwitchingTo(sessionId, target.account.name)
-    cancelResume(sessionId)
+    if (resumeAt !== null) void claudeAccountsApi.setResume(sessionId, null).catch(() => undefined)
     try {
-      await switchProjectClaudeAccount(projectId, target.account.id, {
-        continueSessionIds: limit.status === 'rejected' ? [sessionId] : undefined
+      const continued = await switchProjectClaudeAccount(projectId, target.account.id, {
+        continueSessionIds: limit.status === 'rejected' ? [sessionId] : undefined,
+        expectedAccountId: currentId
       })
       await reloadAccounts()
+      if (continued === null) {
+        toast.info('The account of this project already changed', {
+          description: 'Troupe or another device switched it first.'
+        })
+        return
+      }
       toast.success(`Switched to ${target.account.name}`)
     } catch (err) {
       toastAccountChoiceError(err, 'Could not switch')

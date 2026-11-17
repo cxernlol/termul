@@ -596,6 +596,7 @@ The class column is the request's command class, defined in `src-tauri/src/web/c
 | `set_default_claude_account` | idempotent | Chooses the Default Account. |
 | `set_project_claude_account` | idempotent | Chooses a Project's Account, or clears it with `null`. With `expectedAccountId`, applies only while the Project still uses that Account; replies `{ applied }`. |
 | `set_claude_auto_switch` | idempotent | Turns automatic switching at a usage limit on or off (default on). |
+| `set_claude_resume` | idempotent | `{sessionId, at}`: the host continues the chat at `at` (epoch ms) after its Claude limit resets, or cancels that with `at: null`, and replies `{}`. Refused for a chat that does not run on a Troupe-managed Claude Account. A turn of the chat, or closing it, also cancels the resume. |
 | `add_claude_account` | command | Adds a signed-out Account named `{name}` and replies with it. A resent command replays the first reply. |
 | `rename_claude_account` | idempotent | Renames `{accountId}` to `{name}` and replies `{}`. Renaming to the current name succeeds. |
 | `remove_claude_account` | idempotent | Signs the Claude CLI out of `{accountId}`, removes it and replies `{movedProjectIds}`, the Projects that moved to the Default Account. An Account that is already gone replies `{movedProjectIds: []}`. The built-in Account is refused. |
@@ -649,6 +650,7 @@ A session log event has one of three delivery tiers (`tier_of` in `src-tauri/src
 | `acp:mode_update` | session | Session log event (reliable). |
 | `acp:config_options_update` | session | Session log event (reliable). |
 | `acp:usage_update` | session | Session log event (reliable). Context-window use and optional cost. |
+| `acp:claude_limit_action` | session | Session log event (reliable). The host acted on a Claude chat at its Account's limit, `{sessionId, projectId, action}`. `action` is `switched` (`{from, to, fromAgentId, newAgentId}`), `resume_scheduled` (`{at}`, epoch ms), `resume_cancelled`, `resumed` (`{fromAgentId, newAgentId}`) or `failed` (`{reason}`). The host also sends `switched` or `resumed` for every other chat it reopened on the new agent. |
 | `acp:agent_working` | session | Session log event (reliable). Live only. The agent started or stopped working in the session outside a prompt turn, `{agentId, sessionId, working}`. The `list_agents` summary carries the current set as `workingSessions`. |
 | `acp:background_commands` | session | Session log event (reliable). Live only. The whole list of commands the agent left running in the session, `{agentId, sessionId, revision, commands}`. Every change on the agent takes the next `revision`, so a client replaces its list only with one of a higher revision from the same agent; two lists can arrive out of order. Each command is `{toolCallId, title, command, startedAtMs, state}`, with `endedAtMs` when `state` is `ended`. A command runs from a tool call that showed `terminal_info` and reported a final status without `terminal_exit`, or from a tool call still open when its prompt turn ended. After a turn that ended with any stop reason except `cancelled`, every open call counts. After a cancel, only a call `in_progress` that showed `terminal_info` counts. After an error or a timeout, none does. A call whose permission request the host cancelled never counts, and a call opened between turns does not count at the next turn end. It ends at its `terminal_exit`, at the final status of a call left open, or at a Qwen Code `background_task_completed` chunk naming it. An ended command stays listed until the session's next prompt starts. When the session listed commands, a close sends an empty list before `session_closed`, and so do a delete and the disposal of an ephemeral session. A stopped agent drops the list without this event (`session_closed` follows). The `list_agents` summary carries the lists as `backgroundCommands: {revision, sessions}`, where `sessions` is keyed by session id and leaves out a session with no command. |
 | `acp:permission_request` | session | Session log event (reliable). Live only: never written to the durable log. A `host:` request id with `_meta.termul.origin_kind = "browser"` is a host-originated browser consent ticket with the fixed options `allow_session`, `allow_project` and `deny`. |
@@ -801,11 +803,14 @@ vs in-place-update rule.
     amount: number
     currency: string
   }
+  rateLimit?: ClaudeRateLimit
+  limitReached?: ClaudeRateLimit
 }
 ```
 
 **Semantics:**
 
+- `rateLimit` is the Claude plan rate-limit state when it does not block the chat. A state that blocks the chat (`rejected` with no overage in use) travels only as `limitReached`, so clients that predate the host's account switch never run their own switch on it.
 - Emitted when the agent pushes a usage update; Rust forwards `used`/`size`/`cost` without additional gating (`UsageUpdateEvent` in `src-tauri/src/acp/events.rs`).
 - Each event **replaces** the renderer’s current usage state for that session (`used`/`size`; optional `cost` when accepted).
 - Renderer validation (`_onUsageUpdate` in `acp-store.ts`):

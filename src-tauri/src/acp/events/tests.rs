@@ -390,6 +390,7 @@ fn usage_update_serializes_camel_case() {
             percent: Some(83.0),
             overage_in_use: false,
         }),
+        limit_reached: None,
     };
     let value = serde_json::to_value(&event).unwrap();
     assert_eq!(value["agentId"], "a");
@@ -455,10 +456,51 @@ fn usage_update_omits_none_cost() {
         size: 128_000,
         cost: None,
         rate_limit: None,
+        limit_reached: None,
     };
     let value = serde_json::to_value(&event).unwrap();
     assert!(value.get("cost").is_none());
     assert!(value.get("rateLimit").is_none());
+    assert!(value.get("limitReached").is_none());
+}
+
+/// Clients that predate the host's account switch act on a rejected
+/// `rateLimit`, so a limit that blocks the chat must never travel under it.
+#[test]
+fn a_limit_that_blocks_the_chat_travels_only_as_limit_reached() {
+    use crate::acp::claude_accounts::usage::ClaudeRateLimit;
+    let limit = |status: &str, overage_in_use: bool| ClaudeRateLimit {
+        status: status.to_string(),
+        resets_at: Some(1_760_360_399),
+        kind: Some("five_hour".to_string()),
+        percent: Some(100.0),
+        overage_in_use,
+    };
+    let serialized = |limit: ClaudeRateLimit| {
+        let (rate_limit, limit_reached) = split_claude_limit(Some(limit));
+        let value = serde_json::to_value(UsageUpdateEvent {
+            agent_id: AgentId("a".to_string()),
+            session_id: SessionId::new("s"),
+            used: 0,
+            size: 0,
+            cost: None,
+            rate_limit,
+            limit_reached,
+        })
+        .unwrap();
+        (value.get("rateLimit").cloned(), value.get("limitReached").cloned())
+    };
+    let blocked = serde_json::json!({
+        "status": "rejected", "resetsAt": 1_760_360_399, "kind": "five_hour",
+        "percent": 100.0, "overageInUse": false,
+    });
+    assert_eq!(serialized(limit("rejected", false)), (None, Some(blocked)));
+    let carried = serde_json::json!({
+        "status": "rejected", "resetsAt": 1_760_360_399, "kind": "five_hour",
+        "percent": 100.0, "overageInUse": true,
+    });
+    assert_eq!(serialized(limit("rejected", true)), (Some(carried), None));
+    assert_eq!(split_claude_limit(None), (None, None));
 }
 
 /// Build a Model-category `select` option for the derivation tests.

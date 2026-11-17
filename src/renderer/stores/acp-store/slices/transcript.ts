@@ -1756,7 +1756,7 @@ export const createTranscriptSlice: StateCreator<AcpState, [], [], TranscriptSli
   _onUsageUpdate: (e) => {
     const reportsTokens =
       Number.isFinite(e.used) && Number.isFinite(e.size) && e.size > 0 && e.used > 0
-    const reportedLimit = e.rateLimit
+    const reportedLimit = e.rateLimit ?? e.limitReached
     if (!reportsTokens && !reportedLimit) return
     set((s) => {
       // Closed shells remain in `sessions` after eviction — still reject usage.
@@ -1778,7 +1778,7 @@ export const createTranscriptSlice: StateCreator<AcpState, [], [], TranscriptSli
       if (e.cost && Number.isFinite(e.cost.amount) && e.cost.amount > 0 && e.cost.currency) {
         next.cost = { amount: e.cost.amount, currency: e.cost.currency }
       }
-      const rateLimit = e.rateLimit ?? prev?.rateLimit
+      const rateLimit = reportedLimit ?? prev?.rateLimit
       if (rateLimit) next.rateLimit = rateLimit
       return {
         sessionUsage: { ...s.sessionUsage, [e.sessionId]: next }

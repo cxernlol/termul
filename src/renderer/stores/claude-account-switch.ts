@@ -47,7 +47,7 @@ export function isClaudeSession(state: AcpState, sessionId: string): boolean {
   return sessionAgentConfigId(state, sessionId) === CLAUDE_AGENT_CONFIG_ID
 }
 
-export function runsProjectAccount(state: AcpState, sessionId: string): boolean {
+function runsProjectAccount(state: AcpState, sessionId: string): boolean {
   const session = state.sessions[sessionId]
   return runsCurrentLaunch(
     state,
@@ -70,9 +70,6 @@ function openChatIds(): Set<string> {
   }
   return ids
 }
-
-/** Whether this client has the chat open: a tab, or kept for its off-screen Project. */
-export const isChatOpenHere = (sessionId: string): boolean => openChatIds().has(sessionId)
 
 async function stopOldAgent(agentId: string, reason: string): Promise<void> {
   void logFrontendError({

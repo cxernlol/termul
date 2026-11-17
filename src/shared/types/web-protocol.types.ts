@@ -287,6 +287,9 @@ export const WS_REQUEST_TYPES = [
   'set_project_claude_account',
   // `{ enabled }` → `{}`: host-wide automatic switching at a usage limit.
   'set_claude_auto_switch',
+  // `{ sessionId, at }` → `{}`: the host continues the chat at `at` (epoch
+  // ms) after its Claude limit resets; `at: null` cancels.
+  'set_claude_resume',
   // `{ name }` → the new signed-out `ClaudeAccount`.
   'add_claude_account',
   // `{ accountId, name }` → `{}`.
@@ -391,6 +394,7 @@ export const WS_COMMAND_CLASSES: Readonly<
   set_default_claude_account: ['idempotent', null],
   set_project_claude_account: ['idempotent', null],
   set_claude_auto_switch: ['idempotent', null],
+  set_claude_resume: ['idempotent', null],
   add_claude_account: ['command', 'payload'],
   rename_claude_account: ['idempotent', null],
   remove_claude_account: ['idempotent', null],

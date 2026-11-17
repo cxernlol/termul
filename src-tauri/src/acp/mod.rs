@@ -16,6 +16,7 @@ pub mod chat_history_store;
 pub mod claude_accounts;
 pub mod claude_admin;
 pub mod claude_agent;
+pub mod claude_limit;
 pub mod client;
 pub mod codex_accounts;
 pub mod codex_admin;
