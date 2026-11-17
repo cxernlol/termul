@@ -56,6 +56,56 @@ it('ghost text is not document text', async () => {
   expect(view.dom.querySelector('.cm-completion-ghost')?.textContent ?? null).toBe('tus')
 })
 
+it('a quoted path inserts its shell spelling and ghosts against it (#1879)', async () => {
+  const draft = 'cat "dir w'
+  const view = createEditor(
+    parseCompletionOutput(draft, draft.length, hexLine('dir with space')),
+    () => {}
+  )
+  view.dispatch({
+    changes: { from: 0, to: view.state.doc.length, insert: draft },
+    selection: { anchor: draft.length }
+  })
+  await openCompletion(view)
+
+  expect(ghostText(view.state)).toBe('ith space"')
+  expect(acceptHighlighted(view)).toBe(true)
+  expect(view.state.doc.toString()).toBe('cat "dir with space"')
+})
+
+it('an unquoted path with spaces is inserted escaped (#1879)', async () => {
+  const draft = 'cat dir'
+  const view = createEditor(
+    parseCompletionOutput(draft, draft.length, hexLine('dir with space')),
+    () => {}
+  )
+  view.dispatch({
+    changes: { from: 0, to: view.state.doc.length, insert: draft },
+    selection: { anchor: draft.length }
+  })
+  await openCompletion(view)
+
+  expect(acceptHighlighted(view)).toBe(true)
+  expect(view.state.doc.toString()).toBe('cat dir\\ with\\ space')
+})
+
+it.each([
+  ['cat a$', 'a$b.txt', '\\b.txt'],
+  ['cat "dir"\\ w', 'dir with space', 'ith\\ space'],
+  ['cat $"dir w', 'dir with space', 'ith space"']
+])('%s ghosts the tail of its typed spelling', async (draft, text, ghost) => {
+  const view = createEditor(parseCompletionOutput(draft, draft.length, hexLine(text)), () => {})
+  view.dispatch({
+    changes: { from: 0, to: view.state.doc.length, insert: draft },
+    selection: { anchor: draft.length }
+  })
+  await openCompletion(view)
+
+  expect(ghostText(view.state)).toBe(ghost)
+  expect(acceptHighlighted(view)).toBe(true)
+  expect(view.state.doc.toString()).toBe(draft + ghost)
+})
+
 afterAll(() => {
   geometryMethods.forEach((name, index) => {
     const original = originalGeometry[index]
@@ -87,6 +137,12 @@ function createEditor(
   })
   views.push(view)
   return view
+}
+
+function hexLine(text: string): string {
+  return Array.from(new TextEncoder().encode(text), (byte) =>
+    byte.toString(16).padStart(2, '0')
+  ).join('')
 }
 
 async function openCompletion(view: EditorView) {

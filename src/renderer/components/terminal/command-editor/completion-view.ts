@@ -50,7 +50,8 @@ function ghostDecorations(state: EditorState): DecorationSet {
   const { head, empty } = state.selection.main
   if (!row || !empty || head !== row.to || row.from < 0 || row.from > head) return Decoration.none
   const typed = state.doc.sliceString(row.from, head)
-  const suffix = row.text.startsWith(typed) ? row.text.slice(typed.length) : ''
+  const insert = row.insert ?? row.text
+  const suffix = insert.startsWith(typed) ? insert.slice(typed.length) : ''
   return suffix
     ? Decoration.set([Decoration.widget({ widget: new GhostWidget(suffix), side: 1 }).range(head)])
     : Decoration.none
@@ -75,11 +76,13 @@ function completionResult(source: CompletionViewSource) {
         to: rows[0].to,
         options: rows.map(
           (row): RowCompletion => ({
-            label: row.text,
+            // Filter on the shell spelling the user typed; show the plain word.
+            label: row.insert ?? row.text,
+            ...(row.insert === undefined ? {} : { displayLabel: row.text }),
             row,
             apply: (view, completion) => {
               view.dispatch({
-                ...insertCompletionText(view.state, row.text, row.from, row.to),
+                ...insertCompletionText(view.state, row.insert ?? row.text, row.from, row.to),
                 annotations: pickedCompletion.of(completion)
               })
               closeCompletion(view)

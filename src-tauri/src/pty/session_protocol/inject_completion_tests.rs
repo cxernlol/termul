@@ -486,9 +486,10 @@ fn audit_7_bash_completion_tokenization() {
     for shell in shells().into_iter().filter(|s| s.ends_with("bash")) {
         let dir = tempfile::tempdir().unwrap();
         let probe = dir.path().join("probe");
+        // Each completer call appends its view, so every call is asserted.
         let script = format!(
             r#"{functions}
-_probe() {{ printf '%s\n' "$COMP_CWORD" "$COMP_POINT" "${{COMP_WORDS[@]}}" > "$PROBE"; }}
+_probe() {{ printf '%s\n' "$COMP_CWORD" "$COMP_POINT" "$COMP_LINE" "$2" "${{COMP_WORDS[@]}}" -- >> "$PROBE"; }}
 complete -F _probe git cat
 __termul_candidates "$DRAFT"
 "#
@@ -496,12 +497,27 @@ __termul_candidates "$DRAFT"
         for (draft, expected) in [
             (
                 "git -C \"/tmp/a b\" sta",
-                "3\n21\ngit\n-C\n\"/tmp/a b\"\nsta\n",
+                "3\n21\ngit -C \"/tmp/a b\" sta\nsta\ngit\n-C\n\"/tmp/a b\"\nsta\n--\n",
             ),
-            ("cat a\\ b c", "2\n10\ncat\na\\ b\nc\n"),
-            ("cat 'a b' ", "2\n10\ncat\n'a b'\n\n"),
-            ("cat a\\ ", "1\n7\ncat\na\\ \n"),
+            ("cat a\\ b c", "2\n10\ncat a\\ b c\nc\ncat\na\\ b\nc\n--\n"),
+            ("cat 'a b' ", "2\n10\ncat 'a b' \n\ncat\n'a b'\n\n--\n"),
+            // A quoted current word: the dequoted spelling first, then, while
+            // the completer finds nothing, the open single-quoted one.
+            (
+                "cat a\\ ",
+                "1\n6\ncat a \na \ncat\na \n--\n1\n7\ncat 'a \na \ncat\n'a \n--\n",
+            ),
+            (
+                "cat \"a b",
+                "1\n7\ncat a b\na b\ncat\na b\n--\n1\n8\ncat 'a b\na b\ncat\n'a b\n--\n",
+            ),
+            // A single quote cannot be re-spelled inside single quotes.
+            (
+                "cat \"it's",
+                "1\n8\ncat it's\nit's\ncat\nit's\n--\n",
+            ),
         ] {
+            let _ = std::fs::remove_file(&probe);
             let output = std::process::Command::new(&shell)
                 .args(["--noprofile", "--norc", "-c", &script])
                 .env("DRAFT", draft)

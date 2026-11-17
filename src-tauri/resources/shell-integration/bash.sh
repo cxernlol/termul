@@ -306,11 +306,11 @@ __termul_tokenize() {
         elif [ "$quote" = single ]; then
             word=$word$char
             [ "$char" != "'" ] || quote=
-        elif [ "$quote" = double ]; then
+        elif [ "$quote" = double ] || [ "$quote" = ansi ]; then
             word=$word$char
-            case "$char" in
-                '"') quote= ;;
-                \\) escaped=1 ;;
+            case "$quote$char" in
+                double'"' | ansi"'") quote= ;;
+                *\\) escaped=1 ;;
             esac
         else
             case "$char" in
@@ -319,6 +319,7 @@ __termul_tokenize() {
                     word= trailing=1
                     continue
                     ;;
+                '$') [ "${draft:i+1:1}" != "'" ] || { quote=ansi; char="\$'"; i=$((i + 1)); } ;;
                 "'") quote=single ;;
                 '"') quote=double ;;
                 \\) escaped=1 ;;
@@ -332,18 +333,70 @@ __termul_tokenize() {
     ((${#COMP_WORDS[@]})) || COMP_WORDS=('')
 }
 
+# Remove quoting from one raw word, as readline does for the word it completes.
+# `$'...'` escapes are decoded by printf, whose format escapes match them.
+__termul_dequote() {
+    local raw=$1 char quote= ansi= i
+    REPLY=
+    for ((i=0; i<${#raw}; i++)); do
+        char=${raw:i:1}
+        if [ "$quote" = ansi ] && [ "$char" != "'" ]; then
+            [ "$char" != \\ ] || { i=$((i + 1)); char=$char${raw:i:1}; }
+            ansi=$ansi$char
+        elif [ "$quote" = ansi ]; then
+            printf -v char -- "${ansi//%/%%}"
+            REPLY=$REPLY$char ansi= quote=
+        elif [ "$quote" = single ]; then
+            [ "$char" = "'" ] && quote= || REPLY=$REPLY$char
+        elif [ -z "$quote" ] && [ "$char" = '$' ] && [[ ${raw:i+1:1} == [\'\"] ]]; then
+            [ "${raw:i+1:1}" = "'" ] && quote=ansi || quote=double
+            i=$((i + 1))
+        elif [ "$char" = \\ ] && { [ -z "$quote" ] || [[ ${raw:i+1:1} == [\$\`\"\\] ]]; }; then
+            i=$((i + 1))
+            REPLY=$REPLY${raw:i:1}
+        elif [ "$quote" = double ]; then
+            [ "$char" = '"' ] && quote= || REPLY=$REPLY$char
+        elif [ "$char" = "'" ]; then
+            quote=single
+        elif [ "$char" = '"' ]; then
+            quote=double
+        else
+            REPLY=$REPLY$char
+        fi
+    done
+    if [ "$quote" = ansi ]; then
+        printf -v char -- "${ansi//%/%%}"
+        REPLY=$REPLY$char
+    fi
+}
+
 # Completion runs in a subshell: user completers cannot change shell state.
 __termul_candidates() {
     local LC_ALL=C
-    local draft=$1 word command spec function candidate previous
-    local -a COMP_WORDS COMPREPLY
+    local draft=$1 word command spec function candidate previous prefix spelling REPLY
+    local -a COMP_WORDS COMPREPLY spellings
     __termul_tokenize "$draft"
     local COMP_CWORD=$((${#COMP_WORDS[@]} - 1))
     local COMP_LINE=$draft COMP_POINT=${#draft} COMP_TYPE=9 COMP_KEY=9
-    word=${COMP_WORDS[COMP_CWORD]}
+    __termul_dequote "${COMP_WORDS[COMP_CWORD]}"
+    word=$REPLY
+    # bash-completion's loader claims every unknown word with `_minimal`, so the
+    # command position must be answered before any -F completer is looked up.
+    if ((COMP_CWORD == 0)); then
+        # compgen -c reads a glob pattern in its word (`a[1]`, `a*`) as one and
+        # offers nothing; ask for the literal stem and keep literal prefix matches.
+        prefix=${word%%[][*?(\\]*}
+        if [ "$prefix" = "$word" ]; then
+            compgen -c -- "$word"
+        else
+            compgen -c -- "$prefix" | while IFS= read -r candidate; do
+                [[ $candidate != "$word"* ]] || printf '%s\n' "$candidate"
+            done
+        fi
+        return
+    fi
     command=${COMP_WORDS[0]}
-    previous=
-    ((COMP_CWORD == 0)) || previous=${COMP_WORDS[COMP_CWORD-1]}
+    previous=${COMP_WORDS[COMP_CWORD-1]}
     if ! complete -p -- "$command" >/dev/null 2>&1; then
         for candidate in /usr/share/bash-completion/bash_completion /opt/homebrew/etc/profile.d/bash_completion.sh /usr/local/etc/profile.d/bash_completion.sh; do
             if [ -r "$candidate" ]; then
@@ -361,10 +414,21 @@ __termul_candidates() {
         function=${BASH_REMATCH[1]}
     fi
     if [ -n "$function" ]; then
-        "$function" "$command" "$word" "$previous" >/dev/null 2>&1
+        # Outside readline, compgen never dequotes: offer the dequoted spelling
+        # first (`compgen -d`), then the open single-quoted one, which
+        # bash-completion's _filedir strips before re-quoting for compgen -f.
+        prefix=${draft%"${COMP_WORDS[COMP_CWORD]}"}
+        spellings=("$word")
+        [ "$word" = "${COMP_WORDS[COMP_CWORD]}" ] || [[ $word == *"'"* ]] || spellings+=("'$word")
+        for spelling in "${spellings[@]}"; do
+            COMP_WORDS[COMP_CWORD]=$spelling
+            COMP_LINE=$prefix$spelling
+            COMP_POINT=${#COMP_LINE}
+            COMPREPLY=()
+            "$function" "$command" "$word" "$previous" >/dev/null 2>&1
+            ((${#COMPREPLY[@]})) && break
+        done
         printf '%s\n' "${COMPREPLY[@]}"
-    elif ((COMP_CWORD == 0)); then
-        compgen -c -- "$word"
     else
         compgen -f -- "$word"
     fi
@@ -518,7 +582,7 @@ __termul_bootstrap || {
     unset __termul_owned_debug_trap __termul_current_debug_trap
     unset __termul_user_command __termul_last_status
     unset __termul_prompt_generation __termul_initialized __termul_generator __termul_prompt_suppressed
-    unset -f __termul_{complete,candidates,tokenize,decode_draft,prompt,debug,status,budget_completion,run_completer,completion_output,emit_completion,user_prompt,restore_prompt,preexec,frame,json_escape,bootstrap,save_bindings,restore_bindings,restore_map,replay_bindings,bind_clear_line,bind_restore_prompt,reclaim_prompt,capture_debug}
+    unset -f __termul_{complete,candidates,tokenize,dequote,decode_draft,prompt,debug,status,budget_completion,run_completer,completion_output,emit_completion,user_prompt,restore_prompt,preexec,frame,json_escape,bootstrap,save_bindings,restore_bindings,restore_map,replay_bindings,bind_clear_line,bind_restore_prompt,reclaim_prompt,capture_debug}
     return 0
 }
 unset __termul_bindings_changed __termul_old_0 __termul_old_1 __termul_old_2

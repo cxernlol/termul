@@ -4,6 +4,7 @@ import type {
   TerminalApi
 } from '@shared/types/ipc.types'
 import type { AppSettings } from '@/types/settings'
+import { wordContinuesPastCursor } from './completion-output'
 import type { InputMode, SessionPhase } from './transition'
 
 /** Host completion timeout (1500) + host drain bound (2000) + 500ms margin. */
@@ -61,38 +62,9 @@ function contextMatches(left: CompletionContext, right: CompletionContext): bool
   )
 }
 
-function completionSkipReason(
-  draft: string,
-  cursor: number
-): 'inside_quote' | 'inside_word' | null {
-  if (isInsideOpenQuote(draft, cursor)) return 'inside_quote'
-  const next = draft[cursor]
-  if (next !== undefined && !/\s/.test(next)) return 'inside_word'
-  return null
-}
-
-function isInsideOpenQuote(draft: string, cursor: number): boolean {
-  let inSingle = false
-  let inDouble = false
-  const point = Math.max(0, Math.min(cursor, draft.length))
-  for (let i = 0; i < point; i++) {
-    const ch = draft[i]
-    if (inSingle) {
-      if (ch === "'") inSingle = false
-      continue
-    }
-    if (inDouble) {
-      if (ch === '\\') {
-        i += 1
-        continue
-      }
-      if (ch === '"') inDouble = false
-      continue
-    }
-    if (ch === "'") inSingle = true
-    else if (ch === '"') inDouble = true
-  }
-  return inSingle || inDouble
+/** Quoted words complete too; only a cursor inside a word is skipped. */
+function completionSkipReason(draft: string, cursor: number): 'inside_word' | null {
+  return wordContinuesPastCursor(draft, cursor) ? 'inside_word' : null
 }
 
 function completionFieldsMatch(active: InFlight, completion: CompletionReplyFields): boolean {

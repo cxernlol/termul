@@ -135,14 +135,25 @@ async fn send(port: u16, frame: &Value) -> Value {
     serde_json::from_str(&line).unwrap()
 }
 
-async fn wait_for_install(server: &HostPlanServer) -> String {
-    for _ in 0..200 {
+/// Wait until an install is parked AND its approval card was emitted. The
+/// install is parked before the card fans out, so waiting on the park alone
+/// races `latest_card`.
+async fn wait_for_install(server: &HostPlanServer, sink: &Capture) -> String {
+    for _ in 0..400 {
         if let Some(id) = server.open_mcp_install_ids().into_iter().next() {
-            return id;
+            if has_card(sink, &id) {
+                return id;
+            }
         }
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
-    panic!("mcp_install was never parked");
+    panic!("mcp_install was never parked with an approval card");
+}
+
+fn has_card(sink: &Capture, request_id: &str) -> bool {
+    sink.events.lock().unwrap().iter().any(|(kind, payload)| {
+        kind == "acp:mcp_install_request" && payload["requestId"] == request_id
+    })
 }
 
 fn contains_secret(value: &impl std::fmt::Display) -> bool {
@@ -198,7 +209,7 @@ fn decline_saves_nothing_and_returns_declined() {
             }),
         );
         let call = tokio::spawn(async move { send(harness.port, &frame).await });
-        let request_id = wait_for_install(&harness.server).await;
+        let request_id = wait_for_install(&harness.server, &harness.sink).await;
         assert!(
             !call.is_finished(),
             "the call stays parked until the user decides"
@@ -234,7 +245,7 @@ fn approve_installs_and_keeps_the_secret_out_of_the_result_events_and_logs() {
         );
         let port = harness.port;
         let call = tokio::spawn(async move { send(port, &frame).await });
-        let request_id = wait_for_install(&harness.server).await;
+        let request_id = wait_for_install(&harness.server, &harness.sink).await;
         let card = harness
             .sink
             .events
@@ -317,7 +328,7 @@ fn a_second_install_of_the_same_server_does_not_duplicate() {
         let first = frame(&harness, source.clone());
         let port = harness.port;
         let call = tokio::spawn(async move { send(port, &first).await });
-        let request_id = wait_for_install(&harness.server).await;
+        let request_id = wait_for_install(&harness.server, &harness.sink).await;
         approve(&harness.server, &harness.sink, &request_id, Default::default());
         let reply = call.await.unwrap();
         assert_eq!(reply["result"]["outcome"], "installed", "{reply}");
@@ -371,7 +382,7 @@ fn an_import_whose_runtime_is_missing_still_installs_and_says_so() {
         );
         let port = harness.port;
         let call = tokio::spawn(async move { send(port, &frame).await });
-        let request_id = wait_for_install(&harness.server).await;
+        let request_id = wait_for_install(&harness.server, &harness.sink).await;
         approve(&harness.server, &harness.sink, &request_id, Default::default());
         let reply = call.await.unwrap();
         assert_eq!(reply["result"]["outcome"], "installed", "{reply}");
@@ -440,7 +451,7 @@ fn an_import_shows_its_environment_on_the_card_and_refuses_node_options() {
         );
         let port = harness.port;
         let call = tokio::spawn(async move { send(port, &frame).await });
-        let request_id = wait_for_install(&harness.server).await;
+        let request_id = wait_for_install(&harness.server, &harness.sink).await;
         let card = latest_card(&harness.sink);
         let env = card["consent"]["env"].to_string();
         assert!(env.contains("LOG_LEVEL"), "{card}");
@@ -472,7 +483,7 @@ fn a_wrong_launch_digest_does_not_commit() {
         );
         let port = harness.port;
         let call = tokio::spawn(async move { send(port, &frame).await });
-        let request_id = wait_for_install(&harness.server).await;
+        let request_id = wait_for_install(&harness.server, &harness.sink).await;
         let card = latest_card(&harness.sink);
         harness
             .server
@@ -515,7 +526,7 @@ fn a_missing_plan_is_planned_again_instead_of_an_error() {
         );
         let port = harness.port;
         let call = tokio::spawn(async move { send(port, &frame).await });
-        let request_id = wait_for_install(&harness.server).await;
+        let request_id = wait_for_install(&harness.server, &harness.sink).await;
         let card = latest_card(&harness.sink);
         let old_plan = card["planId"].as_str().unwrap().to_string();
         harness
@@ -567,7 +578,7 @@ fn the_first_answer_wins_and_a_wrong_session_does_not() {
         );
         let port = harness.port;
         let call = tokio::spawn(async move { send(port, &frame).await });
-        let request_id = wait_for_install(&harness.server).await;
+        let request_id = wait_for_install(&harness.server, &harness.sink).await;
         let wrong = harness.server.answer_mcp_install(
             &request_id,
             "other-session",

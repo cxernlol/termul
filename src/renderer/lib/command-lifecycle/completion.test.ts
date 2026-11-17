@@ -498,15 +498,15 @@ it('NotStarted leaves the draft', async () => {
   expect(host.requests[1]?.request.requestId).toBe('B')
 })
 
-it('no completion inside a quote or a word', async () => {
+it('completion runs inside a quote but not inside a word', async () => {
   vi.useFakeTimers()
   const clock = {
     setTimeout: (handler: () => void, ms: number) => setTimeout(handler, ms),
     clearTimeout: (id: unknown) => clearTimeout(id as ReturnType<typeof setTimeout>)
   }
   const quoted = context({
-    draft: 'echo "a b',
-    cursor: 'echo "a b'.length,
+    draft: 'cat "dir w',
+    cursor: 'cat "dir w'.length,
     bufferRevision: 1
   })
 
@@ -519,12 +519,9 @@ it('no completion inside a quote or a word', async () => {
       clock
     })
 
-    scheduler.updateContext(quoted)
-    await vi.advanceTimersByTimeAsync(100)
-    expect(host.requests).toHaveLength(0)
-
     scheduler.requestCompletion(quoted, false)
-    expect(host.requests).toHaveLength(0)
+    expect(host.requests).toHaveLength(1)
+    expect(host.requests[0]?.request.draft).toBe('cat "dir w')
   }
 
   {
@@ -550,6 +547,36 @@ it('no completion inside a quote or a word', async () => {
     scheduler.requestCompletion(context({ draft: 'git sta', cursor: 7 }), false)
     expect(host.requests).toHaveLength(1)
   }
+})
+
+it('a quoted or escaped space after the cursor is still inside the word', () => {
+  vi.useFakeTimers()
+  const request = (draft: string, cursor: number) => {
+    const logs: CompletionLogEvent[] = []
+    const host = createFakeHost()
+    const scheduler = new CompletionScheduler({
+      host,
+      createRequestId: () => 'A',
+      settings: { automaticCompletionRefresh: true },
+      log: (event) => logs.push(event)
+    })
+    scheduler.requestCompletion(context({ draft, cursor }), false)
+    return { requests: host.requests.length, logs: logs.map((event) => event.detail) }
+  }
+
+  // Accepting would replace only `"dir` and leave ` with space"` behind.
+  for (const [draft, cursor] of [
+    ['cat "dir with space"', 'cat "dir'.length],
+    ["cat 'dir with space'", "cat 'dir".length],
+    ['cat dir\\ with', 'cat dir\\'.length]
+  ] as const) {
+    expect(request(draft, cursor), draft).toEqual({
+      requests: 0,
+      logs: ['reason=inside_word']
+    })
+  }
+  expect(request('cat "a b" c', 'cat "a b"'.length).requests).toBe(1)
+  expect(request('cat a\\\\ c', 'cat a\\\\'.length).requests).toBe(1)
 })
 
 it('idle typing with blank draft skips completion', async () => {
