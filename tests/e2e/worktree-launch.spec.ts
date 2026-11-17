@@ -1,6 +1,12 @@
 import { expect, test } from 'playwright/test'
 import { E2E_TOKEN } from './helpers'
-import { chatStartContextRow, openWorkspace, selectProject, startNewChat } from './ui'
+import {
+  chatStartContextRow,
+  emptyChatPanel,
+  openWorkspace,
+  selectProject,
+  startNewChat
+} from './ui'
 
 /**
  * Worktree-launch E2E on termul-server: the context row under the empty chat
@@ -44,21 +50,19 @@ test('the empty chat shows the worktree isolation picker for a git-repo project 
   await expect(workspace).toContainText('Current checkout')
 })
 
-test('the empty chat shows only the read-only context row for a non-git project', async ({
-  page
-}) => {
+test('the empty chat shows no context row for a non-git project', async ({ page }) => {
   await selectProject(page, 'proj-b')
 
-  await startNewChat(page)
-  const row = chatStartContextRow(page)
-  await expect(row).toBeVisible()
+  const composer = await startNewChat(page)
+  await expect(composer).toBeVisible()
   // Give the (absent) git probe a beat to settle before asserting absence.
   await page.waitForTimeout(1_500)
 
-  // A non-git project gets the read-only row: plain "Current checkout"
-  // text, no picker.
-  await expect(row.getByRole('combobox', { name: 'Workspace' })).toHaveCount(0)
-  await expect(row).toContainText('Current checkout')
+  // A project that is not a git repo has no context row, like the launcher
+  // (#1856): no workspace picker and no read-only "Current checkout" label.
+  await expect(chatStartContextRow(page)).toHaveCount(0)
+  await expect(emptyChatPanel(page).getByRole('combobox', { name: 'Workspace' })).toHaveCount(0)
+  await expect(emptyChatPanel(page)).not.toContainText('Current checkout')
 })
 
 test('a first send in New worktree mode creates the worktree and opens the chat in it', async ({

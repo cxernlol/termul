@@ -232,7 +232,7 @@ export async function visibleChunkCount(page: Page): Promise<number> {
 }
 
 /** The visible chat tab that shows the empty chat start screen. */
-function emptyChatPanel(page: Page): Locator {
+export function emptyChatPanel(page: Page): Locator {
   return page
     .locator('[data-chat-tab-state="visible"]')
     .filter({ has: page.getByRole('heading', { name: /^What should we do in / }) })

@@ -50,10 +50,15 @@ test('a click below one line of text focuses the composer with the caret at the 
   await page.keyboard.type('hi')
   await page.keyboard.press('Home')
 
+  // The start-screen input is 40px tall at minimum (CHAT_START_INPUT_MIN_HEIGHT,
+  // #1840), so do not pin a height: assert there is empty editor area below
+  // the one line of text, then click into that area.
   const area = await editor.boundingBox()
-  if (!area) throw new Error('composer editor has no layout box')
-  expect(area.height).toBeGreaterThanOrEqual(60)
-  await page.mouse.click(area.x + area.width / 2, area.y + area.height - 6)
+  const line = await editor.locator('p').first().boundingBox()
+  if (!area || !line) throw new Error('composer editor has no layout box')
+  const clickY = area.y + area.height - 6
+  expect(clickY).toBeGreaterThan(line.y + line.height)
+  await page.mouse.click(area.x + area.width / 2, clickY)
 
   await expect(editor).toBeFocused()
   await page.keyboard.type('!')
