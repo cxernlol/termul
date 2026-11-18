@@ -1,4 +1,4 @@
-import { useCallback, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useSyncExternalStore } from 'react'
 import { logFrontendError } from '@/lib/log-api'
 
 /**
@@ -56,6 +56,9 @@ export function useMessageSelectMode(messageId: string): {
 } {
   const current = useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
   const exit = useCallback(() => exitMessageSelectMode(messageId), [messageId])
+  // Leaving the message (closing the chat, switching sessions) ends its select
+  // mode, so reopening it shows the action row again.
+  useEffect(() => () => exitMessageSelectMode(messageId), [messageId])
   return { selecting: current === messageId, exit }
 }
 

@@ -139,3 +139,20 @@ describe('RestoreSnapshotModal overlay back stack', () => {
     })
   })
 })
+
+describe('RestoreSnapshotModal Enter', () => {
+  it('does not restore on Enter while the dialog itself holds focus (coarse pointer)', () => {
+    const confirm = vi.fn()
+    render(
+      <RestoreSnapshotModal
+        isOpen
+        snapshot={snapshot}
+        isRestoring={false}
+        onRestore={confirm}
+        onClose={vi.fn()}
+      />
+    )
+    fireEvent.keyDown(screen.getByRole('alertdialog'), { key: 'Enter' })
+    expect(confirm).not.toHaveBeenCalled()
+  })
+})

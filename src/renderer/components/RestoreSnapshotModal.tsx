@@ -68,16 +68,15 @@ export function RestoreSnapshotModal({
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLDivElement>) => {
-      // A focused button handles its own Enter (Enter on Cancel must not restore).
-      if (e.key === 'Enter' && !isRestoring && !(e.target instanceof HTMLButtonElement)) {
-        e.preventDefault()
-        handleRestore()
-      } else if (e.key === 'Escape' && !isRestoring) {
+      // No dialog-level Enter: only a focused Restore button confirms (native
+      // button activation). On a coarse pointer the dialog itself holds focus, so
+      // a dialog Enter handler would restore without the user choosing to.
+      if (e.key === 'Escape' && !isRestoring) {
         e.preventDefault()
         onClose()
       }
     },
-    [isRestoring, handleRestore, onClose]
+    [isRestoring, onClose]
   )
 
   return (

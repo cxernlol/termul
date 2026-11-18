@@ -64,16 +64,15 @@ export function DeleteSnapshotModal({
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLDivElement>) => {
-      // A focused button handles its own Enter (Enter on Cancel must not delete).
-      if (e.key === 'Enter' && !isDeleting && !(e.target instanceof HTMLButtonElement)) {
-        e.preventDefault()
-        handleDelete()
-      } else if (e.key === 'Escape' && !isDeleting) {
+      // No dialog-level Enter: only a focused Delete button confirms (native
+      // button activation). On a coarse pointer the dialog itself holds focus, so
+      // a dialog Enter handler would delete without the user choosing to.
+      if (e.key === 'Escape' && !isDeleting) {
         e.preventDefault()
         onClose()
       }
     },
-    [isDeleting, handleDelete, onClose]
+    [isDeleting, onClose]
   )
 
   return (

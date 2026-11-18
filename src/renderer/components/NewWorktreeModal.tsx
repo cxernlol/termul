@@ -555,6 +555,14 @@ export function NewWorktreeModal({ isOpen, onClose, projectId }: NewWorktreeModa
                               autoCorrect="off"
                               spellCheck={false}
                               enterKeyHint="search"
+                              onKeyDown={(e) => {
+                                // The keyboard's Search key is Enter: it filters, it must
+                                // not reach the dialog's Enter-to-create handler.
+                                if (e.key === 'Enter') {
+                                  e.preventDefault()
+                                  e.stopPropagation()
+                                }
+                              }}
                               className={`w-full bg-secondary border border-border rounded pl-7 pr-3 py-1 text-xs text-foreground placeholder-muted-foreground ${TOUCH_FIELD_CLASS} ${FIELD_FOCUS_CLASS}`}
                             />
                           </div>

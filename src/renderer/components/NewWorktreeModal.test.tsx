@@ -3,11 +3,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useProjectStore } from '@/stores/project-store'
 import { NewWorktreeModal } from './NewWorktreeModal'
 
-const mocks = vi.hoisted(() => ({ create: vi.fn(), log: vi.fn() }))
+const mocks = vi.hoisted(() => ({ create: vi.fn(), log: vi.fn(), branches: vi.fn() }))
 
 vi.mock('@/lib/api', () => ({
   worktreeApi: {
-    branches: vi.fn().mockResolvedValue({ success: true, data: [] }),
+    branches: mocks.branches,
     create: mocks.create,
     createSymlinks: vi.fn()
   }
@@ -19,6 +19,7 @@ const initialProjects = useProjectStore.getState().projects
 
 describe('NewWorktreeModal create failure', () => {
   beforeEach(() => {
+    mocks.branches.mockResolvedValue({ success: true, data: [] })
     mocks.create.mockReset()
     mocks.log.mockReset()
     useProjectStore.setState({
@@ -67,5 +68,42 @@ describe('NewWorktreeModal create failure', () => {
       source: 'newWorktreeModal.worktreeCreate',
       message: 'worktree create threw code=UNKNOWN'
     })
+  })
+})
+
+describe('NewWorktreeModal Enter on the branch search', () => {
+  beforeEach(() => {
+    mocks.branches.mockResolvedValue({
+      success: true,
+      data: [{ name: 'feature/x', isCurrent: false, isRemote: false }]
+    })
+    mocks.create.mockReset()
+    mocks.create.mockResolvedValue({ success: false, error: 'stop', code: 'BRANCH_EXISTS' })
+    useProjectStore.setState({
+      projects: [
+        { id: 'p1', name: 'P', color: 'blue', path: '/work', isGitRepo: true, worktrees: [] }
+      ]
+    } as never)
+  })
+  afterEach(() => {
+    cleanup()
+    useProjectStore.setState({ projects: initialProjects })
+  })
+
+  it('does not create the worktree when the keyboard Search key is pressed', async () => {
+    render(<NewWorktreeModal isOpen onClose={vi.fn()} projectId="p1" />)
+    fireEvent.change(screen.getByPlaceholderText('e.g. try-new-hero'), {
+      target: { value: 'try-hero' }
+    })
+    fireEvent.click(screen.getByRole('button', { name: /Advanced/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Existing Branch' }))
+    fireEvent.click(await screen.findByRole('button', { name: /feature\/x/ }))
+    const search = screen.getByLabelText('Search branches')
+    fireEvent.keyDown(search, { key: 'Enter' })
+    expect(mocks.create).not.toHaveBeenCalled()
+
+    // Control: Enter from the name field still creates.
+    fireEvent.keyDown(screen.getByPlaceholderText('e.g. try-new-hero'), { key: 'Enter' })
+    await waitFor(() => expect(mocks.create).toHaveBeenCalledTimes(1))
   })
 })

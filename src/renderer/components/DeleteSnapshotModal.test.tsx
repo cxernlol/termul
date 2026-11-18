@@ -138,3 +138,20 @@ describe('DeleteSnapshotModal overlay back stack', () => {
     })
   })
 })
+
+describe('DeleteSnapshotModal Enter', () => {
+  it('does not delete on Enter while the dialog itself holds focus (coarse pointer)', () => {
+    const confirm = vi.fn()
+    render(
+      <DeleteSnapshotModal
+        isOpen
+        snapshot={snapshot}
+        isDeleting={false}
+        onDelete={confirm}
+        onClose={vi.fn()}
+      />
+    )
+    fireEvent.keyDown(screen.getByRole('alertdialog'), { key: 'Enter' })
+    expect(confirm).not.toHaveBeenCalled()
+  })
+})
