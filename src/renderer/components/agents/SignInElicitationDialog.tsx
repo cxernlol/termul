@@ -97,7 +97,7 @@ export function SignInElicitationDialog({
         if (!open) handleDismiss()
       }}
     >
-      <DialogContent className="sm:max-w-[480px]">
+      <DialogContent className="max-h-[90dvh] overflow-y-auto overscroll-contain sm:max-w-[480px]">
         <DialogHeader>
           <DialogTitle className="text-sm">{`Sign in to ${agentName}`}</DialogTitle>
           <DialogDescription>

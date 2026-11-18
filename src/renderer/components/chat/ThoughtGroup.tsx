@@ -270,7 +270,7 @@ function ThoughtGroupComponent({ messages, isLiveTail }: ThoughtGroupProps): Rea
               <div
                 ref={refCallback}
                 className={cn(
-                  'scroller-thin overflow-y-auto break-words text-xs text-muted-foreground',
+                  'scroller-thin overflow-y-auto overscroll-contain break-words text-xs text-muted-foreground',
                   !expanded && 'max-h-[200px]'
                 )}
               >

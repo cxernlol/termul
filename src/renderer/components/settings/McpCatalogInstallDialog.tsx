@@ -237,7 +237,7 @@ function StepDialog({
         if (!open) onClose()
       }}
     >
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
+      <DialogContent className="max-h-[90dvh] overflow-y-auto overscroll-contain sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
         </DialogHeader>

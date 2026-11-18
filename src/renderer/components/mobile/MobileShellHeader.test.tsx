@@ -113,8 +113,8 @@ describe('MobileShellHeader', () => {
       expect(heading.id).toBe('mobile-shell-title')
       expect(heading).toHaveAttribute('tabindex', '-1')
       expect(heading.className).toContain('pointer-events-none')
-      // Paper 2.6b: 15/20, a long title fades at the end (full-width, centred).
-      expect(heading).toHaveClass('fade-end', 'w-full', 'text-center', 'text-[15px]', 'leading-5')
+      // Paper 2.6b: 15/20, a long title fades at the end (full-width, left aligned).
+      expect(heading).toHaveClass('fade-end', 'w-full', 'text-left', 'text-[15px]', 'leading-5')
       expect(heading.className).not.toContain('truncate')
       expect(refs.title.current).toBe(heading)
 
@@ -232,7 +232,10 @@ describe('MobileShellHeader', () => {
       expect(pill.className).toContain('bg-warning/20')
       expect(pill.className).toContain('text-warning')
       expect(pill.className).toContain('tabular-nums')
-      expect(pill.className).toContain("after:absolute after:-inset-2 after:content-['']")
+      // 44px tall hit area; the side slop stays clear of the neighbours.
+      expect(pill.className).toContain(
+        "after:absolute after:-inset-x-1.5 after:-inset-y-2 after:content-['']"
+      )
       const dot = pill.querySelector('span[aria-hidden="true"]')
       expect(dot?.className).toContain('size-2')
       expect(dot?.className).toContain('bg-warning')

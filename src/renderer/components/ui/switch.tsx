@@ -52,7 +52,9 @@ const Switch = React.forwardRef<
   return (
     <SwitchPrimitives.Root
       className={cn(
-        'peer cursor-pointer disabled:cursor-not-allowed',
+        // On a touch screen an invisible ::after grows the hit area to 44px
+        // tall; the look stays the same.
+        "peer relative cursor-pointer disabled:cursor-not-allowed pointer-coarse:after:absolute pointer-coarse:after:-inset-3 pointer-coarse:after:content-['']",
         classes.track,
         FOCUS_RING_CLASS,
         className

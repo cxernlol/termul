@@ -25,6 +25,15 @@ Never `text-[Npx]`. Use the scale below. `tabular-nums` on every value that chan
 
 Never go below 12px. `text-2xs`, `text-3xs`, and `text-4xs` share that size. Weight and color carry the difference. Paper Mono has no italic, so comments and emphasis stay upright.
 
+## Phone text floor is 15px
+
+On a touch phone, 12px and 14px text is too small to read at arm's length. On a phone, this rule overrides the 12px floor above.
+
+- **Where:** `(pointer: coarse)` and a phone viewport: width 767px or less, or height 499px or less (a landscape phone). These are the same viewports as `useMobileWebShell`. A mouse or trackpad never matches, so the desktop app and a narrow desktop window keep the 12/14px scale.
+- **What:** `text-xs`, `text-sm`, `text-2xs`, `text-3xs` and `text-4xs` all become 15px with a 24px line. `text-base` and larger keep their size. Fields stay at 16px through `pointer-coarse:text-base`.
+- **How:** one unlayered block in `index.css` sets `--text-xs`, `--text-sm` and `--font-size-micro`. `text-2xs`, `text-3xs` and `text-4xs` read `--font-size-micro` (`tailwind.config.ts`). Do not add per-component `pointer-coarse:text-[15px]` classes. Do not use arbitrary pixel sizes (`text-[11px]`), because the floor does not reach them.
+- **Rows:** a row that holds 15px text on a phone is at least 44px tall (`pointer-coarse:min-h-11`; `MENU_ITEM_CLASS` has it).
+
 ## Text fields are 16px on touch
 
 iOS Safari zooms the page when a text field with a computed font size under 16px takes focus. Every text field (`input`, `textarea`, `select`) is 16px on a coarse pointer, whatever its size on a fine pointer. The rule is keyed on pointer type, not width, so a landscape phone (768px or wider) is covered. `Input`, `Textarea`, `CommandInput`, `PopoverSearchBand` and `PANEL_FIELD_CLASS` carry `pointer-coarse:text-base` already. A raw field adds it next to its size (`text-xs pointer-coarse:text-base`), and `cn` keeps it when a caller passes `text-xs` or `text-sm`. Never `text-[16px]`, a global `input` rule, or `maximum-scale` in the viewport meta (it blocks pinch zoom). `ui/text-field-font-size.test.tsx` fails on a raw field that has neither the token nor an allowlist entry.

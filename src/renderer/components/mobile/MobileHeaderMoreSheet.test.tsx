@@ -52,13 +52,15 @@ describe('MobileHeaderMoreSheet', () => {
     expect(dialog.id).toBe('mobile-header-more-sheet')
     expect(dialog).toHaveAccessibleName('Fix auth redirect loop')
     expect(dialog).toHaveAccessibleDescription('termul · ab12')
-    const cls = dialog.className
-    expect(cls).toContain('rounded-t-xl')
-    expect(cls).toContain('max-h-[85dvh]')
-    expect(cls).toContain('overflow-y-auto')
-    expect(cls).toContain('overscroll-contain')
-    expect(cls).toContain('pb-[max(0.5rem,env(safe-area-inset-bottom))]')
+    // The phone sheet (MobileSheetContent): grab handle, 85dvh cap.
+    expect(dialog.className).toContain('max-h-[85dvh]')
+    expect(screen.getByRole('button', { name: 'Close' })).toBeInTheDocument()
     const description = screen.getByText('termul · ab12')
+    // The scrolling body holds the home-indicator inset.
+    const body = description.parentElement?.className ?? ''
+    expect(body).toContain('overflow-y-auto')
+    expect(body).toContain('overscroll-contain')
+    expect(body).toContain('pb-[max(0.5rem,env(safe-area-inset-bottom))]')
     expect(description.className).toContain('text-xs')
     expect(description.className).toContain('text-muted-foreground')
   })
@@ -73,8 +75,7 @@ describe('MobileHeaderMoreSheet', () => {
       'Command palette',
       'New terminal',
       'Project settings',
-      'Close chat',
-      'Close'
+      'Close chat'
     ])
   })
 
@@ -138,7 +139,7 @@ describe('MobileHeaderMoreSheet', () => {
     })
     await screen.findByRole('dialog')
 
-    expect(rowLabels()).toEqual(['Files', 'New terminal', 'Close'])
+    expect(rowLabels()).toEqual(['Files', 'New terminal'])
   })
 
   it('omits Close chat for a non-chat tab but keeps the rest', async () => {
@@ -159,7 +160,7 @@ describe('MobileHeaderMoreSheet', () => {
     })
     await screen.findByRole('dialog')
 
-    expect(rowLabels()).toEqual(['Close chat', 'Close'])
+    expect(rowLabels()).toEqual(['Close chat'])
     expect(
       screen.getByRole('button', { name: 'Close chat' }).parentElement?.className
     ).not.toContain('border-t')

@@ -42,7 +42,7 @@ export function ComposerSendButton({
   // Phone: 36px, radius 10, a 4px hit extension on every side (44px).
   const sizeClass = phone
     ? "size-9 rounded-[10px] after:absolute after:-inset-1 after:content-['']"
-    : "after:absolute after:-inset-1.5 after:content-[''] @[400px]:after:-inset-1"
+    : "after:absolute after:-inset-1.5 after:content-[''] @[400px]:pointer-fine:after:-inset-1"
   return (
     <div className={cn('relative size-8 shrink-0 overflow-visible', phone && 'size-9')}>
       <AnimatePresence initial={false} mode="popLayout">

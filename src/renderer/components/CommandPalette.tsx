@@ -542,10 +542,11 @@ export function CommandPalette({
               void togglePin(cmd.id)
             }}
             className={cn(
-              'flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition-opacity hover:bg-foreground/[0.06] hover:text-foreground group-data-[selected=true]:text-foreground',
+              // Touch has no hover: the pin shows on every row, with a 44px hit area.
+              "relative flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition-opacity hover:bg-foreground/[0.06] active:bg-foreground/[0.06] hover:text-foreground group-data-[selected=true]:text-foreground pointer-coarse:after:absolute pointer-coarse:after:-inset-2.5 pointer-coarse:after:content-['']",
               isPinned
                 ? 'text-foreground opacity-100'
-                : 'opacity-0 group-data-[selected=true]:opacity-100 group-hover:opacity-100'
+                : 'opacity-0 group-data-[selected=true]:opacity-100 group-hover:opacity-100 pointer-coarse:opacity-100'
             )}
           >
             <Pin aria-hidden="true" size={13} className={cn(isPinned && 'fill-current')} />
@@ -613,7 +614,7 @@ export function CommandPalette({
                   </button>
                 )}
               </div>
-              <CommandList className="max-h-[52vh] px-1 py-1">
+              <CommandList className="max-h-[52dvh] overscroll-contain px-1 py-1">
                 <CommandEmpty>No commands found.</CommandEmpty>
 
                 {/* Chat matches first. They show only for a real text match, and

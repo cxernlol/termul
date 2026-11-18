@@ -256,6 +256,11 @@ export function ElicitationPrompt({
                     const value =
                       typeof values[field.name] === 'string' ? String(values[field.name]) : ''
                     const mobileBooleanRow = isMobileShell && field.kind === 'boolean'
+                    // A multi-select is a group of checkboxes, each in its own
+                    // <label> row. An outer <label> would send every tap on an
+                    // option's text to the FIRST checkbox, so it is a group div.
+                    const isOptionGroup = field.kind === 'multi-enum'
+                    const FieldWrapper = isOptionGroup ? 'div' : 'label'
                     const caption = (
                       <>
                         <span className="text-muted-foreground">{label}</span>
@@ -268,8 +273,8 @@ export function ElicitationPrompt({
                     )
                     return (
                       <Fragment key={field.name}>
-                        {/* biome-ignore lint/a11y/noLabelWithoutControl: the control is nested inside this label (implicit association); the kind-conditional defeats the rule's static analysis */}
-                        <label
+                        <FieldWrapper
+                          {...(isOptionGroup ? { role: 'group', 'aria-label': label } : {})}
                           className={cn(
                             'text-xs',
                             mobileBooleanRow
@@ -322,10 +327,11 @@ export function ElicitationPrompt({
                                   ? (values[field.name] as string[])
                                   : []
                                 return (
-                                  <span
+                                  // The whole 44px row toggles its checkbox.
+                                  <label
                                     key={option.value}
                                     className={cn(
-                                      'flex items-center gap-2 text-sm',
+                                      'flex cursor-pointer items-center gap-2 text-sm',
                                       isMobileShell && 'min-h-11'
                                     )}
                                   >
@@ -352,7 +358,7 @@ export function ElicitationPrompt({
                                         </span>
                                       ) : null}
                                     </span>
-                                  </span>
+                                  </label>
                                 )
                               })}
                             </span>
@@ -371,7 +377,7 @@ export function ElicitationPrompt({
                               {...fieldA11y}
                             />
                           )}
-                        </label>
+                        </FieldWrapper>
                         {invalid && error ? (
                           <p id={errorId} role="alert" className="text-xs text-destructive">
                             {error.message}

@@ -308,7 +308,7 @@ export function useMcpServerDialog(): {
           if (!open && !saving) closeDialog()
         }}
       >
-        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-xl">
+        <DialogContent className="max-h-[90dvh] overflow-y-auto overscroll-contain sm:max-w-xl">
           {dialog?.view === 'form' ? (
             <>
               <DialogHeader>

@@ -72,7 +72,15 @@ const DropdownMenuContent = React.forwardRef<
     <DropdownMenuPrimitive.Content
       ref={ref}
       sideOffset={sideOffset}
-      className={cn(MENU_CONTENT_CLASS, MENU_MOTION_CLASS, className)}
+      collisionPadding={8}
+      // A long menu scrolls inside the space Radix measures, so it never
+      // runs off a short (landscape phone) screen.
+      className={cn(
+        MENU_CONTENT_CLASS,
+        'max-h-[var(--radix-dropdown-menu-content-available-height)] overflow-y-auto overscroll-contain',
+        MENU_MOTION_CLASS,
+        className
+      )}
       {...props}
     >
       <NativeWebviewOccluder />

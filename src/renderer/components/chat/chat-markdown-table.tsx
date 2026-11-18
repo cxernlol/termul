@@ -65,7 +65,9 @@ function TableFullscreen({
           <DialogTitle className="sr-only">Table</DialogTitle>
           <DialogDescription className="sr-only">Full screen table</DialogDescription>
           <div className="flex h-full flex-col" data-streamdown="table-wrapper">
-            <div className="flex items-center justify-end p-4">
+            {/* Clear the notch, the home indicator and the landscape side
+                insets: this view covers the whole screen. */}
+            <div className="flex items-center justify-end p-4 pt-[max(1rem,env(safe-area-inset-top))] pr-[max(1rem,env(safe-area-inset-right))]">
               <IconActionGroup className="gap-1">
                 {showCopy ? (
                   <TableCopyDropdown>
@@ -82,7 +84,7 @@ function TableFullscreen({
                 </IconActionButton>
               </IconActionGroup>
             </div>
-            <div className="scroller-thin flex-1 overflow-auto px-4 pb-4 pt-0 [&_thead]:sticky [&_thead]:top-0 [&_thead]:z-10">
+            <div className="scroller-thin flex-1 overflow-auto overscroll-contain pb-[max(1rem,env(safe-area-inset-bottom))] pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] pt-0 [&_thead]:sticky [&_thead]:top-0 [&_thead]:z-10">
               <table className="w-full border-collapse border border-border">{children}</table>
             </div>
           </div>
@@ -120,10 +122,12 @@ function ChatMarkdownTableComponent({
     >
       {toolbar ? (
         <div
-          className="flex justify-end border-b border-border/40 px-1 py-0.5"
+          // Touch: a 44px row so the buttons' 44px hit areas are not clipped
+          // by the wrapper's overflow-hidden, and 20px gaps so they never overlap.
+          className="flex justify-end border-b border-border/40 px-1 py-0.5 pointer-coarse:px-2.5 pointer-coarse:py-2.5"
           data-streamdown="table-toolbar"
         >
-          <IconActionGroup className="gap-0.5" dense>
+          <IconActionGroup className="gap-0.5 pointer-coarse:gap-5" dense>
             {showCopy ? (
               <TableCopyDropdown>
                 <Copy />

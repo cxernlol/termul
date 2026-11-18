@@ -37,11 +37,14 @@ export function ApiKeyForm({
       <Input
         type="password"
         autoComplete="off"
+        autoCapitalize="off"
+        autoCorrect="off"
+        spellCheck={false}
         value={apiKey}
         onChange={(event) => setApiKey(event.target.value)}
         placeholder="API key"
         aria-label={`Key for ${method.name}`}
-        className={layout === 'row' ? 'h-8 w-48' : undefined}
+        className={layout === 'row' ? 'h-8 w-48 pointer-coarse:h-11' : undefined}
         disabled={disabled}
       />
       <Button

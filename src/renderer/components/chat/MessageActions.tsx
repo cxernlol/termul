@@ -1,14 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { Check, Copy, Edit, RotateCcw } from '@/components/icons'
-import {
-  ContextMenu,
-  ContextMenuContent,
-  ContextMenuItem,
-  ContextMenuTrigger
-} from '@/components/ui/context-menu'
+import { Check, Copy, Edit, MoreHorizontal, RotateCcw, Type } from '@/components/icons'
+import { ContextMenu, ContextMenuTrigger } from '@/components/ui/context-menu'
 import { IconActionButton } from '@/components/ui/icon-action-button'
 import { IconSwap } from '@/components/ui/icon-swap'
+import {
+  MobileSheetContent,
+  SheetGroup,
+  SheetIconWell,
+  SheetRow
+} from '@/components/ui/mobile-sheet'
+import { Sheet } from '@/components/ui/sheet'
 import { copyText } from '@/lib/copy-text'
 import { logFrontendError } from '@/lib/log-api'
 import { cn } from '@/lib/utils'
@@ -105,8 +107,22 @@ interface MessageActionsProps {
   onEdit?: () => void
   /** Re-run the turn (regenerate the response). */
   onRetry?: () => void
+  /**
+   * Phone shell: a trailing ⋯ that opens the message's actions sheet
+   * (Paper "10.1"). Omitted on desktop.
+   */
+  onMore?: () => void
+  /**
+   * Phone shell: on a coarse pointer each action is a 44px slot with an 18px
+   * glyph, flush with the text edge (Paper "10.1").
+   */
+  touchSlots?: boolean
   className?: string
 }
+
+/** Paper "10.1": 44px slots with 18px glyphs on a coarse pointer, no gap. */
+const TOUCH_SLOT_CLASS =
+  'pointer-coarse:size-11 pointer-coarse:after:inset-0 pointer-coarse:[&_svg]:size-[18px]'
 
 /**
  * Toolbar for a chat message — copy, plus optional edit (user turns) and
@@ -123,9 +139,12 @@ export function MessageActions({
   reveal = 'hover',
   onEdit,
   onRetry,
+  onMore,
+  touchSlots = false,
   className
 }: MessageActionsProps): React.JSX.Element {
   const { copied, copy } = useMessageCopy(text)
+  const slot = touchSlots ? TOUCH_SLOT_CLASS : undefined
 
   return (
     <div
@@ -133,6 +152,8 @@ export function MessageActions({
         // Compact icon row; the gap keeps the ~44px pseudo-element hit
         // areas (#859) close to tiling without dead space.
         'flex items-center gap-2.5 transition-opacity duration-150 focus-within:opacity-100',
+        // 44px slots tile with no gap; the first glyph lines up with the text.
+        touchSlots && 'pointer-coarse:gap-0',
         reveal === 'focus'
           ? // Hidden and inert at rest so a tap cannot land on an invisible
             // action. Keyboard focus (message or inside the row) reveals it.
@@ -141,17 +162,24 @@ export function MessageActions({
             pinned
             ? 'opacity-100'
             : 'opacity-100 pointer-fine:opacity-0 pointer-fine:group-hover/message:opacity-100',
-        align === 'start' && '-ml-1',
-        align === 'end' && 'justify-end -mr-1',
+        align === 'start' && (touchSlots ? '-ml-1 pointer-coarse:-ml-[13px]' : '-ml-1'),
+        align === 'end' &&
+          (touchSlots ? 'justify-end -mr-1 pointer-coarse:-mr-[13px]' : 'justify-end -mr-1'),
         className
       )}
     >
-      <div className={cn('flex items-center gap-2.5', align === 'end' && 'flex-row-reverse')}>
+      <div
+        className={cn(
+          'flex items-center gap-2.5',
+          touchSlots && 'pointer-coarse:gap-0',
+          align === 'end' && 'flex-row-reverse'
+        )}
+      >
         <IconActionButton
           size="sm"
           label={copied ? 'Copied' : 'Copy'}
           onClick={() => void copy()}
-          className="rounded-md hover:bg-secondary/60 transition-colors duration-150"
+          className={cn('rounded-md hover:bg-secondary/60 transition-colors duration-150', slot)}
         >
           <IconSwap iconKey={copied}>
             {copied ? <Check className="text-success" /> : <Copy />}
@@ -162,7 +190,7 @@ export function MessageActions({
             size="sm"
             label="Edit"
             onClick={onEdit}
-            className="rounded-md hover:bg-secondary/60 transition-colors duration-150"
+            className={cn('rounded-md hover:bg-secondary/60 transition-colors duration-150', slot)}
           >
             <Edit />
           </IconActionButton>
@@ -172,9 +200,19 @@ export function MessageActions({
             size="sm"
             label="Retry"
             onClick={onRetry}
-            className="rounded-md hover:bg-secondary/60 transition-colors duration-150"
+            className={cn('rounded-md hover:bg-secondary/60 transition-colors duration-150', slot)}
           >
             <RotateCcw />
+          </IconActionButton>
+        )}
+        {onMore && (
+          <IconActionButton
+            size="sm"
+            label="More actions"
+            onClick={onMore}
+            className={cn('rounded-md hover:bg-secondary/60 transition-colors duration-150', slot)}
+          >
+            <MoreHorizontal />
           </IconActionButton>
         )}
       </div>
@@ -191,15 +229,25 @@ interface MessageActionsContextMenuProps {
   onEdit?: () => void
   /** Present only when the row shows Retry. */
   onRetry?: () => void
+  /** "Select text" row (Paper "10.2"): start select mode on this message. */
+  onSelectText?: () => void
+  /** Sheet title: "Reply" for an agent message, "Message" for a user message. */
+  title?: string
+  /** Controlled open state, so the row's ⋯ can open the same sheet. */
+  open?: boolean
+  onOpenChange?: (open: boolean) => void
   /**
-   * Keep the wrapper mounted but inert: no menu, no long-press, and the native
+   * Keep the wrapper mounted but inert: no sheet, no long-press, and the native
    * / app-level context menu keeps working. Lets a message gain or lose actions
    * (its stream settles, the turn tail moves) without remounting its subtree.
    */
   disabled?: boolean
-  /** The message element. It becomes the context-menu trigger (`asChild`). */
+  /** The message element. It becomes the long-press trigger (`asChild`). */
   children: React.ReactElement
 }
+
+/** How long the Copy row shows its tick before the sheet closes. */
+export const SHEET_COPY_TICK_MS = 400
 
 /**
  * Props that strip everything Radix's trigger adds to its child when disabled
@@ -213,14 +261,14 @@ const INERT_TRIGGER_PROPS = {
 }
 
 /**
- * Long-press / right-click / context-menu-key menu for a message on the mobile
- * shell. Items mirror the `MessageActions` row exactly (Copy, then Edit or
- * Retry) and call the row's callbacks.
+ * Long-press / right-click / context-menu-key actions for a message on the
+ * mobile shell. Paper "10.2": a bottom sheet (the Composer V2 sheet: grab
+ * handle, drag to close) with Copy, Select text, then Edit or Retry. Radix's
+ * `ContextMenu` stays only as the long-press detector; it never renders a menu.
  *
  * Accepted trade-offs of making the whole message the trigger:
- * - No native long-press text selection on touch. A partial copy goes through
- *   Copy, which always copies the whole message, or through the code-block /
- *   expanded `ToolCallCard` copy buttons.
+ * - No native long-press text selection on touch until the user picks
+ *   "Select text", which turns the trigger off for that message.
  * - Radix sets `-webkit-touch-callout: none` on the trigger, so the iOS link
  *   preview and "save image" long-press callouts are unavailable inside a
  *   message that has actions.
@@ -236,31 +284,69 @@ const INERT_TRIGGER_PROPS = {
  * menu. Radix's trigger still cancels the default of a right-click from such a
  * source, so neither the native nor the app-level menu shows inside the portal.
  *
- * The menu is a controlled Radix `ContextMenu` registered with the overlay
- * stack, so system back closes it. Focus returns to the previously focused
- * element on close (Radix default), except after Edit, where the composer seed
- * owns focus.
+ * The sheet is registered with the overlay stack, so system back closes it.
+ * Focus returns to the previously focused element on close (Radix default),
+ * except after Edit, where the composer seed owns focus.
  */
 export function MessageActionsContextMenu({
   overlayId,
   text,
   onEdit,
   onRetry,
+  onSelectText,
+  title = 'Message',
+  open: openProp,
+  onOpenChange,
   disabled = false,
   children
 }: MessageActionsContextMenuProps): React.JSX.Element {
-  const [open, setOpen] = useState(false)
-  const { copy } = useMessageCopy(text)
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(false)
+  const open = openProp ?? uncontrolledOpen
+  const controlled = openProp !== undefined
+  const onOpenChangeRef = useRef(onOpenChange)
+  onOpenChangeRef.current = onOpenChange
+  const setOpen = useCallback(
+    (next: boolean) => {
+      if (!controlled) setUncontrolledOpen(next)
+      onOpenChangeRef.current?.(next)
+    },
+    [controlled]
+  )
+  const { copied, copy } = useMessageCopy(text)
   const closedByEditRef = useRef(false)
   const fromPortalRef = useRef(false)
+  const disabledRef = useRef(disabled)
+  disabledRef.current = disabled
+  const tickTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  const close = useCallback(() => setOpen(false), [])
+  const close = useCallback(() => setOpen(false), [setOpen])
   useOverlayRegistration(overlayId, open, close)
 
-  // The message stopped owning actions while its menu was open: close it.
+  // The sheet has no Radix trigger, so remember what had focus when it opened
+  // (the message, or the row's ⋯) and give focus back to it on close. Read
+  // during the render that opens it, before the sheet moves focus inside.
+  const returnFocusRef = useRef<HTMLElement | null>(null)
+  const wasOpenRef = useRef(false)
+  if (open && !wasOpenRef.current && typeof document !== 'undefined') {
+    const active = document.activeElement
+    returnFocusRef.current =
+      active instanceof HTMLElement && active !== document.body ? active : null
+  }
+  wasOpenRef.current = open
+
+  useEffect(
+    () => () => {
+      if (tickTimer.current) clearTimeout(tickTimer.current)
+    },
+    []
+  )
+
+  // The message stopped owning actions while its sheet was open: close it.
+  const openRef = useRef(open)
+  openRef.current = open
   useEffect(() => {
-    if (disabled) setOpen(false)
-  }, [disabled])
+    if (disabled && openRef.current) setOpen(false)
+  }, [disabled, setOpen])
 
   // Radix arms its long-press timer from the trigger's `pointerdown`, which also
   // receives portaled descendants' events. Record where the latest one came
@@ -269,66 +355,125 @@ export function MessageActionsContextMenu({
     fromPortalRef.current = !event.currentTarget.contains(event.target as Node)
   }, [])
 
-  const handleOpenChange = useCallback((next: boolean) => {
-    if (next) {
-      if (fromPortalRef.current) return
+  // Radix's trigger asks to open on a long-press, right-click or the
+  // context-menu key; the menu itself never mounts (`open` stays false).
+  const handleTriggerOpen = useCallback(
+    (next: boolean) => {
+      if (!next) return
+      if (fromPortalRef.current || disabledRef.current) return
       // A stale flag (Edit that never reached `onCloseAutoFocus`) must not
       // suppress the focus return of a later close.
       closedByEditRef.current = false
-    }
-    setOpen(next)
-  }, [])
+      setOpen(true)
+    },
+    [setOpen]
+  )
 
   const handleCopy = useCallback(async () => {
     const ok = await copy()
-    if (ok) return
+    if (ok) {
+      // The row's tick shows first, then the sheet closes (no toast).
+      if (tickTimer.current) clearTimeout(tickTimer.current)
+      tickTimer.current = setTimeout(close, SHEET_COPY_TICK_MS)
+      return
+    }
+    close()
     // The toast is shown by useMessageCopy. Log without the message text.
     void logFrontendError({
       level: 'warn',
       source: 'MessageActions.contextMenu',
       message: 'Failed to copy message text from the actions menu'
     })
-  }, [copy])
+  }, [copy, close])
 
   return (
-    <ContextMenu open={open} onOpenChange={handleOpenChange}>
-      <ContextMenuTrigger
-        asChild
-        disabled={disabled}
-        onPointerDownCapture={markEventOrigin}
-        onContextMenuCapture={markEventOrigin}
-        {...(disabled ? INERT_TRIGGER_PROPS : undefined)}
-      >
-        {children}
-      </ContextMenuTrigger>
-      <ContextMenuContent
-        onCloseAutoFocus={(event) => {
-          // After Edit the composer seed focuses the editor; Radix's default
-          // focus return would steal it back.
-          if (!closedByEditRef.current) return
-          closedByEditRef.current = false
-          event.preventDefault()
-        }}
-      >
-        <ContextMenuItem onSelect={() => void handleCopy()}>
-          <Copy className="mr-2 h-4 w-4" /> Copy
-        </ContextMenuItem>
-        {onEdit && (
-          <ContextMenuItem
-            onSelect={() => {
-              closedByEditRef.current = true
-              onEdit()
-            }}
-          >
-            <Edit className="mr-2 h-4 w-4" /> Edit
-          </ContextMenuItem>
-        )}
-        {onRetry && (
-          <ContextMenuItem onSelect={() => onRetry()}>
-            <RotateCcw className="mr-2 h-4 w-4" /> Retry
-          </ContextMenuItem>
-        )}
-      </ContextMenuContent>
-    </ContextMenu>
+    <>
+      <ContextMenu open={false} onOpenChange={handleTriggerOpen}>
+        <ContextMenuTrigger
+          asChild
+          disabled={disabled}
+          onPointerDownCapture={markEventOrigin}
+          onContextMenuCapture={markEventOrigin}
+          {...(disabled ? INERT_TRIGGER_PROPS : undefined)}
+        >
+          {children}
+        </ContextMenuTrigger>
+      </ContextMenu>
+      <Sheet open={open} onOpenChange={setOpen}>
+        <MobileSheetContent
+          title={title}
+          aria-describedby={undefined}
+          onCloseAutoFocus={(event) => {
+            event.preventDefault()
+            const target = returnFocusRef.current
+            returnFocusRef.current = null
+            // After Edit the composer seed focuses the editor; a focus return
+            // would steal it back.
+            if (closedByEditRef.current) {
+              closedByEditRef.current = false
+              return
+            }
+            if (target?.isConnected) target.focus()
+          }}
+        >
+          <SheetGroup>
+            <SheetRow
+              title={copied ? 'Copied' : 'Copy'}
+              icon={
+                <SheetIconWell>
+                  <IconSwap iconKey={copied}>
+                    {copied ? <Check className="text-success" /> : <Copy />}
+                  </IconSwap>
+                </SheetIconWell>
+              }
+              onSelect={() => void handleCopy()}
+            />
+            {onSelectText && (
+              <SheetRow
+                title="Select text"
+                icon={
+                  <SheetIconWell>
+                    <Type />
+                  </SheetIconWell>
+                }
+                onSelect={() => {
+                  close()
+                  onSelectText()
+                }}
+              />
+            )}
+            {onEdit && (
+              <SheetRow
+                title="Edit"
+                icon={
+                  <SheetIconWell>
+                    <Edit />
+                  </SheetIconWell>
+                }
+                onSelect={() => {
+                  closedByEditRef.current = true
+                  close()
+                  onEdit()
+                }}
+              />
+            )}
+            {onRetry && (
+              <SheetRow
+                title="Retry"
+                icon={
+                  <SheetIconWell>
+                    <RotateCcw />
+                  </SheetIconWell>
+                }
+                onSelect={() => {
+                  close()
+                  onRetry()
+                }}
+              />
+            )}
+          </SheetGroup>
+        </MobileSheetContent>
+      </Sheet>
+    </>
   )
 }

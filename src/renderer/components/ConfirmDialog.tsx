@@ -1,6 +1,13 @@
 import { AnimatePresence, motion } from 'framer-motion'
 import { type KeyboardEvent, useCallback, useEffect, useId, useRef } from 'react'
 import { AlertTriangle } from '@/components/icons'
+import {
+  PHONE_MODAL_BODY_CLASS,
+  PHONE_MODAL_BUTTON_CLASS,
+  PHONE_MODAL_CARD_CLASS,
+  PHONE_MODAL_FOOTER_CLASS,
+  PHONE_MODAL_OVERLAY_CLASS
+} from '@/components/phone-modal-classes'
 import { Button } from '@/components/ui/button'
 import { captureFocusReturnTarget } from '@/lib/focus-return'
 import { useOverlayRegistration } from '@/stores/overlay-stack-store'
@@ -145,7 +152,7 @@ export function ConfirmDialog({
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
           data-sibling-dialog
-          className="fixed inset-0 bg-overlay/60 backdrop-blur-sm z-50 flex items-center justify-center"
+          className={`fixed inset-0 bg-overlay/60 backdrop-blur-sm z-50 flex items-center justify-center ${PHONE_MODAL_OVERLAY_CLASS}`}
           onClick={onCancel}
         >
           <motion.div
@@ -153,7 +160,7 @@ export function ConfirmDialog({
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.95, y: 10, transition: { duration: 0.1 } }}
             transition={{ duration: 0.15 }}
-            className="bg-card rounded-lg shadow-2xl w-[400px] border border-border overflow-hidden"
+            className={`bg-card rounded-lg shadow-2xl max-w-[400px] border border-border overflow-hidden ${PHONE_MODAL_CARD_CLASS}`}
             onClick={(e) => e.stopPropagation()}
             onKeyDown={handleKeyDown}
             ref={dialogRef}
@@ -164,7 +171,7 @@ export function ConfirmDialog({
             aria-describedby={`${dialogId}-message`}
           >
             {/* Content */}
-            <div className="p-6">
+            <div className={`p-6 ${PHONE_MODAL_BODY_CLASS}`}>
               <div className="flex items-start gap-4">
                 {variant === 'danger' && (
                   <div className="flex-shrink-0 w-10 h-10 rounded-full bg-destructive/10 flex items-center justify-center">
@@ -187,7 +194,9 @@ export function ConfirmDialog({
             </div>
 
             {/* Footer */}
-            <div className="px-6 py-3 bg-secondary/50 flex justify-end gap-2 border-t border-border">
+            <div
+              className={`px-6 py-3 bg-secondary/50 flex justify-end gap-2 border-t border-border ${PHONE_MODAL_FOOTER_CLASS}`}
+            >
               <Button
                 type="button"
                 variant="ghost"
@@ -195,6 +204,7 @@ export function ConfirmDialog({
                 onClick={onCancel}
                 disabled={isLoading}
                 ref={variant === 'danger' ? initialFocusRef : undefined}
+                className={PHONE_MODAL_BUTTON_CLASS}
               >
                 {cancelLabel}
               </Button>
@@ -205,7 +215,7 @@ export function ConfirmDialog({
                   size="sm"
                   onClick={secondaryAction.onClick}
                   disabled={isLoading}
-                  className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+                  className={`text-destructive hover:bg-destructive/10 hover:text-destructive ${PHONE_MODAL_BUTTON_CLASS}`}
                 >
                   {secondaryAction.label}
                 </Button>
@@ -217,6 +227,7 @@ export function ConfirmDialog({
                 onClick={onConfirm}
                 ref={variant === 'danger' ? undefined : initialFocusRef}
                 disabled={isLoading}
+                className={PHONE_MODAL_BUTTON_CLASS}
               >
                 {isLoading ? 'Loading...' : confirmLabel}
               </Button>

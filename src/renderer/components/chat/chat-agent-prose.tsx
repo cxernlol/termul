@@ -199,7 +199,9 @@ export function TermulFilePathButton({
       type="button"
       data-testid="termul-file-path"
       data-path={path}
-      className="cursor-pointer appearance-none text-left font-medium text-primary underline underline-offset-2"
+      // Touch: an invisible 12px pad above and below makes the tap height
+      // about 44px without moving the line (the pseudo-element takes no space).
+      className="relative cursor-pointer appearance-none text-left font-medium text-primary underline underline-offset-2 pointer-coarse:after:absolute pointer-coarse:after:inset-x-0 pointer-coarse:after:-inset-y-3 pointer-coarse:after:content-['']"
       title="Open in editor"
       onClick={(event) => {
         if (event.button !== 0 || event.shiftKey) return

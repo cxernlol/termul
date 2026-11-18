@@ -1840,6 +1840,20 @@ describe('ChatInputBar draft persistence', () => {
     })
   })
 
+  it('sends on Enter on desktop and labels the return key "send"', async () => {
+    const onSend = vi.fn()
+    renderInputBar({ onSend })
+    expect(document.querySelector('[data-composer-editor="true"]')).toHaveAttribute(
+      'enterkeyhint',
+      'send'
+    )
+    setComposerValue('desktop send')
+
+    pressComposerKey('Enter')
+
+    await waitFor(() => expect(onSend).toHaveBeenCalledWith('desktop send'))
+  })
+
   it('clears the draft on send', async () => {
     persistenceStore.set('chat-draft/p1/session-1', 'send me')
     const onSend = vi.fn()

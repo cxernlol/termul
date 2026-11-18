@@ -1,8 +1,17 @@
 import { AnimatePresence, motion } from 'framer-motion'
-import { type KeyboardEvent, useCallback, useEffect, useId } from 'react'
+import { type KeyboardEvent, useCallback, useEffect, useId, useRef } from 'react'
 import { AlertTriangle, RotateCcw, X } from '@/components/icons'
+import {
+  PHONE_MODAL_BODY_CLASS,
+  PHONE_MODAL_BUTTON_CLASS,
+  PHONE_MODAL_CARD_CLASS,
+  PHONE_MODAL_FOOTER_CLASS,
+  PHONE_MODAL_OVERLAY_CLASS,
+  TOUCH_HIT_AREA_CLASS
+} from '@/components/phone-modal-classes'
 import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/spinner'
+import { useModalFocus } from '@/components/use-modal-focus'
 import { useOverlayRegistration } from '@/stores/overlay-stack-store'
 import type { Snapshot } from '@/types/project'
 
@@ -25,10 +34,16 @@ export function RestoreSnapshotModal({
 }: RestoreSnapshotModalProps): React.JSX.Element {
   // Mobile web shell: system back closes this modal through the page's own
   // close, which vetoes while a restore is in flight (inert on desktop).
-  const overlayId = `restore-snapshot-modal:${useId()}`
+  const dialogId = useId()
+  const overlayId = `restore-snapshot-modal:${dialogId}`
   useOverlayRegistration(overlayId, isOpen && snapshot !== null, onClose, {
     mobileShellOnly: true
   })
+  // Restore closes every terminal: focus lands on Cancel, so a stray Enter on
+  // the button does not restore.
+  const dialogRef = useRef<HTMLDivElement>(null)
+  const cancelRef = useRef<HTMLButtonElement>(null)
+  useModalFocus(isOpen && snapshot !== null, dialogRef, cancelRef)
 
   // Handle Escape key to close modal
   useEffect(() => {
@@ -53,7 +68,8 @@ export function RestoreSnapshotModal({
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLDivElement>) => {
-      if (e.key === 'Enter' && !isRestoring) {
+      // A focused button handles its own Enter (Enter on Cancel must not restore).
+      if (e.key === 'Enter' && !isRestoring && !(e.target instanceof HTMLButtonElement)) {
         e.preventDefault()
         handleRestore()
       } else if (e.key === 'Escape' && !isRestoring) {
@@ -71,7 +87,7 @@ export function RestoreSnapshotModal({
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          className="fixed inset-0 bg-overlay/60 backdrop-blur-sm z-50 flex items-center justify-center"
+          className={`fixed inset-0 bg-overlay/60 backdrop-blur-sm z-50 flex items-center justify-center ${PHONE_MODAL_OVERLAY_CLASS}`}
           onClick={onClose}
         >
           <motion.div
@@ -79,27 +95,37 @@ export function RestoreSnapshotModal({
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.95, y: 10, transition: { duration: 0.1 } }}
             transition={{ duration: 0.15 }}
-            className="bg-card rounded-lg shadow-2xl w-[480px] border border-border overflow-hidden"
+            className={`bg-card rounded-lg shadow-2xl max-w-[480px] border border-border overflow-hidden outline-none ${PHONE_MODAL_CARD_CLASS}`}
             onClick={(e) => e.stopPropagation()}
             onKeyDown={handleKeyDown}
+            ref={dialogRef}
+            tabIndex={-1}
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby={`${dialogId}-title`}
           >
             {/* Header */}
-            <div className="px-4 py-3 border-b border-border flex justify-between items-center bg-secondary/50">
-              <h3 className="text-sm font-semibold text-foreground flex items-center gap-2">
+            <div className="px-4 py-3 border-b border-border flex justify-between items-center bg-secondary/50 shrink-0">
+              <h3
+                id={`${dialogId}-title`}
+                className="text-sm font-semibold text-foreground flex items-center gap-2"
+              >
                 <RotateCcw size={14} />
                 Restore Snapshot
               </h3>
               <button
+                type="button"
                 onClick={onClose}
                 disabled={isRestoring}
-                className="text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
+                aria-label="Close"
+                className={`text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50 ${TOUCH_HIT_AREA_CLASS}`}
               >
                 <X size={14} />
               </button>
             </div>
 
             {/* Content */}
-            <div className="p-4 space-y-4">
+            <div className={`p-4 space-y-4 ${PHONE_MODAL_BODY_CLASS}`}>
               <p className="text-sm text-foreground">
                 Are you sure you want to restore the snapshot{' '}
                 <span className="font-semibold">&quot;{snapshot.name}&quot;</span>?
@@ -122,17 +148,27 @@ export function RestoreSnapshotModal({
             </div>
 
             {/* Footer */}
-            <div className="px-4 py-3 bg-secondary/50 flex justify-end gap-2 border-t border-border">
+            <div
+              className={`px-4 py-3 bg-secondary/50 flex justify-end gap-2 border-t border-border ${PHONE_MODAL_FOOTER_CLASS}`}
+            >
               <Button
+                ref={cancelRef}
                 type="button"
                 variant="ghost"
                 size="sm"
                 onClick={onClose}
                 disabled={isRestoring}
+                className={PHONE_MODAL_BUTTON_CLASS}
               >
                 Cancel
               </Button>
-              <Button type="button" size="sm" onClick={handleRestore} disabled={isRestoring}>
+              <Button
+                type="button"
+                size="sm"
+                onClick={handleRestore}
+                disabled={isRestoring}
+                className={PHONE_MODAL_BUTTON_CLASS}
+              >
                 {isRestoring ? <Spinner size={12} decorative /> : <RotateCcw />}
                 {isRestoring ? 'Restoring...' : 'Restore'}
               </Button>

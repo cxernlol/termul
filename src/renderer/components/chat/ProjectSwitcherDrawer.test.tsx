@@ -214,13 +214,14 @@ describe('ProjectSwitcherDrawer', () => {
   })
 
   describe('bottom sheet', () => {
-    it('opens from the bottom with the sheet id, height cap and safe-area padding', async () => {
+    it('is the phone sheet: grab handle, no ✕, height cap and safe-area padding', async () => {
       render(
         <ProjectSwitcherDrawer
           open
           onOpenChange={vi.fn()}
           side="bottom"
           id="mobile-project-sheet"
+          onAddProject={vi.fn()}
         />
       )
 
@@ -228,13 +229,22 @@ describe('ProjectSwitcherDrawer', () => {
       expect(sheet).not.toBeNull()
       expect(sheet?.id).toBe('mobile-project-sheet')
       const cls = sheet?.className ?? ''
-      expect(cls).toContain('rounded-t-xl')
+      expect(cls).toContain('rounded-t-[14px]')
       expect(cls).toContain('max-h-[85dvh]')
-      expect(cls).toContain('overflow-y-auto')
-      expect(cls).toContain('overscroll-contain')
-      expect(cls).toContain('pb-[max(0.5rem,env(safe-area-inset-bottom))]')
       expect(cls).not.toContain('w-[72vw]')
-      expect(screen.getByText('Projects')).toBeInTheDocument()
+      expect(screen.getByRole('heading', { name: 'Projects' })).toBeInTheDocument()
+      // MobileSheetContent: the grab handle closes the sheet; there is no ✕.
+      expect(screen.getAllByRole('button', { name: 'Close' })).toHaveLength(1)
+      expect(sheet?.innerHTML).toContain('pb-[max(0.5rem,env(safe-area-inset-bottom))]')
+
+      // The Current row is the keycap, as in the desktop chat list; no row
+      // uses the blue `bg-accent`.
+      const current = screen.getByRole('button', { name: /^Alpha/ })
+      expect(current).toHaveAttribute('aria-current', 'true')
+      expect(current).toHaveClass('keycap', 'min-h-11')
+      expect(sheet?.innerHTML).not.toContain('bg-accent')
+
+      expect(screen.getByRole('button', { name: 'Add project' })).toHaveClass('min-h-11', 'px-3')
     })
 
     it('forwards onCloseAutoFocus so the owner can return focus', async () => {

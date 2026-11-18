@@ -13,7 +13,12 @@ import type { SessionConfigOption, SessionUsage } from '@/lib/acp-api'
 import type { AcpSession } from '@/stores/acp-store'
 import { useOverlayStackStore } from '@/stores/overlay-stack-store'
 import { ChatInputBar } from './ChatInputBar'
-import { getComposerValue, setComposerValue } from './composer/chat-composer-test-helpers'
+import {
+  getComposerValue,
+  pressComposerKey,
+  setComposerCaret,
+  setComposerValue
+} from './composer/chat-composer-test-helpers'
 
 // jsdom omits `document.elementFromPoint`; ProseMirror's drop handler calls it.
 if (typeof document.elementFromPoint !== 'function') {
@@ -1143,5 +1148,35 @@ describe('mobile composer: Connectors in the sheet', () => {
     expect(within(sheet).queryByRole('switch')).toBeNull()
     expect(within(sheet).getByRole('button', { name: /Reload this chat/ })).toBeInTheDocument()
     expect(within(sheet).queryByText(/Changes apply to the next chat/)).not.toBeInTheDocument()
+  })
+})
+
+describe('mobile composer: Enter key', () => {
+  it('adds a new line on Enter and does not send (a soft keyboard has no Shift+Enter)', async () => {
+    const onSend = vi.fn()
+    renderBar({ onSend })
+    setComposerValue('first line')
+    setComposerCaret('first line'.length)
+
+    pressComposerKey('Enter')
+
+    expect(onSend).not.toHaveBeenCalled()
+    await waitFor(() => expect(getComposerValue()).toBe('first line\n'))
+  })
+
+  it('still sends on Cmd/Ctrl+Enter (hardware keyboard)', async () => {
+    const onSend = vi.fn()
+    renderBar({ onSend })
+    setComposerValue('send me')
+
+    pressComposerKey('Enter', { metaKey: true })
+
+    await waitFor(() => expect(onSend).toHaveBeenCalledWith('send me'))
+  })
+
+  it('labels the keyboard return key "enter", not "send"', () => {
+    renderBar()
+    const editor = document.querySelector('[data-composer-editor="true"]')
+    expect(editor).toHaveAttribute('enterkeyhint', 'enter')
   })
 })

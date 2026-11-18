@@ -75,21 +75,31 @@ export function EnvVarsSection({
                     type="text"
                     aria-label={`Name of ${name}`}
                     autoComplete="off"
+                    autoCapitalize="off"
+                    autoCorrect="off"
                     spellCheck={false}
                     value={envVar.key}
                     onChange={(event) => onChange(index, { key: event.target.value })}
                     placeholder="KEY"
-                    className={cn(PANEL_FIELD_CLASS, 'h-8 w-2/5 min-w-0 px-2.5 font-mono')}
+                    className={cn(
+                      PANEL_FIELD_CLASS,
+                      'h-8 pointer-coarse:h-11 w-2/5 min-w-0 px-2.5 font-mono'
+                    )}
                   />
                   <input
                     type={envVar.isSecret ? 'password' : 'text'}
                     aria-label={`Value of ${name}`}
                     autoComplete="off"
+                    autoCapitalize="off"
+                    autoCorrect="off"
                     spellCheck={false}
                     value={envVar.value}
                     onChange={(event) => onChange(index, { value: event.target.value })}
                     placeholder="value"
-                    className={cn(PANEL_FIELD_CLASS, 'h-8 min-w-0 flex-1 px-2.5 font-mono')}
+                    className={cn(
+                      PANEL_FIELD_CLASS,
+                      'h-8 pointer-coarse:h-11 min-w-0 flex-1 px-2.5 font-mono'
+                    )}
                   />
                   <button
                     type="button"
@@ -97,7 +107,7 @@ export function EnvVarsSection({
                     onClick={() => onRemove(index)}
                     className={cn(
                       QUIET_ICON_BUTTON_CLASS,
-                      'size-8 shrink-0 hover:text-destructive'
+                      'size-8 pointer-coarse:size-11 shrink-0 hover:text-destructive active:text-destructive'
                     )}
                   >
                     <Trash2 size={14} />

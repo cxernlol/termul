@@ -72,7 +72,9 @@ export function EditDiffBlock({
     </>
   )
 
-  const headerClass = 'flex w-full min-w-0 items-center gap-2 px-2.5 py-1.5 text-left text-xs'
+  // Touch: the header is a 44px row so the "open file" tap is easy to hit.
+  const headerClass =
+    'flex w-full min-w-0 items-center gap-2 px-2.5 py-1.5 text-left text-xs pointer-coarse:min-h-11'
 
   return (
     <div
@@ -86,7 +88,7 @@ export function EditDiffBlock({
           onClick={() => onOpenFile(diff.path, openLine)}
           className={cn(
             headerClass,
-            'outline-none transition-colors hover:bg-muted/50 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-focus-ring'
+            'outline-none transition-colors hover:bg-muted/50 active:bg-muted/50 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-focus-ring'
           )}
         >
           {header}
@@ -102,7 +104,7 @@ export function EditDiffBlock({
               'p-2 font-mono text-xs leading-relaxed',
               collapsed
                 ? hasMoreBelow && '[mask-image:linear-gradient(to_bottom,black_45%,transparent)]'
-                : 'scroller-thin max-h-48 overflow-auto'
+                : 'scroller-thin max-h-48 overflow-auto overscroll-contain'
             )}
           >
             <DiffRows lines={visible} highlight={highlight} />

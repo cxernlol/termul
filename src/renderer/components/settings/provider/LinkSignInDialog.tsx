@@ -17,7 +17,7 @@ export function LinkSignInDialog({
 }: LinkSignInDialogProps): React.JSX.Element {
   return (
     <Dialog open={account !== null} onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="gap-5 sm:max-w-[400px]">
+      <DialogContent className="max-h-[90dvh] gap-5 overflow-y-auto overscroll-contain sm:max-w-[400px]">
         {account && (
           <LinkSignInStep
             account={account}

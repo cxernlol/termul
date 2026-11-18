@@ -936,10 +936,16 @@ describe('WorkspaceLayout mobile branch', () => {
     const sheetContent = filter.closest('[data-sheet]')
     expect(sheetContent).not.toBeNull()
     const cls = sheetContent?.className ?? ''
-    expect(cls).toContain('rounded-t-xl')
-    expect(cls).toContain('max-h-[90vh]')
+    // The phone sheet (MobileSheetContent): 14px top corners, a grab handle.
+    expect(cls).toContain('rounded-t-[14px]')
+    // dvh, not vh: on iOS Safari 90vh runs under the browser toolbar.
+    expect(cls).toContain('max-h-[calc(90dvh-env(safe-area-inset-top))]')
     expect(cls).not.toContain('h-full')
-    expect(cls).toContain('pb-[env(safe-area-inset-bottom)]')
+    expect(
+      within(sheetContent as HTMLElement).getByRole('button', { name: 'Close' })
+    ).toBeInTheDocument()
+    // The home-indicator inset sits on the scrolling body around GitPanel.
+    expect(sheetContent?.innerHTML).toContain('pb-[env(safe-area-inset-bottom)]')
   })
 
   it('omits the Git changes row when no active project path', async () => {

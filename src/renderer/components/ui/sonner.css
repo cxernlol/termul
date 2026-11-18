@@ -58,3 +58,17 @@ html.dark [data-sonner-toaster] [data-sonner-toast][data-styled="true"] {
   background: oklch(var(--secondary));
   color: oklch(var(--secondary-foreground));
 }
+
+/* Touch screens: sonner draws a 20px close button. An invisible ::after
+   grows the hit area to 44px; the action buttons get a 36px floor. */
+@media (pointer: coarse) {
+  [data-sonner-toaster] [data-sonner-toast] [data-close-button]::after {
+    content: "";
+    position: absolute;
+    inset: -12px;
+  }
+
+  [data-sonner-toaster] [data-sonner-toast] :is([data-button], [data-cancel]) {
+    min-height: 36px;
+  }
+}

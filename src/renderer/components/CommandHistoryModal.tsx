@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { Clock, History, Terminal, Trash2 } from '@/components/icons'
+import { TOUCH_FIELD_CLASS } from '@/components/phone-modal-classes'
 import { FIELD_FOCUS_CLASS } from '@/components/ui/panel-styles'
 import {
   Select,
@@ -12,6 +13,7 @@ import {
   SelectValue
 } from '@/components/ui/select'
 import type { CommandHistoryEntry } from '@/stores/command-history-store'
+import { useOverlayRegistration } from '@/stores/overlay-stack-store'
 
 type FilterMode = 'this-project' | 'all-projects'
 
@@ -39,6 +41,8 @@ export function CommandHistoryModal({
   const [isClearing, setIsClearing] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
   const virtuosoRef = useRef<VirtuosoHandle>(null)
+  // Mobile web shell: system back closes this modal (inert on desktop).
+  useOverlayRegistration('command-history-modal', isOpen, onClose, { mobileShellOnly: true })
 
   // Get entries based on filter mode
   const baseEntries = useMemo(() => {
@@ -138,7 +142,7 @@ export function CommandHistoryModal({
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          className="fixed inset-0 z-[60] flex flex-col items-center pt-[10vh] bg-overlay/40 backdrop-blur-sm"
+          className="fixed inset-0 z-[60] flex flex-col items-center px-4 pt-[max(10dvh,calc(env(safe-area-inset-top)+1rem))] bg-overlay/40 backdrop-blur-sm"
           onClick={onClose}
         >
           <motion.div
@@ -148,6 +152,9 @@ export function CommandHistoryModal({
             transition={{ duration: 0.15 }}
             className="w-full max-w-2xl bg-card rounded-xl shadow-2xl border border-border overflow-hidden"
             onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Command History"
           >
             {/* Header */}
             <div className="flex items-center justify-between gap-2 px-4 py-3 border-b border-border">
@@ -178,7 +185,12 @@ export function CommandHistoryModal({
                 onChange={(e) => setQuery(e.target.value)}
                 onKeyDown={handleKeyDown}
                 placeholder="Search commands..."
-                className={`w-full px-3 py-2 text-sm pointer-coarse:text-base bg-background border border-border rounded ${FIELD_FOCUS_CLASS}`}
+                aria-label="Search commands"
+                autoCapitalize="off"
+                autoCorrect="off"
+                spellCheck={false}
+                enterKeyHint="search"
+                className={`w-full px-3 py-2 text-sm bg-background border border-border rounded ${TOUCH_FIELD_CLASS} ${FIELD_FOCUS_CLASS}`}
               />
             </div>
 
@@ -191,10 +203,10 @@ export function CommandHistoryModal({
                 </p>
               </div>
             ) : (
-              <div className="max-h-[50vh]">
+              <div className="max-h-[50dvh]">
                 <Virtuoso
                   ref={virtuosoRef}
-                  style={{ height: '50vh' }}
+                  style={{ height: '50dvh', overscrollBehavior: 'contain' }}
                   data={filteredEntries}
                   itemContent={(index, entry) => (
                     <div
@@ -204,7 +216,9 @@ export function CommandHistoryModal({
                         onClose()
                       }}
                       className={`px-4 py-3 cursor-pointer transition-colors ${
-                        index === selectedIndex ? 'keycap' : 'hover:bg-foreground/[0.03]'
+                        index === selectedIndex
+                          ? 'keycap'
+                          : 'hover:bg-foreground/[0.03] active:bg-foreground/[0.06]'
                       }`}
                     >
                       <div className="flex items-start justify-between gap-3">
@@ -230,7 +244,8 @@ export function CommandHistoryModal({
 
             {/* Footer */}
             <div className="label-group bg-background px-4 py-2 border-t border-border flex items-center justify-between text-muted-foreground">
-              <div className="flex items-center space-x-4">
+              {/* Keyboard hints: no keyboard keys on a touch screen. */}
+              <div className="flex items-center space-x-4 pointer-coarse:hidden">
                 <span className="flex items-center">
                   <kbd className="bg-secondary text-foreground px-1 rounded mr-1">↑↓</kbd> to
                   navigate
@@ -245,7 +260,7 @@ export function CommandHistoryModal({
               <button
                 type="button"
                 onClick={() => setShowClearConfirm(true)}
-                className="flex items-center gap-1 px-2 py-1 rounded hover:bg-secondary/50 text-destructive hover:text-destructive transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                className="flex items-center gap-1 px-2 py-1 rounded hover:bg-secondary/50 active:bg-secondary/50 text-destructive hover:text-destructive transition-colors disabled:opacity-50 disabled:cursor-not-allowed pointer-coarse:min-h-11 pointer-coarse:ml-auto"
                 disabled={entries.length === 0 || filterMode !== 'this-project' || isClearing}
                 title={
                   filterMode === 'all-projects'

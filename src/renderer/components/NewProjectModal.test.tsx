@@ -512,17 +512,19 @@ describe('NewProjectModal (web-mode · auto-name + advanced options)', () => {
 
   // ── Story 7: responsive width + doubled-name/duplicate warning ──────────
 
-  it('constrains the modal to 100vw-2rem on phone-sized viewports', () => {
-    // Matrix row "Modal fits 390px": the container must carry the responsive
-    // max-width alongside the desktop width so a 390px viewport never
-    // overflows horizontally.
+  it('fits phone-sized viewports (full width up to 520px, dvh-capped height)', () => {
+    // Matrix row "Modal fits 390px": the card is full width inside the
+    // overlay's 16px gutter, capped at the desktop 520px, so a 390px viewport
+    // never overflows horizontally; its height follows the visible area.
     const { container } = render(
       <NewProjectModal isOpen onClose={vi.fn()} onCreateProject={vi.fn()} />
     )
     const panel = container.querySelector('.bg-card.rounded-lg') as HTMLElement
     expect(panel).toBeTruthy()
-    expect(panel.className).toContain('w-[520px]')
-    expect(panel.className).toContain('max-w-[calc(100vw-2rem)]')
+    expect(panel.className).toContain('w-full')
+    expect(panel.className).toContain('max-w-[520px]')
+    expect(panel.className).toContain('100dvh')
+    expect((panel.parentElement as HTMLElement).className).toContain('px-4')
   })
 
   it('warns when the name is a doubled pattern and still allows creating', async () => {

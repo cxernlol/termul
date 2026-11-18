@@ -8,6 +8,7 @@ import type { ChatMessage as ChatMessageType } from '@/stores/acp-store'
 import { useOverlayStackStore } from '@/stores/overlay-stack-store'
 import { ChatMessage } from './ChatMessage'
 import { resetLongPressFallbackLogForTests } from './MessageActions'
+import { resetMessageSelectModeForTests } from './message-select-mode'
 
 const { mobileShellMock, copyTextMock, logFrontendErrorMock, toastErrorMock } = vi.hoisted(() => ({
   mobileShellMock: vi.fn(() => true),
@@ -109,12 +110,12 @@ const MENU_CASES = [
   {
     label: 'user message',
     ui: () => <ChatMessage message={userMessage()} onEdit={() => {}} />,
-    items: ['Copy', 'Edit']
+    items: ['Copy', 'Select text', 'Edit']
   },
   {
     label: 'agent turn tail',
     ui: () => <ChatMessage message={agentMessage()} isTurnTail onRetry={() => {}} />,
-    items: ['Copy', 'Retry']
+    items: ['Copy', 'Select text', 'Retry']
   }
 ]
 
@@ -132,14 +133,44 @@ function actionsRow(): HTMLElement {
   return row
 }
 
+// Paper "10.2": the actions are rows in a bottom sheet (a dialog). Its grab
+// handle is a "Close" button, not an action.
+function querySheetItems(): HTMLElement[] {
+  const sheet = screen.queryByRole('dialog')
+  if (!sheet) return []
+  return Array.from(sheet.querySelectorAll<HTMLElement>('button')).filter(
+    (button) => button.getAttribute('aria-label') !== 'Close'
+  )
+}
+
+async function findSheetItems(): Promise<HTMLElement[]> {
+  await screen.findByRole('dialog')
+  return querySheetItems()
+}
+
+function querySheetItem(options: { name: string | RegExp }): HTMLElement | null {
+  return (
+    querySheetItems().find((item) => {
+      const text = item.textContent?.trim() ?? ''
+      return typeof options.name === 'string' ? text === options.name : options.name.test(text)
+    }) ?? null
+  )
+}
+
+function sheetItem(options: { name: string | RegExp }): HTMLElement {
+  const item = querySheetItem(options)
+  if (!item) throw new Error(`sheet item ${String(options.name)} not found`)
+  return item
+}
+
 async function openMenuWithContextMenuKey(el: HTMLElement): Promise<string[]> {
   fireEvent.contextMenu(el)
-  const items = await screen.findAllByRole('menuitem')
+  const items = await findSheetItems()
   return items.map((item) => item.textContent?.trim() ?? '')
 }
 
 async function expectMenuClosed(): Promise<void> {
-  await waitFor(() => expect(screen.queryAllByRole('menuitem')).toHaveLength(0))
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
 }
 
 function infoLogs(): Array<Record<string, unknown>> {
@@ -155,6 +186,7 @@ beforeEach(() => {
   logFrontendErrorMock.mockClear()
   toastErrorMock.mockClear()
   resetLongPressFallbackLogForTests()
+  resetMessageSelectModeForTests()
   useOverlayStackStore.setState({ stack: [] })
 })
 
@@ -193,9 +225,28 @@ describe('ChatMessage on the mobile shell: focus-revealed row', () => {
     expect(screen.getByRole('button', { name: 'Edit' })).toBeInTheDocument()
   })
 
-  it('makes a settled turn-tail agent message focusable with a hidden row', () => {
-    const container = renderMessage(
+  it('keeps the last reply row visible on the phone, with a 44px ⋯ that opens the sheet (Paper 10.1)', async () => {
+    renderMessage(
       <ChatMessage message={agentMessage()} isTurnTail onRetry={() => {}} actionsPinned />
+    )
+
+    const row = actionsRow()
+    expect(row).toHaveClass('opacity-100')
+    expect(row).not.toHaveClass('pointer-events-none')
+    const more = screen.getByRole('button', { name: 'More actions' })
+    expect(more).toHaveClass('pointer-coarse:size-11')
+    fireEvent.click(more)
+    expect((await findSheetItems()).map((item) => item.textContent?.trim())).toEqual([
+      'Copy',
+      'Select text',
+      'Retry'
+    ])
+    expect(screen.getByRole('dialog')).toHaveTextContent('Reply')
+  })
+
+  it('makes a settled turn-tail agent message that is not the last reply focusable with a hidden row', () => {
+    const container = renderMessage(
+      <ChatMessage message={agentMessage()} isTurnTail onRetry={() => {}} />
     )
 
     const message = messageElement(container)
@@ -237,8 +288,12 @@ describe('ChatMessage on the mobile shell: context menu', () => {
   it('opens Copy and Edit on a user message via the context-menu key', async () => {
     const container = renderMessage(<ChatMessage message={userMessage()} onEdit={() => {}} />)
 
-    expect(await openMenuWithContextMenuKey(messageElement(container))).toEqual(['Copy', 'Edit'])
-    expect(screen.getAllByRole('menuitem')).toHaveLength(2)
+    expect(await openMenuWithContextMenuKey(messageElement(container))).toEqual([
+      'Copy',
+      'Select text',
+      'Edit'
+    ])
+    expect(querySheetItems()).toHaveLength(3)
   })
 
   it('opens Copy and Retry on an agent turn tail with onRetry', async () => {
@@ -246,20 +301,30 @@ describe('ChatMessage on the mobile shell: context menu', () => {
       <ChatMessage message={agentMessage()} isTurnTail onRetry={() => {}} />
     )
 
-    expect(await openMenuWithContextMenuKey(messageElement(container))).toEqual(['Copy', 'Retry'])
+    expect(await openMenuWithContextMenuKey(messageElement(container))).toEqual([
+      'Copy',
+      'Select text',
+      'Retry'
+    ])
   })
 
   it('offers Copy only on a user message the row cannot edit', async () => {
     // No onEdit callback: the row shows Copy only.
     const container = renderMessage(<ChatMessage message={userMessage()} />)
 
-    expect(await openMenuWithContextMenuKey(messageElement(container))).toEqual(['Copy'])
+    expect(await openMenuWithContextMenuKey(messageElement(container))).toEqual([
+      'Copy',
+      'Select text'
+    ])
   })
 
   it('offers Copy only on an agent turn tail without onRetry', async () => {
     const container = renderMessage(<ChatMessage message={agentMessage()} isTurnTail />)
 
-    expect(await openMenuWithContextMenuKey(messageElement(container))).toEqual(['Copy'])
+    expect(await openMenuWithContextMenuKey(messageElement(container))).toEqual([
+      'Copy',
+      'Select text'
+    ])
   })
 
   it('opens on a held touch pointerdown (the 700ms long-press)', async () => {
@@ -267,13 +332,13 @@ describe('ChatMessage on the mobile shell: context menu', () => {
     const container = renderMessage(<ChatMessage message={userMessage()} onEdit={() => {}} />)
 
     fireEvent.pointerDown(messageElement(container), { pointerType: 'touch', pointerId: 1 })
-    expect(screen.queryAllByRole('menuitem')).toHaveLength(0)
+    expect(querySheetItems()).toHaveLength(0)
     act(() => {
       vi.advanceTimersByTime(700)
     })
 
-    const items = await screen.findAllByRole('menuitem')
-    expect(items.map((item) => item.textContent?.trim())).toEqual(['Copy', 'Edit'])
+    const items = await findSheetItems()
+    expect(items.map((item) => item.textContent?.trim())).toEqual(['Copy', 'Select text', 'Edit'])
   })
 
   it('does not open from a touch release before 700ms', () => {
@@ -287,7 +352,7 @@ describe('ChatMessage on the mobile shell: context menu', () => {
       vi.advanceTimersByTime(1000)
     })
 
-    expect(screen.queryAllByRole('menuitem')).toHaveLength(0)
+    expect(querySheetItems()).toHaveLength(0)
   })
 
   it.each(
@@ -304,10 +369,10 @@ describe('ChatMessage on the mobile shell: context menu', () => {
       vi.advanceTimersByTime(700)
     })
 
-    const items = await screen.findAllByRole('menuitem')
+    const items = await findSheetItems()
     expect(items.map((item) => item.textContent?.trim())).toEqual(expected)
-    expect(screen.queryByRole('menuitem', { name: /Paste/ })).toBeNull()
-    expect(screen.queryByRole('menuitem', { name: /Select All/ })).toBeNull()
+    expect(querySheetItem({ name: /Paste/ })).toBeNull()
+    expect(querySheetItem({ name: /Select All/ })).toBeNull()
   })
 
   it.each(
@@ -321,8 +386,8 @@ describe('ChatMessage on the mobile shell: context menu', () => {
     // The message trigger is deeper, so it opens first and cancels the default;
     // the app-level trigger's composed handler then skips.
     expect(await openMenuWithContextMenuKey(messageElement(container))).toEqual(expected)
-    expect(screen.queryByRole('menuitem', { name: /Paste/ })).toBeNull()
-    expect(screen.queryByRole('menuitem', { name: /Select All/ })).toBeNull()
+    expect(querySheetItem({ name: /Paste/ })).toBeNull()
+    expect(querySheetItem({ name: /Select All/ })).toBeNull()
   })
 
   it('registers with the overlay stack under a per-message id while open', async () => {
@@ -376,7 +441,7 @@ describe('ChatMessage on the mobile shell: menu actions', () => {
     const container = renderMessage(<ChatMessage message={userMessage(raw)} onEdit={() => {}} />)
     await openMenuWithContextMenuKey(messageElement(container))
 
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Copy' }))
+    fireEvent.click(sheetItem({ name: 'Copy' }))
 
     await waitFor(() => expect(copyTextMock).toHaveBeenCalledTimes(1))
     expect(copyTextMock).toHaveBeenCalledWith(display)
@@ -394,7 +459,7 @@ describe('ChatMessage on the mobile shell: menu actions', () => {
     )
     await openMenuWithContextMenuKey(messageElement(container))
 
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Copy' }))
+    fireEvent.click(sheetItem({ name: 'Copy' }))
 
     await waitFor(() => expect(copyTextMock).toHaveBeenCalledTimes(1))
     expect(copyTextMock).toHaveBeenCalledWith('first reply\n\nlast reply')
@@ -409,7 +474,7 @@ describe('ChatMessage on the mobile shell: menu actions', () => {
     message.focus()
     await openMenuWithContextMenuKey(message)
 
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Edit' }))
+    fireEvent.click(sheetItem({ name: 'Edit' }))
 
     expect(onEdit).toHaveBeenCalledTimes(1)
     expect(onEdit).toHaveBeenCalledWith(raw)
@@ -427,7 +492,7 @@ describe('ChatMessage on the mobile shell: menu actions', () => {
     const message = messageElement(container)
     message.focus()
     await openMenuWithContextMenuKey(message)
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Edit' }))
+    fireEvent.click(sheetItem({ name: 'Edit' }))
     await expectMenuClosed()
     // Let Radix's deferred close-focus run (Edit opts out of the focus return).
     await act(async () => {
@@ -450,7 +515,7 @@ describe('ChatMessage on the mobile shell: menu actions', () => {
     )
     await openMenuWithContextMenuKey(messageElement(container))
 
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Retry' }))
+    fireEvent.click(sheetItem({ name: 'Retry' }))
 
     expect(onRetry).toHaveBeenCalledTimes(1)
     await expectMenuClosed()
@@ -462,7 +527,7 @@ describe('ChatMessage on the mobile shell: menu actions', () => {
     const container = renderMessage(<ChatMessage message={userMessage(secret)} onEdit={() => {}} />)
     await openMenuWithContextMenuKey(messageElement(container))
 
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Copy' }))
+    fireEvent.click(sheetItem({ name: 'Copy' }))
 
     await waitFor(() => expect(toastErrorMock).toHaveBeenCalledWith('Failed to copy'))
     await expectMenuClosed()
@@ -483,8 +548,11 @@ describe('ChatMessage on the mobile shell: menu actions', () => {
     const container = renderMessage(<ChatMessage message={message} onEdit={() => {}} />)
 
     // No text, so the row (and menu) offer Copy only.
-    expect(await openMenuWithContextMenuKey(messageElement(container))).toEqual(['Copy'])
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Copy' }))
+    expect(await openMenuWithContextMenuKey(messageElement(container))).toEqual([
+      'Copy',
+      'Select text'
+    ])
+    fireEvent.click(sheetItem({ name: 'Copy' }))
 
     await expectMenuClosed()
     expect(copyTextMock).not.toHaveBeenCalled()
@@ -517,7 +585,7 @@ describe('ChatMessage on the mobile shell: messages without actions', () => {
     // The default is not prevented, so the app-level / native context menu stays.
     expect(fireEvent.contextMenu(el)).toBe(true)
     await Promise.resolve()
-    expect(screen.queryAllByRole('menuitem')).toHaveLength(0)
+    expect(querySheetItems()).toHaveLength(0)
     expect(logFrontendErrorMock).not.toHaveBeenCalled()
   })
 })
@@ -541,7 +609,7 @@ describe('ChatMessage on the mobile shell: gaining and losing actions', () => {
     )
     expect(messageElement(view.container)).toBe(before)
     expect(before).toHaveAttribute('tabindex', '0')
-    expect(await openMenuWithContextMenuKey(before)).toEqual(['Copy', 'Retry'])
+    expect(await openMenuWithContextMenuKey(before)).toEqual(['Copy', 'Select text', 'Retry'])
 
     // A later reply takes over the tail while the menu is open: it closes and
     // the message goes back to untouched, on the same element.
@@ -572,7 +640,7 @@ describe('ChatMessage on the mobile shell: gaining and losing actions', () => {
     })
     await Promise.resolve()
 
-    expect(screen.queryAllByRole('menuitem')).toHaveLength(0)
+    expect(querySheetItems()).toHaveLength(0)
     expect(useOverlayStackStore.getState().stack).toHaveLength(0)
   })
 })
@@ -609,7 +677,7 @@ describe('ChatMessage on the mobile shell: portaled descendants', () => {
     fireEvent.contextMenu(portaled)
     await Promise.resolve()
 
-    expect(screen.queryAllByRole('menuitem')).toHaveLength(0)
+    expect(querySheetItems()).toHaveLength(0)
     expect(useOverlayStackStore.getState().stack).toHaveLength(0)
   })
 
@@ -619,7 +687,7 @@ describe('ChatMessage on the mobile shell: portaled descendants', () => {
     fireEvent.contextMenu(screen.getByTestId('portaled-control'))
     await Promise.resolve()
 
-    expect(screen.queryAllByRole('menuitem')).toHaveLength(0)
+    expect(querySheetItems()).toHaveLength(0)
     expect(useOverlayStackStore.getState().stack).toHaveLength(0)
   })
 
@@ -642,8 +710,8 @@ describe('ChatMessage on the mobile shell: portaled descendants', () => {
       vi.advanceTimersByTime(700)
     })
 
-    const items = await screen.findAllByRole('menuitem')
-    expect(items.map((item) => item.textContent?.trim())).toEqual(['Copy'])
+    const items = await findSheetItems()
+    expect(items.map((item) => item.textContent?.trim())).toEqual(['Copy', 'Select text'])
   })
 })
 
@@ -665,7 +733,7 @@ describe('ChatMessage on the desktop shell', () => {
     expect(fireEvent.pointerDown(message, { pointerType: 'touch', pointerId: 1 })).toBe(true)
     fireEvent.contextMenu(message)
     await Promise.resolve()
-    expect(screen.queryAllByRole('menuitem')).toHaveLength(0)
+    expect(querySheetItems()).toHaveLength(0)
   })
 
   it('keeps pinned honoured on a turn-tail agent message', async () => {
@@ -680,8 +748,87 @@ describe('ChatMessage on the desktop shell', () => {
     )
     fireEvent.contextMenu(message)
     await Promise.resolve()
-    expect(screen.queryAllByRole('menuitem')).toHaveLength(0)
+    expect(querySheetItems()).toHaveLength(0)
     expect(logFrontendErrorMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('ChatMessage on the mobile shell: select text mode (Paper 10.3)', () => {
+  async function enterSelectMode(container: HTMLElement): Promise<HTMLElement> {
+    const message = messageElement(container)
+    await openMenuWithContextMenuKey(message)
+    fireEvent.click(sheetItem({ name: 'Select text' }))
+    await expectMenuClosed()
+    return messageElement(container)
+  }
+
+  it('turns native selection on, marks the message and hides its row', async () => {
+    const container = renderMessage(
+      <ChatMessage message={agentMessage()} isTurnTail onRetry={() => {}} actionsPinned />
+    )
+    const message = await enterSelectMode(container)
+
+    expect(message).toHaveClass('select-text', 'bg-primary/10', 'ring-1', 'ring-primary/55')
+    expect(message).not.toHaveClass('pointer-coarse:select-none')
+    expect(screen.queryByRole('button', { name: 'Copy' })).toBeNull()
+    expect(screen.getByText('Press and drag to select. Tap Done to go back.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Done' })).toHaveClass('h-11')
+    expect(infoLogs().map((log) => log.message)).toContain('select text mode entered')
+  })
+
+  it('does not open the sheet on a long press or right-click while selecting', async () => {
+    const container = renderMessage(<ChatMessage message={userMessage()} onEdit={() => {}} />)
+    const message = await enterSelectMode(container)
+
+    fireEvent.contextMenu(message)
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
+  it('leaves on Done, Escape and system back', async () => {
+    const container = renderMessage(<ChatMessage message={userMessage()} onEdit={() => {}} />)
+
+    await enterSelectMode(container)
+    fireEvent.click(screen.getByRole('button', { name: 'Done' }))
+    expect(messageElement(container)).not.toHaveClass('select-text')
+    expect(infoLogs().map((log) => log.message)).toContain('select text mode left')
+
+    await enterSelectMode(container)
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+    expect(messageElement(container)).not.toHaveClass('select-text')
+
+    await enterSelectMode(container)
+    expect(
+      useOverlayStackStore.getState().stack.some((entry) => entry.id === 'message-select:user-1')
+    ).toBe(true)
+    act(() => {
+      useOverlayStackStore.getState().closeTopmostOverlay()
+    })
+    expect(messageElement(container)).not.toHaveClass('select-text')
+  })
+
+  it('keeps only one message in select mode', async () => {
+    const { container } = render(
+      <TooltipProvider>
+        <ChatMessage message={userMessage('first', 'user-a')} onEdit={() => {}} />
+        <ChatMessage message={userMessage('second', 'user-b')} onEdit={() => {}} />
+      </TooltipProvider>
+    )
+    const [first, second] = Array.from(
+      container.querySelectorAll<HTMLElement>('[data-slot="message"]')
+    )
+    await openMenuWithContextMenuKey(first)
+    fireEvent.click(sheetItem({ name: 'Select text' }))
+    await expectMenuClosed()
+    await openMenuWithContextMenuKey(second)
+    fireEvent.click(sheetItem({ name: 'Select text' }))
+    await expectMenuClosed()
+
+    const [firstAfter, secondAfter] = Array.from(
+      container.querySelectorAll<HTMLElement>('[data-slot="message"]')
+    )
+    expect(firstAfter).not.toHaveClass('select-text')
+    expect(secondAfter).toHaveClass('select-text')
+    expect(screen.getAllByRole('button', { name: 'Done' })).toHaveLength(1)
   })
 })
 
@@ -698,11 +845,11 @@ describe('ChatMessage on the mobile shell without long-press support (fallback)'
 
     const row = actionsRow()
     expect(row.className).toBe(
-      'flex items-center gap-2.5 transition-opacity duration-150 focus-within:opacity-100 opacity-100 justify-end -mr-1'
+      'flex items-center gap-2.5 transition-opacity duration-150 focus-within:opacity-100 pointer-coarse:gap-0 opacity-100 justify-end -mr-1 pointer-coarse:-mr-[13px]'
     )
     expect(row).not.toHaveClass('pointer-events-none')
     expect(message).toHaveAttribute('tabindex', '0')
-    expect(await openMenuWithContextMenuKey(message)).toEqual(['Copy', 'Edit'])
+    expect(await openMenuWithContextMenuKey(message)).toEqual(['Copy', 'Select text', 'Edit'])
   })
 
   it.each(

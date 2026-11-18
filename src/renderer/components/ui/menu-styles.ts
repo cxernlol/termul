@@ -33,8 +33,12 @@ export const MENU_MOTION_CLASS =
 /** Pointer or keyboard highlight on a menu row. */
 export const MENU_HIGHLIGHT_CLASS = 'focus:bg-foreground/[0.06] focus:text-foreground'
 
-/** One row for every menu kind. Height 32, text 12, radius 8. */
-export const MENU_ITEM_CLASS = `relative flex min-h-8 cursor-default select-none items-center rounded-lg px-2 py-1.5 text-xs outline-none transition-colors duration-150 ease-out data-[disabled]:pointer-events-none data-[disabled]:opacity-50 ${MENU_HIGHLIGHT_CLASS}`
+/**
+ * One row for every menu kind. Height 32, text 12, radius 8. On a touch
+ * screen the row is 44px tall (the phone text floor in `index.css` lifts the
+ * text).
+ */
+export const MENU_ITEM_CLASS = `relative flex min-h-8 pointer-coarse:min-h-11 cursor-default select-none items-center rounded-lg px-2 py-1.5 text-xs outline-none transition-colors duration-150 ease-out data-[disabled]:pointer-events-none data-[disabled]:opacity-50 ${MENU_HIGHLIGHT_CLASS}`
 
 /**
  * Picked radio row: no tick. It keeps a fill one step stronger than the

@@ -190,7 +190,7 @@ export const Attachment = forwardRef<HTMLDivElement, AttachmentProps>(
             variant === 'inline' && [
               'flex h-8 cursor-pointer select-none items-center gap-1.5',
               'rounded-md border border-border px-1.5',
-              'font-medium text-sm transition-all',
+              'font-medium text-sm transition-colors',
               'hover:bg-accent hover:text-accent-foreground dark:hover:bg-accent/50'
             ],
             variant === 'list' && [
@@ -350,8 +350,13 @@ export const AttachmentRemove = ({
         ],
         variant === 'inline' && [
           'size-5 rounded p-0',
-          'opacity-0 transition-opacity group-hover:opacity-100',
-          '[&>svg]:size-2.5'
+          // A mouse reveals it on hover (or keyboard focus).
+          'pointer-fine:opacity-0 pointer-fine:transition-opacity pointer-fine:group-hover:opacity-100 pointer-fine:focus-visible:opacity-100',
+          '[&>svg]:size-2.5',
+          // Paper "10.4": touch has no hover, so the × is always there — a
+          // 20px popover circle with the control ring and drop on the chip's
+          // corner, and an invisible 44px hit area.
+          "pointer-coarse:absolute pointer-coarse:-right-1.5 pointer-coarse:-top-1.5 pointer-coarse:rounded-full pointer-coarse:bg-popover pointer-coarse:text-foreground pointer-coarse:shadow-control pointer-coarse:after:absolute pointer-coarse:after:-inset-3 pointer-coarse:after:content-['']"
         ],
         variant === 'list' && ['size-8 shrink-0 rounded p-0', '[&>svg]:size-4'],
         className

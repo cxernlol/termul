@@ -1,16 +1,15 @@
 import { useEffect, useRef, useState } from 'react'
 import { Edit, History, RotateCcw, X } from '@/components/icons'
 import { Input } from '@/components/ui/input'
+import { MobileSheetContent } from '@/components/ui/mobile-sheet'
+import { Sheet, SheetDescription } from '@/components/ui/sheet'
 import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetHeader,
-  SheetTitle
-} from '@/components/ui/sheet'
-import {
+  focusFirstSheetAction,
+  SHEET_BODY_CLASS_NAME,
   SHEET_DESTRUCTIVE_DIVIDER_CLASS_NAME,
+  SHEET_DESTRUCTIVE_ROW_CLASS_NAME,
   SHEET_ROW_CLASS_NAME,
+  SHEET_SUBTITLE_CLASS_NAME,
   type ShellNavigationActions,
   visibleNavigationRows
 } from './mobile-sheet-rows'
@@ -105,22 +104,20 @@ export function MobileTerminalActionsSheet({
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent
-        side="bottom"
+      <MobileSheetContent
         id={MOBILE_TERMINAL_ACTIONS_SHEET_ID}
+        title={name}
         // No description to point at before a command has exited.
         {...(hasExitCode ? {} : { 'aria-describedby': undefined })}
+        onOpenAutoFocus={focusFirstSheetAction}
         onCloseAutoFocus={onCloseAutoFocus}
-        className="flex max-h-[85dvh] flex-col gap-0 overflow-y-auto overscroll-contain p-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]"
+        bodyClassName={SHEET_BODY_CLASS_NAME}
       >
-        <SheetHeader className="space-y-0 px-2 py-2 pr-10 text-left">
-          <SheetTitle className="truncate text-base">{name}</SheetTitle>
-          {hasExitCode && (
-            <SheetDescription className="text-xs tabular-nums text-muted-foreground">
-              Last exit code {lastExitCode}
-            </SheetDescription>
-          )}
-        </SheetHeader>
+        {hasExitCode && (
+          <SheetDescription className={`${SHEET_SUBTITLE_CLASS_NAME} tabular-nums`}>
+            Last exit code {lastExitCode}
+          </SheetDescription>
+        )}
         {onRenameTerminal &&
           (renaming ? (
             // No vertical padding: the edit row is exactly as tall as the
@@ -154,11 +151,7 @@ export function MobileTerminalActionsSheet({
               />
             </div>
           ) : (
-            <button
-              type="button"
-              className={`${SHEET_ROW_CLASS_NAME} hover:bg-accent`}
-              onClick={startRename}
-            >
+            <button type="button" className={SHEET_ROW_CLASS_NAME} onClick={startRename}>
               <Edit size={16} />
               Rename terminal
             </button>
@@ -166,7 +159,7 @@ export function MobileTerminalActionsSheet({
         {onRestartTerminal && (
           <button
             type="button"
-            className={`${SHEET_ROW_CLASS_NAME} hover:bg-accent`}
+            className={SHEET_ROW_CLASS_NAME}
             onClick={choose(() => onRestartTerminal(terminalId))}
           >
             <RotateCcw size={16} />
@@ -176,7 +169,7 @@ export function MobileTerminalActionsSheet({
         {onOpenCommandHistory && (
           <button
             type="button"
-            className={`${SHEET_ROW_CLASS_NAME} hover:bg-accent`}
+            className={SHEET_ROW_CLASS_NAME}
             onClick={choose(onOpenCommandHistory)}
           >
             <History size={16} />
@@ -184,12 +177,7 @@ export function MobileTerminalActionsSheet({
           </button>
         )}
         {navigationRows.map(({ label, Icon, run }) => (
-          <button
-            key={label}
-            type="button"
-            className={`${SHEET_ROW_CLASS_NAME} hover:bg-accent`}
-            onClick={choose(run)}
-          >
+          <button key={label} type="button" className={SHEET_ROW_CLASS_NAME} onClick={choose(run)}>
             <Icon size={16} />
             {label}
           </button>
@@ -200,7 +188,7 @@ export function MobileTerminalActionsSheet({
           >
             <button
               type="button"
-              className={`${SHEET_ROW_CLASS_NAME} text-destructive hover:bg-destructive/10`}
+              className={SHEET_DESTRUCTIVE_ROW_CLASS_NAME}
               onClick={choose(() => onCloseTerminal(terminalId, tabId))}
             >
               <X size={16} />
@@ -208,7 +196,7 @@ export function MobileTerminalActionsSheet({
             </button>
           </div>
         )}
-      </SheetContent>
+      </MobileSheetContent>
     </Sheet>
   )
 }

@@ -38,7 +38,10 @@ const buttonVariants = cva(
         destructive: `bg-destructive-fill text-destructive-foreground hover:bg-destructive-fill/90 ${PRESS}`,
         outline: secondaryControl,
         secondary: secondaryControl,
-        ghost: 'hover:bg-secondary hover:text-ghost-hover-foreground',
+        // `active:` repeats the hover look so a tap on a touch screen (no
+        // hover there) still shows the press.
+        ghost:
+          'hover:bg-secondary hover:text-ghost-hover-foreground active:bg-secondary active:text-ghost-hover-foreground',
         link: 'text-primary underline-offset-4 hover:underline',
         composer: primaryEmboss
       },

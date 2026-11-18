@@ -32,7 +32,7 @@ interface SettingsModalProps {
  * backdrop (`fixed inset-0 bg-overlay/60 backdrop-blur-sm`) → centered card.
  *
  * The card is sized wide (`w-[90vw] max-w-5xl]`) and tall
- * (`max-h-[85vh]`) to accommodate the `SettingsLayout` sidebar and its
+ * (`max-h-[85dvh]`) to accommodate the `SettingsLayout` sidebar and its
  * one-page-at-a-time content. Esc and backdrop click call `onClose`.
  */
 export function SettingsModal({
@@ -119,7 +119,7 @@ export function SettingsModal({
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.95, y: 10, transition: { duration: 0.1 } }}
             transition={{ duration: 0.15 }}
-            className="flex h-[90vh] max-h-[90vh] w-full flex-col overflow-hidden rounded-lg border border-border bg-background shadow-2xl focus:outline-none md:h-[85vh] md:max-h-[85vh] md:w-[90vw] md:max-w-5xl"
+            className="flex h-[90dvh] max-h-[90dvh] w-full flex-col overflow-hidden rounded-lg border border-border bg-background shadow-2xl focus:outline-none md:h-[85dvh] md:max-h-[85dvh] md:w-[90vw] md:max-w-5xl"
             onClick={(e) => e.stopPropagation()}
             role="dialog"
             aria-modal="true"

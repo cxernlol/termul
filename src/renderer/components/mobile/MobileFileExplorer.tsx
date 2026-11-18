@@ -27,6 +27,7 @@ import {
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { MobileSheetContent } from '@/components/ui/mobile-sheet'
 import {
   Sheet,
   SheetContent,
@@ -54,6 +55,12 @@ import { useFileExplorer, useFileExplorerActions } from '@/stores/file-explorer-
 import { useOverlayRegistration } from '@/stores/overlay-stack-store'
 import { useActiveProjectId } from '@/stores/project-store'
 import { editorTabId, useWorkspaceStore } from '@/stores/workspace-store'
+import {
+  focusFirstSheetAction,
+  SHEET_BODY_CLASS_NAME,
+  SHEET_DESTRUCTIVE_ROW_CLASS_NAME,
+  SHEET_ROW_CLASS_NAME
+} from './mobile-sheet-rows'
 
 interface MobileFileExplorerProps {
   open: boolean
@@ -375,9 +382,13 @@ export function MobileFileExplorer({
             aria-label={`Rename ${entry.name}`}
           />
         ) : (
-          <div className="flex h-11 items-center gap-2 px-2">
+          // The row answers a press (a touch has no hover): the fill shows while
+          // the open button is held, and the 16px inset puts the icon in the
+          // phone gutter.
+          <div className="mx-1 flex h-11 items-center gap-2 rounded-md px-3 transition-colors duration-150 ease-out has-[[data-row-open]:active]:bg-row-hover">
             <button
               type="button"
+              data-row-open=""
               className="flex h-11 min-w-0 flex-1 items-center gap-2 text-left"
               onClick={() => handleRowTap(entry)}
               aria-label={
@@ -404,7 +415,7 @@ export function MobileFileExplorer({
               type="button"
               variant="ghost"
               size="icon"
-              className="size-9 shrink-0"
+              className="-mr-2 size-11 shrink-0"
               aria-label={`Actions for ${entry.name}`}
               onClick={(event) => {
                 event.stopPropagation()
@@ -462,16 +473,19 @@ export function MobileFileExplorer({
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent
         side="right"
-        className="flex w-[min(100vw,26rem)] flex-col gap-0 p-0 sm:max-w-md"
+        // Full width up to 26rem. The right inset keeps the sheet clear of the
+        // notch on a landscape phone; the close button follows the top and
+        // right insets the same way the drawer's does.
+        className="flex w-full max-w-[26rem] flex-col gap-0 p-0 pr-[env(safe-area-inset-right)] sm:max-w-[26rem] [&>button:last-child]:mt-[env(safe-area-inset-top)] [&>button:last-child]:mr-[env(safe-area-inset-right)]"
         onCloseAutoFocus={filesSheetCloseAutoFocus}
       >
-        <SheetHeader className="space-y-0 border-b border-border/60 p-2 text-left">
+        <SheetHeader className="space-y-0 border-b border-border/60 p-2 pr-12 pt-[max(0.5rem,env(safe-area-inset-top))] text-left">
           <div className="flex min-w-0 items-center gap-1">
             <Button
               type="button"
               variant="ghost"
               size="icon"
-              className="-ml-2 size-9 shrink-0"
+              className="-ml-2 size-11 shrink-0"
               aria-label="Back to parent folder"
               disabled={isAtRoot || createSubmitting}
               onClick={navigateBack}
@@ -537,7 +551,7 @@ export function MobileFileExplorer({
             type="button"
             variant="ghost"
             size="icon"
-            className="size-9"
+            className="size-11"
             aria-label="Refresh current folder"
             disabled={!currentPath || createSubmitting}
             onClick={() => currentPath && void refreshDirectory(currentPath)}
@@ -548,7 +562,7 @@ export function MobileFileExplorer({
             type="button"
             variant="ghost"
             size="icon"
-            className="size-9"
+            className="size-11"
             aria-label="New file"
             disabled={!currentPath || createSubmitting}
             onClick={() => setCreating({ type: 'file', value: '' })}
@@ -559,7 +573,7 @@ export function MobileFileExplorer({
             type="button"
             variant="ghost"
             size="icon"
-            className="size-9"
+            className="size-11"
             aria-label="New folder"
             disabled={!currentPath || createSubmitting}
             onClick={() => setCreating({ type: 'directory', value: '' })}
@@ -605,7 +619,7 @@ export function MobileFileExplorer({
                       : 'none'
                 }
                 data-reduced-motion={reducedMotion ? 'true' : 'false'}
-                className="absolute inset-0 overflow-y-auto py-1"
+                className="absolute inset-0 overflow-y-auto overscroll-contain pt-1 pb-[max(0.25rem,env(safe-area-inset-bottom))]"
                 initial={{ opacity: reducedMotion ? 1 : 0, x: navigationDirection * slideDistance }}
                 animate={{ opacity: 1, x: 0 }}
                 exit={{
@@ -644,20 +658,19 @@ export function MobileFileExplorer({
         </div>
 
         <Sheet open={!!actionEntry} onOpenChange={(value) => !value && setActionEntry(null)}>
-          <SheetContent
-            side="bottom"
-            className="flex flex-col gap-0 p-2"
+          <MobileSheetContent
+            title={actionEntry?.name ?? ''}
             aria-label={actionEntry ? `Actions for ${actionEntry.name}` : undefined}
+            aria-describedby={undefined}
+            onOpenAutoFocus={focusFirstSheetAction}
             onCloseAutoFocus={fileActionsSheetCloseAutoFocus}
+            bodyClassName={SHEET_BODY_CLASS_NAME}
           >
             {actionEntry && (
               <>
-                <SheetHeader className="space-y-0 px-2 py-2 text-left">
-                  <SheetTitle className="truncate text-sm">{actionEntry.name}</SheetTitle>
-                </SheetHeader>
                 <button
                   type="button"
-                  className="flex h-11 items-center gap-2 rounded-md px-2 text-sm hover:bg-accent"
+                  className={SHEET_ROW_CLASS_NAME}
                   onClick={() => {
                     setRenaming({ path: actionEntry.path, value: actionEntry.name })
                     setActionEntry(null)
@@ -667,7 +680,7 @@ export function MobileFileExplorer({
                 </button>
                 <button
                   type="button"
-                  className="flex h-11 items-center gap-2 rounded-md px-2 text-sm hover:bg-accent"
+                  className={SHEET_ROW_CLASS_NAME}
                   onClick={() => {
                     const entry = actionEntry
                     setActionEntry(null)
@@ -678,7 +691,7 @@ export function MobileFileExplorer({
                 </button>
                 <button
                   type="button"
-                  className="flex h-11 items-center gap-2 rounded-md px-2 text-sm text-destructive hover:bg-destructive/10"
+                  className={SHEET_DESTRUCTIVE_ROW_CLASS_NAME}
                   onClick={() => {
                     setPendingDelete(actionEntry)
                     setActionEntry(null)
@@ -688,7 +701,7 @@ export function MobileFileExplorer({
                 </button>
               </>
             )}
-          </SheetContent>
+          </MobileSheetContent>
         </Sheet>
       </SheetContent>
 

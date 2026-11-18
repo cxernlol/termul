@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { TOUCH_HIT_AREA_CLASS } from '@/components/phone-modal-classes'
 import { availableColors, getColorClasses } from '@/lib/colors'
 import { cn } from '@/lib/utils'
 import type { ProjectColor } from '@/types/project'
@@ -75,7 +76,8 @@ export function ColorPickerPopover({
       style={{ left: position.left, top: position.top }}
     >
       <p className="text-xs text-muted-foreground mb-2">Select Color</p>
-      <div className="flex gap-2 flex-wrap">
+      {/* Touch: 20px gaps so the 44px hit areas round the 24px swatches do not overlap. */}
+      <div className="flex gap-2 pointer-coarse:gap-5 pointer-coarse:p-2.5 flex-wrap">
         {availableColors.map((color) => {
           const colors = getColorClasses(color)
           return (
@@ -87,7 +89,8 @@ export function ColorPickerPopover({
                 onClose()
               }}
               className={cn(
-                'w-6 h-6 rounded-full transition-all',
+                'w-6 h-6 rounded-full transition-[opacity,box-shadow]',
+                TOUCH_HIT_AREA_CLASS,
                 colors.bg,
                 currentColor === color
                   ? 'ring-2 ring-offset-2 ring-offset-card ring-current'

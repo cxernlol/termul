@@ -66,7 +66,7 @@ export function useSettingsSectionVisible(): boolean {
   return useContext(SectionVisibleContext)
 }
 
-const ROW_CLASS = `flex flex-shrink-0 items-center gap-2.5 rounded-md px-2.5 text-left text-xs transition-colors duration-150 ease-out md:w-full ${FOCUS_RING_CLASS}`
+const ROW_CLASS = `flex flex-shrink-0 items-center gap-2.5 rounded-md px-2.5 text-left text-xs transition-colors duration-150 ease-out md:w-full pointer-coarse:min-h-11 active:bg-foreground/[0.06] ${FOCUS_RING_CLASS}`
 
 /**
  * One settings page. It stays mounted (form state and search anchors keep
@@ -200,7 +200,7 @@ export function SettingsLayout({
         onClick={onClose}
         aria-label={`Close ${title}`}
         title="Close"
-        className={cn(QUIET_ICON_BUTTON_CLASS, 'size-7 shrink-0', className)}
+        className={cn(QUIET_ICON_BUTTON_CLASS, 'size-7 shrink-0 pointer-coarse:size-11', className)}
       >
         <X size={16} />
       </button>
@@ -226,7 +226,14 @@ export function SettingsLayout({
                 onChange={(e) => setQuery(e.target.value)}
                 placeholder="Search settings"
                 aria-label="Search settings"
-                className={cn(PANEL_FIELD_CLASS, 'h-8 w-full bg-background pl-7 pr-7')}
+                autoCapitalize="off"
+                autoCorrect="off"
+                spellCheck={false}
+                enterKeyHint="search"
+                className={cn(
+                  PANEL_FIELD_CLASS,
+                  'h-8 w-full bg-background pl-7 pr-7 pointer-coarse:h-11 pointer-coarse:pr-11'
+                )}
               />
               {query && (
                 <button
@@ -235,7 +242,7 @@ export function SettingsLayout({
                   aria-label="Clear search"
                   className={cn(
                     QUIET_ICON_BUTTON_CLASS,
-                    'absolute right-1 top-1/2 flex size-6 -translate-y-1/2'
+                    'absolute right-1 top-1/2 flex size-6 -translate-y-1/2 pointer-coarse:right-0 pointer-coarse:size-11'
                   )}
                 >
                   <X size={13} />
@@ -258,7 +265,7 @@ export function SettingsLayout({
                     type="button"
                     onClick={() => setQuery('')}
                     className={cn(
-                      'h-7 rounded-md border border-border bg-background px-2 text-xs font-medium text-foreground hover:bg-secondary',
+                      'h-7 rounded-md border border-border bg-background px-2 text-xs font-medium text-foreground hover:bg-secondary active:bg-secondary pointer-coarse:h-11 pointer-coarse:px-3',
                       FOCUS_RING_CLASS
                     )}
                   >
@@ -320,7 +327,7 @@ export function SettingsLayout({
                       onKeyDown={(e) => handleCategoryKeyDown(e, index)}
                       className={cn(
                         ROW_CLASS,
-                        'h-8 [&_svg]:size-3.5',
+                        'h-8 pointer-coarse:h-11 [&_svg]:size-3.5',
                         isActive
                           ? 'keycap text-foreground'
                           : 'text-secondary-foreground hover:bg-foreground/[0.03] hover:text-foreground'

@@ -24,8 +24,16 @@ import type { DirectoryEntry, IpcResult } from '@shared/types/ipc.types'
 import { AnimatePresence, motion } from 'framer-motion'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ArrowUp, ChevronRight, Folder, X } from '@/components/icons'
+import {
+  PHONE_MODAL_BUTTON_CLASS,
+  PHONE_MODAL_CARD_CLASS,
+  PHONE_MODAL_FOOTER_CLASS,
+  PHONE_MODAL_OVERLAY_CLASS,
+  TOUCH_HIT_AREA_CLASS
+} from '@/components/phone-modal-classes'
 import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/spinner'
+import { useModalFocus } from '@/components/use-modal-focus'
 import { acpCatalogApi } from '@/lib/acp-catalog-api'
 import { _resetWebDirectoryPickerForTesting, registerWebDirectoryPicker } from '@/lib/dialog-api'
 import { claimEscape } from '@/lib/escape-claim'
@@ -315,6 +323,9 @@ export function DirectoryPicker(): React.JSX.Element {
   // overlay stack), so system back must close the picker first, not the modal
   // underneath it. Inert on desktop.
   useOverlayRegistration('directory-picker', isOpen, handleCancel, { mobileShellOnly: true })
+  // The dialog itself takes focus (Enter does nothing until the user picks).
+  const dialogRef = useRef<HTMLDivElement>(null)
+  useModalFocus(isOpen, dialogRef, dialogRef)
 
   const handleNavigateInto = useCallback(
     (entry: DirectoryEntry) => {
@@ -357,7 +368,7 @@ export function DirectoryPicker(): React.JSX.Element {
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          className="fixed inset-0 bg-overlay/60 backdrop-blur-sm z-[60] flex items-center justify-center"
+          className={`fixed inset-0 bg-overlay/60 backdrop-blur-sm z-[60] flex items-center justify-center ${PHONE_MODAL_OVERLAY_CLASS}`}
           onClick={handleCancel}
         >
           <motion.div
@@ -365,15 +376,23 @@ export function DirectoryPicker(): React.JSX.Element {
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.95, y: 10 }}
             transition={{ duration: 0.15 }}
-            className="bg-card rounded-lg shadow-2xl w-[560px] border border-border overflow-hidden max-h-[80vh] flex flex-col"
+            className={`bg-card rounded-lg shadow-2xl max-w-[560px] border border-border overflow-hidden outline-none ${PHONE_MODAL_CARD_CLASS} sm:max-h-[80dvh]`}
             onClick={(e) => e.stopPropagation()}
+            ref={dialogRef}
+            tabIndex={-1}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="directory-picker-title"
           >
             {/* Header */}
             <div className="px-4 py-3 border-b border-border flex justify-between items-center bg-secondary/50 flex-shrink-0">
-              <h3 className="text-sm font-semibold text-foreground">Select Project Folder</h3>
+              <h3 id="directory-picker-title" className="text-sm font-semibold text-foreground">
+                Select Project Folder
+              </h3>
               <button
+                type="button"
                 onClick={handleCancel}
-                className="text-muted-foreground hover:text-foreground transition-colors"
+                className={`text-muted-foreground hover:text-foreground transition-colors ${TOUCH_HIT_AREA_CLASS}`}
                 aria-label="Cancel directory picker"
               >
                 <X size={14} />
@@ -383,10 +402,11 @@ export function DirectoryPicker(): React.JSX.Element {
             {/* Current path + go up */}
             <div className="px-4 py-2 border-b border-border bg-secondary/30 flex items-center gap-2 flex-shrink-0">
               <button
+                type="button"
                 onClick={handleGoUp}
                 disabled={!canGoUp || loading}
                 className={cn(
-                  'flex items-center gap-1 text-xs px-2 py-1 rounded border border-border transition-colors',
+                  'flex items-center gap-1 text-xs px-2 py-1 rounded border border-border transition-colors pointer-coarse:min-h-11 pointer-coarse:px-3',
                   canGoUp && !loading
                     ? 'text-foreground hover:bg-muted'
                     : 'text-muted-foreground/50 cursor-not-allowed'
@@ -405,7 +425,7 @@ export function DirectoryPicker(): React.JSX.Element {
             </div>
 
             {/* Listing */}
-            <div className="flex-1 overflow-y-auto p-1 min-h-[200px]">
+            <div className="flex-1 overflow-y-auto overscroll-contain p-1 min-h-[200px]">
               {loading ? (
                 <div className="flex items-center justify-center py-8 text-muted-foreground text-xs">
                   <Spinner size={16} decorative className="mr-2" />
@@ -420,9 +440,10 @@ export function DirectoryPicker(): React.JSX.Element {
                   {entries.map((entry) => (
                     <li key={entry.path}>
                       <button
+                        type="button"
                         onClick={() => handleNavigateInto(entry)}
                         className={cn(
-                          'w-full flex items-center gap-2 px-2 py-1.5 rounded text-sm text-left transition-colors',
+                          'w-full flex items-center gap-2 px-2 py-1.5 rounded text-sm text-left transition-colors pointer-coarse:min-h-11 active:bg-secondary',
                           entry.ignored
                             ? 'text-muted-foreground/60 hover:bg-secondary/50'
                             : 'text-foreground hover:bg-secondary'
@@ -446,11 +467,25 @@ export function DirectoryPicker(): React.JSX.Element {
             </div>
 
             {/* Footer */}
-            <div className="px-4 py-3 bg-secondary/50 flex justify-end gap-2 border-t border-border flex-shrink-0">
-              <Button type="button" variant="ghost" size="sm" onClick={handleCancel}>
+            <div
+              className={`px-4 py-3 bg-secondary/50 flex justify-end gap-2 border-t border-border flex-shrink-0 ${PHONE_MODAL_FOOTER_CLASS}`}
+            >
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={handleCancel}
+                className={PHONE_MODAL_BUTTON_CLASS}
+              >
                 Cancel
               </Button>
-              <Button type="button" size="sm" onClick={handleSelectCurrent} disabled={!currentPath}>
+              <Button
+                type="button"
+                size="sm"
+                onClick={handleSelectCurrent}
+                disabled={!currentPath}
+                className={PHONE_MODAL_BUTTON_CLASS}
+              >
                 Select Current Folder
               </Button>
             </div>

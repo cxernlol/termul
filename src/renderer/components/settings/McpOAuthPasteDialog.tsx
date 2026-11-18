@@ -134,7 +134,7 @@ export function McpOAuthPasteDialog({
         if (!open) dismiss()
       }}
     >
-      <DialogContent className="sm:max-w-[520px]">
+      <DialogContent className="max-h-[90dvh] overflow-y-auto overscroll-contain sm:max-w-[520px]">
         <DialogHeader>
           <DialogTitle className="text-sm">{`Finish signing in to ${serverName}`}</DialogTitle>
           <DialogDescription>

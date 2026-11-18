@@ -34,14 +34,14 @@ export const STATUS_RAIL_GUTTER_X = 'in-data-[status-rail=shown]:@max-[892px]:pr
  * 44px on a narrow pane, 40px when the pane is at least 400px.
  * No min width: a long label must not become a square.
  */
-export const CHAT_HIT_MIN_H = 'min-h-11 @[400px]:min-h-10'
+export const CHAT_HIT_MIN_H = 'min-h-11 @[400px]:pointer-fine:min-h-10'
 
 /**
  * Hit area for icon controls. The box is the target, so do not add a
  * pseudo-element that can overlap the next control.
  */
 export const CHAT_HIT_ICON =
-  'relative inline-flex shrink-0 items-center justify-center size-11 @[400px]:size-10'
+  'relative inline-flex shrink-0 items-center justify-center size-11 @[400px]:pointer-fine:size-10'
 
 /**
  * Dense agent-activity rows (tool calls, thought and turn headers). The row is

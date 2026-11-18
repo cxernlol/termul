@@ -850,7 +850,13 @@ describe('MobileChatShell', () => {
     function sheetRows(): string[] {
       const sheet = document.getElementById('mobile-header-more-sheet')
       return Array.from(sheet?.querySelectorAll('button') ?? [])
-        .map((button) => button.textContent?.trim() ?? '')
+        .map((button) => {
+          // A disabled row shows its reason as visible text under the label;
+          // the row's name is the label alone.
+          const reasonId = button.getAttribute('aria-describedby')
+          const reason = reasonId ? (document.getElementById(reasonId)?.textContent ?? '') : ''
+          return (button.textContent ?? '').replace(reason, '').trim()
+        })
         .filter((text) => text.length > 0 && text !== 'Close')
     }
 
@@ -983,6 +989,11 @@ describe('MobileChatShell', () => {
       await openHeaderSheet()
 
       expect(sheetRows()).toEqual(['Files', 'Reload this chat', 'Close chat'])
+      // Disabled here: the reason shows as text a touch can read, not a tooltip.
+      const reload = screen.getByRole('button', { name: 'Reload this chat' })
+      expect(reload).toBeDisabled()
+      expect(reload).not.toHaveAttribute('title')
+      expect(reload).toHaveAccessibleDescription('This chat is not ready to reload.')
     })
 
     it('omits Close chat for a non-chat tab', async () => {

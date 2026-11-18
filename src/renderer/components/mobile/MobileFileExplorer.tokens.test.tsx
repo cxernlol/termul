@@ -9,9 +9,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 let mockReducedMotion = false
 
-vi.mock('framer-motion', async () => {
+vi.mock('framer-motion', async (importOriginal) => {
   const React = await import('react')
+  // The file-actions sheet (MobileSheetContent) also uses useIsPresent and the
+  // other real exports; only the animated parts are replaced.
+  const actual = await importOriginal<typeof import('framer-motion')>()
   return {
+    ...actual,
+    useIsPresent: () => true,
     AnimatePresence: ({ children }: { children: React.ReactNode }) => children,
     motion: {
       div: React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>(
@@ -20,7 +25,9 @@ vi.mock('framer-motion', async () => {
             {children}
           </div>
         )
-      )
+      ),
+      // The sheet title fades with a real motion.span.
+      span: actual.motion.span
     },
     useReducedMotion: () => mockReducedMotion
   }
@@ -149,7 +156,7 @@ describe('MobileFileExplorer token sweep (story 12)', () => {
     expect(cls).not.toContain('px-4')
   })
 
-  it('action sheet inherits rounded-t-xl from the Sheet component default', async () => {
+  it('action sheet is the phone sheet with a grab handle', async () => {
     render(<MobileFileExplorer open onOpenChange={vi.fn()} />)
 
     fireEvent.click(await screen.findByLabelText('Actions for doomed.txt'))
@@ -159,8 +166,11 @@ describe('MobileFileExplorer token sweep (story 12)', () => {
     // side=bottom variant — the call site no longer hand-rolls the class.
     const sheets = document.querySelectorAll('[data-sheet]')
     expect(sheets.length).toBeGreaterThanOrEqual(2)
+    // The action sheet is the phone sheet (MobileSheetContent): 14px top
+    // corners and a grab handle instead of a ✕.
     const actionSheet = sheets[sheets.length - 1]
-    expect(actionSheet.className).toContain('rounded-t-xl')
+    expect(actionSheet.className).toContain('rounded-t-[14px]')
+    expect(within(actionSheet as HTMLElement).getByRole('button', { name: 'Close' })).toBeTruthy()
   })
 
   it('delete confirm uses destructive tokens, not raw bg-red-500', async () => {

@@ -70,7 +70,7 @@ export function McpConsentDialog({
     >
       {plan !== null && (
         <DialogContent
-          className="max-h-[90vh] overflow-y-auto sm:max-w-xl"
+          className="max-h-[90dvh] overflow-y-auto overscroll-contain sm:max-w-xl"
           onOpenAutoFocus={(event) => {
             event.preventDefault()
             cancelRef.current?.focus()

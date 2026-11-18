@@ -31,9 +31,14 @@ import {
 
 let mockReducedMotion = false
 
-vi.mock('framer-motion', async () => {
+vi.mock('framer-motion', async (importOriginal) => {
   const React = await import('react')
+  // The file-actions sheet (MobileSheetContent) also uses useIsPresent and the
+  // other real exports; only the animated parts are replaced.
+  const actual = await importOriginal<typeof import('framer-motion')>()
   return {
+    ...actual,
+    useIsPresent: () => true,
     AnimatePresence: ({ children }: { children: React.ReactNode }) => children,
     motion: {
       div: React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>(
@@ -42,7 +47,9 @@ vi.mock('framer-motion', async () => {
             {children}
           </div>
         )
-      )
+      ),
+      // The sheet title fades with a real motion.span.
+      span: actual.motion.span
     },
     useReducedMotion: () => mockReducedMotion
   }

@@ -447,6 +447,18 @@ export function ChatInputBar({
         onCancel()
         return true
       }
+      // Phone: a soft keyboard has no Shift+Enter, so Enter adds a new line
+      // (the editor's own paragraph split) and only the send button sends.
+      if (
+        event.key === 'Enter' &&
+        !event.shiftKey &&
+        !event.isComposing &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        isMobileShell
+      ) {
+        return undefined
+      }
       if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
         event.preventDefault()
         if (showStop) return true
@@ -461,7 +473,7 @@ export function ChatInputBar({
       }
       return undefined
     },
-    [onSlashOrMentionKeyDown, busy, showStop, onCancel, submit]
+    [onSlashOrMentionKeyDown, busy, showStop, onCancel, submit, isMobileShell]
   )
 
   // Load externally-seeded text (edit a message, pick a starter prompt), then
@@ -581,7 +593,13 @@ export function ChatInputBar({
       ref={rootRef}
       className={cn(
         isMobileShell ? COMPOSER_PHONE_GUTTER_X : CHAT_GUTTER_X,
-        !(startScreen && !isMobileShell) && 'pb-6 pt-3',
+        !(startScreen && !isMobileShell) && 'pt-3',
+        // Phone: keep the composer clear of the home indicator. While the
+        // keyboard is open it covers the inset, so the keyboard height is
+        // taken off and the plain 24px floor wins (no double space).
+        isMobileShell
+          ? 'pb-[max(1.5rem,calc(env(safe-area-inset-bottom,0px)-var(--termul-keyboard-height,0px)))]'
+          : !startScreen && 'pb-6',
         // The slash/mention menu overflows upward into the message list; lift
         // it above the list's jump-to-latest button (z-20).
         (slashOpen || mentionMenuOpen) && 'relative z-30'
@@ -685,6 +703,7 @@ export function ChatInputBar({
                       onValueChange={handleValueChange}
                       onCaretChange={mentions.update}
                       onBeforeEditorKeyDown={handleKeyDown}
+                      enterKeyHint={isMobileShell ? 'enter' : 'send'}
                       onPasteAttachments={handleComposerPaste}
                       getSkillPaths={() => skillPathsRef.current}
                       editorRef={editorRef}

@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 import { lazy, Suspense } from 'react'
-import { Sheet, SheetContent } from '@/components/ui/sheet'
+import { MobileSheetContent } from '@/components/ui/mobile-sheet'
+import { Sheet } from '@/components/ui/sheet'
 import { PaneDndProvider } from '@/hooks/use-pane-dnd'
 import { ShellSkeleton } from '@/layouts/workspace-layout/ShellSkeleton'
 import { terminalApi } from '@/lib/api'
@@ -64,11 +65,27 @@ export function MobileWorkspaceShell({
   const { closeTerminal, renameTerminal } = useTerminalActions()
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden bg-background pt-[env(safe-area-inset-top)]">
+    <div className="flex h-dvh flex-col overflow-hidden bg-background pt-[env(safe-area-inset-top)]">
       {/* pt-[env(safe-area-inset-top)] (Story 7, QA F2): with
           `viewport-fit=cover` the webview extends under the notch; the shell
           root pads by the top inset so the header's 44px buttons clear
           the cutout. Evaluates to 0 on non-notch devices (no extra padding). */}
+      {/* Safari on iOS blurs the page under its bars unless a fixed strip
+          with a solid fill touches that edge; then it extends the strip's
+          fill instead. Without the top strip the blur lands on the header.
+          Safari needs at least 5px of a strip to be visible. Both strips
+          stay inside the shell's top and bottom padding, so they cover no
+          content. Source: joshpuckett.me/seamless-mobile-safari. */}
+      <div
+        aria-hidden="true"
+        data-safari-edge="top"
+        className="pointer-events-none fixed inset-x-0 top-0 z-40 h-[max(5px,env(safe-area-inset-top))] bg-background"
+      />
+      <div
+        aria-hidden="true"
+        data-safari-edge="bottom"
+        className="pointer-events-none fixed inset-x-0 bottom-0 z-40 h-[max(5px,env(safe-area-inset-bottom))] bg-background"
+      />
       <Suspense fallback={<ShellSkeleton />}>
         <MobileChatShell
           onNewChat={handleOpenAgentChat}
@@ -131,11 +148,16 @@ export function MobileWorkspaceShell({
             overlay). p-0 matches the mobile sheet family; the GitPanel
             block owns its internal p-2 rhythm. Story 7 keeps the
             safe-area-inset-bottom pad so the footer clears the home
-            indicator. */}
-        <SheetContent
-          side="bottom"
-          className="flex h-[90vh] max-h-[90vh] flex-col gap-0 rounded-t-xl p-0 pb-[env(safe-area-inset-bottom)]"
+            indicator. The phone sheet (MobileSheetContent) adds the grab
+            handle and drag to close. The sheet keeps a fixed tall height, so
+            the view area under the header (its last child) grows to fill it
+            and GitPanel gets a definite height. */}
+        <MobileSheetContent
+          title="Git changes"
+          className="h-[calc(90dvh-env(safe-area-inset-top))] max-h-[calc(90dvh-env(safe-area-inset-top))] [&>div:last-child]:flex-1"
+          bodyClassName="gap-0 p-0 pb-[env(safe-area-inset-bottom)]"
           aria-label="Git changes"
+          aria-describedby={undefined}
           onCloseAutoFocus={sheetCloseAutoFocus('git-sheet')}
         >
           {gitSheetCwd ? (
@@ -143,7 +165,7 @@ export function MobileWorkspaceShell({
               <GitPanel cwd={gitSheetCwd} isVisible={gitSheetOpen} />
             </Suspense>
           ) : null}
-        </SheetContent>
+        </MobileSheetContent>
       </Sheet>
 
       {appModals}

@@ -4,11 +4,21 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { type KeyboardEvent, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { ChevronDown, ChevronRight, X } from '@/components/icons'
+import {
+  PHONE_MODAL_BODY_CLASS,
+  PHONE_MODAL_BUTTON_CLASS,
+  PHONE_MODAL_CARD_CLASS,
+  PHONE_MODAL_FOOTER_CLASS,
+  PHONE_MODAL_OVERLAY_CLASS,
+  TOUCH_FIELD_CLASS,
+  TOUCH_HIT_AREA_CLASS
+} from '@/components/phone-modal-classes'
 import { Button } from '@/components/ui/button'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { FIELD_FOCUS_CLASS } from '@/components/ui/panel-styles'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Switch } from '@/components/ui/switch'
+import { useModalFocus } from '@/components/use-modal-focus'
 import { NativeWebviewOccluder } from '@/hooks/use-native-webview-occlusion'
 import { dialogApi, filesystemApi, gitApi, shellApi } from '@/lib/api'
 import { availableColors, getColorClasses } from '@/lib/colors'
@@ -52,8 +62,12 @@ const DOUBLED_NAME_RE = /^(.{2,}?)\1$/
 
 export function NewProjectModal({ isOpen, onClose, onCreateProject }: NewProjectModalProps) {
   // Mobile web shell: system back closes this modal (inert on desktop).
-  const overlayId = `${NEW_PROJECT_MODAL_OVERLAY_PREFIX}${useId()}`
+  const dialogId = useId()
+  const overlayId = `${NEW_PROJECT_MODAL_OVERLAY_PREFIX}${dialogId}`
   useOverlayRegistration(overlayId, isOpen, onClose, { mobileShellOnly: true })
+  const dialogRef = useRef<HTMLDivElement>(null)
+  const pathInputRef = useRef<HTMLInputElement>(null)
+  useModalFocus(isOpen, dialogRef, pathInputRef)
   const defaultColor = useDefaultProjectColor() as ProjectColor
   // Simple defaults (empty template, app default color, detected default shell,
   // no git init) with the full set of controls back under an Advanced section.
@@ -399,7 +413,13 @@ export function NewProjectModal({ isOpen, onClose, onCreateProject }: NewProject
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLDivElement>) => {
-      if (e.key === 'Enter' && name.trim() && path.trim()) {
+      // A focused button handles its own Enter (Enter on Cancel must not create).
+      if (
+        e.key === 'Enter' &&
+        name.trim() &&
+        path.trim() &&
+        !(e.target instanceof HTMLButtonElement)
+      ) {
         e.preventDefault()
         handleCreate()
       } else if (e.key === 'Escape' && !isEscapeClaimed(e.nativeEvent)) {
@@ -420,7 +440,7 @@ export function NewProjectModal({ isOpen, onClose, onCreateProject }: NewProject
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          className="fixed inset-0 bg-overlay/60 backdrop-blur-sm z-50 flex items-center justify-center"
+          className={`fixed inset-0 bg-overlay/60 backdrop-blur-sm z-50 flex items-center justify-center ${PHONE_MODAL_OVERLAY_CLASS}`}
           onClick={onClose}
         >
           <NativeWebviewOccluder />
@@ -429,38 +449,56 @@ export function NewProjectModal({ isOpen, onClose, onCreateProject }: NewProject
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.95, y: 10 }}
             transition={{ duration: 0.15 }}
-            className="bg-card rounded-lg shadow-2xl w-[520px] max-w-[calc(100vw-2rem)] border border-border overflow-hidden max-h-[90vh] flex flex-col"
+            className={`bg-card rounded-lg shadow-2xl max-w-[520px] border border-border overflow-hidden outline-none ${PHONE_MODAL_CARD_CLASS}`}
             onClick={(e) => e.stopPropagation()}
             onKeyDown={handleKeyDown}
+            ref={dialogRef}
+            tabIndex={-1}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby={`${dialogId}-title`}
           >
             {/* Header */}
             <div className="px-4 py-3 border-b border-border flex justify-between items-center bg-secondary/50 flex-shrink-0">
-              <h3 className="text-sm font-semibold text-foreground">Create New Project</h3>
+              <h3 id={`${dialogId}-title`} className="text-sm font-semibold text-foreground">
+                Create New Project
+              </h3>
               <button
+                type="button"
                 onClick={onClose}
-                className="text-muted-foreground hover:text-foreground transition-colors"
+                aria-label="Close"
+                className={`text-muted-foreground hover:text-foreground transition-colors ${TOUCH_HIT_AREA_CLASS}`}
               >
                 <X size={14} />
               </button>
             </div>
 
-            <div className="p-4 space-y-4 overflow-y-auto flex-1">
+            <div className={`p-4 space-y-4 flex-1 ${PHONE_MODAL_BODY_CLASS}`}>
               {/* Root Directory first — the flow starts with picking a folder. */}
               <div>
-                <label className="block text-xs font-medium text-muted-foreground mb-1">
+                <label
+                  htmlFor={`${dialogId}-path`}
+                  className="block text-xs font-medium text-muted-foreground mb-1"
+                >
                   Root Directory
                 </label>
                 <div className="flex gap-2">
                   <input
+                    ref={pathInputRef}
+                    id={`${dialogId}-path`}
                     type="text"
                     value={path}
                     onChange={(e) => handlePathChange(e.target.value)}
                     placeholder="No directory selected"
-                    className={`flex-1 bg-secondary border border-border rounded px-3 py-1.5 text-sm pointer-coarse:text-base text-foreground placeholder-muted-foreground ${FIELD_FOCUS_CLASS}`}
+                    autoCapitalize="off"
+                    autoCorrect="off"
+                    spellCheck={false}
+                    className={`min-w-0 flex-1 bg-secondary border border-border rounded px-3 py-1.5 text-sm text-foreground placeholder-muted-foreground ${TOUCH_FIELD_CLASS} ${FIELD_FOCUS_CLASS}`}
                   />
                   <button
+                    type="button"
                     onClick={handleBrowse}
-                    className="bg-secondary hover:bg-muted text-foreground text-xs px-3 rounded border border-border transition-colors"
+                    className="bg-secondary hover:bg-muted active:bg-muted text-foreground text-xs px-3 rounded border border-border transition-colors pointer-coarse:min-h-11"
                   >
                     Browse
                   </button>
@@ -468,15 +506,19 @@ export function NewProjectModal({ isOpen, onClose, onCreateProject }: NewProject
               </div>
 
               <div>
-                <label className="block text-xs font-medium text-muted-foreground mb-1">
+                <label
+                  htmlFor={`${dialogId}-name`}
+                  className="block text-xs font-medium text-muted-foreground mb-1"
+                >
                   Project Name
                 </label>
                 <input
+                  id={`${dialogId}-name`}
                   type="text"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   placeholder="My Project"
-                  className={`w-full bg-secondary border border-border rounded px-3 py-1.5 text-sm pointer-coarse:text-base text-foreground placeholder-muted-foreground ${FIELD_FOCUS_CLASS}`}
+                  className={`w-full bg-secondary border border-border rounded px-3 py-1.5 text-sm text-foreground placeholder-muted-foreground ${TOUCH_FIELD_CLASS} ${FIELD_FOCUS_CLASS}`}
                 />
                 {nameWarning && (
                   <p
@@ -493,7 +535,7 @@ export function NewProjectModal({ isOpen, onClose, onCreateProject }: NewProject
                   common path (pick folder, confirm auto name, Create)
                   minimal. All controls restore pre-simplification behavior. */}
               <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
-                <CollapsibleTrigger className="flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors w-fit cursor-pointer select-none">
+                <CollapsibleTrigger className="flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors w-fit cursor-pointer select-none pointer-coarse:min-h-11">
                   {advancedOpen ? <ChevronDown size={12} /> : <ChevronRight size={14} />}
                   Advanced options
                 </CollapsibleTrigger>
@@ -509,7 +551,7 @@ export function NewProjectModal({ isOpen, onClose, onCreateProject }: NewProject
                           const tpl = BUILT_IN_TEMPLATES.find((t) => t.id === e.target.value)
                           if (tpl) handleSelectTemplate(tpl)
                         }}
-                        className={`w-full appearance-none bg-secondary border border-border rounded px-3 py-1.5 pr-8 text-sm pointer-coarse:text-base text-foreground cursor-pointer ${FIELD_FOCUS_CLASS}`}
+                        className={`w-full appearance-none bg-secondary border border-border rounded px-3 py-1.5 pr-8 text-sm text-foreground cursor-pointer ${TOUCH_FIELD_CLASS} ${FIELD_FOCUS_CLASS}`}
                       >
                         {BUILT_IN_TEMPLATES.map((tpl) => (
                           <option key={tpl.id} value={tpl.id}>
@@ -547,15 +589,20 @@ export function NewProjectModal({ isOpen, onClose, onCreateProject }: NewProject
                     <label className="block text-xs font-medium text-muted-foreground mb-2">
                       Color
                     </label>
-                    <div className="flex gap-2 flex-wrap">
+                    {/* Touch: 20px gaps so the 44px hit areas round the 24px swatches do not overlap. */}
+                    <div className="flex gap-2 pointer-coarse:gap-5 flex-wrap pointer-coarse:py-2.5">
                       {availableColors.map((color) => {
                         const colors = getColorClasses(color)
                         return (
                           <button
                             key={color}
+                            type="button"
+                            aria-label={color}
+                            aria-pressed={selectedColor === color}
                             onClick={() => setSelectedColor(color)}
                             className={cn(
-                              'w-6 h-6 rounded-full transition-all',
+                              'w-6 h-6 rounded-full transition-[opacity,box-shadow]',
+                              TOUCH_HIT_AREA_CLASS,
                               colors.bg,
                               selectedColor === color
                                 ? 'ring-2 ring-offset-2 ring-offset-card ring-current'
@@ -578,7 +625,7 @@ export function NewProjectModal({ isOpen, onClose, onCreateProject }: NewProject
                         <select
                           value={selectedShell}
                           onChange={(e) => setSelectedShell(e.target.value)}
-                          className={`w-full appearance-none bg-secondary border border-border rounded px-3 py-1.5 pr-8 text-sm pointer-coarse:text-base text-foreground cursor-pointer ${FIELD_FOCUS_CLASS}`}
+                          className={`w-full appearance-none bg-secondary border border-border rounded px-3 py-1.5 pr-8 text-sm text-foreground cursor-pointer ${TOUCH_FIELD_CLASS} ${FIELD_FOCUS_CLASS}`}
                         >
                           {shells?.available && shells.available.length > 0 ? (
                             shells.available.map((shell) => (
@@ -598,7 +645,7 @@ export function NewProjectModal({ isOpen, onClose, onCreateProject }: NewProject
                   </div>
 
                   {isFolderEmpty && (
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 pointer-coarse:min-h-11">
                       <Switch
                         id="init-git"
                         size="sm"
@@ -607,7 +654,7 @@ export function NewProjectModal({ isOpen, onClose, onCreateProject }: NewProject
                       />
                       <label
                         htmlFor="init-git"
-                        className="text-xs text-muted-foreground select-none cursor-pointer"
+                        className="text-xs text-muted-foreground select-none cursor-pointer pointer-coarse:py-3"
                       >
                         Initialize Git repository in this directory
                       </label>
@@ -626,8 +673,16 @@ export function NewProjectModal({ isOpen, onClose, onCreateProject }: NewProject
             </div>
 
             {/* Footer */}
-            <div className="px-4 py-3 bg-secondary/50 flex justify-end gap-2 border-t border-border flex-shrink-0">
-              <Button type="button" variant="ghost" size="sm" onClick={onClose}>
+            <div
+              className={`px-4 py-3 bg-secondary/50 flex justify-end gap-2 border-t border-border flex-shrink-0 ${PHONE_MODAL_FOOTER_CLASS}`}
+            >
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={onClose}
+                className={PHONE_MODAL_BUTTON_CLASS}
+              >
                 Cancel
               </Button>
               <Button
@@ -635,6 +690,7 @@ export function NewProjectModal({ isOpen, onClose, onCreateProject }: NewProject
                 size="sm"
                 onClick={handleCreate}
                 disabled={!name.trim() || !path.trim()}
+                className={PHONE_MODAL_BUTTON_CLASS}
               >
                 Create
               </Button>

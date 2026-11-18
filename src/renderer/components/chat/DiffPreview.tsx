@@ -128,7 +128,7 @@ export function DiffPreview({ diff }: DiffPreviewProps): React.JSX.Element {
           <span className="text-destructive">−{removed}</span>
         </span>
       </div>
-      <div className="scroller-thin max-h-48 overflow-auto p-2 font-mono text-xs leading-relaxed">
+      <div className="scroller-thin max-h-48 overflow-auto overscroll-contain p-2 font-mono text-xs leading-relaxed">
         <DiffRows lines={lines} highlight={highlight} />
       </div>
     </div>

@@ -462,6 +462,9 @@
   }
 
   html {
+    /* Same fill as body: Safari on iOS reads the html background for the
+       area behind its bars. */
+    background-color: oklch(var(--background));
     /* Crisp font rendering on Linux/Wayland (sub-pixel AA off by default) */
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
@@ -815,6 +818,38 @@
    for it (Button's active:scale). Unlayered, so it wins over utilities. */
 [aria-haspopup]:active {
   scale: none;
+}
+
+/* Phone text floor (tactile-design "Phone", touch-and-accessibility).
+   On a touch phone (the same viewports as `useMobileWebShell`: narrow, or a
+   short landscape phone) small text is hard to read at arm's length, so
+   every size under 15px becomes 15px with a 24px line. `text-base` and
+   larger keep their size; fields stay at 16px (`pointer-coarse:text-base`)
+   so iOS does not zoom. A mouse or trackpad never matches, so the desktop
+   app and a narrow desktop window keep the dense 12/14px scale.
+   `--font-size-micro` drives `text-2xs` / `text-3xs` / `text-4xs`
+   (tailwind.config.ts). Unlayered, so it wins over the theme layer. */
+:root {
+  --font-size-micro: 0.75rem;
+}
+
+@media (pointer: coarse) and (max-width: 767px), (pointer: coarse) and (max-height: 499px) {
+  :root {
+    --font-size-micro: 0.9375rem;
+    --text-xs: 0.9375rem;
+    --text-xs--line-height: calc(24 / 15);
+    --text-sm: 0.9375rem;
+    --text-sm--line-height: calc(24 / 15);
+  }
+
+  /* Safari on iOS evens out every line of a `text-wrap: pretty` paragraph,
+     so reply lines break well before the right padding and the column
+     looks inset on the right. On a phone the lines fill to the padding,
+     so both sides look the same. Unlayered, so it wins over `.chat-prose`. */
+  .chat-prose,
+  .chat-streamdown {
+    text-wrap: wrap;
+  }
 }
 
 /* The model menu drives open and close with a transition. */
@@ -1549,6 +1584,28 @@
     width: 0.875rem;
     height: 0.875rem;
     flex-shrink: 0;
+  }
+  /* Touch: the 24px code and table actions keep their look but get a 44px
+     hit area (an invisible ring 10px wide), and a press shows the hover ink. */
+  @media (pointer: coarse) {
+    .chat-streamdown [data-streamdown="code-block-actions"] button,
+    .chat-streamdown [data-streamdown="table-toolbar"] button {
+      position: relative;
+    }
+    .chat-streamdown [data-streamdown="code-block-actions"] button::after,
+    .chat-streamdown [data-streamdown="table-toolbar"] button::after {
+      content: "";
+      position: absolute;
+      inset: -0.625rem;
+    }
+    /* 20px apart so two hit areas never overlap. */
+    .chat-streamdown [data-streamdown="code-block-actions"] {
+      gap: 1.25rem;
+    }
+    .chat-streamdown [data-streamdown="code-block-actions"] button:active,
+    .chat-streamdown [data-streamdown="table-toolbar"] button:active {
+      color: oklch(var(--foreground));
+    }
   }
   /* Fullscreen table toolbar is portaled to document.body, so it's outside
      .chat-streamdown. Keep a 44px hit area. */

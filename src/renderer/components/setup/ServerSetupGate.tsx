@@ -29,7 +29,7 @@ export function ServerSetupGate({ children }: { children: React.ReactNode }): Re
   }
   if (gate === 'checking') {
     return (
-      <div className="flex h-screen flex-col items-center justify-center overflow-hidden bg-background">
+      <div className="flex h-dvh flex-col items-center justify-center overflow-hidden bg-background">
         <p className="text-sm text-muted-foreground">Loading...</p>
       </div>
     )

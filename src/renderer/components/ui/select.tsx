@@ -53,7 +53,7 @@ const SelectTrigger = React.forwardRef<
   <SelectPrimitive.Trigger
     ref={ref}
     className={cn(
-      'flex h-10 w-full items-center justify-between rounded-lg px-3 py-2 text-sm transition-colors duration-150 ease-out placeholder:text-muted-foreground disabled:cursor-not-allowed [&>span]:line-clamp-1',
+      'flex h-10 pointer-coarse:h-11 pointer-coarse:text-base w-full items-center justify-between rounded-lg px-3 py-2 text-sm transition-colors duration-150 ease-out placeholder:text-muted-foreground disabled:cursor-not-allowed [&>span]:line-clamp-1',
       FIELD_SURFACE_CLASS,
       FIELD_FOCUS_CLASS,
       className
@@ -106,7 +106,7 @@ const SelectContent = React.forwardRef<
       className={cn(
         // The Viewport carries the 4px padding so scroll buttons sit flush.
         MENU_CONTENT_CLASS,
-        'relative max-h-96 p-0',
+        'relative max-h-[min(24rem,var(--radix-select-content-available-height))] p-0',
         MENU_MOTION_CLASS,
         position === 'popper' &&
           'data-[side=bottom]:translate-y-1 data-[side=left]:-translate-x-1 data-[side=right]:translate-x-1 data-[side=top]:-translate-y-1',

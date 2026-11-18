@@ -43,7 +43,12 @@ function rowClass(isActive: boolean): string {
   return cn(
     'flex min-h-11 w-full min-w-0 items-center gap-3 rounded-full px-4 py-2 text-left text-base outline-none transition-colors duration-150 ease-out',
     'select-none [-webkit-touch-callout:none] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-focus-ring',
-    isActive ? 'bg-secondary text-foreground' : 'text-foreground hover:bg-foreground/[0.04]'
+    // On touch the row keeps its right 44px free for the visible ⋯.
+    'pointer-coarse:pr-12',
+    // A touch has no hover: the press shows a fill so the row answers the finger.
+    isActive
+      ? 'bg-secondary text-foreground'
+      : 'text-foreground hover:bg-foreground/[0.04] active:bg-foreground/[0.08]'
   )
 }
 
@@ -176,7 +181,7 @@ interface RowShellProps {
   onOpenActions: () => void
 }
 
-/** The markup every Recents row shares: one select button and a focus-only actions button. */
+/** The markup every Recents row shares: one select button and an actions button (visible on touch, focus-only otherwise). */
 function RecentsRowShell({
   entryId,
   title,
@@ -220,16 +225,16 @@ function RecentsRowShell({
           <span className="shrink-0 text-xs tabular-nums text-muted-foreground">{time}</span>
         ) : null}
       </button>
-      {/* Keyboard and screen-reader route to the row actions. Invisible and
-          untouchable until it holds focus (a screen reader's double-tap
-          focuses it first), so the row shows no trailing icon. */}
+      {/* The row actions. On touch the ⋯ is always visible (Paper 10.7):
+          a long press is not discoverable. With a mouse or keyboard it stays
+          invisible and untouchable until it holds focus. */}
       <button
         type="button"
         data-recents-actions=""
         aria-label={`More actions for ${title}`}
         aria-haspopup="dialog"
         onClick={onOpenActions}
-        className="pointer-events-none absolute right-1 top-1/2 inline-flex size-11 -translate-y-1/2 items-center justify-center rounded-full bg-secondary text-foreground opacity-0 outline-none focus:pointer-events-auto focus:opacity-100 focus-visible:ring-2 focus-visible:ring-focus-ring"
+        className="pointer-events-none absolute right-1 top-1/2 inline-flex size-11 -translate-y-1/2 items-center justify-center rounded-full bg-secondary text-foreground opacity-0 outline-none transition-colors duration-150 ease-out focus:pointer-events-auto focus:opacity-100 focus-visible:ring-2 focus-visible:ring-focus-ring pointer-coarse:pointer-events-auto pointer-coarse:bg-transparent pointer-coarse:text-muted-foreground pointer-coarse:opacity-100 pointer-coarse:active:bg-foreground/[0.08]"
       >
         <MoreHorizontal size={16} aria-hidden="true" />
       </button>
@@ -668,7 +673,7 @@ export function MobileRecentsList({
           <button
             type="button"
             onClick={loadMore}
-            className="min-h-11 w-full rounded-full py-1 text-sm tabular-nums text-muted-foreground transition-colors duration-150 ease-out hover:bg-foreground/[0.04]"
+            className="min-h-11 w-full rounded-full py-1 text-sm tabular-nums text-muted-foreground transition-colors duration-150 ease-out hover:bg-foreground/[0.04] active:bg-foreground/[0.08]"
           >
             Load more ({filtered.length - visible.length} more)
           </button>

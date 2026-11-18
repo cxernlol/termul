@@ -25,7 +25,7 @@ export function CodexSignInDialog({
         if (!open && !running) onClose()
       }}
     >
-      <DialogContent className="gap-5 sm:max-w-[400px]">
+      <DialogContent className="max-h-[90dvh] gap-5 overflow-y-auto overscroll-contain sm:max-w-[400px]">
         {/* The content unmounts on close, so each open starts at the method pick. */}
         {account && (
           <CodexSignInRun

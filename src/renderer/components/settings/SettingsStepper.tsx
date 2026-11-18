@@ -19,7 +19,7 @@ interface SettingsStepperProps extends Omit<React.HTMLAttributes<HTMLDivElement>
   resetLabel?: string
 }
 
-const STEP_BUTTON_CLASS = `flex size-8 items-center justify-center text-muted-foreground transition-colors duration-150 ease-out hover:text-foreground disabled:pointer-events-none disabled:opacity-35 ${FOCUS_RING_CLASS}`
+const STEP_BUTTON_CLASS = `flex size-8 pointer-coarse:size-11 items-center justify-center text-muted-foreground transition-colors duration-150 ease-out hover:text-foreground active:text-foreground active:bg-foreground/[0.06] disabled:pointer-events-none disabled:opacity-35 ${FOCUS_RING_CLASS}`
 
 /** Round away float noise from repeated `0.1` steps. */
 function snap(value: number, step: number): number {
@@ -52,7 +52,7 @@ export const SettingsStepper = forwardRef<HTMLDivElement, SettingsStepperProps>(
       <div ref={ref} className={cn('flex items-center gap-2', className)} {...props}>
         <div
           className={cn(
-            'flex h-8 items-center rounded-lg transition-colors duration-150 ease-out',
+            'flex h-8 pointer-coarse:h-11 items-center rounded-lg transition-colors duration-150 ease-out',
             FIELD_SURFACE_CLASS
           )}
         >
@@ -86,7 +86,7 @@ export const SettingsStepper = forwardRef<HTMLDivElement, SettingsStepperProps>(
             type="button"
             onClick={() => set(resetValue)}
             disabled={value === resetValue}
-            className={`h-7 rounded-md px-2 text-xs font-medium text-secondary-foreground transition-colors duration-150 ease-out hover:bg-secondary hover:text-foreground disabled:pointer-events-none disabled:opacity-40 ${FOCUS_RING_CLASS}`}
+            className={`h-7 pointer-coarse:h-11 rounded-md px-2 text-xs font-medium text-secondary-foreground transition-colors duration-150 ease-out hover:bg-secondary active:bg-secondary hover:text-foreground disabled:pointer-events-none disabled:opacity-40 ${FOCUS_RING_CLASS}`}
           >
             {resetLabel}
           </button>

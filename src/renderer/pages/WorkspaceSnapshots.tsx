@@ -167,7 +167,7 @@ export default function WorkspaceSnapshots(): React.JSX.Element {
   // Show loading state while projects are being loaded
   if (!isLoaded) {
     return (
-      <div className="h-screen flex items-center justify-center bg-background">
+      <div className="h-dvh flex items-center justify-center bg-background">
         <div className="text-muted-foreground text-sm">Loading...</div>
       </div>
     )

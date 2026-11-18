@@ -44,7 +44,9 @@ describe('public/manifest.webmanifest', () => {
     expect(manifest.scope).toBe('/')
     expect(manifest.display).toBe('standalone')
     expect(manifest.theme_color).toBe('#1E1E1E')
-    expect(manifest.background_color).toBe('#0F172A')
+    // The splash matches theme_color, so the install splash and the status
+    // bar are one colour.
+    expect(manifest.background_color).toBe('#1E1E1E')
     expect(manifest.categories).toEqual(expect.arrayContaining(['utilities', 'productivity']))
   })
 

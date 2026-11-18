@@ -46,7 +46,7 @@ export const SettingsSelect = forwardRef<HTMLButtonElement, SettingsSelectProps>
           id={id}
           aria-label={ariaLabel}
           aria-describedby={ariaDescribedBy}
-          className={cn('h-8 w-full text-xs @[35rem]:w-60', className)}
+          className={cn('h-8 w-full text-xs pointer-coarse:h-11 @[35rem]:w-60', className)}
         >
           <SelectValue />
         </SelectTrigger>

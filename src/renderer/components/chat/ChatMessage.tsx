@@ -1,5 +1,5 @@
 import { motion, useReducedMotion } from 'framer-motion'
-import { memo, useEffect, useMemo } from 'react'
+import { memo, useEffect, useMemo, useState } from 'react'
 
 import { Attachment, AttachmentPreview, Attachments } from '@/components/ai-elements/attachments'
 import { Bubble, BubbleContent } from '@/components/ui/bubble'
@@ -43,6 +43,8 @@ import {
   resolveMessageActionsMode,
   supportsLongPressMenu
 } from './MessageActions'
+import { MessageSelectHint } from './MessageSelectHint'
+import { enterMessageSelectMode, useMessageSelectMode } from './message-select-mode'
 import { SelectionContextChip } from './SelectionContextChip'
 import { CommandChipLink, SkillChipLink } from './skill-file-links'
 import { ToolChip } from './ToolChip'
@@ -299,6 +301,10 @@ interface ChatMessageProps {
 const MOBILE_ACTIONS_RING_CLASS =
   'rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-focus-ring'
 
+/** Paper "10.3" select-text mode: primary 10% wash, 1px primary ring at 55%. */
+const SELECT_MODE_CLASS =
+  'select-text -mx-2.5 px-2.5 rounded-[10px] bg-primary/10 outline-none ring-1 ring-inset ring-primary/55'
+
 /**
  * Classes for a message that owns mobile actions: the focus ring in every
  * mobile mode, plus no native text selection on coarse pointers only in
@@ -306,8 +312,15 @@ const MOBILE_ACTIONS_RING_CLASS =
  * `MessageActionsContextMenu`). In `visible-fallback` long-press cannot work,
  * so selection stays and the always-visible row carries Copy.
  */
-function mobileActionsMessageClass(mode: MessageActionsMode): string | undefined {
+function mobileActionsMessageClass(
+  mode: MessageActionsMode,
+  selecting: boolean
+): string | undefined {
   if (mode === 'desktop') return undefined
+  // Paper "10.3": select mode turns native selection back on and marks the
+  // message with a primary wash and ring. The padding and the matching
+  // negative margin keep the text where it was.
+  if (selecting) return SELECT_MODE_CLASS
   return mode === 'focus-reveal'
     ? `${MOBILE_ACTIONS_RING_CLASS} pointer-coarse:select-none`
     : MOBILE_ACTIONS_RING_CLASS
@@ -356,13 +369,24 @@ function ChatMessageComponent({
     ? resolveMessageActionsMode(isMobileShell, supportsLongPressMenu())
     : 'desktop'
   const mobileActions = actionsMode !== 'desktop'
-  const mobileActionsClass = mobileActionsMessageClass(actionsMode)
+  const { selecting: selectingRaw, exit: exitSelect } = useMessageSelectMode(message.id)
+  const selecting = mobileActions && selectingRaw
+  const mobileActionsClass = mobileActionsMessageClass(actionsMode, selecting)
+  const [sheetOpen, setSheetOpen] = useState(false)
   // On the mobile shell every message keeps the same menu wrapper (inert unless
   // it has actions), so a message that gains or loses actions as its stream
   // settles or the turn tail moves does not remount its subtree.
   const menuWrapped = isMobileShell
-  const actionsReveal = actionsMode === 'focus-reveal' ? 'focus' : 'hover'
+  // Paper "10.1": the last agent reply keeps Copy / Retry / ⋯ visible on the
+  // phone; every other message reveals its row on focus only.
+  const pinLastReply = !isUser && actionsPinned && actionsMode === 'focus-reveal'
+  const actionsReveal = actionsMode === 'focus-reveal' && !pinLastReply ? 'focus' : 'hover'
   const actionsMenuId = `message-actions-menu:${message.id}`
+  const openSheet = mobileActions ? () => setSheetOpen(true) : undefined
+  const startSelect = (): void => enterMessageSelectMode(message.id)
+  const selectHint = selecting ? (
+    <MessageSelectHint overlayId={message.id} onDone={exitSelect} />
+  ) : null
   useEffect(() => {
     if (actionsMode === 'visible-fallback') logLongPressFallbackOnce()
   }, [actionsMode])
@@ -418,20 +442,24 @@ function ChatMessageComponent({
               </Bubble>
             </StaggerSection>
           )}
-          <StaggerSection
-            delay={nextDelay()}
-            align="end"
-            reduced={reduced}
-            animateEnter={animateEnter}
-          >
-            <MessageActions
-              text={copyTextForActions}
+          {!selecting && (
+            <StaggerSection
+              delay={nextDelay()}
               align="end"
-              pinned={actionsPinned}
-              reveal={actionsReveal}
-              onEdit={editForActions}
-            />
-          </StaggerSection>
+              reduced={reduced}
+              animateEnter={animateEnter}
+            >
+              <MessageActions
+                text={copyTextForActions}
+                align="end"
+                pinned={actionsPinned}
+                reveal={actionsReveal}
+                onEdit={editForActions}
+                onMore={openSheet}
+                touchSlots={mobileActions}
+              />
+            </StaggerSection>
+          )}
         </MessageContent>
       </Message>
     )
@@ -443,13 +471,18 @@ function ChatMessageComponent({
             overlayId={actionsMenuId}
             text={copyTextForActions}
             onEdit={editForActions}
-            disabled={!mobileActions}
+            onSelectText={startSelect}
+            title="Message"
+            open={sheetOpen}
+            onOpenChange={setSheetOpen}
+            disabled={!mobileActions || selecting}
           >
             {userMessage}
           </MessageActionsContextMenu>
         ) : (
           userMessage
         )}
+        {selectHint}
       </div>
     )
   }
@@ -513,7 +546,7 @@ function ChatMessageComponent({
             <MediaBlocks blocks={message.blocks} />
           </StaggerSection>
         )}
-        {hasActions && (
+        {hasActions && !selecting && (
           <StaggerSection
             delay={actionsDelay}
             align="start"
@@ -526,6 +559,8 @@ function ChatMessageComponent({
               pinned={actionsPinned}
               reveal={actionsReveal}
               onRetry={onRetry}
+              onMore={openSheet}
+              touchSlots={mobileActions}
             />
           </StaggerSection>
         )}
@@ -540,13 +575,18 @@ function ChatMessageComponent({
           overlayId={actionsMenuId}
           text={agentCopyText}
           onRetry={onRetry}
-          disabled={!mobileActions}
+          onSelectText={startSelect}
+          title="Reply"
+          open={sheetOpen}
+          onOpenChange={setSheetOpen}
+          disabled={!mobileActions || selecting}
         >
           {agentMessage}
         </MessageActionsContextMenu>
       ) : (
         agentMessage
       )}
+      {selectHint}
     </div>
   )
 }

@@ -111,7 +111,14 @@ export function ShortcutsSection({
             onChange={(e) => setFilter(e.target.value)}
             placeholder="Filter shortcuts"
             aria-label="Filter shortcuts"
-            className={cn(PANEL_FIELD_CLASS, 'h-8 w-full bg-background pl-7 pr-3')}
+            autoCapitalize="off"
+            autoCorrect="off"
+            spellCheck={false}
+            enterKeyHint="search"
+            className={cn(
+              PANEL_FIELD_CLASS,
+              'h-8 pointer-coarse:h-11 w-full bg-background pl-7 pr-3'
+            )}
           />
         </div>
         <Button

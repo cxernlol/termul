@@ -217,6 +217,8 @@ export function LinkSignInStep({
               value={code}
               autoFocus
               autoComplete="off"
+              autoCapitalize="off"
+              autoCorrect="off"
               spellCheck={false}
               placeholder="Paste the code"
               disabled={state.phase === 'submitting'}

@@ -91,7 +91,7 @@ export const FileMentionMenu = forwardRef<FileMentionMenuHandle, FileMentionMenu
         aria-label={`Back from ${menu.header.title}`}
         {...tapSelect(onBack)}
         onMouseDown={(e) => e.preventDefault()}
-        className="flex min-h-11 w-full min-w-0 items-center gap-1.5 rounded-lg px-2 text-left text-xs @[400px]:min-h-8"
+        className="flex min-h-11 w-full min-w-0 items-center gap-1.5 rounded-lg px-2 text-left text-xs @[400px]:pointer-fine:min-h-8"
       >
         <ChevronLeft size={12} className="shrink-0 text-foreground" />
         <span className="shrink-0 font-semibold text-foreground">{menu.header.title}</span>

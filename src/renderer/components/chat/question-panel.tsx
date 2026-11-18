@@ -147,7 +147,7 @@ export function QuestionPager(): React.JSX.Element | null {
         aria-label="Previous question"
         disabled={index === 0 || submitting}
         onClick={() => onNavigate(index - 1)}
-        className="text-muted-foreground pointer-coarse:size-9"
+        className="text-muted-foreground pointer-coarse:size-11"
       >
         <ChevronLeft size={14} />
       </Button>
@@ -161,7 +161,7 @@ export function QuestionPager(): React.JSX.Element | null {
         aria-label="Next question"
         disabled={index >= total - 1 || submitting}
         onClick={() => onNavigate(index + 1)}
-        className="text-muted-foreground pointer-coarse:size-9"
+        className="text-muted-foreground pointer-coarse:size-11"
       >
         <ChevronRight size={14} />
       </Button>
@@ -193,7 +193,7 @@ export function QuestionWindowActions({
         size="icon-xs"
         aria-label="Minimize questions"
         onClick={onMinimize}
-        className="text-muted-foreground pointer-coarse:size-9"
+        className="text-muted-foreground pointer-coarse:size-11"
       >
         <Minus size={14} />
       </Button>
@@ -205,7 +205,7 @@ export function QuestionWindowActions({
         aria-label="Cancel"
         data-question-cancel=""
         onClick={onClose}
-        className="text-muted-foreground pointer-coarse:size-9"
+        className="text-muted-foreground pointer-coarse:size-11"
       >
         <X size={14} />
       </Button>
@@ -460,7 +460,7 @@ export const QuestionPrimaryButton = forwardRef<HTMLButtonElement, QuestionPrima
         type="button"
         size="xs"
         className={cn(
-          'h-8 gap-2 rounded-lg pl-3.5 pr-1.5 text-sm pointer-coarse:min-h-11',
+          'h-8 gap-2 rounded-lg pl-3.5 pr-1.5 text-sm pointer-coarse:min-h-11 pointer-coarse:pr-3.5',
           className
         )}
         {...props}
@@ -468,7 +468,8 @@ export const QuestionPrimaryButton = forwardRef<HTMLButtonElement, QuestionPrima
         {children}
         <span
           aria-hidden="true"
-          className="flex size-5 items-center justify-center rounded-[5px] bg-primary-foreground/15 text-2xs"
+          // A keyboard hint: touch has no Enter key to press here.
+          className="flex size-5 items-center justify-center rounded-[5px] bg-primary-foreground/15 text-2xs pointer-coarse:hidden"
         >
           ↵
         </span>

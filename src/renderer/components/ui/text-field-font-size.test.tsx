@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { cn } from '@/lib/utils'
+import { TOUCH_FIELD_CLASS } from '../phone-modal-classes'
 import {
   findRawTagStarts,
   findTextFieldTags,
@@ -83,6 +84,10 @@ describe('shared text fields keep 16px on a coarse pointer', () => {
     expect(list).toContain(TOKEN)
   })
 
+  it('TOUCH_FIELD_CLASS (phone modal fields) carries the 16px token', () => {
+    expect(TOUCH_FIELD_CLASS.split(/\s+/)).toContain(TOKEN)
+  })
+
   it('PANEL_FIELD_CLASS keeps text-xs for a fine pointer and survives a caller text-sm', () => {
     expect(PANEL_FIELD_CLASS.split(/\s+/)).toEqual(expect.arrayContaining(['text-xs', TOKEN]))
     const merged = cn(PANEL_FIELD_CLASS, 'w-full px-3 py-2 text-sm').split(/\s+/)
@@ -111,6 +116,7 @@ function isSixteenPx(tag: string): boolean {
     POINTER_TOKEN.test(tag) ||
     (PLAIN_TEXT_BASE.test(tag) && !BREAKPOINT_DOWNSIZE.test(tag)) ||
     tag.includes('PANEL_FIELD_CLASS') ||
+    tag.includes('TOUCH_FIELD_CLASS') ||
     tag.includes('pickerSearchTextClass(')
   )
 }

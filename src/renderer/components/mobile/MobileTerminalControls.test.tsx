@@ -40,10 +40,6 @@ const KEYS = [
 const TOGGLE_NAME = 'Show/hide key bar'
 const BUTTON_NAMES = [TOGGLE_NAME, 'Paste', ...KEYS.map(([, name]) => name)]
 
-function keyButtons(): HTMLElement[] {
-  return KEYS.map(([, name]) => screen.getByRole('button', { name }))
-}
-
 beforeEach(() => {
   writeMock.mockReset().mockResolvedValue({ success: true })
   readTextMock.mockReset().mockResolvedValue({ success: true, data: '' })
@@ -52,27 +48,42 @@ beforeEach(() => {
   useTerminalStore.getState().setTerminals([])
 })
 
-// Issue #859: at 390px the key bar's horizontal scroll pushed the arrow keys
-// and PgUp/PgDn off-screen. The bar now wraps its keys into rows instead of
-// scrolling, so every key stays visible.
-describe('MobileTerminalControls key bar (#859)', () => {
-  it('renders every key without a scrolling container (wrap layout)', () => {
+const keyLane = (): HTMLElement => {
+  const lane = screen.getByRole('button', { name: 'Esc, escape' }).parentElement
+  if (!lane) throw new Error('the key lane is missing')
+  return lane
+}
+
+// Paper 10.6a: one 52px row. The toggle and Paste stay fixed; the nine keys
+// scroll sideways in their own lane, so the terminal keeps more lines above
+// the on-screen keyboard.
+describe('MobileTerminalControls key bar (Paper 10.6a)', () => {
+  it('puts the nine keys in one sideways-scrolling lane that never wraps', () => {
     render(<MobileTerminalControls terminalId="t1" />)
 
     for (const [, name] of KEYS) {
       expect(screen.getByRole('button', { name })).toBeInTheDocument()
     }
 
-    // The key row wraps instead of horizontally scrolling: no overflow-x-auto.
-    const keyRow = screen.getByRole('button', { name: 'Esc, escape' }).parentElement
-    expect(keyRow).not.toBeNull()
-    expect(keyRow?.className).not.toContain('overflow-x-auto')
-    expect(keyRow?.className).toContain('flex-wrap')
+    const lane = keyLane()
+    expect(lane).toHaveClass('overflow-x-auto', 'snap-x', 'touch-pan-x', 'overscroll-x-contain')
+    expect(lane).not.toHaveClass('flex-wrap')
+    expect(within(lane).getAllByRole('button')).toHaveLength(KEYS.length)
+    for (const button of within(lane).getAllByRole('button')) {
+      expect(button).toHaveClass('snap-start')
+    }
+  })
+
+  it('shows no end fade when every key already fits', () => {
+    render(<MobileTerminalControls terminalId="t1" />)
+
+    // jsdom has no layout: scrollWidth equals clientWidth, so the lane is at its end.
+    expect(keyLane().className).not.toContain('mask-image')
   })
 })
 
 describe('MobileTerminalControls structure', () => {
-  it('puts the toggle, Paste and the nine keys in a "Terminal keys" group that wraps', () => {
+  it('puts the toggle, Paste and the nine keys in one "Terminal keys" row', () => {
     render(<MobileTerminalControls terminalId="t1" />)
 
     const group = screen.getByRole('group', { name: 'Terminal keys' })
@@ -81,12 +92,11 @@ describe('MobileTerminalControls structure', () => {
       expect(within(group).getByRole('button', { name })).toBeInTheDocument()
     }
 
-    expect(group).toHaveClass('flex-wrap')
-    expect(group).not.toHaveClass('overflow-x-auto')
-    // The group is the wrap container itself, not a wrapper around the keys only.
-    for (const button of within(group).getAllByRole('button')) {
-      expect(button.parentElement).toBe(group)
-    }
+    expect(group).not.toHaveClass('flex-wrap')
+    // Toggle and Paste sit in the row itself; the keys sit in the lane.
+    expect(screen.getByRole('button', { name: TOGGLE_NAME }).parentElement).toBe(group)
+    expect(screen.getByRole('button', { name: 'Paste' }).parentElement).toBe(group)
+    expect(keyLane().parentElement).toBe(group)
   })
 
   it('keeps the key set and on-screen order (toggle, Paste, then the nine keys)', () => {
@@ -152,27 +162,27 @@ describe('MobileTerminalControls accessible names', () => {
 })
 
 describe('MobileTerminalControls show/hide key bar', () => {
-  it('exposes aria-expanded and aria-controls pointing at the Terminal keys group', () => {
+  it('exposes aria-expanded and aria-controls pointing at the key lane', () => {
     render(<MobileTerminalControls terminalId="t1" />)
 
     const toggle = screen.getByRole('button', { name: TOGGLE_NAME })
-    const group = screen.getByRole('group', { name: 'Terminal keys' })
+    const lane = keyLane()
     expect(toggle).toHaveAttribute('aria-expanded', 'true')
-    expect(group.id).not.toBe('')
-    expect(toggle).toHaveAttribute('aria-controls', group.id)
+    expect(lane.id).not.toBe('')
+    expect(toggle).toHaveAttribute('aria-controls', lane.id)
   })
 
-  it('hides only the nine keys when collapsed and restores them on the second tap', () => {
+  it('hides only the key lane when collapsed and restores it on the second tap', () => {
     render(<MobileTerminalControls terminalId="t1" />)
 
     const toggle = screen.getByRole('button', { name: TOGGLE_NAME })
     const paste = screen.getByRole('button', { name: 'Paste' })
-    const keys = keyButtons()
-    for (const key of keys) expect(key).not.toHaveClass('hidden')
+    const lane = keyLane()
+    expect(lane).not.toHaveClass('hidden')
 
     fireEvent.click(toggle)
     expect(toggle).toHaveAttribute('aria-expanded', 'false')
-    for (const key of keys) expect(key).toHaveClass('hidden')
+    expect(lane).toHaveClass('hidden')
     // Toggle, Paste and the group stay rendered and visible.
     expect(toggle).not.toHaveClass('hidden')
     expect(paste).not.toHaveClass('hidden')
@@ -182,7 +192,7 @@ describe('MobileTerminalControls show/hide key bar', () => {
 
     fireEvent.click(toggle)
     expect(toggle).toHaveAttribute('aria-expanded', 'true')
-    for (const key of keys) expect(key).not.toHaveClass('hidden')
+    expect(lane).not.toHaveClass('hidden')
   })
 })
 

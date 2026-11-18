@@ -21,7 +21,8 @@ interface IconActionButtonProps {
 
 /**
  * Compact chat/streamdown-style icon control: color-only hover, shared
- * tooltip, no press scale (only main buttons press). Layout slot is 44×44
+ * tooltip, no press scale (only main buttons press); touch gets a fill on
+ * press instead. Layout slot is 44×44
  * (WCAG touch) with a centered Streamdown-sized glyph so adjacent actions
  * never share overlapping hit regions. Pass `size="sm"` for dense chrome
  * (code-block actions, table toolbar) where 44px is visually too heavy — the
@@ -53,6 +54,9 @@ export function IconActionButton({
               : 'relative inline-flex size-11 shrink-0 items-center justify-center',
             'cursor-pointer text-muted-foreground transition-colors duration-150',
             'hover:text-foreground disabled:cursor-not-allowed disabled:text-disabled-foreground',
+            // Touch has no hover: the press shows the hover ink plus a soft
+            // fill, so a tap answers the moment the finger lands.
+            'rounded-md active:text-foreground pointer-coarse:active:bg-row-hover',
             // Let explicit success/destructive tokens on the glyph win over muted.
             '[&_svg]:block [&_svg]:size-3.5 [&_svg]:shrink-0 [&_svg.text-success]:text-success',
             className

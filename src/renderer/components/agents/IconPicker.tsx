@@ -103,12 +103,12 @@ export function IconPicker({ value, onChange }: IconPickerProps): React.JSX.Elem
       </button>
 
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="sm:max-w-[400px] max-h-[70vh]">
+        <DialogContent className="sm:max-w-[400px] max-h-[70dvh]">
           <DialogHeader>
             <DialogTitle className="text-sm">Choose icon</DialogTitle>
           </DialogHeader>
 
-          <div className="overflow-y-auto max-h-[50vh] -mx-2 px-2">
+          <div className="overflow-y-auto overscroll-contain max-h-[50dvh] -mx-2 px-2">
             <div className="grid grid-cols-6 gap-2 py-2">
               {/* "No icon" option */}
               <button

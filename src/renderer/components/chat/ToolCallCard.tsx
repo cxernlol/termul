@@ -132,7 +132,7 @@ export function renderContentItem(
           {typeof exitCode === 'number' ? ` · exit ${exitCode}` : ''}
         </div>
         {output ? (
-          <pre className="scroller-thin max-h-72 overflow-auto whitespace-pre-wrap break-words rounded border border-border/40 bg-background/60 px-2 py-1.5 font-mono text-xs leading-relaxed text-foreground/90">
+          <pre className="scroller-thin max-h-72 overflow-auto overscroll-contain whitespace-pre-wrap break-words rounded border border-border/40 bg-background/60 px-2 py-1.5 font-mono text-xs leading-relaxed text-foreground/90">
             {output}
           </pre>
         ) : null}
@@ -164,7 +164,7 @@ function formatDuration(ms: number): string {
 }
 
 const RESULT_BLOCK_CLASS =
-  'scroller-thin max-h-72 overflow-auto whitespace-pre-wrap break-words rounded border border-border/40 bg-background/60 px-2 py-1.5 font-mono text-xs leading-relaxed text-foreground/90'
+  'scroller-thin max-h-72 overflow-auto overscroll-contain whitespace-pre-wrap break-words rounded border border-border/40 bg-background/60 px-2 py-1.5 font-mono text-xs leading-relaxed text-foreground/90'
 
 /**
  * Readable tool result text (e.g. command output, search hits, a diff/patch).
@@ -402,7 +402,7 @@ function ToolCallCardComponent({
                 onClick={() => setOpen((v) => !v)}
                 aria-expanded={open}
                 className={cn(
-                  'flex min-w-0 flex-1 items-center gap-2 text-left text-xs outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-focus-ring',
+                  'flex min-w-0 flex-1 items-center gap-2 text-left text-xs outline-none transition-colors hover:text-foreground active:text-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-focus-ring',
                   CHAT_ROW_MIN_H
                 )}
               >

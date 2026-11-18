@@ -9,7 +9,7 @@ import { cn } from '@/lib/utils'
 import type { ProjectColor } from '@/types/project'
 
 /** Sized like `SettingsSelect`: full width when narrow, 15rem in a row. */
-const FIELD_SIZE_CLASS = 'h-8 w-full px-2.5 @[35rem]:w-60'
+const FIELD_SIZE_CLASS = 'h-8 pointer-coarse:h-11 w-full px-2.5 @[35rem]:w-60'
 
 interface GeneralSectionProps {
   name: string
@@ -55,6 +55,8 @@ export function GeneralSection({
               id="project-root-directory"
               type="text"
               autoComplete="off"
+              autoCapitalize="off"
+              autoCorrect="off"
               spellCheck={false}
               aria-describedby={settingsDescriptionId('project-root-directory')}
               value={rootPath}
@@ -65,7 +67,7 @@ export function GeneralSection({
               type="button"
               variant="outline"
               size="sm"
-              className="h-8 shrink-0"
+              className="h-8 pointer-coarse:h-11 shrink-0"
               onClick={onBrowseRootPath}
             >
               Browse

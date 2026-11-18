@@ -3,6 +3,7 @@ import { Check, Palette, Search, X } from '@/components/icons'
 import { FIELD_FOCUS_CLASS } from '@/components/ui/panel-styles'
 import { useUpdateAppSettings } from '@/hooks/use-app-settings'
 import { useEffectiveColorThemeId } from '@/hooks/use-color-theme'
+import { useMobileWebShell } from '@/hooks/use-mobile-web-shell'
 import {
   COLOR_THEME_FAMILIES,
   getColorThemeDefinition,
@@ -11,6 +12,7 @@ import {
   type ThemePickerRow
 } from '@/lib/themes'
 import { cn } from '@/lib/utils'
+import { useOverlayRegistration } from '@/stores/overlay-stack-store'
 import { useRailExpanded, useRailWidth } from '@/stores/shell-layout-store'
 import { useThemePickerStore } from '@/stores/theme-picker-store'
 
@@ -95,6 +97,10 @@ export function ThemePicker(): React.JSX.Element | null {
     cancel()
     setQuery('')
   }, [cancel])
+
+  // Mobile web shell: system back cancels the picker (inert on desktop).
+  useOverlayRegistration('theme-picker', isOpen, handleCancel, { mobileShellOnly: true })
+  const isMobileShell = useMobileWebShell()
 
   const scrollFocusedIntoView = useCallback((index: number) => {
     const list = listRef.current
@@ -213,8 +219,19 @@ export function ThemePicker(): React.JSX.Element | null {
         role="dialog"
         aria-modal="true"
         aria-label="Color theme picker"
-        className="pointer-events-auto absolute top-4 bottom-4 w-[min(20rem,calc(100vw-2rem))] flex flex-col rounded-xl border border-border bg-popover/95 shadow-2xl backdrop-blur-sm"
-        style={{ left: (railExpanded ? railWidth : COLLAPSED_RAIL_WIDTH) + RAIL_GUTTER }}
+        className={cn(
+          'pointer-events-auto absolute flex flex-col rounded-xl border border-border bg-popover/95 shadow-2xl backdrop-blur-sm',
+          // Phone: no Rail beside it, so the panel fills the screen inside a
+          // 16px gutter and clear of the notch and home bar.
+          isMobileShell
+            ? 'inset-x-4 top-[calc(env(safe-area-inset-top)+1rem)] bottom-[calc(env(safe-area-inset-bottom)+1rem)]'
+            : 'top-4 bottom-4 w-[min(20rem,calc(100vw-2rem))]'
+        )}
+        style={
+          isMobileShell
+            ? undefined
+            : { left: (railExpanded ? railWidth : COLLAPSED_RAIL_WIDTH) + RAIL_GUTTER }
+        }
         onMouseDown={(event) => event.stopPropagation()}
       >
         <header className="flex items-center gap-2 border-b border-border px-3 py-2.5">
@@ -222,13 +239,14 @@ export function ThemePicker(): React.JSX.Element | null {
           <div className="min-w-0 flex-1">
             <h2 className="text-sm font-medium text-foreground leading-none">Color Themes</h2>
             <p className="text-2xs text-muted-foreground mt-0.5">
-              Hover to preview · Enter to apply
+              <span className="pointer-coarse:hidden">Hover to preview · Enter to apply</span>
+              <span className="hidden pointer-coarse:inline">Tap a theme to apply it</span>
             </p>
           </div>
           <button
             type="button"
             onClick={handleCancel}
-            className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors duration-150 ease-[var(--ease-out)]"
+            className="relative flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-secondary active:bg-secondary hover:text-foreground transition-colors duration-150 ease-[var(--ease-out)] pointer-coarse:after:absolute pointer-coarse:after:-inset-2 pointer-coarse:after:content-['']"
             aria-label="Close theme picker"
           >
             <X size={14} />
@@ -259,7 +277,7 @@ export function ThemePicker(): React.JSX.Element | null {
 
         <div
           ref={listRef}
-          className="flex-1 overflow-y-auto p-2"
+          className="flex-1 overflow-y-auto overscroll-contain p-2"
           role="listbox"
           aria-label="Themes"
         >
@@ -288,7 +306,7 @@ export function ThemePicker(): React.JSX.Element | null {
                         data-theme-row
                         aria-selected={isHighlighted}
                         className={cn(
-                          'flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-sm transition-colors duration-100 ease-[var(--ease-out)]',
+                          'flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-sm transition-colors duration-100 ease-[var(--ease-out)] pointer-coarse:min-h-11 active:bg-foreground/[0.06]',
                           isHighlighted || isFocused
                             ? 'bg-foreground/[0.06] text-foreground'
                             : 'text-foreground/90 hover:bg-foreground/[0.06]'
@@ -323,7 +341,7 @@ export function ThemePicker(): React.JSX.Element | null {
           )}
         </div>
 
-        <footer className="border-t border-border px-3 py-2 text-2xs text-muted-foreground">
+        <footer className="border-t border-border px-3 py-2 text-2xs text-muted-foreground pointer-coarse:hidden">
           Esc cancel · Enter apply
         </footer>
       </section>

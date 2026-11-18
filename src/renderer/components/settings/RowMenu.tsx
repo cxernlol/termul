@@ -23,7 +23,7 @@ export function RowMenu({ label, children }: RowMenuProps): React.JSX.Element {
           size="icon-sm"
           variant="ghost"
           aria-label={label}
-          className="size-7 text-muted-foreground data-[state=open]:bg-foreground/[0.06] data-[state=open]:text-foreground"
+          className="size-7 pointer-coarse:size-11 text-muted-foreground data-[state=open]:bg-foreground/[0.06] data-[state=open]:text-foreground"
         >
           <MoreHorizontal size={14} />
         </Button>

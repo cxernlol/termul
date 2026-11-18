@@ -1,18 +1,29 @@
 import type { BranchInfo } from '@shared/types/worktree.types'
 import { AnimatePresence, motion } from 'framer-motion'
-import { type KeyboardEvent, useCallback, useEffect, useState } from 'react'
+import { type KeyboardEvent, useCallback, useEffect, useId, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { WorktreeCreationCard } from '@/components/chat/WorktreeCreationCard'
 import { AlertTriangle, GitBranch, Link2, Search, Terminal, X } from '@/components/icons'
+import {
+  PHONE_MODAL_BODY_CLASS,
+  PHONE_MODAL_BUTTON_CLASS,
+  PHONE_MODAL_CARD_CLASS,
+  PHONE_MODAL_FOOTER_CLASS,
+  PHONE_MODAL_OVERLAY_CLASS,
+  TOUCH_FIELD_CLASS,
+  TOUCH_HIT_AREA_CLASS
+} from '@/components/phone-modal-classes'
 import { Button } from '@/components/ui/button'
 import { FIELD_FOCUS_CLASS } from '@/components/ui/panel-styles'
 import { Spinner } from '@/components/ui/spinner'
+import { useModalFocus } from '@/components/use-modal-focus'
 import { worktreeApi } from '@/lib/api'
 import { logFrontendError } from '@/lib/log-api'
 import { openTerminalAtCwd } from '@/lib/terminal-spawn'
 import { cn } from '@/lib/utils'
 import { randomUUID } from '@/lib/uuid'
 import { reconcileProjectWorktrees } from '@/lib/worktree-reconciler'
+import { useOverlayRegistration } from '@/stores/overlay-stack-store'
 import { useProjectActions, useProjectStore } from '@/stores/project-store'
 import { useWorktreeProgressStore } from '@/stores/worktree-progress-store'
 import type { Worktree } from '@/types/project'
@@ -27,6 +38,15 @@ export function NewWorktreeModal({ isOpen, onClose, projectId }: NewWorktreeModa
   const project = useProjectStore((state) => state.projects.find((p) => p.id === projectId))
   const isWorktreeOperationLocked = useProjectStore((state) => state.isWorktreeOperationLocked)
   const { setWorktreeOperationLock } = useProjectActions()
+
+  // Mobile web shell: system back closes this modal (inert on desktop).
+  const dialogId = useId()
+  useOverlayRegistration(`new-worktree-modal:${dialogId}`, isOpen && !!project, onClose, {
+    mobileShellOnly: true
+  })
+  const dialogRef = useRef<HTMLDivElement>(null)
+  const nameRef = useRef<HTMLInputElement>(null)
+  useModalFocus(isOpen && !!project, dialogRef, nameRef)
 
   // Form state
   const [branchType, setBranchType] = useState<'existing' | 'new'>('new')
@@ -349,7 +369,13 @@ export function NewWorktreeModal({ isOpen, onClose, projectId }: NewWorktreeModa
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLDivElement>) => {
-      if (e.key === 'Enter' && canProceed && worktreeName.trim()) {
+      // A focused button handles its own Enter (Enter on Cancel must not create).
+      if (
+        e.key === 'Enter' &&
+        canProceed &&
+        worktreeName.trim() &&
+        !(e.target instanceof HTMLButtonElement)
+      ) {
         e.preventDefault()
         void handleCreate()
       } else if (e.key === 'Escape') {
@@ -374,7 +400,7 @@ export function NewWorktreeModal({ isOpen, onClose, projectId }: NewWorktreeModa
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          className="fixed inset-0 bg-overlay/60 backdrop-blur-sm z-50 flex items-center justify-center"
+          className={`fixed inset-0 bg-overlay/60 backdrop-blur-sm z-50 flex items-center justify-center ${PHONE_MODAL_OVERLAY_CLASS}`}
           onClick={onClose}
         >
           <motion.div
@@ -382,48 +408,71 @@ export function NewWorktreeModal({ isOpen, onClose, projectId }: NewWorktreeModa
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.95, y: 10 }}
             transition={{ duration: 0.15 }}
-            className="bg-card rounded-lg shadow-2xl w-[520px] border border-border overflow-hidden"
+            className={`bg-card rounded-lg shadow-2xl max-w-[520px] border border-border overflow-hidden outline-none ${PHONE_MODAL_CARD_CLASS}`}
             onClick={(e) => e.stopPropagation()}
             onKeyDown={handleKeyDown}
+            ref={dialogRef}
+            tabIndex={-1}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby={`${dialogId}-title`}
           >
             {/* Header */}
-            <div className="px-4 py-3 border-b border-border flex justify-between items-center bg-secondary/50">
+            <div className="px-4 py-3 border-b border-border flex justify-between items-center bg-secondary/50 shrink-0">
               <div className="flex items-center gap-2">
                 <GitBranch size={14} className="text-primary" />
-                <h3 className="text-sm font-semibold text-foreground">New Worktree</h3>
+                <h3 id={`${dialogId}-title`} className="text-sm font-semibold text-foreground">
+                  New Worktree
+                </h3>
               </div>
               <button
+                type="button"
                 onClick={onClose}
-                className="text-muted-foreground hover:text-foreground transition-colors"
+                aria-label="Close"
+                className={`text-muted-foreground hover:text-foreground transition-colors ${TOUCH_HIT_AREA_CLASS}`}
               >
                 <X size={14} />
               </button>
             </div>
 
             {/* Content */}
-            <div className="p-4 space-y-4">
+            <div className={`p-4 space-y-4 ${PHONE_MODAL_BODY_CLASS}`}>
               {/* Project name (read-only) */}
               <div>
-                <label className="block text-xs font-medium text-muted-foreground mb-1">
+                <label
+                  htmlFor={`${dialogId}-project`}
+                  className="block text-xs font-medium text-muted-foreground mb-1"
+                >
                   Project
                 </label>
                 <input
+                  id={`${dialogId}-project`}
                   type="text"
                   value={project.name}
                   readOnly
-                  className={`w-full bg-secondary/50 border border-border rounded px-3 py-1.5 text-sm text-muted-foreground cursor-not-allowed ${FIELD_FOCUS_CLASS}`}
+                  className={`w-full bg-secondary/50 border border-border rounded px-3 py-1.5 text-sm text-muted-foreground cursor-not-allowed ${TOUCH_FIELD_CLASS} ${FIELD_FOCUS_CLASS}`}
                 />
               </div>
 
               {/* Worktree name — primary, only required field for the simple path */}
               <div>
-                <label className="block text-xs font-medium text-muted-foreground mb-1">Name</label>
+                <label
+                  htmlFor={`${dialogId}-name`}
+                  className="block text-xs font-medium text-muted-foreground mb-1"
+                >
+                  Name
+                </label>
                 <input
+                  ref={nameRef}
+                  id={`${dialogId}-name`}
                   type="text"
                   value={worktreeName}
                   onChange={(e) => setWorktreeName(e.target.value)}
                   placeholder="e.g. try-new-hero"
-                  className={`w-full bg-secondary border border-border rounded px-3 py-1.5 text-sm text-foreground placeholder-muted-foreground ${FIELD_FOCUS_CLASS}`}
+                  autoCapitalize="off"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  className={`w-full bg-secondary border border-border rounded px-3 py-1.5 text-sm text-foreground placeholder-muted-foreground ${TOUCH_FIELD_CLASS} ${FIELD_FOCUS_CLASS}`}
                 />
                 <p className="text-3xs text-muted-foreground mt-0.5">
                   A separate place to work. Your main project stays untouched.
@@ -434,7 +483,7 @@ export function NewWorktreeModal({ isOpen, onClose, projectId }: NewWorktreeModa
               <button
                 type="button"
                 onClick={() => setShowAdvanced(!showAdvanced)}
-                className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+                className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors pointer-coarse:min-h-11"
                 aria-expanded={showAdvanced}
               >
                 <GitBranch size={12} aria-hidden="true" />
@@ -455,7 +504,7 @@ export function NewWorktreeModal({ isOpen, onClose, projectId }: NewWorktreeModa
                       <button
                         onClick={() => setBranchType('new')}
                         className={cn(
-                          'flex-1 px-3 py-1.5 text-xs font-medium rounded border transition-colors',
+                          'flex-1 px-3 py-1.5 text-xs font-medium rounded border transition-colors pointer-coarse:min-h-11',
                           branchType === 'new'
                             ? 'bg-primary-fill text-primary-foreground border-primary'
                             : 'bg-secondary text-muted-foreground border-border hover:bg-muted'
@@ -466,7 +515,7 @@ export function NewWorktreeModal({ isOpen, onClose, projectId }: NewWorktreeModa
                       <button
                         onClick={() => setBranchType('existing')}
                         className={cn(
-                          'flex-1 px-3 py-1.5 text-xs font-medium rounded border transition-colors',
+                          'flex-1 px-3 py-1.5 text-xs font-medium rounded border transition-colors pointer-coarse:min-h-11',
                           branchType === 'existing'
                             ? 'bg-primary-fill text-primary-foreground border-primary'
                             : 'bg-secondary text-muted-foreground border-border hover:bg-muted'
@@ -501,7 +550,12 @@ export function NewWorktreeModal({ isOpen, onClose, projectId }: NewWorktreeModa
                               value={branchSearch}
                               onChange={(e) => setBranchSearch(e.target.value)}
                               placeholder="Search branches..."
-                              className={`w-full bg-secondary border border-border rounded pl-7 pr-3 py-1 text-xs text-foreground placeholder-muted-foreground ${FIELD_FOCUS_CLASS}`}
+                              aria-label="Search branches"
+                              autoCapitalize="off"
+                              autoCorrect="off"
+                              spellCheck={false}
+                              enterKeyHint="search"
+                              className={`w-full bg-secondary border border-border rounded pl-7 pr-3 py-1 text-xs text-foreground placeholder-muted-foreground ${TOUCH_FIELD_CLASS} ${FIELD_FOCUS_CLASS}`}
                             />
                           </div>
                           {/* Remote toggle */}
@@ -515,7 +569,7 @@ export function NewWorktreeModal({ isOpen, onClose, projectId }: NewWorktreeModa
                             Show remote branches
                           </label>
                           {/* Branch list */}
-                          <div className="max-h-32 overflow-y-auto border border-border rounded bg-secondary/50">
+                          <div className="max-h-32 pointer-coarse:max-h-56 overflow-y-auto overscroll-contain border border-border rounded bg-secondary/50">
                             {sortedBranches.length === 0 ? (
                               <div className="p-2 text-xs text-muted-foreground text-center">
                                 No branches found
@@ -526,7 +580,7 @@ export function NewWorktreeModal({ isOpen, onClose, projectId }: NewWorktreeModa
                                   key={branch.name}
                                   onClick={() => setSelectedBranch(branch.name)}
                                   className={cn(
-                                    'w-full flex items-center px-3 py-1 text-xs transition-colors text-left',
+                                    'w-full flex items-center px-3 py-1 text-xs transition-colors text-left pointer-coarse:min-h-11',
                                     selectedBranch === branch.name
                                       ? 'bg-primary/15 text-foreground'
                                       : 'text-muted-foreground hover:bg-sidebar-accent/50'
@@ -565,7 +619,10 @@ export function NewWorktreeModal({ isOpen, onClose, projectId }: NewWorktreeModa
                           placeholder={
                             worktreeName ? sanitizeBranchName(worktreeName) : 'feature/my-feature'
                           }
-                          className={`w-full bg-secondary border border-border rounded px-3 py-1.5 text-sm text-foreground placeholder-muted-foreground ${FIELD_FOCUS_CLASS}`}
+                          autoCapitalize="off"
+                          autoCorrect="off"
+                          spellCheck={false}
+                          className={`w-full bg-secondary border border-border rounded px-3 py-1.5 text-sm text-foreground placeholder-muted-foreground ${TOUCH_FIELD_CLASS} ${FIELD_FOCUS_CLASS}`}
                         />
                         <p className="text-3xs text-muted-foreground mt-0.5">
                           {newBranchName && sanitizeBranchName(newBranchName) !== newBranchName
@@ -583,7 +640,10 @@ export function NewWorktreeModal({ isOpen, onClose, projectId }: NewWorktreeModa
                           value={startRef}
                           onChange={(e) => setStartRef(e.target.value)}
                           placeholder="HEAD, main, or a commit hash"
-                          className={`w-full bg-secondary border border-border rounded px-3 py-1.5 text-sm text-foreground placeholder-muted-foreground ${FIELD_FOCUS_CLASS}`}
+                          autoCapitalize="off"
+                          autoCorrect="off"
+                          spellCheck={false}
+                          className={`w-full bg-secondary border border-border rounded px-3 py-1.5 text-sm text-foreground placeholder-muted-foreground ${TOUCH_FIELD_CLASS} ${FIELD_FOCUS_CLASS}`}
                         />
                         <p className="text-3xs text-muted-foreground mt-0.5">
                           Defaults to HEAD if not specified
@@ -608,8 +668,10 @@ export function NewWorktreeModal({ isOpen, onClose, projectId }: NewWorktreeModa
               {project.symlinkDirs && project.symlinkDirs.length > 0 && (
                 <div>
                   <button
+                    type="button"
                     onClick={() => setShowSymlinkSection(!showSymlinkSection)}
-                    className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+                    aria-expanded={showSymlinkSection}
+                    className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors pointer-coarse:min-h-11"
                   >
                     <Link2 size={12} />
                     <span>Symlink Directories ({project.symlinkDirs.length})</span>
@@ -674,8 +736,16 @@ export function NewWorktreeModal({ isOpen, onClose, projectId }: NewWorktreeModa
             </div>
 
             {/* Footer */}
-            <div className="px-4 py-3 bg-secondary/50 flex justify-end gap-2 border-t border-border">
-              <Button type="button" variant="ghost" size="sm" onClick={onClose}>
+            <div
+              className={`px-4 py-3 bg-secondary/50 flex justify-end gap-2 border-t border-border ${PHONE_MODAL_FOOTER_CLASS}`}
+            >
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={onClose}
+                className={PHONE_MODAL_BUTTON_CLASS}
+              >
                 Cancel
               </Button>
               <Button
@@ -683,6 +753,7 @@ export function NewWorktreeModal({ isOpen, onClose, projectId }: NewWorktreeModa
                 size="sm"
                 onClick={() => void handleCreate()}
                 disabled={!canProceed || isCreating || !worktreeName.trim()}
+                className={PHONE_MODAL_BUTTON_CLASS}
               >
                 {isCreating ? <Spinner size={12} decorative /> : <Terminal />}
                 {isCreating ? 'Creating...' : 'Create & open'}

@@ -386,7 +386,7 @@ export function SSHFileExplorer({
       </div>
 
       <Dialog open={nameDialog !== null} onOpenChange={(open) => !open && setNameDialog(null)}>
-        <DialogContent className="sm:max-w-sm">
+        <DialogContent className="max-h-[90dvh] overflow-y-auto overscroll-contain sm:max-w-sm">
           <DialogHeader>
             <DialogTitle className="text-base">
               {nameDialog?.kind === 'rename'

@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AttachmentPreviewGroup } from './AttachmentPreviewGroup'
 import type { PendingAttachment } from './chat-attachments'
 
@@ -92,5 +92,65 @@ describe('AttachmentPreviewGroup', () => {
 
     fireEvent.click(removeButton)
     expect(onRemove).not.toHaveBeenCalled()
+  })
+})
+
+function stubPointer(coarse: boolean): void {
+  vi.stubGlobal(
+    'matchMedia',
+    vi.fn((query: string) => ({
+      matches: coarse && query.includes('coarse'),
+      media: query,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      onchange: null,
+      dispatchEvent: () => false
+    }))
+  )
+}
+
+describe('AttachmentPreviewGroup on touch (Paper 10.4, 10.5)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('keeps the remove × visible on a coarse pointer with a 44px hit area; hover-only on a mouse', () => {
+    render(<AttachmentPreviewGroup attachments={[fileAtt]} onRemove={() => {}} />)
+    const remove = screen.getByRole('button', { name: /Remove/ })
+    expect(remove).toHaveClass(
+      'pointer-fine:opacity-0',
+      'pointer-fine:group-hover:opacity-100',
+      'pointer-coarse:absolute',
+      'pointer-coarse:-top-1.5',
+      'pointer-coarse:-right-1.5',
+      'pointer-coarse:rounded-full',
+      'pointer-coarse:after:-inset-3'
+    )
+    expect(remove).not.toHaveClass('opacity-0')
+  })
+
+  it('opens the full-screen preview on a tap and removes from it', () => {
+    stubPointer(true)
+    const onRemove = vi.fn()
+    render(<AttachmentPreviewGroup attachments={[imageAtt, fileAtt]} onRemove={onRemove} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Image' }))
+    const dialog = screen.getByRole('dialog')
+    expect(dialog).toHaveTextContent('Image')
+    expect(dialog).toHaveTextContent('1 of 2 · 1 KB')
+    expect(screen.getByRole('button', { name: 'Close preview' })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Image' }))
+    expect(onRemove).toHaveBeenCalledWith('att-1')
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
+  it('does not open the preview on a mouse click (the hover card stays)', () => {
+    stubPointer(false)
+    render(<AttachmentPreviewGroup attachments={[imageAtt]} onRemove={() => {}} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Image' }))
+    expect(screen.queryByRole('dialog')).toBeNull()
   })
 })

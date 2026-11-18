@@ -459,7 +459,7 @@ export function CustomAcpAgentDialog({
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="sm:max-w-[560px]">
+      <DialogContent className="max-h-[90dvh] overflow-y-auto overscroll-contain sm:max-w-[560px]">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Plus size={18} />

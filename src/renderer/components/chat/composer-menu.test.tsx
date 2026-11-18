@@ -92,10 +92,11 @@ describe('ComposerMenu touch interactions (Story 5.3)', () => {
     const option = screen.getByRole('option', { name: 'Alpha' })
     // jsdom doesn't apply `@container` CSS, so the narrow-pane classes
     // are present by default and the wide-pane variants stay in the class string.
+    // The dense rows need BOTH a wide pane and a mouse, so a large phone keeps 44px.
     expect(option.className).toContain('min-h-11')
     expect(option.className).toContain('py-2.5')
-    expect(option.className).toContain('@[400px]:min-h-8')
-    expect(option.className).toContain('@[400px]:py-1.5')
+    expect(option.className).toContain('@[400px]:pointer-fine:min-h-8')
+    expect(option.className).toContain('@[400px]:pointer-fine:py-1.5')
   })
 
   it('highlights with a foreground wash and marks selection with a check, not a fill', () => {
@@ -118,14 +119,17 @@ describe('ComposerMenu touch interactions (Story 5.3)', () => {
     expect(beta.querySelector('svg')).not.toBeNull()
   })
 
-  it('renders the narrow-pane max-h cap (max-h-[40vh]) for short mobile viewports', () => {
+  it('caps the menu at 40dvh minus the on-screen keyboard for short mobile viewports', () => {
     const onSelect = vi.fn()
     const sections = [makeSection('s1', 'Commands', [makeItem('a', 'Alpha')])]
     const { container } = render(<ComposerMenu sections={sections} onSelect={onSelect} />)
     const listbox = container.querySelector('[role="listbox"]')
     expect(listbox).not.toBeNull()
-    expect(listbox?.className).toContain('max-h-[40vh]')
-    expect(listbox?.className).toContain('@[400px]:max-h-64')
+    expect(listbox?.className).toContain(
+      'max-h-[min(40dvh,calc(100dvh-var(--termul-keyboard-height,0px)-8rem))]'
+    )
+    expect(listbox?.className).toContain('@[400px]:pointer-fine:max-h-64')
+    expect(listbox?.className).toContain('overscroll-contain')
   })
 
   it('preserves forwardRef selectHighlighted imperative API (keyboard path)', () => {

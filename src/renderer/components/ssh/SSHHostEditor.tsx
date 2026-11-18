@@ -116,6 +116,8 @@ function SecretInput({
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
         autoComplete="new-password"
+        autoCapitalize="off"
+        autoCorrect="off"
         spellCheck={false}
         aria-describedby={describedBy}
         className="h-9 pr-9"
@@ -270,7 +272,7 @@ export function SSHHostEditor({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        className="flex max-h-[85vh] flex-col gap-0 p-0 sm:max-w-lg"
+        className="flex max-h-[85dvh] flex-col gap-0 p-0 sm:max-w-lg"
         data-testid="ssh-host-editor"
         onCloseAutoFocus={(e) => {
           const target = returnFocusTo.current
@@ -325,6 +327,8 @@ export function SSHHostEditor({
                   onBlur={() => setValues((prev) => splitAddress(prev, portEdited))}
                   placeholder="example.com or 192.168.1.10"
                   autoComplete="off"
+                  autoCapitalize="off"
+                  autoCorrect="off"
                   spellCheck={false}
                   autoFocus
                   aria-invalid={Boolean(errors.host)}
@@ -370,6 +374,8 @@ export function SSHHostEditor({
                 onChange={(e) => update('username', e.target.value)}
                 placeholder="root"
                 autoComplete="off"
+                autoCapitalize="off"
+                autoCorrect="off"
                 spellCheck={false}
                 aria-invalid={Boolean(errors.username)}
                 aria-describedby={describe('username')}
@@ -454,6 +460,8 @@ export function SSHHostEditor({
                       onChange={(e) => update('privateKeyPath', e.target.value)}
                       placeholder="~/.ssh/id_ed25519"
                       autoComplete="off"
+                      autoCapitalize="off"
+                      autoCorrect="off"
                       spellCheck={false}
                       aria-invalid={Boolean(errors.privateKeyPath || keyIssue)}
                       aria-describedby={fieldId('key-help')}

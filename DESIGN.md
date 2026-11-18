@@ -23,6 +23,7 @@ Need a colour?
 - Only main buttons press (`scale(0.97)`); rows, menu items, chips, tabs and icon buttons answer with their fill.
 - Labels are sentence case with a real "…". Status is a word or icon plus its colour, never colour alone.
 - Every motion has a reduced-motion path.
+- On a touch phone, phone rules win: text is at least 15px (fields 16px), every tap target is at least 44px, every control shows a press state on tap, nothing is reachable only by hover, heights use `dvh`, and bars and sheets clear the safe areas. See the phone text floor in [docs/design/typography.md](docs/design/typography.md).
 
 ## Files
 

@@ -1,15 +1,16 @@
 import { useEffect, useRef, useState } from 'react'
 import { Copy, Edit, Trash2, X } from '@/components/icons'
 import { Input } from '@/components/ui/input'
-import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetHeader,
-  SheetTitle
-} from '@/components/ui/sheet'
+import { MobileSheetContent } from '@/components/ui/mobile-sheet'
+import { Sheet, SheetDescription } from '@/components/ui/sheet'
 import { useOverlayRegistration } from '@/stores/overlay-stack-store'
-import { SHEET_DESTRUCTIVE_DIVIDER_CLASS_NAME, SHEET_ROW_CLASS_NAME } from './mobile-sheet-rows'
+import {
+  focusFirstSheetAction,
+  SHEET_BODY_CLASS_NAME,
+  SHEET_DESTRUCTIVE_DIVIDER_CLASS_NAME,
+  SHEET_DESTRUCTIVE_ROW_CLASS_NAME,
+  SHEET_ROW_CLASS_NAME
+} from './mobile-sheet-rows'
 
 export const MOBILE_RECENTS_ACTIONS_SHEET_ID = 'mobile-recents-actions-sheet'
 
@@ -82,16 +83,14 @@ export function MobileRecentsActionsSheet({
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent
-        side="bottom"
+      <MobileSheetContent
         id={MOBILE_RECENTS_ACTIONS_SHEET_ID}
+        title={title}
+        onOpenAutoFocus={focusFirstSheetAction}
         onCloseAutoFocus={onCloseAutoFocus}
-        className="flex max-h-[85dvh] flex-col gap-0 overflow-y-auto overscroll-contain p-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]"
+        bodyClassName={SHEET_BODY_CLASS_NAME}
       >
-        <SheetHeader className="space-y-0 px-2 py-2 pr-10 text-left">
-          <SheetTitle className="truncate text-base">{title}</SheetTitle>
-          <SheetDescription className="sr-only">Chat actions</SheetDescription>
-        </SheetHeader>
+        <SheetDescription className="sr-only">Chat actions</SheetDescription>
         {onRename &&
           (renaming ? (
             // The edit row is as tall as the action rows, so ending the edit
@@ -119,29 +118,17 @@ export function MobileRecentsActionsSheet({
               />
             </div>
           ) : (
-            <button
-              type="button"
-              className={`${SHEET_ROW_CLASS_NAME} hover:bg-accent`}
-              onClick={startRename}
-            >
+            <button type="button" className={SHEET_ROW_CLASS_NAME} onClick={startRename}>
               <Edit size={16} />
               Rename chat
             </button>
           ))}
-        <button
-          type="button"
-          className={`${SHEET_ROW_CLASS_NAME} hover:bg-accent`}
-          onClick={choose(onCopyReference)}
-        >
+        <button type="button" className={SHEET_ROW_CLASS_NAME} onClick={choose(onCopyReference)}>
           <Copy size={16} />
           Copy chat reference
         </button>
         {onCloseChat && (
-          <button
-            type="button"
-            className={`${SHEET_ROW_CLASS_NAME} hover:bg-accent`}
-            onClick={choose(onCloseChat)}
-          >
+          <button type="button" className={SHEET_ROW_CLASS_NAME} onClick={choose(onCloseChat)}>
             <X size={16} />
             Close chat
           </button>
@@ -150,7 +137,7 @@ export function MobileRecentsActionsSheet({
           <div className={SHEET_DESTRUCTIVE_DIVIDER_CLASS_NAME}>
             <button
               type="button"
-              className={`${SHEET_ROW_CLASS_NAME} text-destructive hover:bg-destructive/10`}
+              className={SHEET_DESTRUCTIVE_ROW_CLASS_NAME}
               onClick={choose(onDeleteChat)}
             >
               <Trash2 size={16} />
@@ -158,7 +145,7 @@ export function MobileRecentsActionsSheet({
             </button>
           </div>
         )}
-      </SheetContent>
+      </MobileSheetContent>
     </Sheet>
   )
 }

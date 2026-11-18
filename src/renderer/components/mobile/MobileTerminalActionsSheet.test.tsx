@@ -62,12 +62,14 @@ describe('MobileTerminalActionsSheet', () => {
     const dialog = await screen.findByRole('dialog')
     expect(dialog.id).toBe('mobile-terminal-actions-sheet')
     expect(dialog).toHaveAccessibleName('zsh — dev server')
-    const cls = dialog.className
-    expect(cls).toContain('rounded-t-xl')
-    expect(cls).toContain('max-h-[85dvh]')
-    expect(cls).toContain('overflow-y-auto')
-    expect(cls).toContain('overscroll-contain')
-    expect(cls).toContain('pb-[max(0.5rem,env(safe-area-inset-bottom))]')
+    // The phone sheet (MobileSheetContent): grab handle, 85dvh cap, and a
+    // scrolling body that holds the home-indicator inset.
+    expect(dialog.className).toContain('max-h-[85dvh]')
+    expect(screen.getByRole('button', { name: 'Close' })).toBeInTheDocument()
+    const body = screen.getByRole('button', { name: 'Rename terminal' }).parentElement
+    expect(body?.className).toContain('overflow-y-auto')
+    expect(body?.className).toContain('overscroll-contain')
+    expect(body?.className).toContain('pb-[max(0.5rem,env(safe-area-inset-bottom))]')
   })
 
   it('lists rename, restart, history and a destructive close, each at 44px', async () => {
@@ -78,8 +80,7 @@ describe('MobileTerminalActionsSheet', () => {
       'Rename terminal',
       'Restart terminal',
       'Command history',
-      'Close terminal',
-      'Close'
+      'Close terminal'
     ])
     for (const name of ['Rename terminal', 'Restart terminal', 'Command history']) {
       const row = screen.getByRole('button', { name })
@@ -104,8 +105,7 @@ describe('MobileTerminalActionsSheet', () => {
         'Files',
         'Command palette',
         'Project settings',
-        'Close terminal',
-        'Close'
+        'Close terminal'
       ])
     })
 
@@ -205,8 +205,7 @@ describe('MobileTerminalActionsSheet', () => {
         'Rename terminal',
         'Restart terminal',
         'Command history',
-        'Close terminal',
-        'Close'
+        'Close terminal'
       ])
     })
 
@@ -291,7 +290,7 @@ describe('MobileTerminalActionsSheet', () => {
       })
       await screen.findByRole('dialog')
 
-      expect(rowLabels()).toEqual(['Close terminal', 'Close'])
+      expect(rowLabels()).toEqual(['Close terminal'])
     })
 
     it('omits Close terminal when it cannot be closed', async () => {

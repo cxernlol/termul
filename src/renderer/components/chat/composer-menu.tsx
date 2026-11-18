@@ -80,6 +80,15 @@ interface FlatRow {
 const COMPOSER_MENU_SHELL_CLASS =
   'absolute bottom-full left-2 right-2 mb-1 rounded-xl border bg-popover p-1 text-popover-foreground shadow-md'
 
+/**
+ * Menu height cap. Touch: 40% of the visible height, and never taller than the
+ * space the on-screen keyboard leaves above the composer (iOS does not shrink
+ * `dvh` for the keyboard, so its height comes off by hand). A mouse on a wide
+ * pane keeps the desktop 16rem.
+ */
+const COMPOSER_MENU_MAX_H_CLASS =
+  'max-h-[min(40dvh,calc(100dvh-var(--termul-keyboard-height,0px)-8rem))] @[400px]:pointer-fine:max-h-64'
+
 const PANEL_ENTER_CLASS: Record<ComposerMenuPanel['enter'], string | null> = {
   forward: 'animate-panel-forward motion-reduce:animate-none',
   back: 'animate-panel-back motion-reduce:animate-none',
@@ -209,14 +218,15 @@ export const ComposerMenu = forwardRef<ComposerMenuHandle, ComposerMenuProps>(
               onMouseEnter={() => setHighlight(rowIdx)}
               className={cn(
                 // Story 5.3 (T4.1): raise the touch hit-target height on
-                // narrow panes (mobile) to ≥44px. The `@[400px]:` variant
-                // restores `py-1.5` on wider panes (desktop
-                // non-regression). Pure CSS variant — no JS two-branch
+                // narrow panes and touch screens to ≥44px. The
+                // `@[400px]:pointer-fine:` variant restores `py-1.5` for a
+                // mouse on a wider pane (desktop non-regression), so a large
+                // phone keeps 44px rows. Pure CSS variant — no JS two-branch
                 // render (Story 5.1 threshold-remount lesson).
                 // Rows are rounded-lg (8px), concentric with the
                 // rounded-xl (12px) shell and its 4px padding.
                 MENU_OPTION_ROW_CLASS,
-                'min-h-11 py-2.5 @[400px]:min-h-8 @[400px]:py-1.5',
+                'min-h-11 py-2.5 @[400px]:pointer-fine:min-h-8 @[400px]:pointer-fine:py-1.5',
                 item.wrap ? 'flex-wrap items-start' : 'items-center',
                 isHighlighted && MENU_ACTIVE_ROW_CLASS,
                 item.dimmed && 'text-disabled-foreground'
@@ -272,7 +282,7 @@ export const ComposerMenu = forwardRef<ComposerMenuHandle, ComposerMenuProps>(
                 ref={listRef}
                 id={listboxId}
                 role="listbox"
-                className="max-h-[40vh] overflow-y-auto @[400px]:max-h-64"
+                className={cn(COMPOSER_MENU_MAX_H_CLASS, 'overflow-y-auto overscroll-contain')}
               >
                 {rows}
               </div>
@@ -295,12 +305,13 @@ export const ComposerMenu = forwardRef<ComposerMenuHandle, ComposerMenuProps>(
         ref={listRef}
         id={listboxId}
         role="listbox"
-        // Story 5.3 (T4.3): cap the menu height on short mobile viewports with
-        // OSK. The default `max-h-64` (16rem) is fine on desktop; on a narrow
-        // pane (mobile), use `max-h-[40vh]` so a long slash list doesn't push
-        // above the top of the visible viewport. The `@[400px]:` variant
-        // restores `max-h-64` on wider panes (desktop non-regression).
-        className={cn(COMPOSER_MENU_SHELL_CLASS, 'max-h-[40vh] overflow-y-auto @[400px]:max-h-64')}
+        // Story 5.3 (T4.3): cap the menu height so a long slash list never
+        // pushes above the visible viewport. See COMPOSER_MENU_MAX_H_CLASS.
+        className={cn(
+          COMPOSER_MENU_SHELL_CLASS,
+          COMPOSER_MENU_MAX_H_CLASS,
+          'overflow-y-auto overscroll-contain'
+        )}
       >
         {rows}
       </div>

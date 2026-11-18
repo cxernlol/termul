@@ -5,6 +5,14 @@ import {
   requestExternalLinkOpen
 } from '@/components/external-link/ExternalLinkConfirm'
 import { ExternalLink, Sparkles, X } from '@/components/icons'
+import {
+  PHONE_MODAL_BODY_CLASS,
+  PHONE_MODAL_BUTTON_CLASS,
+  PHONE_MODAL_CARD_CLASS,
+  PHONE_MODAL_FOOTER_CLASS,
+  PHONE_MODAL_OVERLAY_CLASS,
+  TOUCH_HIT_AREA_CLASS
+} from '@/components/phone-modal-classes'
 import { Button } from '@/components/ui/button'
 import { renderChatMarkdown } from '@/lib/chat-markdown'
 import { useOverlayRegistration } from '@/stores/overlay-stack-store'
@@ -78,7 +86,7 @@ export function WhatsNewModal({
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          className="fixed inset-0 bg-overlay/60 backdrop-blur-sm z-50 flex items-center justify-center"
+          className={`fixed inset-0 bg-overlay/60 backdrop-blur-sm z-50 flex items-center justify-center ${PHONE_MODAL_OVERLAY_CLASS}`}
           onClick={onClose}
         >
           <motion.div
@@ -86,7 +94,7 @@ export function WhatsNewModal({
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.95, y: 10 }}
             transition={{ duration: 0.15 }}
-            className="bg-card rounded-lg shadow-2xl w-[500px] border border-border overflow-hidden"
+            className={`bg-card rounded-lg shadow-2xl max-w-[500px] border border-border overflow-hidden ${PHONE_MODAL_CARD_CLASS}`}
             onClick={(e) => e.stopPropagation()}
             onKeyDown={handleKeyDown}
             role="dialog"
@@ -95,7 +103,7 @@ export function WhatsNewModal({
             tabIndex={-1}
           >
             {/* Header */}
-            <div className="px-4 py-3 border-b border-border flex justify-between items-center bg-secondary/50">
+            <div className="px-4 py-3 border-b border-border flex justify-between items-center bg-secondary/50 shrink-0">
               <div className="flex items-center gap-2">
                 <div className="w-5 h-5 rounded bg-primary/10 flex items-center justify-center">
                   <Sparkles className="w-3 h-3 text-primary" />
@@ -107,14 +115,15 @@ export function WhatsNewModal({
               <button
                 type="button"
                 onClick={onClose}
-                className="text-muted-foreground hover:text-foreground transition-colors"
+                aria-label="Close"
+                className={`text-muted-foreground hover:text-foreground transition-colors ${TOUCH_HIT_AREA_CLASS}`}
               >
                 <X size={14} />
               </button>
             </div>
 
             {/* Content */}
-            <div className="p-4 space-y-4">
+            <div className={`p-4 space-y-4 ${PHONE_MODAL_BODY_CLASS}`}>
               {/* Version Info */}
               <div className="flex items-baseline gap-2">
                 <span className="text-xs font-medium text-muted-foreground">
@@ -128,7 +137,8 @@ export function WhatsNewModal({
                 <span className="block text-xs font-medium text-muted-foreground mb-1.5">
                   Release Notes
                 </span>
-                <div className="max-h-[320px] overflow-y-auto pr-1">
+                {/* Phone: the whole body scrolls, so the notes do not nest a second scroller. */}
+                <div className="max-h-[320px] overflow-y-auto overscroll-contain pr-1 max-sm:max-h-none max-sm:overflow-visible">
                   {notesHtml ? (
                     // biome-ignore lint/a11y/noStaticElementInteractions: link clicks are delegated from sanitized HTML; Enter on a focused link fires click
                     // biome-ignore lint/a11y/useKeyWithClickEvents: link clicks are delegated from sanitized HTML; Enter on a focused link fires click
@@ -150,14 +160,27 @@ export function WhatsNewModal({
             </div>
 
             {/* Footer */}
-            <div className="px-4 py-3 bg-secondary/50 flex justify-end gap-2 border-t border-border flex-wrap">
+            <div
+              className={`px-4 py-3 bg-secondary/50 flex justify-end gap-2 border-t border-border flex-wrap ${PHONE_MODAL_FOOTER_CLASS}`}
+            >
               {htmlUrl && (
-                <Button type="button" variant="ghost" size="sm" onClick={handleViewOnGitHub}>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={handleViewOnGitHub}
+                  className={PHONE_MODAL_BUTTON_CLASS}
+                >
                   <ExternalLink />
                   View on GitHub
                 </Button>
               )}
-              <Button type="button" size="sm" onClick={onClose}>
+              <Button
+                type="button"
+                size="sm"
+                onClick={onClose}
+                className={PHONE_MODAL_BUTTON_CLASS}
+              >
                 Got it
               </Button>
             </div>

@@ -80,7 +80,7 @@ export function AddAccountDialogShell<A extends NamedAccount>({
         else if (!locked) cancelRef.current()
       }}
     >
-      <DialogContent className="gap-5 sm:max-w-[400px]">
+      <DialogContent className="max-h-[90dvh] gap-5 overflow-y-auto overscroll-contain sm:max-w-[400px]">
         <AddAccountFlow
           {...flow}
           setLocked={setLocked}

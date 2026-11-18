@@ -61,9 +61,12 @@ export function WebTokenGateScreen(): React.JSX.Element {
   }
 
   return (
-    <div className="flex h-screen flex-col items-center justify-center overflow-hidden bg-background px-6">
+    // `h-dvh` + its own scroller: the page root does not scroll, so with the
+    // on-screen keyboard open the Continue button must stay reachable here.
+    // `my-auto` centres the form and still lets it scroll when it does not fit.
+    <div className="flex h-dvh flex-col items-center overflow-y-auto overscroll-contain bg-background px-6 pt-[max(1.5rem,env(safe-area-inset-top))] pb-[max(1.5rem,env(safe-area-inset-bottom))]">
       <form
-        className="flex w-full max-w-sm flex-col gap-4"
+        className="my-auto flex w-full max-w-sm flex-col gap-4"
         onSubmit={(event) => {
           void handleSubmit(event)
         }}
@@ -78,9 +81,13 @@ export function WebTokenGateScreen(): React.JSX.Element {
         </div>
         <Input
           type="password"
+          name="access-token"
           value={token}
           autoComplete="off"
+          autoCapitalize="off"
+          autoCorrect="off"
           spellCheck={false}
+          enterKeyHint="go"
           aria-label="Access token"
           placeholder="Paste token"
           onChange={(e) => setToken(e.target.value)}
@@ -91,7 +98,11 @@ export function WebTokenGateScreen(): React.JSX.Element {
             {error}
           </p>
         ) : null}
-        <Button type="submit" disabled={gate.submitting || gate.status === 'checking'}>
+        <Button
+          type="submit"
+          disabled={gate.submitting || gate.status === 'checking'}
+          className="pointer-coarse:h-11"
+        >
           {gate.submitting ? <Spinner size={16} decorative className="mr-2" /> : null}
           {gate.submitting ? 'Verifying…' : 'Continue'}
         </Button>

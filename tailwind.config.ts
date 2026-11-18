@@ -136,9 +136,11 @@ export default {
         // 12px floor for dense chrome (badges, chips, path labels). Three role
         // names share one size so existing call sites stay put. Size-only
         // (no [size, lineHeight] tuple) so existing `leading-*` still wins.
-        '2xs': '0.75rem', // 12px
-        '3xs': '0.75rem', // 12px
-        '4xs': '0.75rem', // 12px
+        // The value is a variable so the phone text floor in `index.css`
+        // can lift it to 15px on a touch phone.
+        '2xs': 'var(--font-size-micro)', // 12px
+        '3xs': 'var(--font-size-micro)', // 12px
+        '4xs': 'var(--font-size-micro)', // 12px
         // The start screen's one display line ("What should we do in …?",
         // Paper 2.2). Nothing else uses it.
         hero: '1.375rem' // 22px

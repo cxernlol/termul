@@ -1,14 +1,14 @@
+import { useId } from 'react'
 import { RefreshCw, X } from '@/components/icons'
+import { MobileSheetContent } from '@/components/ui/mobile-sheet'
+import { Sheet, SheetDescription } from '@/components/ui/sheet'
 import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetHeader,
-  SheetTitle
-} from '@/components/ui/sheet'
-import {
+  focusFirstSheetAction,
+  SHEET_BODY_CLASS_NAME,
   SHEET_DESTRUCTIVE_DIVIDER_CLASS_NAME,
+  SHEET_DESTRUCTIVE_ROW_CLASS_NAME,
   SHEET_ROW_CLASS_NAME,
+  SHEET_SUBTITLE_CLASS_NAME,
   type ShellNavigationActions,
   visibleNavigationRows
 } from './mobile-sheet-rows'
@@ -66,28 +66,21 @@ export function MobileHeaderMoreSheet({
 
   // Each row renders only when its callback is given.
   const visibleRows = visibleNavigationRows(navigation)
+  const reloadReasonId = useId()
+  const showReloadReason = reloadChatDisabled && Boolean(reloadChatReason)
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent
-        side="bottom"
+      <MobileSheetContent
         id={MOBILE_HEADER_MORE_SHEET_ID}
+        title={title}
+        onOpenAutoFocus={focusFirstSheetAction}
         onCloseAutoFocus={onCloseAutoFocus}
-        className="flex max-h-[85dvh] flex-col gap-0 overflow-y-auto overscroll-contain p-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]"
+        bodyClassName={SHEET_BODY_CLASS_NAME}
       >
-        <SheetHeader className="space-y-0 px-2 py-2 pr-10 text-left">
-          <SheetTitle className="truncate text-base">{title}</SheetTitle>
-          <SheetDescription className="truncate text-xs text-muted-foreground">
-            {subtitle}
-          </SheetDescription>
-        </SheetHeader>
+        <SheetDescription className={SHEET_SUBTITLE_CLASS_NAME}>{subtitle}</SheetDescription>
         {visibleRows.map(({ label, Icon, run }) => (
-          <button
-            key={label}
-            type="button"
-            className={`${SHEET_ROW_CLASS_NAME} hover:bg-accent`}
-            onClick={choose(run)}
-          >
+          <button key={label} type="button" className={SHEET_ROW_CLASS_NAME} onClick={choose(run)}>
             <Icon size={16} />
             {label}
           </button>
@@ -95,13 +88,24 @@ export function MobileHeaderMoreSheet({
         {onReloadChat && (
           <button
             type="button"
-            className={`${SHEET_ROW_CLASS_NAME} hover:bg-accent disabled:opacity-70`}
+            className={`${SHEET_ROW_CLASS_NAME} py-2 disabled:opacity-70`}
             onClick={choose(onReloadChat)}
             disabled={reloadChatDisabled}
-            title={reloadChatDisabled ? (reloadChatReason ?? undefined) : undefined}
+            // The name is the label alone; the visible reason is its description.
+            aria-label="Reload this chat"
+            aria-describedby={showReloadReason ? reloadReasonId : undefined}
           >
-            <RefreshCw size={16} />
-            Reload this chat
+            <RefreshCw size={16} className="shrink-0" />
+            {/* A touch has no hover, so the reason the row is disabled shows as
+                text under its label instead of in a `title` tooltip. */}
+            <span className="flex min-w-0 flex-col text-left">
+              <span>Reload this chat</span>
+              {showReloadReason && (
+                <span id={reloadReasonId} className="text-xs text-muted-foreground">
+                  {reloadChatReason}
+                </span>
+              )}
+            </span>
           </button>
         )}
         {onCloseChat && (
@@ -110,7 +114,7 @@ export function MobileHeaderMoreSheet({
           >
             <button
               type="button"
-              className={`${SHEET_ROW_CLASS_NAME} text-destructive hover:bg-destructive/10`}
+              className={SHEET_DESTRUCTIVE_ROW_CLASS_NAME}
               onClick={choose(onCloseChat)}
             >
               <X size={16} />
@@ -124,7 +128,7 @@ export function MobileHeaderMoreSheet({
           >
             <button
               type="button"
-              className={`${SHEET_ROW_CLASS_NAME} text-destructive hover:bg-destructive/10`}
+              className={SHEET_DESTRUCTIVE_ROW_CLASS_NAME}
               onClick={choose(onCloseTab)}
             >
               <X size={16} />
@@ -132,7 +136,7 @@ export function MobileHeaderMoreSheet({
             </button>
           </div>
         )}
-      </SheetContent>
+      </MobileSheetContent>
     </Sheet>
   )
 }
