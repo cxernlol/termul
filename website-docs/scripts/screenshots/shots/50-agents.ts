@@ -252,7 +252,7 @@ export const shots: Shot[] = [
     run: async (page) => {
       await setup(page)
       await startChat(page, 'Try a discount argument for cartTotal', 5_000)
-      await page.getByRole('button', { name: 'Expand changed files' }).click()
+      await page.getByRole('button', { name: /^Changes:/ }).click()
       await page.waitForTimeout(500)
       return pane(page)
     }
@@ -325,7 +325,7 @@ export const shots: Shot[] = [
       await send(page, 'Then write release notes', 800)
       await page.getByText('Then update the roadmap').hover()
       await page
-        .getByRole('button', { name: /^Send now/ })
+        .getByRole('button', { name: /^Steer/ })
         .first()
         .waitFor()
       return pane(page)

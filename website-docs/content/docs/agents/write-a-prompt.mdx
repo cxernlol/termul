@@ -5,6 +5,15 @@ description: Choose a model and a mode, use slash commands and mentions of files
 
 The message box at the bottom of a chat is where you talk to the agent. Besides text, it holds the controls for the model, how much the agent may do on its own, and what you send along with your words. The launcher uses the same box, so everything on this page works there too.
 
+In the desktop app and in a desktop browser, the box has these parts:
+
+- The text field, with the [context ring](#check-how-much-context-is-left) at its top right.
+- Under the text, on the left: the **+** button (**Add to chat**), the mode button, and for Claude Agent and Codex chats the account button. See [Claude accounts](/docs/agent-setup/claude-accounts).
+- Under the text, on the right: the model button and the send arrow.
+- A row below the box. On the left it shows where the agent works. In a new chat you choose it there, see [Choose where the agent works](/docs/agents/start-a-chat#choose-where-the-agent-works). On the right, **Connectors** shows the MCP servers the chat gets, see [MCP servers](/docs/agent-setup/mcp-servers#choose-servers-for-a-new-chat).
+
+The **+** menu has **Add files**, **Mention** (the same as typing `@`), **Slash commands** (the same as typing `/`), and **Troupe tools**, which puts one of Troupe's own tools in your message for the agent to use. On a phone, the box is more compact, and the **+** button opens a sheet.
+
 ## Send and add lines
 
 - Press `Enter` to send. `Ctrl+Enter` (`Cmd+Enter` on macOS) also sends.
@@ -14,9 +23,9 @@ If the agent is still working when you send, Troupe queues your message and send
 
 ## Change the model, effort, and fast mode
 
-Click the model button. It sits to the left of the mode button and shows the current model, followed by the effort level when the agent has one. The model panel opens with the cursor in its search field.
+Click the model button. It sits to the left of the send arrow and shows the current model, followed by the effort level when the agent has one. The model panel opens with the cursor in its search field.
 
-- Click a model in the list to switch to it. A check mark shows the current model.
+- Click a model in the list to switch to it. The current model's row is highlighted.
 - Type in the search field to filter models and agents by name. The number of matches shows at the end of the field. Press Enter to pick the first match. When nothing matches, Enter does nothing.
 - Use the up and down arrow keys to move through the list, and Enter to pick a model.
 
@@ -34,11 +43,11 @@ Hover over a model and click its star to add it to **Favorites**. Favorites appe
 
 ## Choose how much the agent may do
 
-The mode button sits between the model button and the send arrow. A mode controls whether the agent asks you before it edits files or runs commands. Each agent has its own list of modes. Troupe sorts them into groups so you can see how much each one allows:
+The mode button sits right of the **+** button and shows the name of the current mode. For Claude Agent, the default mode reads **Ask first**. A mode controls whether the agent asks you before it edits files or runs commands. Each agent has its own list of modes. Troupe sorts them into groups so you can see how much each one allows:
 
 - **Ask first**. The agent asks before it edits files or runs commands, or it only reads and plans. Pick these when you want to check each step.
 - **Let _agent_ act**, where _agent_ is the agent's name. The agent edits files, and sometimes runs commands, without asking first. Pick these for routine work you will review afterwards.
-- **Use with care**. The agent does everything without asking, including commands that can delete files or push code. These modes sit at the bottom of the menu, under a line. They have a yellow icon, and their description ends with "Use with care." While one is on, the icon on the mode button is yellow too.
+- **Use with care**. The agent does everything without asking, including commands that can delete files or push code. These modes sit at the bottom of the menu, under a line. They have a yellow icon, and their description ends with "Use with care." While one is on, the mode button is yellow too.
 
 Modes that Troupe does not recognize are listed under **Other modes**. Read their descriptions in the menu. Troupe shows the group names only when the agent's modes fall into more than one group.
 
@@ -86,7 +95,7 @@ Press `Esc` to close the menu and keep what you typed.
 
 You can attach text files, code files, and images. To attach a file, use one of these:
 
-- Click **Attach files** (the paperclip) and choose files.
+- Click **+** (**Add to chat**), choose **Add files**, and choose files. When the agent accepts images, the item reads **Add files or photos**.
 - Drag files onto the box. The box shows "Drop files to attach".
 - Paste an image or a screenshot.
 
@@ -98,14 +107,14 @@ Other file types, such as PDFs, are not supported. Troupe shows "Unsupported fil
 
 Files that you drag in or paste, and every file you attach in a browser, go into the message itself. These limits apply to them:
 
-- A text or code file can be up to 512 KB. The agent must accept files in a message. If it does not, Troupe asks you to use the paperclip instead, in the desktop app.
+- A text or code file can be up to 512 KB. The agent must accept files in a message. If it does not, Troupe asks you to pick the file with **Add files** instead, in the desktop app.
 - An image can be up to 10 MB when the agent accepts images.
 - In a browser, the agent must accept images. If it does not, Troupe shows "This agent can't accept images in the browser".
 - In the desktop app, an image for an agent that does not accept images is saved to a temporary file. The agent gets its path.
 
 A file over the limit shows "File too large".
 
-In the desktop app, text and code files that you pick with the paperclip are sent as paths. The agent reads them from disk. Images you pick go into the message when the agent accepts images, and are sent as paths when it does not.
+In the desktop app, text and code files that you pick with **Add files** are sent as paths. The agent reads them from disk. Images you pick go into the message when the agent accepts images, and are sent as paths when it does not.
 
 ## Check how much context is left
 

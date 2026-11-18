@@ -13,6 +13,8 @@ Many agents write a plan before they start. The plan stays at the top of the cha
 
 Each task has a status icon and a priority: **High**, **Medium**, or **Low**. Finished tasks are crossed out. Click a task that has details to read them. Click the header to collapse or expand the plan. On a phone, the plan starts collapsed.
 
+A chat has one plan. When the agent updates a task, the plan changes in place. When the agent writes a new plan, it takes the place of the old one and opens. When every task is done or cancelled, the plan collapses. Click the header to open it again. The plan does not show up a second time inside the agent's reply. When a turn ends, a task that was still in progress goes back to waiting, so no spinner keeps turning.
+
 ## See each step
 
 While the agent works, a **Working…** row sits above its reply. When the turn ends, the row changes to **Worked for** and the time it took, with the number of lines added and removed. Click the row to open it. If a step failed, the row is red and says "needs attention".
@@ -28,13 +30,29 @@ Inside, the steps are grouped, for example "Read 1 file, ran 1 search". Click a 
 
 ## Review changed files
 
-When the agent edited, deleted, or moved files in this chat, a status pill shows at the top right of the chat. It shows how many files changed and how many subagents there are. In a wide chat it also shows how many lines were added and removed and how many subagents are running or have ended. On a phone or in a narrow pane it shows only the totals, so open the list for the details. Click the pill to open the list. In a Git repository, the list shows the files that this chat's edit, delete, and move steps touched and that are still uncommitted, under the caption "Edited this session, uncommitted". Files you commit or discard drop out of the list. A file that only you, a terminal, or another chat changed is not listed. For a file this chat did change, the row and its line counts include all its uncommitted changes, also ones made outside this chat. A file the agent changed only through a shell command, for example a formatter, is not listed either. The **Changes** tab in the side panel still shows it. When the pill has more than one kind of item, the list has a tab for each kind: **Changed files**, **Subagents**, and **Background**. On a phone the list opens as a sheet, and you can swipe between the tabs.
+When the agent changed files, started subagents, or left commands running, a small status bar floats at the top right of the chat. It has one part for each kind of activity, in this order: subagents, background commands, and changed files. Each part shows an icon and a count, and shows only while it has something to list. Hover a part to see what it counts, for example "3 changed files".
 
-The picture below was taken when the list was a bar above the message box. The list itself is the same.
+A part can also show a mark:
+
+- A spinner while a subagent or a background command runs.
+- A red dot when a subagent failed, or when Troupe could not read the Git status of the folder.
+- A blue dot on the changed files part when files changed since you last looked. It goes away when you open the list, or when the **Changes** panel shows the folder.
+
+Click a part to open its list to the left of the bar. Only one list is open at a time. Click the part again or press `Esc` to close it. On a phone the list opens as a sheet from the bottom.
+
+Open the changed files part to see the files this chat changed. In a Git repository, the list shows the files that this chat's edit, delete, and move steps touched and that are still uncommitted. Its header says how many, for example "This chat · 3 files, not committed", with the lines added and removed. Files you commit or discard drop out of the list. A file that only you, a terminal, or another chat changed is not listed. For a file this chat did change, the row and its line counts include all its uncommitted changes, also ones made outside this chat. A file the agent changed only through a shell command, for example a formatter, is not listed either. The **Changes** panel still shows it. Outside a Git repository, the list shows every file this chat touched, for example "This chat · 3 files edited".
 
 ![The opened Changed files list shows cart.ts in the src folder, marked M, with 3 lines added and 2 removed.](/screenshots/agents-changed-files.png)
 
-Each file has a letter: **M** for modified, **D** for deleted, or **R** for renamed. Click a file to open it in the editor. A deleted file does not open. This list is for review only. To stage and commit the changes, use the **Changes** tab in the side panel. See [Git](/docs/git).
+The picture above was taken before the status bar moved to the top right of the chat. The rows now show a file icon instead of a letter.
+
+Each row shows the file name, its folder, and how many lines were added and removed. A renamed file shows **Renamed**. Click a file to open it in the editor. A deleted file does not open.
+
+The list shows the first 4 files. Click **Show N more**, or **Open in Git**, to open the **Changes** panel on the right with all of them. On a phone this opens the Git sheet. To stage and commit the changes, use the **Changes** panel. See [Git](/docs/git).
+
+To throw away this chat's changes, click **Discard all**. Troupe asks first, because new files are deleted and unstaged edits in these files go too, also your own. Staged changes stay. Click **Discard N files** to confirm, or **Cancel**. You can't undo a discard. **Discard all** is off while the agent works. It is not shown outside a Git repository, or when the server does not accept changes from your device.
+
+A [quick chat](/docs/agents/start-a-chat#start-a-quick-chat) has no changed files part, because it has no project.
 
 ## Follow subagents
 
@@ -56,13 +74,13 @@ To stop one subagent and leave the others running, click **Stop** in its panel. 
 
 ### Subagents that run in the background
 
-An agent can end its turn while subagents it started keep working in the background. The chat then keeps those subagents as running. The [status pill](#review-changed-files) shows "Waiting on N background subagents" in its hover tooltip, and the opened list shows it above the subagent rows. While they run, Troupe does not switch the agent or the Claude account of the chat, because that would stop them.
+An agent can end its turn while subagents it started keep working in the background. The chat then keeps those subagents as running. When you hover the subagents part of the [status bar](#review-changed-files), its text ends with "waiting on N background subagents". Its opened list shows "Waiting on N background subagents" above the subagent rows. While they run, Troupe does not switch the agent or the Claude account of the chat, because that would stop them.
 
 ## Commands that run in the background
 
 An agent can end its turn while a command it started keeps running. For example, Claude Code can run a command in the background, and Codex can leave a shell command running when it ends its turn. The step of that command reads **Running in background** with a timer that counts up until the command ends.
 
-The [status pill](#review-changed-files) also shows these commands. In a wide chat it shows how many are running and how many have ended, and on hover it shows "1 command running in the background". On a phone or in a narrow pane it shows only the total. Open the list to see each command, its state, and how long it ran. When the list has tabs, the commands are on the **Background** tab. Click a row to go to the step of that command in the chat and open its output.
+The background commands part of the [status bar](#review-changed-files) lists these commands. It shows how many commands there are, with a spinner while one runs. Click it to see each command, its state, and how long it ran. The list header says how many are running and how many have ended, for example "1 running, 2 ended". Click a row to go to the step of that command in the chat and open its output.
 
 The agent gets the result of each command when the command ends. An ended command stays in the list until you send your next message. You can keep chatting while a command runs. Troupe does not switch the agent or the Claude account of the chat while a command runs, because that would stop the command. The one exception is a chat that hit a usage limit and continues on another Claude account: it continues at once and stops its commands. **Reload this chat** also stops it, so Troupe asks you to confirm the reload first. When you close the chat, its commands leave the list.
 
@@ -91,16 +109,17 @@ A video can be up to 100 MB. If a video is too large or cannot be read, Troupe s
 
 ## Queue prompts
 
-You do not have to wait for the agent to finish. Type your next message and press `Enter`. While the agent works, the send button becomes **Queue message**, and your message goes into a queue above the message box.
+You do not have to wait for the agent to finish. Type your next message and press `Enter`. While the agent works, the send button becomes **Queue message**, and your message goes into a queue at the top of the message box.
 
-![Two queued messages above the message box while the agent runs tests. The first message shows the Send now and Remove from queue buttons.](/screenshots/agents-queue.png)
+Troupe sends the queued messages in order, from top to bottom, one each time the agent finishes a turn. The queue header shows how many messages wait, for example **2 queued**. Click it to collapse or expand the list. On a phone the list starts collapsed. Click the **×** button in the header (**Clear queue**) to remove all queued messages.
 
-Troupe sends the queued messages in order, one each time the agent finishes a turn. Click the **Queued** header to collapse the list. Hover a queued message to see its buttons. On a touch screen, the buttons are always visible. Each queued message has these buttons:
+Hover a queued message to see its buttons. On a touch screen, the buttons are always visible. Each queued message has these buttons:
 
-- **Send now** stops the agent's current turn and sends this message right away.
-- **Remove from queue** deletes the message without sending it.
+- **Steer** stops the agent's current turn and sends this message right away.
+- **Edit** takes the message out of the queue and puts its text in the message box, after anything you already typed there. A message with files or images has no **Edit** button.
+- **Remove from queue**, the trash button, deletes the message without sending it.
 
-You cannot edit a queued message. Remove it and type it again.
+To change the order, drag a message by its handle on the left. You can also focus the handle and press the up and down arrow keys. Troupe announces the new place, for example "Moved to place 1 of 3". The handle shows when two or more messages wait.
 
 ### When the agent works after its turn
 
@@ -127,7 +146,7 @@ Hover a message to see its buttons. The last message in the chat always shows th
 
 ![Your message, "Try a discount parameter on cartTotal", with the Edit and Copy buttons below it.](/screenshots/agents-message-actions.png)
 
-If the chat stopped, **Retry** starts the agent again before it sends your message. When a turn ends with an error, the error notice has its own **Retry** or **Resume chat** button.
+If the chat stopped, **Retry** starts the agent again before it sends your message. When a turn ends with an error, a notice at the top of the message box says "The last turn did not finish." and shows the error. It can have its own **Retry** or **Resume chat** button. When the error has a code or data, click **Details** to see them. Click the **×** button to dismiss the notice.
 
 Code blocks in a reply have their own **Copy** and **Download** buttons. Tables have copy, download, and **View fullscreen** buttons.
 
