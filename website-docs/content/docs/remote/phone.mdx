@@ -15,6 +15,8 @@ To make changes from your phone, the phone must be allowed to. A link shared fro
 
 ![A chat on a phone, with the menu button, the chat title, the project line, and the New chat and More buttons at the top](/screenshots/remote-phone-chat.png)
 
+The picture was taken before the chat title and the project line moved to the left, next to the menu button.
+
 The bar at the top has these parts, from left to right:
 
 - **Open menu** (☰) opens the side menu.
@@ -22,6 +24,16 @@ The bar at the top has these parts, from left to right:
 - A yellow number, when chats are waiting for you. Tap it to open the side menu.
 - **New chat** in a chat, or **New terminal** in a terminal.
 - **More** (⋯) in a chat, or **Terminal actions** (⋯) in a terminal.
+
+## Close menus and dialogs
+
+Menus such as **More** and **Terminal actions** slide up from the bottom of the screen. They have a grab handle at the top. Tap the handle, or drag the handle or the title of the menu down, to close it.
+
+The phone's Back gesture closes the menu, dialog or preview that is on top.
+
+On a phone, the buttons at the bottom of most dialogs fill the width and stack, with the main button on top.
+
+Buttons that a desktop shows only when you hover are always visible on a touch screen. For example, the ⋯ next to a chat in the side menu, the **X** on a file you added to a message, and the pin of each command in the command palette.
 
 ## Open the side menu
 
@@ -38,6 +50,13 @@ The picture was taken before the tabs became icons and the **GitHub** tab was ad
 
 The **Chats** list shows the chats you have open under **Active**. Closed chats are under **Today**, **Yesterday** and **Earlier**, sorted by when you started them. Each row shows when the chat was started, such as a time for today, "Yesterday 14:05", or a date for older chats. Reopening a chat does not change its time or its place in the list.
 
+Tap ⋯ at the right of a chat, or press and hold the chat, to see what you can do with it:
+
+- **Rename chat**, for a quick chat.
+- **Copy chat reference** copies a reference to the chat that an agent in another chat can follow. See [Let an agent read another chat](/docs/agents/chat-history#let-an-agent-read-another-chat).
+- **Close chat**, for a chat that is open.
+- **Delete chat**, for a chat that is saved in the history. Troupe asks you to confirm.
+
 The bottom of the side menu has these buttons:
 
 - **Settings** (gear) opens the app settings.
@@ -52,12 +71,14 @@ In a chat, tap **More** (⋯) for the actions that don't fit in the top bar.
 
 ![The More menu for a chat, with Git changes, Files, Command palette, New terminal, Project settings, Reload this chat and Close chat](/screenshots/remote-phone-more.png)
 
+The picture was taken before the menu got a grab handle at the top in place of the close button.
+
 - **Git changes** opens the changed files and the commit form.
 - **Files** opens the file browser.
 - **Command palette** opens the command palette.
 - **New terminal** opens a terminal in the project.
 - **Project settings** opens the settings of this project.
-- **Reload this chat** restarts the chat on a new agent process.
+- **Reload this chat** restarts the chat on a new agent process. When it is off, the reason shows under it.
 - **Close chat** closes the chat.
 
 On other tabs, such as a file or git history, the last item is **Close tab**.
@@ -66,7 +87,7 @@ On other tabs, such as a file or git history, the last item is **Close tab**.
 
 The message box at the bottom of a chat has four controls: **+**, the model pill, the context ring, and send. The model pill shows the agent's icon and the model name. In a new chat, the row has **+**, the model pill and send.
 
-Tap anywhere in the message box to type.
+Tap anywhere in the message box to type. On a phone, the return key of the keyboard adds a new line. While the list of commands or files you can mention is open, the return key picks the highlighted item instead. To send, tap the send button. With a hardware keyboard, `Ctrl+Enter` or `Cmd+Enter` also sends.
 
 ### Pick a model
 
@@ -88,6 +109,26 @@ Tap **+** to open **Add to chat**:
 - **Commands** opens the agent's commands and skills.
 - **MCP servers** shows how many servers are on, and lets you turn them on or off.
 
+Each file you add shows as a chip above the message box. Tap the **X** on the corner of a chip to remove the file.
+
+Tap the chip of a picture to see it full screen. The top of the preview has **Close preview** (**X**), the file name, and **Remove**, which takes the picture out of the message. The bottom shows which picture it is and its size, for example "1 of 2 · 120 KB". To close the preview, tap **X**, tap beside the picture, or use the phone's Back gesture.
+
+## Copy, retry or select a reply
+
+Under the last reply of the agent, these buttons are always visible:
+
+- **Copy** copies the reply.
+- **Retry** runs the turn again. It shows only when the chat can run the turn again.
+- **More actions** (⋯) opens the actions of the reply.
+
+On other messages, the buttons are hidden. Press and hold a message to open its actions. The menu is called **Reply** for a reply of the agent, and **Message** for a message you sent. It has:
+
+- **Copy**.
+- **Select text**, to select part of the message.
+- **Retry** for a reply of the agent, when the chat can run the turn again, or **Edit** for your own message. **Edit** puts the text back in the message box so you can change it.
+
+A long press on a message opens this menu, so the phone doesn't select text there. To copy part of a message, tap **Select text**. The message gets a colored frame, and the line under it says "Press and drag to select. Tap Done to go back." Select the text as you do in other apps. Tap **Done**, or use the phone's Back gesture, when you are finished.
+
 ## Answer an approval
 
 When an agent asks for permission, the chat shows **Approval needed** above the message box. The agent waits until you answer.
@@ -106,14 +147,16 @@ To open a terminal, tap **New terminal** in the top bar of a terminal, in the **
 
 ![A terminal on a phone with the key bar at the bottom: Paste, Esc, Tab, Ctrl+C, the arrow keys, PgUp and PgDn](/screenshots/remote-phone-terminal.png)
 
-A phone keyboard has no `Esc`, `Tab` or arrow keys, so Troupe adds a key bar under the terminal:
+The picture was taken before the key bar became one row.
+
+A phone keyboard has no `Esc`, `Tab` or arrow keys, so Troupe adds a key bar under the terminal. The key bar is one row, so the terminal keeps more lines above the keyboard. The keyboard button and **Paste** stay at the left. Swipe the keys to the left to see the rest. The end of the row fades while more keys are hidden.
 
 - **Paste** pastes the text from your clipboard.
 - **Esc**, **Tab** and **Ctrl+C** send those keys. `Ctrl+C` stops the running command.
 - The four arrows move the cursor or walk through your command history.
 - **PgUp** and **PgDn** scroll programs that use those keys.
 
-The keyboard button at the left of the key bar hides the keys. Tap it again to show them.
+The keyboard button at the left of the key bar hides the keys. **Paste** stays. Tap the keyboard button again to show the keys.
 
 Tap **Terminal actions** (⋯) for more:
 
