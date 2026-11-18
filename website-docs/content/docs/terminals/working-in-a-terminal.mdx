@@ -1,6 +1,6 @@
 ---
 title: Work in a terminal
-description: Type commands in the command editor, copy and paste, learn which keys reach your shell, open links and files, and set up scrollback, notifications, and the context bar.
+description: Type commands in the command editor, copy and paste, learn which keys reach your shell, open links and files, and set up scrollback and notifications.
 ---
 
 A Troupe terminal works like the terminal you already use. This page covers the parts that are specific to Troupe.
@@ -30,6 +30,8 @@ Troupe doesn't use the command editor on Windows, for other shells such as fish 
 | `Ctrl+A`, `Ctrl+E` | Move to the start or end of the line. |
 | `Ctrl+K`, `Ctrl+U`, `Ctrl+W` | Delete to the end of the line, to the start of the line, or the word before the cursor. |
 | `Ctrl+Z` (`Cmd+Z` on macOS) | Undoes the last edit. `Ctrl+Y` redoes it. On macOS, redo is `Cmd+Shift+Z`. On Linux, `Ctrl+Shift+Z` also works. |
+
+`Tab` completes command names as well as paths, also inside quotes and for names with spaces. The list shows the plain names. When Troupe inserts a name, it escapes or quotes it the way your shell needs, so a folder such as `my files` stays one argument. Inside a quote, Troupe closes the quote after a file and leaves it open after a folder, so you can go on typing the path.
 
 Troupe's own shortcuts still come first. For example, on Windows and Linux `Ctrl+K` opens the command palette and `Ctrl+W` closes the tab, as listed in [Keys that don't reach your shell](#keys-that-dont-reach-your-shell).
 
@@ -168,22 +170,6 @@ To open the window:
 - On a phone, select the **...** button at the top of a terminal, then **Command history**.
 
 The window has a search box and a filter for **This Project** or **All Projects**. Select a command or press `Enter` to insert it at the prompt, or in the command editor. Troupe doesn't run it. **Clear History** deletes the list for the current project.
-
-## Choose what the context bar shows
-
-The context bar runs along the bottom of the window. It shows facts about the active project and terminal. Its **Terminal** button opens a new terminal in the active folder.
-
-To choose what the bar shows, select the gear icon at the right end of the bar (**Context bar settings**), then turn items on or off.
-
-![The Show in Context Bar menu with switches for Project Name, Git Branch, Git Status, Working Directory, and Exit Code](/screenshots/terminals-context-bar.png)
-
-- **Project Name** shows the project's name. Off by default.
-- **Git Branch** shows the current branch. Select it to switch to another branch or create one. On by default.
-- **Git Status** shows how many files are modified, staged, and untracked, when there are any. Off by default.
-- **Working Directory** shows the active project or worktree folder. On by default.
-- **Exit Code** shows whether the last command in the active terminal succeeded. On by default. It appears only if your shell reports exit codes to the terminal. Terminals with the [command editor](#type-commands-in-the-command-editor) do this. Other shells often don't unless you set up shell integration.
-
-Troupe saves your choices with your settings. Every browser and phone that connects to the same Troupe uses them.
 
 ## Use a terminal on your phone
 

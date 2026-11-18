@@ -268,17 +268,6 @@ export const shots: Shot[] = [
     }
   },
   {
-    id: 'terminals-context-bar',
-    run: async (page) => {
-      await openTerminalsApp(page)
-      await openTerminal(page)
-      await run(page, ['git status --short'])
-      await page.getByRole('button', { name: 'Context bar settings' }).click()
-      await page.getByText('Show in Context Bar').waitFor()
-      await page.waitForTimeout(300)
-    }
-  },
-  {
     id: 'terminals-appearance-settings',
     run: async (page) => {
       await openTerminalsApp(page)
