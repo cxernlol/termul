@@ -3,11 +3,11 @@ title: Manage projects
 description: Switch, rename, color, group, archive, and delete projects.
 ---
 
-The projects list on the left of the window holds all your projects. This page shows how to keep it in order.
+The **Projects** section of the sidebar on the left of the window holds all your projects. This page shows how to keep it in order.
 
 ## Switch projects
 
-Select a project in the list. You can also:
+Select a project in the list. Each project shows its chats under its name. See [Find and resume chats](/docs/agents/chat-history). You can also:
 
 - Press `Ctrl+1` to `Ctrl+9` (`Cmd+1` to `Cmd+9` on macOS) to switch to one of your first nine projects. Hover over a project to see its key.
 - Open the [command palette](/docs/getting-started/command-palette) and type the project name.
@@ -28,9 +28,11 @@ Each project in the list shows what happens inside it:
 
 ## Change a project
 
-Right-click a project to open its menu.
+Right-click a project to open its menu, or hover over it and select the **…** button (**More actions**).
 
-The menu has **Settings**, **Rename**, **Change Color**, **Default Shell**, **Move to Group**, **New Worktree**, **Archive**, and **Delete**.
+The menu has **Settings**, **Rename**, **Change color**, **Default shell**, **Move to group**, **Switch worktree…**, **New worktree**, **Archive**, and **Delete**. **Switch worktree…** picks the working copy the project uses. See [Worktrees](/docs/git/worktrees).
+
+The **+** at the end of a project's row starts a new chat in that project.
 
 ### Rename a project
 
@@ -41,18 +43,18 @@ Renaming changes only the name in Troupe. The folder keeps its name.
 
 ### Change the color
 
-1. Right-click the project and select **Change Color**.
+1. Right-click the project and select **Change color**.
 2. Select a color.
 
 The color shows on the project's icon in the list and in the command palette.
 
 ### Change the default shell
 
-Right-click the project, point to **Default Shell**, and select a shell. New terminals in this project use it.
+Right-click the project, point to **Default shell**, and select a shell. New terminals in this project use it.
 
 ### Open the project settings
 
-Select the gear icon next to the project, or right-click it and select **Settings**. The **Project settings** window opens for that project, even if you have another project open. Its pages are **General**, **Shell**, **Environment variables**, **Worktree symlinks**, **Accounts**, and **Browser**. See [Project settings](/docs/settings/project-settings).
+Hover over the project and select the gear icon (**Project settings**), or right-click it and select **Settings**. The **Project settings** window opens for that project, even if you have another project open. Its pages are **General**, **Shell**, **Environment variables**, **Worktree symlinks**, **Accounts**, and **Browser**. See [Project settings](/docs/settings/project-settings).
 
 ## Reorder projects
 
@@ -73,17 +75,17 @@ To create a group:
 To put a project in a group, use one of these:
 
 - Drag the project onto the group.
-- Right-click the project, point to **Move to Group**, and select the group. Select **No Group (Root)** to take it out again.
-- Right-click the project, point to **Move to Group**, and select **Create New Group...** to make a group and move the project into it.
+- Right-click the project, point to **Move to group**, and select the group. Select **No group (root)** to take it out again.
+- Right-click the project, point to **Move to group**, and select **Create new group…** to make a group and move the project into it.
 
 Select a group's name to collapse or expand it. Drag a group to change its place in the list.
 
-Right-click a group, or select the **…** button next to it, for these actions:
+Right-click a group, or select the **…** button next to it (**Group actions**), for these actions:
 
-- **Rename Group** and **Change Color**.
-- **Add Project** lists your projects with check boxes. Select a project to add it to the group or take it out. **Import Project...** at the bottom picks a folder and adds it as a new project in this group.
-- **Delete Group (Keep Projects)** removes the group and moves its projects back to the main list.
-- **Delete Group & All Projects** removes the group and every project in it from Troupe.
+- **Rename group** and **Change color**.
+- **Add project** lists your projects with check boxes. Select a project to add it to the group or take it out. **Import project…** at the bottom picks a folder and adds it as a new project in this group.
+- **Delete group (keep projects)** removes the group and moves its projects back to the main list.
+- **Delete group and all projects** removes the group and every project in it from Troupe.
 
 Groups and the order of the list are saved in this browser or on this computer. They don't follow you to other devices.
 

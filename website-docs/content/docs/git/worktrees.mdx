@@ -16,7 +16,7 @@ Troupe puts each worktree in `.termul/worktrees/<name>/` inside your project fol
 ## Create a worktree
 
 1. Do one of these:
-   - Right-click the project in the projects rail and click **New Worktree**.
+   - Right-click the project in the sidebar and click **New worktree**.
    - Press `Ctrl+Shift+Alt+N` (`Cmd+Shift+Option+N` on macOS).
 2. Type a **Name**, for example `try-new-hero`. Troupe uses it for the folder and for a new branch.
 3. Optional: check **Path Preview** to see where the folder goes.
@@ -26,7 +26,7 @@ Troupe puts each worktree in `.termul/worktrees/<name>/` inside your project fol
 
 Troupe creates the worktree and opens a terminal in it. The new branch starts from the commit your project folder has checked out.
 
-The project must be a Git repository. If it is not, **New Worktree** is disabled in the menu.
+The project must be a Git repository. If it is not, the menu shows **New worktree (no git repo)**, turned off.
 
 ### Pick the branch
 
@@ -43,7 +43,7 @@ A branch can be checked out in only one folder at a time. If the branch already 
 
 ### Create a worktree from the switcher
 
-1. Click the **Workspace** button at the top of the side panel.
+1. Right-click the project in the sidebar and click **Switch worktree…**.
 2. Type a name in **Search or create a worktree…** that matches no existing worktree.
 3. Click **Create worktree** followed by the name.
 
@@ -54,32 +54,32 @@ Troupe creates a new branch with that name, starting from the current commit, an
 When you start a chat, you can make the agent work in a worktree instead of your project folder. Your own files stay as they are while the agent edits.
 
 1. Click **New chat**.
-2. Below the prompt box, open the **Workspace** menu. It shows **Current checkout** by default.
+2. In the row below the message box, click the first item. It shows **Current checkout** by default. See [Choose where the agent works](/docs/agents/start-a-chat#choose-where-the-agent-works).
 3. Pick one of these:
    - **New worktree** creates a fresh worktree for this chat. Pick the **Base branch** to start from. Troupe selects the repository's default branch for you, such as `main`.
    - **Existing worktree** runs the agent in a worktree you already have. Pick it in the **Worktree** menu.
 4. Type your prompt and send it.
 
-![The Workspace menu below the prompt box, with Current checkout, Existing worktree, and New worktree](/screenshots/git-launcher-worktree.png)
+![An older layout: the Workspace menu below the prompt box, with Current checkout, Existing worktree, and New worktree](/screenshots/git-launcher-worktree.png)
 
 A new worktree for a chat gets a branch named `chat/` followed by a short id. When the agent gives the chat a title, Troupe may rename the branch to match the title. The folder keeps its name.
 
-The chat shows **Worktree** below its prompt box when the agent works in a worktree, and **Current checkout** when it edits your project folder.
+After the first message, the row below the message box shows the worktree's folder name and branch when the agent works in a worktree, and **Current checkout** with the branch, for example `Current checkout · main`, when it edits your project folder.
 
 ## Switch between worktrees
 
-The **Workspace** button at the top of the side panel shows which folder you are looking at. It reads **Workspace** for the project folder, or the branch of the worktree you picked.
+Each project uses one folder at a time: the project folder or one of its worktrees. When you pick a worktree, its name shows under the project's name in the sidebar.
 
-1. Click the **Workspace** button.
+1. Right-click the project in the sidebar, or hover over it and click **…** (**More actions**). Click **Switch worktree…**.
 2. Click a worktree. The first row is the project folder, shown by its branch name. Click it to go back. You can also type to filter the list, then use the arrow keys and `Enter`.
 
-![The worktree switcher with the project folder on main and the worktrees fix/checkout-timeout and try-coupons](/screenshots/git-worktree-switcher.png)
+![The worktree switcher, in an older layout, with the project folder on main and the worktrees fix/checkout-timeout and try-coupons](/screenshots/git-worktree-switcher.png)
 
 Switching changes what these show:
 
-- The **Chats** tab lists only the chats of that worktree. The project folder lists all chats.
-- The **Changes** tab shows the changes, branch, and stashes of that worktree.
-- **New chat** offers that worktree as its **Workspace**.
+- The sidebar lists only the chats of that worktree under the project. The project folder lists all chats.
+- The **Changes** panel shows the changes, branch, and stashes of that worktree.
+- **New chat** offers that worktree as the place where the agent works.
 
 Switching does not close or move your open tabs, terminals, or running agents. A dot next to a worktree means a chat or terminal in it is busy. The number is how many tabs you have open in it.
 
@@ -107,7 +107,7 @@ A new worktree has only the files that Git tracks. Folders that Git ignores, lik
 
 To choose the linked folders:
 
-1. Right-click the project in the projects rail and click **Settings**.
+1. Right-click the project in the sidebar and click **Settings**.
 2. In the **Project settings** window, click **Worktree symlinks**.
 3. Click **Sync from .gitignore** to add the folders listed in your `.gitignore` that exist in the project. Or click **Add directory** and type a folder name, for example `node_modules`.
 4. To remove a folder, click the **X** next to it.

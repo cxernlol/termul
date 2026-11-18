@@ -1,85 +1,59 @@
 ---
 title: A tour of the window
-description: The five parts of the Troupe window and what each one is for.
+description: The parts of the Troupe window and what each one is for.
 ---
 
-The Troupe window has five parts. The numbers in the picture match the sections on this page.
+The Troupe window has four parts: the sidebar on the left, the main area with your tabs, the tool strip on the right edge, and the right panel that the tool strip opens.
 
-![The Troupe window with five numbered regions: 1 the projects list, 2 the side panel, 3 the tab bar, 4 the main area with an agent chat, 5 the status bar](/screenshots/getting-started-window.png)
+<Callout type="info">The picture below shows an older layout, with a side panel, a tab bar menu, and a status bar. It will be replaced. The sections on this page describe the current window.</Callout>
 
-## 1. The projects list
+![The Troupe window in an older layout, with the projects list, a side panel, the tab bar, an agent chat, and a status bar](/screenshots/getting-started-window.png)
 
-The column on the far left lists your projects. Select a project to switch to it. See [Manage projects](/docs/getting-started/projects).
+## 1. The sidebar
 
-From top to bottom it has these parts:
+The column on the far left holds your projects and their chats. From top to bottom it has these parts:
 
-- **Search** opens the [command palette](/docs/getting-started/command-palette). Its key is shown next to it.
+- **New chat** starts a chat in the active project. With no project open, it starts a [quick chat](/docs/agents/start-a-chat).
+- **Search** opens the [command palette](/docs/getting-started/command-palette), where you can also find chats.
 - **Canvas** opens the project's design document (a `.figcraft` file in the project folder) in a tab. If the project has no such file, you start with an empty design.
-- **Projects** has a **+** button to create a project or a folder group. Below it are your projects.
-- At the bottom are three buttons:
-  - **Settings** opens the app settings.
-  - **Color themes** opens the theme picker.
-  - **Keyboard shortcuts** opens the **Shortcut Menu**, where you can change common shortcuts.
+- **Automations** opens the project's [automations](/docs/automations).
+- **Projects** lists your projects. Its **+** menu has **New project**, **New folder group**, and **Import chats**. Select a project to switch to it. Each project shows its chats under its name. See [Manage projects](/docs/getting-started/projects).
+- **Quick chats** lists chats that don't belong to a project, and **Older chats** keeps chats from older versions of Troupe. See [Chat history](/docs/agents/chat-history).
+- At the bottom are **Settings**, **Report a bug**, **Color themes**, and the keyboard shortcuts menu. The shortcuts menu opens the **Shortcut Menu**, where you can change common shortcuts.
 
-The button at the top right of the column collapses it to a narrow strip of icons. Press `Ctrl+Shift+B` (`Cmd+Shift+B` on macOS) to collapse or expand it. You can also drag the right edge of the column to change its width.
+Press `Ctrl+B` (`Cmd+B` on macOS) to collapse the sidebar to a narrow strip of icons, or to expand it again. The button at the top of the sidebar does the same. While the sidebar is collapsed, that button sits at the left end of the row above the main area. You can also drag the right edge of the sidebar to change its width.
 
-When the column is collapsed, it shows icons for your projects. If the side panel is not on screen, it also shows icons for the four side panel tabs. This happens when you hide the side panel, open an SSH workspace, or have no project open. Select a tab icon to open the side panel on that tab. Select the project icon to search your projects and switch.
+When the sidebar is collapsed, it shows icons for the same parts. A small dot on a chat's icon shows its status. Hover over or focus an icon to see its name, or a project's chats.
 
-## 2. The side panel
+On Windows and Linux, the window buttons (minimize, maximize, and close) are at the top right of the window. On macOS, the window buttons sit in the sidebar and hide while it is collapsed. To make the sidebar translucent on macOS, see [App settings](/docs/settings/app-settings#translucent-sidebar).
 
-The side panel shows more about the current project. It has four tabs. Each tab is an icon; hover over it to see its name.
+## 2. The main area
 
-The picture at the top of this page was taken before the **GitHub** tab was added, so it shows only the first three tabs.
-
-- **Chats** lists your chats with agents in this project. Use **Search chats…** to find one. See [Agents](/docs/agents).
-- **Explorer** shows the files in the project folder. See [Files](/docs/files).
-- **Changes** shows the files you changed, and lets you stage and commit them. The number on the tab counts the changed files. See [Git](/docs/git).
-- **GitHub** lists the issues and pull requests of the project's GitHub repository. See [GitHub issues and pull requests](/docs/git/github).
-
-Above the tabs:
-
-- The **Workspace** menu picks the working copy you work in. That is the project folder or one of its Git worktrees. A worktree is a second checkout of the same repository in another folder, often on another branch. Chats, **Changes**, and the status bar follow your choice. See [Worktrees](/docs/git/worktrees).
-- **+** starts a new chat.
-- **«** hides the side panel. Press `Ctrl+B` (`Cmd+B` on macOS) to hide or show it. When it is hidden, a **»** button at the left of the tab bar brings it back.
-
-## 3. The tab bar
-
-Each open chat, terminal, file, and Git view is a tab. Select a tab to show it. To close a tab, select its **×**, middle-click it, or press `Ctrl+W` (`Cmd+W` on macOS, `Alt+W` in the browser).
-
-The **+** at the right end of the tab bar opens the new-tab menu:
-
-![The new-tab menu with New chat, a Terminal section that lists Bash and Shell, and Open canvas](/screenshots/getting-started-new-tab-menu.png)
-
-- **New chat** starts a chat with an agent.
-- Under **Terminal**, select a shell to open a terminal. Troupe lists the shells it found on the computer.
-- **New browser tab** opens a web page inside Troupe. It is in the desktop app only. See [Browser](/docs/browser).
-- **Open canvas** opens the project's design document.
+The main area shows your tabs. Each open chat, terminal, file, and Git view is a tab. Select a tab to show it. To close a tab, select its **×**, middle-click it, or press `Ctrl+W` (`Cmd+W` on macOS, `Alt+W` in the browser).
 
 Right-click a tab for more actions, such as **Rename** for a terminal, **Close Other Tabs**, and **Copy Path** for a file.
 
-You can show several tabs side by side. Drag a tab to the left, right, top, or bottom edge of the main area to split it. See [Terminals](/docs/terminals) for tabs and panes in detail.
+You can show several tabs side by side. Drag a tab to the left, right, top, or bottom edge of the main area to split it. You can also drag a chat from the sidebar into a pane. See [Terminals](/docs/terminals) for tabs and panes in detail.
 
-## 4. The main area
+A new chat opens with **What should we do in** _project_**?** and a message box. Type what you want an agent to do and press `Enter`. Under the message box, choose where the agent works: the current checkout, an existing worktree, or a new worktree. See [Start a chat](/docs/agents/start-a-chat).
 
-The main area shows the active tab. With no tab open, it shows **What should we do in &lt;project&gt;?** and a message box. Type what you want an agent to do and press `Enter` to start a chat.
+## 3. The tool strip
 
-The buttons under the message box, such as **Explain this project** and **Find a bug**, fill in a ready-made request. They don't send it. Edit the text if you want, then press `Enter`.
+The narrow strip on the right edge of the window has these buttons. Hover over a button to see its name.
 
-The **Current checkout** menu under the message box picks where the agent works. Choose the current checkout, an existing worktree, or a new worktree. See [Agents](/docs/agents).
+- **Explorer** shows the files in the project folder. See [Files](/docs/files).
+- **Changes** shows the files you changed, and lets you stage and commit them. The number on the button counts the changed files. See [Git](/docs/git).
+- **GitHub** lists the issues and pull requests of the project's GitHub repository. See [GitHub issues and pull requests](/docs/git/github).
+- At the bottom, **New terminal** opens a terminal in the working folder. Right-click it to pick a shell. See [Open a terminal](/docs/terminals/open-a-terminal).
+- In the desktop app, **New browser tab** opens a web page inside Troupe. See [Browser](/docs/browser).
+- In the desktop app, a monitor icon for [remote access](/docs/remote/share-desktop). In the browser, a dot that shows the connection to the server instead. If the server goes offline, select the dot to try again.
 
-## 5. The status bar
+## 4. The right panel
 
-The bar at the bottom shows facts about the current working copy. From left to right:
+**Explorer**, **Changes**, and **GitHub** open in the panel at the right of the main area. Click the same button again, or **Close panel** at the top of the panel, to close it. Press `Ctrl+Alt+B` (`Cmd+Option+B` on macOS) to show or hide the panel. Drag its left edge to change its width. While a quick chat is open, the three buttons and the panel are hidden. Go back to a project to use them.
 
-- The Git branch. Select it to switch to another branch or create a new one.
-- The path of the working folder.
-- A note when a chat needs your answer. Select it to open that chat.
-- In the browser, a dot that shows the connection to the server. If the server goes offline, select the dot to try again.
-- In the desktop app, a monitor icon for [remote access](/docs/remote).
-- The exit code of the last terminal command, such as **Exit 1**.
-- **Terminal** opens a terminal in the working folder.
-- The gear opens **Show in Context Bar**. Use it to turn on or off **Project Name**, **Git Branch**, **Git Status**, **Working Directory**, and **Exit Code**. **Project Name** and **Git Status** are off by default.
+To work in one of the project's Git worktrees, open the project's menu in the sidebar and choose **Switch worktree…**. The chats in the sidebar and the **Changes** panel follow your choice. **New terminal** opens in the folder of the active tab, for example a chat that runs in another worktree, and in the picked worktree when the active tab has no folder. See [Worktrees](/docs/git/worktrees).
 
 ## On a phone
 
-On a narrow screen, such as a phone, Troupe uses a different layout. The projects list, the side panel, and the tab bar are hidden. Select the menu button at the top left to switch between chats, terminals, and open files. See [Browser and phone](/docs/remote).
+On a narrow screen, such as a phone, Troupe uses a different layout. The sidebar, the tool strip, and the tab bar are hidden. Select the menu button at the top left to open the drawer and switch between chats, terminals, and open files. See [Browser and phone](/docs/remote).

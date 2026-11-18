@@ -156,17 +156,6 @@ export const shots: Shot[] = [
     }
   },
   {
-    id: 'git-branch-picker',
-    run: async (page) => {
-      ensureFixtures()
-      await openApp(page)
-      await page.getByRole('button', { name: 'Switch git branch' }).last().click()
-      const picker = page.getByRole('dialog').filter({ has: page.getByLabel('Search branches') })
-      await picker.getByRole('group', { name: 'Remote branches' }).waitFor()
-      return picker
-    }
-  },
-  {
     id: 'git-branch-switch-dialog',
     run: async (page) => {
       const panel = await openChanges(page)

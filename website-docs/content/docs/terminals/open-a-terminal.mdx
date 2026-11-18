@@ -7,27 +7,30 @@ A new terminal starts in the folder of the active project. If you work in a [wor
 
 ## Open a terminal from the tab bar
 
-1. Select the **+** button at the right end of the tab bar. Its tooltip is **New tab**.
-2. Under **Terminal**, select a shell.
+Click **New tab** (the **+** at the end of a pane's tab bar). The menu has:
 
-The terminal opens as a new tab in that pane. Each pane has its own **+** button, so you can open a terminal in the pane where you want it.
+- **New terminal** opens a terminal with the [default shell](#set-the-default-shell).
+- **New terminal with** lists the shells Troupe found. The default shell is marked **Default**. While Troupe looks for shells, the list shows **Detecting shells…**. If Troupe could not find them, select **Could not detect shells. Try again**.
 
-![The New tab menu with New chat, a Terminal group listing Bash and Shell, and Open canvas](/screenshots/terminals-new-tab-menu.png)
+The terminal opens as a new tab in that pane. The same menu also has **New chat** and, in the desktop app, **New browser tab**.
 
-The same menu also starts a chat (**New chat**) or opens the project canvas (**Open canvas**). In the desktop app it also has **New browser tab**.
+## Open a terminal from the tool strip
+
+Click **New terminal** at the bottom of the tool strip, on the right edge of the window. The terminal opens as a new tab in the active pane, with the default shell.
+
+To pick another shell, right-click **New terminal** (or focus it and press `Shift+F10`). This opens the same **New terminal with** list.
 
 ### Other ways to open a terminal
 
-- Select **Terminal** in the bar at the bottom of the window. The terminal opens in the active project or worktree folder.
 - Press `Ctrl+Shift+Alt+T` (`Cmd+Shift+Alt+T` on macOS). In the keyboard shortcut list, this shortcut is called **Open Terminal in Worktree**. It also works when you are not in a worktree.
 - Open the command palette with `Ctrl+K` (`Cmd+K` on macOS) and run **New Terminal**.
 - In the **Explorer**, right-click a folder and select **Open in Terminal**. The terminal starts in that folder.
-- In the **Chats** list, right-click a chat and select **Open Terminal Here**. The terminal starts in the chat's folder.
-- Open the **Workspace** menu at the top of the side panel. Each folder in the list has a terminal button. Select it, or right-click the folder and select **Open Terminal Here**.
+- In the sidebar, right-click a chat and select **Open terminal here**. The terminal starts in the chat's folder.
+- Right-click the project in the sidebar and select **Switch worktree…**. Each folder in the list has a terminal button (**Open terminal in** _folder_).
 
 ## Which shells you can pick
 
-The **Terminal** group lists the shells that Troupe finds. In the desktop app, these are the shells on your computer. In a browser, they are the shells on the computer that runs the Troupe server.
+The **New terminal with** menu lists the shells that Troupe finds. In the desktop app, these are the shells on your computer. In a browser, they are the shells on the computer that runs the Troupe server.
 
 | Platform | Shells Troupe looks for |
 | --- | --- |
@@ -38,7 +41,7 @@ On Windows, **Command Prompt** and **WSL** are always in the list, even if WSL i
 
 On macOS and Linux, Troupe looks only in `/bin` and `/usr/bin`. A shell installed somewhere else, for example by Homebrew, is not in the menu. To use one, create a [terminal profile](#save-a-terminal-profile) and type the shell's path.
 
-If the project has a default shell, the menu lists it first and marks it **(default)**.
+The menu marks the default shell **Default**.
 
 ## Set the default shell
 
@@ -46,7 +49,7 @@ The default shell is the shell Troupe uses when you don't pick one, for example 
 
 To set the default for all projects:
 
-1. Select **Settings** at the bottom of the projects rail, or press `Ctrl+,` (`Cmd+,` on macOS, `Alt+,` in a browser).
+1. Select **Settings** at the bottom of the sidebar, or press `Ctrl+,` (`Cmd+,` on macOS, `Alt+,` in a browser).
 2. Select **Default Shell**.
 3. Choose a shell from **Shell**. **System Default** uses your system's default shell.
 
@@ -54,7 +57,7 @@ To set the default for all projects:
 
 To set the default for one project:
 
-1. Hover the project in the projects rail and select the gear icon (**Project settings**).
+1. Hover the project in the sidebar and select the gear icon (**Project settings**).
 2. Click **Shell** and choose a shell in the **Shell** list. **App default** uses the shell from Application Preferences.
 3. Select **Save changes**.
 
@@ -62,7 +65,7 @@ When you create a project, **Advanced options** in the new project dialog has a 
 
 Troupe picks the shell for a new terminal in this order:
 
-1. The shell you select in the **+** menu.
+1. The shell you select in the **New terminal with** menu.
 2. The project's default shell.
 3. The default shell in Settings.
 4. Your system's default shell.
@@ -97,7 +100,7 @@ To change a profile, select its pencil icon. To remove it, select its trash icon
 2. Type the profile name.
 3. Select **New Terminal: _profile name_**.
 
-The terminal opens in the active pane, and the tab has the profile's name. Profiles are not in the **+** menu.
+The terminal opens in the active pane, and the tab has the profile's name. Profiles are not in the **New terminal with** menu.
 
 ![The command palette filtered to Node dev, with New Terminal: Node dev at the top](/screenshots/terminals-profile-palette.png)
 

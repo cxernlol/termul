@@ -3,29 +3,28 @@ title: See your changes
 description: Find the files you changed and read their diffs.
 ---
 
-The **Changes** tab lists every file that differs from your last commit. Click a file to see exactly which lines changed.
+The **Changes** panel lists every file that differs from your last commit. Click a file to see exactly which lines changed.
 
-![The Changes tab in the side panel and the diff of src/cart.ts in the main area](/screenshots/git-changes.png)
+<Callout type="info">This picture shows an older layout. It will be replaced.</Callout>
 
-## Open the Changes tab
+![An older layout: the Changes tab in a side panel and the diff of src/cart.ts in the main area](/screenshots/git-changes.png)
 
-Click **Changes** at the top of the side panel. The number next to the label is how many files changed.
+## Open the Changes panel
 
-If the side panel is hidden, click **Show side panel** or press `Ctrl+B` (`Cmd+B` on macOS). If the projects rail is collapsed too, you can also click the **Changes** icon in the rail.
+Click **Changes** in the tool strip at the right edge of the window. The number on the button is how many files changed, up to **99+**. The panel opens at the right of the main area. Click **Changes** again, or press `Ctrl+Alt+B` (`Cmd+Option+B` on macOS), to close it.
 
-The tab shows the checkout you picked in the **Workspace** menu at the top of the side panel. That is the project folder, or a worktree of it. See [Worktrees](/docs/git/worktrees).
+The panel shows the checkout the project uses. That is the project folder, or a worktree you picked with **Switch worktree…** in the project's menu in the sidebar. See [Worktrees](/docs/git/worktrees).
 
 ## Read the file list
 
-From top to bottom, the tab shows:
+From top to bottom, the panel shows:
 
-1. The current branch and the **Stash changes** button.
+1. The current branch and the stash button. See [Branches and stashes](/docs/git/branches-and-stash).
 2. The commit box. See [Stage and commit](/docs/git/stage-and-commit).
 3. The **Filter changes** box. Type part of a file path to shorten the list.
 4. **Staged**: files that go into your next commit. This section only shows when it has files.
 5. **Changes**: files you changed but did not stage yet. New files that Git does not track yet are here too.
-6. **Stashes**: work you put aside. This section only shows when you have stashes. See [Branches and stashes](/docs/git/branches-and-stash).
-7. **History**: the number of commits and the last commit message. See [Browse history](/docs/git/history).
+6. **History**: the number of commits and the last commit message. See [Browse history](/docs/git/history).
 
 A file can be in **Staged** and **Changes** at the same time. That happens when you stage a file and then edit it again.
 

@@ -1,34 +1,15 @@
 ---
 title: Branches and stashes
-description: Switch, find, and create branches, and put unfinished work aside.
+description: Switch and create branches, and put unfinished work aside.
 ---
 
 Switch to another branch or start a new one without leaving Troupe. When you are not ready to commit, stash your changes to put them aside and bring them back later.
 
-## Switch branches from the context bar
+## Switch branches
 
-The context bar at the bottom of the window shows the current branch. This picker has a search box, so use it when you have many branches.
-
-1. Click the branch name in the context bar.
-2. Type part of a name in **Search branches** to shorten the list.
-3. Click a branch.
-
-![The branch picker open above the context bar, with a search box and the Local and Remote groups](/screenshots/git-branch-picker.png)
-
-The picker shows two groups:
-
-- **Local** lists your branches. The current branch has a check mark and comes first.
-- **Remote** lists branches that exist only on the remote. Click one to create a local branch with the same name that tracks it.
-
-A branch marked **worktree** is checked out in another worktree. You cannot switch to it here. See [Worktrees](/docs/git/worktrees).
-
-If you do not see the branch name in the context bar, click **Context bar settings** (the gear at the right end of the bar) and turn on **Git Branch**.
-
-This picker does not stash your changes for you. If you have uncommitted changes, Git carries them to the other branch. If they conflict with the other branch, Git refuses and Troupe shows the error.
-
-## Switch branches from the Changes tab
-
-The branch name at the top of the **Changes** tab also opens a branch menu. It lists all branches, including remote ones, but has no search box.
+1. Open the **Changes** panel: click **Changes** in the tool strip at the right edge of the window.
+2. Click the branch name at the top of the panel. If you have commits that are not pushed yet, the button also shows how many, for example **↑2**.
+3. Click a branch. The menu lists all branches, including remote ones.
 
 If you have uncommitted changes, Troupe asks what to do with them:
 
@@ -44,17 +25,7 @@ New files count as uncommitted changes here.
 
 A new branch starts from the commit you have checked out. Troupe switches to it right away. Your uncommitted changes come with you.
 
-From the context bar:
-
-1. Click the branch name in the context bar.
-2. Click **Create branch from** followed by the current branch name.
-3. Type the name and press `Enter`, or click **Create**. Press `Escape` to cancel.
-
-Troupe replaces spaces and other characters that Git does not allow with `-`.
-
-From the **Changes** tab:
-
-1. Click the branch name at the top of the tab.
+1. Click the branch name at the top of the **Changes** panel.
 2. Click **Create new branch...**.
 3. Type a name in **Branch name**, for example `feature/new-login`.
 4. Click **Create & Switch**.
@@ -73,25 +44,27 @@ If you chose **Stash & Switch** and the switch was refused, your changes stay in
 
 A stash saves your uncommitted changes and removes them from your files. Later you apply the stash to bring the changes back, on this branch or another one.
 
-1. Click **Stash changes** (the box icon next to the branch name at the top of the **Changes** tab).
+1. At the top of the **Changes** panel, click the box icon next to the branch name (**Stash changes**, or **Stashes** with a count when you already have stashes), then click **Stash changes**.
 2. Optional: type a message, so you can recognize the stash later.
 3. To stash new untracked files too, select **Include untracked files**. Without it, new files stay where they are.
 4. Click **Stash**.
 
 ![The Stash Changes dialog with a message and the Include untracked files option](/screenshots/git-stash-dialog.png)
 
-The button is disabled when there is nothing to stash.
+**Stash changes** is off when there is nothing to stash.
 
 ## Apply, pop, or drop a stash
 
-Your stashes are listed in the **Stashes** section of the **Changes** tab, newest first. Each one shows its name, such as `stash@{0}`, and its message. Hover over a stash to see its buttons:
+Click the box icon at the top of the **Changes** panel. Your stashes are listed under **Stashes**, newest first. Each one shows its name, such as `stash@{0}`, and its message. Point to a stash to see its actions:
 
-- **Apply stash (keeps stash entry)** brings the changes back and keeps the stash, so you can apply it again.
-- **Pop stash (applies and drops)** brings the changes back and deletes the stash.
-- **Drop stash** deletes the stash without applying it.
+- **Apply** brings the changes back and keeps the stash, so you can apply it again.
+- **Pop** brings the changes back and deletes the stash. If the changes conflict with your files, the stash stays in the list.
+- **Drop** deletes the stash without applying it.
 
 <Callout type="warn">
-**Drop stash** does not ask for confirmation. The stash is gone right away.
+**Drop** does not ask for confirmation. The stash is gone right away.
 </Callout>
 
-![The Stashes section with one stash and its Apply, Pop, and Drop buttons](/screenshots/git-stash-list.png)
+<Callout type="info">This picture shows an older layout. It will be replaced.</Callout>
+
+![An older layout: the Stashes section with one stash and its Apply, Pop, and Drop buttons. Stashes are now in the menu of the box icon.](/screenshots/git-stash-list.png)

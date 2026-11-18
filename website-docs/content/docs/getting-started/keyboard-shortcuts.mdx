@@ -22,8 +22,8 @@ The names in the first column are the names you see in **Settings** > **Keyboard
 | **Next Tab** | `Ctrl+PageDown` | `Alt+PageDown` |
 | **Previous Tab** | `Ctrl+PageUp` | `Alt+PageUp` |
 | **Command History** | `Ctrl+R` | Not set |
-| **Toggle Side Panel** | `Ctrl+B` | `Ctrl+B` |
-| **Toggle Projects** | `Ctrl+Shift+B` | `Ctrl+Shift+B` |
+| **Toggle Side Panel** (the right panel) | `Ctrl+Alt+B` | `Ctrl+Alt+B` |
+| **Toggle Projects** (the sidebar) | `Ctrl+B` | `Ctrl+B` |
 | **Save File** | `Ctrl+S` | `Ctrl+S` |
 | **Settings** | `Ctrl+,` | `Alt+,` |
 | **Change Color Theme** | `Ctrl+Alt+T` | `Ctrl+Alt+T` |
@@ -40,7 +40,7 @@ A few notes on these keys:
 
 - The zoom keys change the size of the whole Troupe window, not only the terminal text.
 - **Toggle Side Panel** does nothing while you type in the editor, a text field, or a terminal. Click an empty part of the window first.
-- **Toggle Projects** does nothing while you type in the editor or a text field.
+- **Toggle Projects** does nothing while you type in the editor or a text field. In a terminal, it works.
 - **Command History** opens a searchable list of commands you ran in this project. In the browser it has no key by default. Give it one in Settings, or open it from the [command palette](/docs/getting-started/command-palette).
 - The worktree keys act on the working copies of the current project. See [Worktrees](/docs/git/worktrees).
 
@@ -50,7 +50,7 @@ These keys are built in. They don't appear in Settings.
 
 | Where | Key | What it does |
 | --- | --- | --- |
-| Anywhere | `Ctrl+1` to `Ctrl+9` | Switch to the first to ninth project in the projects list. |
+| Anywhere | `Ctrl+1` to `Ctrl+9` | Switch to the first to ninth project in the sidebar. |
 | Command palette | `Esc` | Close the palette. |
 | Agent launcher | `Enter` or `Ctrl+Enter` | Start the chat. |
 | Agent launcher | `Esc` | Hide the launcher. |
@@ -70,7 +70,7 @@ These keys are built in. They don't appear in Settings.
 | Git history | `Ctrl+C` | Copy the commit hash. |
 | Git history | `/` | Go to the filter box. |
 
-In a browser tab, your browser may use `Ctrl+1` to `Ctrl+9` to switch its own tabs. If that happens, click the project in the projects list instead.
+In a browser tab, your browser may use `Ctrl+1` to `Ctrl+9` to switch its own tabs. If that happens, click the project in the sidebar instead.
 
 ## Keys on macOS
 
@@ -99,6 +99,6 @@ To go back to the default, select the reset arrow next to the action. To reset e
 
 ![Settings open on the Keyboard Shortcuts page, with Command Palette set to Ctrl+K and New Project set to Alt+N in the browser](/screenshots/getting-started-shortcuts-settings.png)
 
-For the most used shortcuts there is a faster way. Select the keyboard button at the bottom of the projects list to open the **Shortcut Menu**. It lists **Command Palette**, **Command History**, **Agent Launcher**, **Toggle Side Panel**, **Toggle Projects**, **Settings**, and the zoom keys, and you change them the same way.
+For the most used shortcuts there is a faster way. Select the keyboard button at the bottom of the sidebar to open the **Shortcut Menu**. It lists **Command Palette**, **Command History**, **Agent Launcher**, **Toggle Side Panel**, **Toggle Projects**, **Settings**, and the zoom keys, and you change them the same way.
 
 See [Settings](/docs/settings) for the other options on that page.

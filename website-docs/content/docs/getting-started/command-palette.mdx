@@ -1,9 +1,9 @@
 ---
 title: Command palette
-description: Find projects and run commands from one search box.
+description: Find projects and chats, and run commands from one search box.
 ---
 
-The command palette is a search box for projects and commands. Use it to switch projects, open a terminal, change the theme, and more, without the mouse.
+The command palette is a search box for projects, chats, and commands. Use it to switch projects, find a chat, open a terminal, change the theme, and more, without the mouse.
 
 ## Open the palette
 
@@ -11,7 +11,7 @@ Use one of these:
 
 - Press `Ctrl+K` (`Cmd+K` on macOS).
 - Press `Ctrl+Shift+P` (`Cmd+Shift+P` on macOS).
-- Select **Search** at the top of the projects list.
+- Select **Search** at the top of the sidebar.
 
 Both keys open the same palette, in the desktop app and in the browser.
 
@@ -25,7 +25,13 @@ Both keys open the same palette, in the desktop app and in the browser.
 
 Press `Esc` to close the palette.
 
-The palette matches the names and descriptions of commands, and the names and folders of projects. It doesn't search the files in your project or your chats. To search files, use the [file explorer](/docs/files). To find a chat, use **Search chats…** on the **Chats** tab.
+The palette matches the names and descriptions of commands, and the names and folders of projects. It doesn't search the files in your project. To search files, use the [file explorer](/docs/files).
+
+## Find a chat
+
+Type part of a chat's title. For the chats of the active project, the agent, the branch, and the model match too. Matching chats show first, under **Chats**, before the commands. The group lists the chats of the active project, in all of its worktrees. Chats without a project show under **Quick chats**, and match by title only. Select a chat to open it.
+
+The chat groups show only while you type. With an empty search box, the palette shows commands.
 
 ![The command palette after typing history, showing the payments-api project, Command History, and Open Shortcut Menu](/screenshots/getting-started-palette-search.png)
 
@@ -48,12 +54,13 @@ The palette groups its items in this order.
 
 - **New Terminal** opens a terminal in the active pane.
 - **New Terminal: &lt;name&gt;** opens a terminal from one of your saved terminal profiles. See [Terminals](/docs/terminals).
-- **Agent Launcher** shows the box where you start a new agent chat. See [Agents](/docs/agents).
+- **New chat** starts a new chat in the active pane. Its shortcut is shown next to it. See [Start a chat](/docs/agents/start-a-chat).
+- **New quick chat** starts a chat that has no project. See [Start a chat](/docs/agents/start-a-chat).
 - **Launch Agent** opens a command-line agent in a terminal in the active pane.
 - **New Browser Tab** opens a web page in Troupe. Desktop app only.
 - **Save Workspace Snapshot** saves the terminals you have open so you can bring them back later. See [Terminals](/docs/terminals).
 - **Open Canvas** opens the project's design document.
-- **New Project** creates a project. This command is in the phone layout only. Elsewhere, use **+** in the projects list.
+- **New Project** creates a project. This command is in the phone layout only. Elsewhere, use the **+** menu next to **Projects** in the sidebar.
 
 **Navigation** has these commands:
 
@@ -65,4 +72,5 @@ The palette groups its items in this order.
 - **Command History** opens a searchable list of the commands you ran in terminals. It shows when a project is open.
 - **Change Color Theme** opens the theme picker.
 - **Open Shortcut Menu** shows the most used shortcuts so you can change them.
+- **Report a Bug** opens the bug report form.
 - **SSH: &lt;host&gt;** connects to a saved SSH host. Desktop app only. See [SSH](/docs/ssh).
