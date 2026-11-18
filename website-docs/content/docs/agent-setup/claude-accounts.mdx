@@ -1,9 +1,9 @@
 ---
 title: Claude accounts
-description: Sign in to more than one Claude account, pick one per project, watch your limits, and switch when one runs out.
+description: Sign in to more than one Claude account, pick one per project or per chat, watch your limits, and switch when one runs out.
 ---
 
-If you have more than one Claude subscription, for example a personal one and a work one, Troupe can keep them all signed in. Each project uses one account for its Claude Agent chats. When an account reaches its limit, Troupe offers to continue the chat on another account.
+If you have more than one Claude subscription, for example a personal one and a work one, Troupe can keep them all signed in. Each project has an account for its Claude Agent chats, and one chat can use an account of its own. When a chat's account reaches its limit, Troupe moves that chat to another account, or offers you the choice.
 
 Accounts apply to **Claude Agent** chats only. To set up Claude Agent itself, see [Set up Claude Agent](/docs/agent-setup/install-agents#set-up-claude-agent).
 
@@ -49,7 +49,7 @@ Each account has a **⋯** menu with these actions:
 - **Make default**: projects that follow the default use this account.
 - **Sign in** or **Sign in again**: repeat the sign-in, for example after the login expires.
 - **Rename**: change the name Troupe shows.
-- **Remove**: sign Claude Code out of the account on this computer. Its chat history stays. Projects that used it move to the default account, and their open Claude Agent chats start again on it. You cannot remove **Default**.
+- **Remove**: sign Claude Code out of the account on this computer. Its chat history stays. Projects that used it move to the default account, and their open Claude Agent chats start again on it. Chats that used it as their own account follow their project again. You cannot remove **Default**.
 
 Every account shares the same Claude Code settings, skills, plugins and chat history. Only the login is separate.
 
@@ -59,9 +59,22 @@ Every account shares the same Claude Code settings, skills, plugins and chat his
 2. Click **Accounts**.
 3. Pick **Follow default**, or pick one account.
 
-New Claude Agent chats in the project use the account you pick. Chats that are already open move to it when they start again.
+New Claude Agent chats in the project use the account you pick. Open chats that follow the project start again on the new account. Chats that have their own account stay on it.
 
-You can also change the account from a Claude Agent chat. Click the account button in the chat box and pick an account under **Account for this project**.
+Before a chat starts, the account button in the agent launcher sets the account for the project too. Its menu is called **Account for this project**, and its first row is **Follow default**.
+
+## Choose the account for one chat
+
+A chat can run on another account than its project, for example to keep a long task on an account with more room.
+
+1. In a Claude Agent chat, click the account button in the chat box. It shows the account's name.
+2. The menu is called **Account for this chat**. Pick an account. Each row shows the account's plan and how much of its limits it has used.
+
+Troupe starts this chat again on that account and keeps the conversation. Other chats of the project keep their account. The account button now shows a pin next to the name, and its label says the account is for this chat only.
+
+To go back to the project's account, pick **Follow project** at the top of the menu. The row shows which account the project uses, for example "Uses Work". Picking the account the chat already uses changes nothing. **Manage accounts** opens **Settings** > **Provider**.
+
+New chats always start on the project's account.
 
 ## Watch your usage and limits
 
@@ -73,19 +86,36 @@ Troupe reads these numbers through Claude Code. It never reads your login token.
 
 ## Switch accounts when you hit a limit
 
-During a chat, Troupe watches the limit of the account the chat uses.
+During a chat, Troupe watches the limit of the account the chat uses. When a chat switches accounts, only that chat moves. The other chats of the project keep their account and keep working.
 
-- When the account gets close to a limit, a yellow bar above the chat box shows how much it has used. If another account has room, the bar has a **Switch to** button with that account's name.
-- When the account reaches its limit, a red box says which limit ran out and when it resets.
+### Near the limit
 
-In the red box, you can:
+When the account has used 80% of a limit, a notice at the top of the chat box says how much it has used and when the limit resets, for example "Work has used 85% of its 5-hour limit." You can keep chatting. If another account has room, click **Switch account** and pick one from the list. Click the **×** button to dismiss the notice.
 
-- Click **Switch to** _account_ **and continue**. Troupe moves the project to that account and continues the same chat. Troupe suggests the account with the most room left.
-- Click **Other account** to pick a different one.
-- Click **Continue when it resets**. Troupe continues the chat when the limit resets. Click **Cancel** to stop the wait.
+### Switch automatically
+
+**Switch accounts automatically** shows under the accounts in the **Claude Code** group of **Settings** > **Provider** when you have two or more accounts. It is on by default.
+
+When a chat reaches its account's limit, Troupe moves the chat to the signed-in account with the most room and continues it. Troupe does this on the computer that runs it, so it also works when no app window or browser has the chat open. The chat gets a short message instead of your last message again, for example "Troupe moved this chat from Claude account Work to Spare because Work reached its 5-hour limit. Continue the task you were working on." Subagents and background commands that were running are stopped, and the message asks the agent to start again the ones it still needs.
+
+When no other account has room, Troupe continues the chat when the limit resets. The notice in the chat box shows when, for example "Continues at 14:05", on every device that has the chat open. Click **Cancel** to stop the wait. If you or an automation continue the chat before then, Troupe leaves it alone at the reset.
+
+### Choose yourself
+
+When **Switch accounts automatically** is off, or Troupe could not switch, a notice at the top of the chat box says which limit ran out and when it resets. Your draft is kept.
+
+When another account has room, the notice shows **Go on with** and the account Troupe suggests, the one with the most room left. Click it to pick another account. The list shows each account with its usage bar and how much it has used. The account at its limit is listed last and cannot be picked. Click **Manage accounts** to open **Settings** > **Provider**. When the account you want is shown, click **Switch and continue**. Troupe moves this chat to that account and continues it with the same short message.
+
+When no other account has room, the notice says "No other account has room left right now." You can:
+
+- Click **Continue when it resets**. Troupe continues the chat when the limit resets and shows when, for example "Continues at 14:05". Click **Cancel** to stop the wait.
 - Click **Add account** to sign in to another account.
 
 Project Settings shows the same warning when the project's account is at its limit, with a **Use** button for the account with the most room.
+
+### Worker chats
+
+An agent can start worker chats for parts of a task. When **Switch accounts automatically** is on, each worker chat of a Claude Agent chat runs on its own account: the signed-in account with the most room, unless the agent names one. Troupe moves a worker chat at its limit like any other chat. When the setting is off, worker chats follow the project's account. See [Let an agent start worker chats](/docs/agents/chat-history#let-an-agent-start-worker-chats).
 
 ## Manage accounts on a server
 
