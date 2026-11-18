@@ -242,3 +242,26 @@ describe('worktree:open-terminal', () => {
     expect(spawnTerminalInPane).not.toHaveBeenCalled()
   })
 })
+
+describe('useTabOpeners handleAddTerminal during a project switch', () => {
+  it('opens the terminal in a pane of the project on screen', async () => {
+    const project = seed()
+    const { result } = mount(project)
+    await act(async () => {
+      result.current.handleAddTerminal('pane-1')
+    })
+    expect(spawnTerminalInPane).toHaveBeenCalledWith('pane-1', 'p1', ROOT, expect.anything())
+  })
+
+  it("spawns nothing while the previous project's tree is still on screen", async () => {
+    const project = seed()
+    // p1 is selected, but p0's tree (with pane-1) is still the visible one.
+    useWorkspaceStore.setState({ activeProjectId: 'p0' })
+    const { result } = mount(project)
+    await act(async () => {
+      result.current.handleAddTerminal('pane-1')
+    })
+    expect(spawnTerminalInPane).not.toHaveBeenCalled()
+    useWorkspaceStore.setState({ activeProjectId: '' })
+  })
+})

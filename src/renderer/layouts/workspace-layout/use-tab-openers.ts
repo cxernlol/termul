@@ -8,8 +8,10 @@ import { getActiveWorkingCopy, reportUnresolvedWorkingCopy } from '@/lib/active-
 import { launchAgentInPane } from '@/lib/agent-launch'
 import { BUILT_IN_AGENTS } from '@/lib/agents/agent-registry'
 import { newUserBrowserTabId } from '@/lib/browser-api'
+import { logFrontendError } from '@/lib/log-api'
 import { leaveQuickChatView } from '@/lib/no-project-chat'
 import { openProjectCanvas } from '@/lib/open-project-canvas'
+import { committedPaneProject } from '@/lib/pane-target'
 import { openTerminalFromProfile, spawnTerminalInPane } from '@/lib/terminal-spawn'
 import { getDefaultCwdForProject } from '@/lib/worktree-context'
 import { useDefaultShell } from '@/stores/app-settings-store'
@@ -124,6 +126,18 @@ export function useTabOpeners({
     (paneId: string | undefined, shell?: ShellInfo) => {
       const targetPaneId = paneId ?? useWorkspaceStore.getState().activePaneId
       if (!targetPaneId) return
+      // During a slow project switch the visible pane still belongs to the
+      // previous project: a terminal spawned for the selected project would
+      // land in a pane that filters it out. Wait for the switch instead.
+      if (committedPaneProject(targetPaneId) !== activeProjectId) {
+        void logFrontendError({
+          level: 'info',
+          source: SOURCE,
+          message: `New terminal skipped in pane ${targetPaneId}: project ${activeProjectId} is not on screen yet`
+        })
+        toast.info('The project is still opening. Try again in a moment.')
+        return
+      }
       leaveQuickChatView(SOURCE)
       if (shell) {
         handleCreateTerminalInPane(targetPaneId, shell.path)
@@ -131,7 +145,7 @@ export function useTabOpeners({
         handleCreateTerminalInPane(targetPaneId)
       }
     },
-    [handleCreateTerminalInPane]
+    [handleCreateTerminalInPane, activeProjectId]
   )
 
   const handleOpenTerminalProfile = useCallback(

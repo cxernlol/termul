@@ -187,6 +187,34 @@ describe('workspace-store per-project trees', () => {
       expect(parkedA.type === 'split' && parkedA.sizes).toEqual([50, 50])
     })
   })
+
+  describe('addTabToParkedPane', () => {
+    const tab = { type: 'terminal' as const, id: 'term-late', terminalId: 'late' }
+
+    it('adds the tab to the parked pane, makes it active and leaves the visible tree alone', () => {
+      store().activateProject('A', treeOf(leafWith('pane-a', 'ta')))
+      store().activateProject('B', treeOf(leafWith('pane-b', 'tb')))
+      const visibleRoot = store().root
+
+      expect(store().addTabToParkedPane('A', 'pane-a', tab)).toBe(true)
+
+      const parked = store().parkedTrees.A.root as LeafNode
+      expect(parked.tabs.map((t) => t.id)).toEqual(['term-ta', 'term-late'])
+      expect(parked.activeTabId).toBe('term-late')
+      expect(store().root).toBe(visibleRoot)
+    })
+
+    it('refuses the visible project, an unknown project and a missing pane', () => {
+      store().activateProject('A', treeOf(leafWith('pane-a', 'ta')))
+      store().activateProject('B', treeOf(leafWith('pane-b', 'tb')))
+      const before = store().parkedTrees
+
+      expect(store().addTabToParkedPane('B', 'pane-b', tab)).toBe(false)
+      expect(store().addTabToParkedPane('gone', 'pane-a', tab)).toBe(false)
+      expect(store().addTabToParkedPane('A', 'pane-x', tab)).toBe(false)
+      expect(store().parkedTrees).toBe(before)
+    })
+  })
 })
 
 describe('addAutomationsTab', () => {

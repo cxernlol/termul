@@ -14,6 +14,7 @@ import { useAppSettingsStore } from '@/stores/app-settings-store'
 import { useProjectStore } from '@/stores/project-store'
 import { useTerminalStore } from '@/stores/terminal-store'
 import { useWorkspaceStore } from '@/stores/workspace-store'
+import { findPaneById } from '@/stores/workspace-store/tree'
 import type { TerminalProfile } from '@/types/settings'
 
 export interface SpawnTerminalOptions {
@@ -33,6 +34,19 @@ export interface SpawnTerminalResult {
   success: boolean
   error?: string
   terminalId?: string
+}
+
+/**
+ * Where `paneId` lives for `projectId`: the visible tree (that project is on
+ * screen, or no tree is committed yet), its parked tree (the user switched
+ * away), or nowhere.
+ */
+function paneHome(projectId: string, paneId: string): 'visible' | 'parked' | null {
+  const workspace = useWorkspaceStore.getState()
+  const onScreen = !workspace.activeProjectId || workspace.activeProjectId === projectId
+  const root = onScreen ? workspace.root : workspace.parkedTrees?.[projectId]?.root
+  if (!root || findPaneById(root, paneId)?.type !== 'leaf') return null
+  return onScreen ? 'visible' : 'parked'
 }
 
 /**
@@ -86,6 +100,20 @@ export async function spawnTerminalInPane(
       }
     }
 
+    // The spawn can outlive the project switch the user started meanwhile:
+    // the tab goes to the pane it was asked for, in its own project's tree
+    // (visible or parked). With that pane gone, the PTY is released.
+    const home = paneHome(projectId, paneId)
+    if (!home) {
+      void terminalApi.kill(spawnResult.data.id)
+      void logFrontendError({
+        level: 'info',
+        source: 'terminal-spawn',
+        message: `Released PTY ${spawnResult.data.id}: pane ${paneId} of project ${projectId} is gone`
+      })
+      return { success: false, error: 'The pane closed before the terminal started.' }
+    }
+
     // Create terminal record in store
     const terminalCount = terminalStore.terminals.length
     const terminal = terminalStore.addTerminal(
@@ -105,11 +133,9 @@ export async function spawnTerminalInPane(
     }
 
     // Add terminal tab to the workspace pane
-    workspaceStore.addTabToPane(paneId, {
-      type: 'terminal',
-      id: `term-${terminal.id}`,
-      terminalId: terminal.id
-    })
+    const tab = { type: 'terminal' as const, id: `term-${terminal.id}`, terminalId: terminal.id }
+    if (home === 'visible') workspaceStore.addTabToPane(paneId, tab)
+    else workspaceStore.addTabToParkedPane(projectId, paneId, tab)
 
     return {
       success: true,

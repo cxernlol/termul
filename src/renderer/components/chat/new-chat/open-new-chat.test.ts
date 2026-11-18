@@ -408,6 +408,42 @@ describe('openNewChat', () => {
     expect(launchChat).not.toHaveBeenCalled()
   })
 
+  it("starts no chat for the selected project in the previous project's pane (slow switch)", async () => {
+    // p2 is selected, but p1's tree (with pane-1) is still the one on screen.
+    useWorkspaceStore.setState({ activeProjectId: 'p1' } as never)
+    useProjectStore.setState({
+      activeProjectId: 'p2',
+      projects: [
+        { id: 'p1', name: 'termul', path: '/work', isGitRepo: true },
+        { id: 'p2', name: 'other', path: '/other', isGitRepo: true }
+      ]
+    } as never)
+
+    expect(await openNewChat({ paneId: 'pane-1', reason: 'new-tab-menu' })).toEqual({
+      kind: 'skipped'
+    })
+    expect(launchChat).not.toHaveBeenCalled()
+    useWorkspaceStore.setState({ activeProjectId: '' } as never)
+  })
+
+  it('opens no launcher for a pane the user switched away from while the agent resolved', async () => {
+    useWorkspaceStore.setState({ activeProjectId: 'p1' } as never)
+    let finish: (value: unknown) => void = () => undefined
+    resolveEntries.mockReturnValue(
+      new Promise((resolve) => {
+        finish = resolve
+      })
+    )
+    const showAgentLauncher = vi.spyOn(useWorkspaceStore.getState(), 'showAgentLauncher')
+    const run = openNewChat({ reason: 'rail' })
+    useProjectStore.setState({ activeProjectId: 'p2' } as never)
+    finish([entry('cfg-b', 'install-required')])
+
+    expect(await run).toEqual({ kind: 'skipped' })
+    expect(showAgentLauncher).not.toHaveBeenCalled()
+    useWorkspaceStore.setState({ activeProjectId: '' } as never)
+  })
+
   it('keeps one start per pane and project, not per pane', async () => {
     useProjectStore.setState({
       projects: [

@@ -27,6 +27,7 @@ type PaneSliceState = Pick<
   | 'hideAgentLauncher'
   | 'splitPane'
   | 'addTabToPane'
+  | 'addTabToParkedPane'
   | 'moveTabToPane'
   | 'moveTabToNewSplit'
   | 'closeTab'
@@ -372,6 +373,21 @@ export const createPaneSlice: StateCreator<WorkspaceState, [], [], PaneSliceStat
 
   clearFullscreenPane: (): void => {
     set({ fullscreenPaneId: null })
+  },
+
+  addTabToParkedPane: (projectId: string, paneId: string, tab: WorkspaceTab): boolean => {
+    const state = get()
+    const parked = state.parkedTrees[projectId]
+    if (!parked || projectId === state.activeProjectId) return false
+    const pane = findPaneById(parked.root, paneId)
+    if (pane?.type !== 'leaf') return false
+    const root = updateLeaf(parked.root, paneId, (leaf) => ({
+      ...leaf,
+      tabs: leaf.tabs.some((t) => t.id === tab.id) ? leaf.tabs : [...leaf.tabs, tab],
+      activeTabId: tab.id
+    }))
+    set({ parkedTrees: { ...state.parkedTrees, [projectId]: { ...parked, root } } })
+    return true
   },
 
   updatePaneSizes: (splitId: string, sizes: number[], projectId?: string): void => {

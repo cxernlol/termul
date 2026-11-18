@@ -27,7 +27,7 @@ Supporting these are shared layout, navigation, modal, and design-system compone
 
 - `workspace/PaneRenderer.tsx` — recursive pane renderer for split layouts
 - `workspace/PaneContent.tsx` — content host for terminal, editor, and browser tabs inside a leaf pane
-- `workspace/WorkspaceTabBar.tsx` — tab strip for workspace tabs, reordering, terminal/editor/browser tab controls
+- `workspace/WorkspaceTabBar.tsx` — tab strip for workspace tabs, reordering, terminal/editor/browser tab controls; ends with the `+` New tab menu (`workspace/NewTabMenu.tsx`: new chat, terminal or browser tab in that pane)
 - `workspace/EditorTab.tsx` — editor tab presentation
 - `workspace/DropZoneOverlay.tsx` — drag/drop affordance for split and tab interactions
 

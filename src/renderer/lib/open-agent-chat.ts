@@ -114,19 +114,24 @@ export function openAgentChatInOwnProject(
     source,
     message: `Opening chat ${sessionId} switches project ${activeProjectId} -> ${owner}`
   })
-  // Same as the sidebar's project select (client-only on every surface).
-  releaseFocusNotOfProject(owner)
-  useProjectStore.getState().selectProject(owner)
-  useSSHStore.getState().selectProfile(null)
-  // An explicit open (not an effect-driven pick): it survives the pick the
-  // workspace hook issues for the same project, and activating the tab is a
-  // no-op when the commit's chat reattach already put it on screen.
-  void projectSwitch.request({
-    kind: 'open',
-    projectId: owner,
-    afterCommit: () => useWorkspaceStore.getState().addAgentChatTab(sessionId)
-  })
+  // Activating the tab is a no-op when the commit's chat reattach already
+  // put it on screen.
+  openProjectThen(owner, () => useWorkspaceStore.getState().addAgentChatTab(sessionId))
   return 'switched-project'
+}
+
+/**
+ * Switch to `projectId` the way the sidebar's project select does
+ * (client-only on every surface), then run `afterCommit` once that project's
+ * tree is the one on screen, so whatever it opens lands in that tree. It is
+ * an explicit open (not an effect-driven pick): it survives the pick the
+ * workspace hook issues for the same project.
+ */
+export function openProjectThen(projectId: string, afterCommit: () => void): void {
+  releaseFocusNotOfProject(projectId)
+  useProjectStore.getState().selectProject(projectId)
+  useSSHStore.getState().selectProfile(null)
+  void projectSwitch.request({ kind: 'open', projectId, afterCommit })
 }
 
 /**

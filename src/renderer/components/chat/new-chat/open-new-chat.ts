@@ -24,6 +24,7 @@ import {
   leaveQuickChatView,
   showNoProjectChat
 } from '@/lib/no-project-chat'
+import { committedPaneProject } from '@/lib/pane-target'
 import { getActiveWorktreeForProject, getDefaultCwdForProject } from '@/lib/worktree-context'
 import {
   type AgentOptionsCacheEntry,
@@ -51,6 +52,7 @@ export type NewChatReason =
   | 'project-row'
   | 'shortcut'
   | 'menu'
+  | 'new-tab-menu'
   | 'command-palette'
   | 'stopped-chat'
   | 'github-handoff'
@@ -110,6 +112,25 @@ function emptyChatInPane(paneId: string, projectId: string): SessionId | null {
   if (tab?.type !== 'agent-chat') return null
   const session = useAcpStore.getState().sessions[tab.sessionId]
   return session?.projectId === projectId && isEmptyStartChat(tab.sessionId) ? tab.sessionId : null
+}
+
+/**
+ * True when `paneId` is still a pane of the tree on screen and that tree is
+ * `projectId`'s (not the previous project's tree during a slow switch). Logs
+ * the skip otherwise.
+ */
+function paneStillTargets(
+  paneId: string,
+  projectId: string,
+  reason: NewChatReason,
+  what: 'chat' | 'launcher'
+): boolean {
+  if (committedPaneProject(paneId) === projectId) return true
+  log(
+    'info',
+    `New chat (reason=${reason}) skipped the ${what}: its pane or project changed while it started`
+  )
+  return false
 }
 
 /**
@@ -326,6 +347,10 @@ async function start(
 ): Promise<OpenNewChatResult> {
   const agent = await resolveNewChatAgent()
   if (agent.kind === 'none') {
+    // The await can outlive the pane or the project the user was in: a
+    // launcher for a pane that is no longer on screen would only block
+    // shortcuts that check for an open launcher.
+    if (!paneStillTargets(paneId, projectId, reason, 'launcher')) return { kind: 'skipped' }
     useWorkspaceStore.getState().showAgentLauncher(paneId)
     log('info', `New chat (reason=${reason}) opened the launcher: ${agent.reason}`)
     return { kind: 'launcher' }
@@ -343,6 +368,7 @@ async function start(
       const message = err instanceof Error ? err.message : String(err)
       toast.error(`Could not set up ${agent.name}: ${message}`)
       log('warn', `New chat (reason=${reason}) could not save ${agent.configId}: ${message}`)
+      if (!paneStillTargets(paneId, projectId, reason, 'launcher')) return { kind: 'skipped' }
       useWorkspaceStore.getState().showAgentLauncher(paneId)
       return { kind: 'launcher' }
     }
@@ -351,14 +377,7 @@ async function start(
 
   const picks = await savedPicks(agent.configId)
   // The awaits above can outlive the pane or the project the user was in.
-  const now = useWorkspaceStore.getState()
-  if (
-    findPaneById(now.root, paneId)?.type !== 'leaf' ||
-    useProjectStore.getState().activeProjectId !== projectId
-  ) {
-    log('info', `New chat (reason=${reason}) skipped: its pane or project changed while it started`)
-    return { kind: 'skipped' }
-  }
+  if (!paneStillTargets(paneId, projectId, reason, 'chat')) return { kind: 'skipped' }
   const cache = useAcpStore.getState().agentOptionsCache[agent.configId]
   const shown = newChatPlaceholderOptions(cache, picks)
   const dropped = (cache?.configOptions.length ?? 0) - shown.configOptions.length
@@ -410,7 +429,9 @@ async function start(
         )
         useWorkspaceStore.getState().removeTab(agentChatTabId(placeholderId))
         void discardEmptyChat(placeholderId)
-        useWorkspaceStore.getState().showAgentLauncher(paneId)
+        if (paneStillTargets(paneId, projectId, reason, 'launcher')) {
+          useWorkspaceStore.getState().showAgentLauncher(paneId)
+        }
       })
     })
   return { kind: 'opened', sessionId: placeholderId }

@@ -83,20 +83,27 @@ export async function openRightPanelView(
 }
 
 /**
+ * The open project's chat list in the Rail. Every project lists its chats
+ * under its row; the open project's list carries `data-open-project`.
+ */
+function openProjectRailChats(page: Page) {
+  return page.locator('[data-testid="rail-project-chats"][data-open-project]')
+}
+
+/**
  * The Rail chat row (under the open project) whose accessible name starts
  * with `title`: the project's chats, closed ones included. Call
  * {@link showAllRailChats} first when the chat may sit past "Show N more".
  */
 export function railChat(page: Page, title: string) {
-  return page
-    .getByTestId('rail-project-chats')
+  return openProjectRailChats(page)
     .getByRole('button', { name: new RegExp(`^${escapeRegExp(title)}`) })
     .first()
 }
 
 /** Expand the open project's Rail chats past "Show N more" (no-op when all fit). */
 export async function showAllRailChats(page: Page): Promise<void> {
-  const more = page.getByTestId('rail-project-chats').getByRole('button', {
+  const more = openProjectRailChats(page).getByRole('button', {
     name: /^Show \d+ more/
   })
   if ((await more.count()) > 0) await more.first().click()

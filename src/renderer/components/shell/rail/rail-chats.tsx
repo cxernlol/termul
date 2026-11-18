@@ -49,7 +49,7 @@ export interface RailChatGroupProps extends React.ComponentPropsWithoutRef<'div'
 }
 
 /**
- * Chats under the active Rail project: 1px between rows, 4px below the
+ * Chats under a Rail project: 1px between rows, 4px below the
  * group. Owns the "Show N more" state that {@link RailChatItem} and
  * {@link RailShowMore} read. Compose it as
  * `RailChatGroup > RailChatList > RailChatItem > RailChatRow`, then `RailShowMore`.

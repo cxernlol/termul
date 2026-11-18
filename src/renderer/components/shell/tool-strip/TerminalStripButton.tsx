@@ -34,10 +34,17 @@ export function TerminalStripButton({
   onNewTerminal
 }: TerminalStripButtonProps): React.JSX.Element {
   const appShell = useDefaultShell()
-  const { loading, sortedShells, defaultShell } = useAvailableShells(projectShell || appShell)
+  const { loading, failed, sortedShells, defaultShell, load } = useAvailableShells(
+    projectShell || appShell
+  )
 
   return (
-    <ContextMenu>
+    <ContextMenu
+      onOpenChange={(open) => {
+        // A failed detection runs again when the shell list opens.
+        if (open) load()
+      }}
+    >
       <ContextMenuTrigger asChild disabled={disabled}>
         <ToolStrip.Button
           label="New terminal"
@@ -47,7 +54,10 @@ export function TerminalStripButton({
           aria-haspopup="menu"
           onClick={() => {
             logShellEvent('strip opens a terminal tab')
-            onNewTerminal()
+            // The shell marked Default in the list, so a saved shell that no
+            // longer exists does not make the plain click fail. Before the
+            // detection lands, the spawn resolves the setting itself.
+            onNewTerminal(defaultShell)
           }}
           onKeyDown={(event) => {
             if (!isContextMenuKey(event)) return
@@ -59,7 +69,16 @@ export function TerminalStripButton({
       </ContextMenuTrigger>
       <ContextMenuContent className="w-52" aria-label="Shells">
         <ContextMenuLabel>New terminal with</ContextMenuLabel>
-        {loading ? (
+        {failed ? (
+          <ContextMenuItem
+            onSelect={(event) => {
+              event.preventDefault()
+              load()
+            }}
+          >
+            Could not detect shells. Try again
+          </ContextMenuItem>
+        ) : loading ? (
           <ContextMenuItem disabled>Detecting shells…</ContextMenuItem>
         ) : sortedShells && sortedShells.length > 0 ? (
           sortedShells.map((shell) => (

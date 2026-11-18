@@ -148,6 +148,13 @@ export interface WorkspaceState extends ProjectWorkspace {
     options?: SplitPaneOptions
   ) => void
   addTabToPane: (paneId: string, tab: WorkspaceTab, options?: AddTabOptions) => void
+  /**
+   * Add `tab` to a pane of a PARKED project's tree (the project the user left
+   * while the tab was starting) and make it that pane's active tab. Never
+   * touches the visible tree. False when that project has no parked tree or
+   * the pane is not one of its leaves.
+   */
+  addTabToParkedPane: (projectId: string, paneId: string, tab: WorkspaceTab) => boolean
   moveTabToPane: (tabId: string, sourcePaneId: string, targetPaneId: string) => void
   moveTabToNewSplit: (
     tabId: string,

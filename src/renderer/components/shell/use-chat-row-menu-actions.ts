@@ -6,8 +6,9 @@ import { openerApi } from '@/lib/api'
 import { copyChatReference } from '@/lib/chat-reference'
 import { copyTextWithToast } from '@/lib/copy-text'
 import { logFrontendError } from '@/lib/log-api'
-import { openAgentChatPlaced } from '@/lib/open-agent-chat'
+import { openAgentChatPlaced, openProjectThen } from '@/lib/open-agent-chat'
 import { openTerminalAtCwd } from '@/lib/terminal-spawn'
+import { useProjectStore } from '@/stores/project-store'
 import { useWorkspaceStore } from '@/stores/workspace-store'
 
 const LOG_SOURCE = 'shell-chat-row-menu'
@@ -37,16 +38,33 @@ export function useChatRowMenuActions(projectId: string): ChatRowMenuActions {
 
   const onOpenTerminal = useCallback(
     async (entry: ProjectChatEntry) => {
-      if (!entry.cwd) return
-      const outcome = await openTerminalAtCwd(projectId, entry.cwd)
-      if (outcome.status === 'opened') return
-      if (outcome.status === 'no-pane') {
-        toast.error('No active pane', { description: 'Open a pane first, then try again.' })
+      const cwd = entry.cwd
+      if (!cwd) return
+      const open = async (): Promise<void> => {
+        const outcome = await openTerminalAtCwd(projectId, cwd)
+        if (outcome.status === 'opened') return
+        if (outcome.status === 'no-pane') {
+          toast.error('No active pane', { description: 'Open a pane first, then try again.' })
+          return
+        }
+        toast.error('Could not open a terminal', {
+          description: outcome.error || 'Try again.'
+        })
+      }
+      // The Rail lists every project's chats. A chat of another project opens
+      // its terminal in that project's pane: switch first and spawn once the
+      // switch commits (the active pane is then that project's). A switch
+      // that a newer pick replaces opens nothing.
+      if (useProjectStore.getState().activeProjectId !== projectId) {
+        void logFrontendError({
+          level: 'info',
+          source: LOG_SOURCE,
+          message: `[rail-chats] open terminal for chat ${entry.id} switches to project ${projectId}`
+        })
+        openProjectThen(projectId, () => void open())
         return
       }
-      toast.error('Could not open a terminal', {
-        description: outcome.error || 'Try again.'
-      })
+      await open()
     },
     [projectId]
   )

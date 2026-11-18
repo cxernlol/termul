@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mockSessionIndexEntry } from '@/lib/test-utils/acp'
 import { resetChatActivity, seedChatActivity } from '@/lib/test-utils/chat-activity'
 import { useAcpStore } from '@/stores/acp-store'
+import { useProjectStore } from '@/stores/project-store'
 import { resetShellLayoutStoreForTests, useShellLayoutStore } from '@/stores/shell-layout-store'
 import { useWorkspaceStore } from '@/stores/workspace-store'
 import type { Project } from '@/types/project'
@@ -43,8 +44,12 @@ const entry = (id: string, lastActivityAt: number) =>
     lastActivityAt
   })
 
+const realSelectProject = useProjectStore.getState().selectProject
+
 beforeEach(() => {
   vi.clearAllMocks()
+  // The rows belong to p1, the open project, unless a test switches it.
+  useProjectStore.setState({ activeProjectId: 'p1', selectProject: realSelectProject })
   mocks.paneDnd.dragPayload = null
   mocks.openHistorySession.mockResolvedValue(undefined)
   mocks.deleteHistorySession.mockResolvedValue(undefined)
@@ -73,7 +78,7 @@ const rows = () =>
 
 describe('RailProjectChats', () => {
   it('renders nothing without chats', () => {
-    const { container } = render(<RailProjectChats project={project} />)
+    const { container } = render(<RailProjectChats project={project} isOpenProject />)
     expect(container).toBeEmptyDOMElement()
   })
 
@@ -83,7 +88,7 @@ describe('RailProjectChats', () => {
         mockSessionIndexEntry({ id: 'other', projectId: 'p2', title: 'Other' })
       )
     })
-    render(<RailProjectChats project={project} />)
+    render(<RailProjectChats project={project} isOpenProject />)
     expect(rows().map((row) => row.getAttribute('title'))).toEqual([
       'Chat c6',
       'Chat c5',
@@ -98,13 +103,13 @@ describe('RailProjectChats', () => {
   it('collapses the list on a 0fr grid row (inert, faded), and opens it again', () => {
     useAcpStore.setState({ sessionIndex: [entry('a', 1)] })
     useShellLayoutStore.getState().setProjectChatsHidden('p1', true)
-    const { container, rerender } = render(<RailProjectChats project={project} />)
+    const { container, rerender } = render(<RailProjectChats project={project} isOpenProject />)
     const collapse = container.querySelector('[data-rail-chats-collapse]')
     expect(collapse).toHaveAttribute('data-rail-chats-collapse', 'closed')
     expect(collapse).toHaveAttribute('inert')
     expect(collapse).toHaveClass('grid-rows-[0fr]', 'duration-150', 'motion-reduce:transition-none')
     useShellLayoutStore.getState().setProjectChatsHidden('p1', false)
-    rerender(<RailProjectChats project={project} />)
+    rerender(<RailProjectChats project={project} isOpenProject />)
     expect(collapse).toHaveAttribute('data-rail-chats-collapse', 'open')
     expect(collapse).not.toHaveAttribute('inert')
     expect(collapse).toHaveClass('grid-rows-[1fr]', 'duration-200')
@@ -117,7 +122,7 @@ describe('RailProjectChats', () => {
     useShellLayoutStore.getState().setProjectChatsHidden('p1', true)
     render(
       <RailDensityProvider density="collapsed">
-        <RailProjectChats project={project} />
+        <RailProjectChats project={project} isOpenProject />
       </RailDensityProvider>
     )
     expect(screen.queryByRole('list', { name: 'Chats in Alpha' })).not.toBeInTheDocument()
@@ -126,7 +131,7 @@ describe('RailProjectChats', () => {
   it('names each row with its status and shows the trail', () => {
     useAcpStore.setState({ sessionIndex: [entry('a', 2), entry('b', 1)] })
     seedChatActivity({ a: { needsYou: true } })
-    render(<RailProjectChats project={project} />)
+    render(<RailProjectChats project={project} isOpenProject />)
     const needsYou = screen.getByRole('button', { name: 'Chat a, Needs you' })
     expect(needsYou).toHaveTextContent('Needs you')
     expect(screen.getByRole('button', { name: 'Chat b' })).toBeInTheDocument()
@@ -142,7 +147,7 @@ describe('RailProjectChats', () => {
         activeTabId: 'tab-b'
       }
     } as never)
-    render(<RailProjectChats project={project} />)
+    render(<RailProjectChats project={project} isOpenProject />)
     const open = screen.getByRole('button', { name: 'Chat b' })
     expect(open).toHaveAttribute('aria-current', 'true')
     expect(open).toHaveClass('keycap')
@@ -151,7 +156,7 @@ describe('RailProjectChats', () => {
 
   it('opens the chat on click and writes one info log from the Rail', () => {
     useAcpStore.setState({ sessionIndex: [entry('a', 1)] })
-    render(<RailProjectChats project={project} />)
+    render(<RailProjectChats project={project} isOpenProject />)
     fireEvent.click(screen.getByRole('button', { name: 'Chat a' }))
     expect(mocks.openHistorySession).toHaveBeenCalledWith('a')
     expect(mocks.addAgentChatTab).toHaveBeenCalledWith('a')
@@ -163,9 +168,21 @@ describe('RailProjectChats', () => {
     })
   })
 
+  it("switches to the chat's project first when another project is open", () => {
+    const selectProject = vi.fn()
+    useProjectStore.setState({ activeProjectId: 'p2', selectProject } as never)
+    useAcpStore.setState({ sessionIndex: [entry('a', 1)] })
+    render(<RailProjectChats project={project} isOpenProject />)
+    fireEvent.click(screen.getByRole('button', { name: 'Chat a' }))
+    expect(mocks.openHistorySession).toHaveBeenCalledWith('a')
+    expect(selectProject).toHaveBeenCalledWith('p1')
+    // The tab goes into p1's own tree after the switch, not into p2's panes.
+    expect(mocks.addAgentChatTab).not.toHaveBeenCalled()
+  })
+
   it('drags a row into a pane with the chat payload and logs it from the Rail', () => {
     useAcpStore.setState({ sessionIndex: [entry('a', 1)] })
-    render(<RailProjectChats project={project} />)
+    render(<RailProjectChats project={project} isOpenProject />)
     const row = screen.getByRole('button', { name: 'Chat a' })
     expect(row).toHaveAttribute('draggable', 'true')
     fireEvent.dragStart(row)
@@ -179,9 +196,19 @@ describe('RailProjectChats', () => {
     expect(mocks.openHistorySession).not.toHaveBeenCalled()
   })
 
-  it('does not open on the click right after a drag ends, then opens on the next click', () => {
+  it('does not drag a chat of a project that is not open (a pane would refuse it)', () => {
     useAcpStore.setState({ sessionIndex: [entry('a', 1)] })
     render(<RailProjectChats project={project} />)
+    const row = screen.getByRole('button', { name: 'Chat a' })
+    expect(row).not.toHaveAttribute('draggable', 'true')
+    fireEvent.dragStart(row)
+    expect(mocks.paneDnd.startChatDrag).not.toHaveBeenCalled()
+    expect(list().parentElement?.closest('[data-open-project]')).toBeNull()
+  })
+
+  it('does not open on the click right after a drag ends, then opens on the next click', () => {
+    useAcpStore.setState({ sessionIndex: [entry('a', 1)] })
+    render(<RailProjectChats project={project} isOpenProject />)
     const row = screen.getByRole('button', { name: 'Chat a' })
     fireEvent.dragStart(row)
     fireEvent.dragEnd(row)
@@ -195,7 +222,7 @@ describe('RailProjectChats', () => {
   it('dims the dragged row like a dragged tab, scale off with reduced motion', () => {
     useAcpStore.setState({ sessionIndex: [entry('a', 2), entry('b', 1)] })
     mocks.paneDnd.dragPayload = { type: 'chat', sessionId: 'b' }
-    render(<RailProjectChats project={project} />)
+    render(<RailProjectChats project={project} isOpenProject />)
     const dragged = screen.getByRole('button', { name: 'Chat b' })
     expect(dragged).toHaveAttribute('data-dragging')
     expect(dragged).toHaveClass('opacity-50', 'scale-[0.98]', 'motion-reduce:scale-100')
@@ -208,7 +235,7 @@ describe('RailProjectChats', () => {
 describe('RailProjectChats row menu', () => {
   it('opens the Paper chat row menu on right-click', async () => {
     useAcpStore.setState({ sessionIndex: [entry('a', 1)] })
-    render(<RailProjectChats project={project} />)
+    render(<RailProjectChats project={project} isOpenProject />)
     fireEvent.contextMenu(screen.getByRole('button', { name: 'Chat a' }))
     const menu = await screen.findByTestId('rail-chat-menu')
     expect(
@@ -229,7 +256,7 @@ describe('RailProjectChats row menu', () => {
 
   it('opens the same menu from the row "…" button, which sits in place of the trail', async () => {
     useAcpStore.setState({ sessionIndex: [entry('a', 1)] })
-    render(<RailProjectChats project={project} />)
+    render(<RailProjectChats project={project} isOpenProject />)
     const more = screen.getByRole('button', { name: 'More actions for Chat a' })
     expect(more).toHaveAttribute('aria-haspopup', 'menu')
     expect(more).toHaveClass('opacity-0', 'group-hover/rail-chat:opacity-100')
@@ -241,7 +268,7 @@ describe('RailProjectChats row menu', () => {
 
   it('opens the menu with Shift+F10 on the row', async () => {
     useAcpStore.setState({ sessionIndex: [entry('a', 1)] })
-    render(<RailProjectChats project={project} />)
+    render(<RailProjectChats project={project} isOpenProject />)
     fireEvent.keyDown(screen.getByRole('button', { name: 'Chat a' }), {
       key: 'F10',
       shiftKey: true
@@ -251,7 +278,7 @@ describe('RailProjectChats row menu', () => {
 
   it('disables the folder items for a chat with no cwd', async () => {
     useAcpStore.setState({ sessionIndex: [{ ...entry('a', 1), cwd: undefined } as never] })
-    render(<RailProjectChats project={project} />)
+    render(<RailProjectChats project={project} isOpenProject />)
     fireEvent.contextMenu(screen.getByRole('button', { name: 'Chat a' }))
     const menu = await screen.findByTestId('rail-chat-menu')
     for (const name of ['Open terminal here', 'Open in file explorer', 'Copy path']) {
@@ -261,7 +288,7 @@ describe('RailProjectChats row menu', () => {
 
   it('deletes the chat only after the confirm, and logs it from the Rail', async () => {
     useAcpStore.setState({ sessionIndex: [entry('a', 1)] })
-    render(<RailProjectChats project={project} />)
+    render(<RailProjectChats project={project} isOpenProject />)
     fireEvent.contextMenu(screen.getByRole('button', { name: 'Chat a' }))
     fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete chat' }))
     const dialog = await screen.findByRole('alertdialog')
@@ -276,7 +303,7 @@ describe('RailProjectChats row menu', () => {
 
   it('keeps the chat when the confirm is cancelled', async () => {
     useAcpStore.setState({ sessionIndex: [entry('a', 1)] })
-    render(<RailProjectChats project={project} />)
+    render(<RailProjectChats project={project} isOpenProject />)
     fireEvent.contextMenu(screen.getByRole('button', { name: 'Chat a' }))
     fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete chat' }))
     fireEvent.click(
@@ -291,7 +318,7 @@ describe('RailProjectChats on the collapsed Rail', () => {
   const renderCollapsed = () =>
     render(
       <RailDensityProvider density="collapsed">
-        <RailProjectChats project={project} />
+        <RailProjectChats project={project} isOpenProject />
       </RailDensityProvider>
     )
   const peek = () => screen.findByTestId('rail-chat-peek')

@@ -32,10 +32,8 @@ export const RailProjectItem = memo(function RailProjectItem(
           renderContextMenu={props.renderContextMenu}
           diffStat={diffStat}
         />
-      ) : props.isActive ? (
-        <ActiveRailProjectItem {...props} diffStat={diffStat} />
       ) : (
-        <ProjectItem {...props} diffStat={diffStat} />
+        <ChatsToggleRailProjectItem {...props} diffStat={diffStat} />
       )}
       <RailWorktreeChip project={props.project} collapsed={collapsed} />
     </RailWorktreeSwitcher>
@@ -43,11 +41,14 @@ export const RailProjectItem = memo(function RailProjectItem(
 })
 
 /**
- * The open project's row: it owns the chevron that collapses or expands its
- * chat list (only when it has chats). A click on the row also toggles it.
+ * A project's row with the chevron that collapses or expands its chat list
+ * (only when it has chats). Every project keeps its own collapse state, so a
+ * project switch leaves each list as the user left it. A click on the open
+ * project's row also toggles it; a click on another project's row only opens
+ * that project.
  */
-function ActiveRailProjectItem(props: ProjectItemProps): React.JSX.Element {
-  const { project, onClick } = props
+function ChatsToggleRailProjectItem(props: ProjectItemProps): React.JSX.Element {
+  const { project, onClick, isActive } = props
   const hasChats = useProjectHasChats(project)
   const hidden = useProjectChatsHidden(project.id)
   if (!hasChats) return <ProjectItem {...props} />
@@ -61,10 +62,14 @@ function ActiveRailProjectItem(props: ProjectItemProps): React.JSX.Element {
       chatsExpanded={!hidden}
       chatsListId={railChatsListId(project.id)}
       onToggleChats={toggle}
-      onClick={() => {
-        toggle()
-        onClick()
-      }}
+      onClick={
+        isActive
+          ? () => {
+              toggle()
+              onClick()
+            }
+          : onClick
+      }
     />
   )
 }

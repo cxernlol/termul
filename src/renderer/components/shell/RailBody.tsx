@@ -31,10 +31,15 @@ interface RailBodyProps {
 
 const NEED_PROJECT = 'Open a project first'
 
+/** Every project lists its chats under its row, open or not. */
+const renderProjectChats = (project: Project, isActive: boolean): React.JSX.Element => (
+  <RailProjectChats key={project.id} project={project} isOpenProject={isActive} />
+)
+
 /**
  * Rail body, top to bottom: the header (top row part, ending in the Rail
  * toggle), the nav (New chat, Search, Canvas, Automations), the Projects
- * section with the active project's chats (and the SSH section on desktop),
+ * section with every project's chats (and the SSH section on desktop),
  * and the icon-only footer. Fills the width its container gives it and
  * inherits the Rail's surface.
  *
@@ -62,7 +67,6 @@ export function RailBody({
     useProjectActions()
   const searchShortcut = useShortcutLabel('commandPalette')
   const newChat = useNewChat()
-  const activeProject = projects.find((project) => project.id === activeProjectId)
 
   return (
     <div className="flex h-full min-h-0 w-full flex-col">
@@ -115,11 +119,7 @@ export function RailBody({
           onSSHConnect={onSSHConnect}
           onSelectSSHProfile={onSelectSSHProfile}
           activeSSHProfileId={activeSSHProfileId}
-          activeProjectContent={
-            activeProject ? (
-              <RailProjectChats key={activeProject.id} project={activeProject} />
-            ) : null
-          }
+          renderProjectContent={renderProjectChats}
         />
       </RailWorktreeSwitcherProvider>
 

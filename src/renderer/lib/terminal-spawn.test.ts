@@ -9,6 +9,9 @@ const {
   mockSetTerminalPtyId,
   mockSetTerminalClaim,
   mockAddTabToPane,
+  mockAddTabToParkedPane,
+  mockWorkspace,
+  mockTerminalApiKill,
   mockTerminalApiSpawn,
   mockTerminals,
   mockSetWorktreePick,
@@ -22,6 +25,14 @@ const {
   mockSetTerminalPtyId: vi.fn(),
   mockSetTerminalClaim: vi.fn(),
   mockAddTabToPane: vi.fn(),
+  mockAddTabToParkedPane: vi.fn(() => true),
+  // The committed tree is proj-1's, with the one pane the tests target.
+  mockWorkspace: {
+    activeProjectId: 'proj-1',
+    root: { type: 'leaf', id: 'pane-1', tabs: [], activeTabId: null } as unknown,
+    parkedTrees: {} as Record<string, { root: unknown }>
+  },
+  mockTerminalApiKill: vi.fn(),
   mockTerminalApiSpawn: vi.fn(),
   mockTerminals: [] as Array<{ projectId: string }>,
   mockSetWorktreePick: vi.fn(),
@@ -49,7 +60,11 @@ vi.mock('@/stores/workspace-store', () => ({
   useWorkspaceStore: {
     getState: () => ({
       activePaneId: mockActivePaneId.current,
-      addTabToPane: mockAddTabToPane
+      addTabToPane: mockAddTabToPane,
+      addTabToParkedPane: mockAddTabToParkedPane,
+      activeProjectId: mockWorkspace.activeProjectId,
+      root: mockWorkspace.root,
+      parkedTrees: mockWorkspace.parkedTrees
     })
   }
 }))
@@ -89,7 +104,8 @@ vi.mock('@/lib/log-api', () => ({
 
 vi.mock('@/lib/api', () => ({
   terminalApi: {
-    spawn: mockTerminalApiSpawn
+    spawn: mockTerminalApiSpawn,
+    kill: mockTerminalApiKill
   }
 }))
 
@@ -112,6 +128,8 @@ describe('spawnTerminalInPane', () => {
     vi.clearAllMocks()
     mockTerminals.length = 0
     mockActivePaneId.current = 'pane-1'
+    mockWorkspace.activeProjectId = 'proj-1'
+    mockWorkspace.parkedTrees = {}
     mockAddTerminal.mockReturnValue({ id: 'term-new-1' })
     // CAP-3: spawn is the only claim issuance path — the fixture carries the
     // issued lease credential alongside the terminal info.
@@ -227,6 +245,47 @@ describe('spawnTerminalInPane', () => {
 
     expect(result.success).toBe(false)
     expect(result.error).toBe('Failed to create terminal')
+  })
+})
+
+describe('spawnTerminalInPane across a project switch', () => {
+  const leaf = { type: 'leaf', id: 'pane-1', tabs: [], activeTabId: null }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockTerminals.length = 0
+    mockAddTerminal.mockReturnValue({ id: 'term-new-1' })
+    mockTerminalApiSpawn.mockResolvedValue({
+      success: true,
+      data: mockSpawnedTerminal({ cwd: '/test/worktree' })
+    })
+  })
+
+  it('puts the tab in the parked tree of its project when the user switched away', async () => {
+    mockWorkspace.activeProjectId = 'proj-2'
+    mockWorkspace.parkedTrees = { 'proj-1': { root: leaf } }
+    const result = await spawnTerminalInPane('pane-1', 'proj-1', '/test/worktree')
+    expect(result.success).toBe(true)
+    expect(mockAddTabToPane).not.toHaveBeenCalled()
+    expect(mockAddTabToParkedPane).toHaveBeenCalledWith('proj-1', 'pane-1', {
+      type: 'terminal',
+      id: 'term-term-new-1',
+      terminalId: 'term-new-1'
+    })
+  })
+
+  it('releases the PTY and reports it when the target pane is gone', async () => {
+    mockWorkspace.activeProjectId = 'proj-2'
+    mockWorkspace.parkedTrees = {}
+    const result = await spawnTerminalInPane('pane-1', 'proj-1', '/test/worktree')
+    expect(result).toEqual({
+      success: false,
+      error: 'The pane closed before the terminal started.'
+    })
+    expect(mockTerminalApiKill).toHaveBeenCalledWith('pty-1')
+    expect(mockAddTerminal).not.toHaveBeenCalled()
+    expect(mockAddTabToPane).not.toHaveBeenCalled()
+    mockWorkspace.activeProjectId = 'proj-1'
   })
 })
 

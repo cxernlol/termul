@@ -1,9 +1,10 @@
 import type { ShellInfo } from '@shared/types/ipc.types'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { CanvasMountLayer } from '@/components/canvas/CanvasMountLayer'
 import { ShellFrame } from '@/components/shell/ShellFrame'
 import { WebTokenGateScreen } from '@/components/WebTokenGateScreen'
+import { type NewTabActions, NewTabActionsProvider } from '@/components/workspace/new-tab-actions'
 import { useEditorPersistence } from '@/hooks/use-editor-persistence'
 import { useFileWatcher } from '@/hooks/use-file-watcher'
 import { useMobileWebShell } from '@/hooks/use-mobile-web-shell'
@@ -166,6 +167,11 @@ export default function WorkspaceLayout(): React.JSX.Element {
     (shell?: ShellInfo) => handleAddTerminal(undefined, shell),
     [handleAddTerminal]
   )
+  // Tab bar `+` menu: a new terminal or browser tab in that bar's pane.
+  const newTabActions = useMemo<NewTabActions>(
+    () => ({ addTerminal: handleAddTerminal, addBrowserTab: handleNewBrowserTab }),
+    [handleAddTerminal, handleNewBrowserTab]
+  )
 
   // Determine if we should show the terminal area (only on workspace dashboard)
   const isWorkspaceRoute = isWorkspaceRoutePath(location.pathname)
@@ -209,17 +215,19 @@ export default function WorkspaceLayout(): React.JSX.Element {
   }
 
   const workspaceMain = (
-    <WorkspaceMain
-      isMobileWebShell={isMobileWebShell}
-      isWorkspaceRoute={isWorkspaceRoute}
-      projects={projects}
-      ssh={ssh}
-      setIsNewProjectModalOpen={setIsNewProjectModalOpen}
-      handleCloseTerminal={terminalClose.handleCloseTerminal}
-      handleCloseEditorTab={editorTabClose.handleCloseEditorTab}
-      handleCloseTabs={bulkTabClose.handleCloseTabs}
-      closingTerminalIds={terminalClose.closingTerminalIds}
-    />
+    <NewTabActionsProvider value={newTabActions}>
+      <WorkspaceMain
+        isMobileWebShell={isMobileWebShell}
+        isWorkspaceRoute={isWorkspaceRoute}
+        projects={projects}
+        ssh={ssh}
+        setIsNewProjectModalOpen={setIsNewProjectModalOpen}
+        handleCloseTerminal={terminalClose.handleCloseTerminal}
+        handleCloseEditorTab={editorTabClose.handleCloseEditorTab}
+        handleCloseTabs={bulkTabClose.handleCloseTabs}
+        closingTerminalIds={terminalClose.closingTerminalIds}
+      />
+    </NewTabActionsProvider>
   )
 
   const appModals = (

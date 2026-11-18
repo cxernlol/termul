@@ -252,15 +252,15 @@ async function flushShellEffect(): Promise<void> {
 }
 
 describe('WorkspaceTabBar', () => {
-  it('has no New tab menu, title actions or pane-close control (Paper tab bar)', async () => {
+  it('has the New tab menu and no title actions or pane-close control (Paper tab bar)', async () => {
     mockWorkspaceStoreState.leafCount = 1
     const { container } = render(<WorkspaceTabBar paneId="pane-a" tabs={[]} activeTabId={null} />)
 
     await flushShellEffect()
 
-    expect(screen.queryByRole('button', { name: 'New tab' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'New tab' })).toBeInTheDocument()
     expect(screen.queryByTitle('Close pane')).not.toBeInTheDocument()
-    expect(screen.queryAllByRole('button')).toHaveLength(0)
+    expect(screen.queryAllByRole('button')).toHaveLength(1)
     // 44px, background surface, 0.5px bottom hairline, 6px inline padding.
     expect(container.firstElementChild).toHaveClass(
       'h-11',
@@ -1513,7 +1513,8 @@ describe('WorkspaceTabBar', () => {
       expect(spacer).toHaveAttribute('data-tauri-drag-region')
       expect(screen.queryByTestId('window-controls')).toBeNull()
       expect(screen.queryAllByRole('button', { name: /window$/ })).toHaveLength(0)
-      expect(screen.queryByRole('button', { name: 'New tab' })).toBeNull()
+      // The `+` sits before the spacer, so the controls never cover it.
+      expect(screen.getByRole('button', { name: 'New tab' })).toBeInTheDocument()
     })
   })
 })

@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { useAppSettingsStore } from '@/stores/app-settings-store'
 import { TerminalStripButton } from './TerminalStripButton'
+import { resetAvailableShellsForTests } from './use-available-shells'
 
 const { mockLog, mockGetShells } = vi.hoisted(() => ({
   mockLog: vi.fn(() => Promise.resolve()),
@@ -35,6 +36,7 @@ const shellItems = () => screen.getAllByRole('menuitem').map((item) => item.text
 
 beforeEach(() => {
   vi.clearAllMocks()
+  resetAvailableShellsForTests()
   mockGetShells.mockResolvedValue({
     success: true,
     data: { default: ZSH, available: [ZSH, BASH, FISH] }
@@ -48,7 +50,8 @@ describe('TerminalStripButton', () => {
   it('opens a terminal with the default shell on a plain click, without a menu', async () => {
     const onNewTerminal = await renderButton()
     fireEvent.click(button())
-    expect(onNewTerminal).toHaveBeenCalledWith()
+    // The shell the list marks Default, so a missing saved shell cannot fail it.
+    expect(onNewTerminal).toHaveBeenCalledWith(ZSH)
     expect(screen.queryByRole('menu')).not.toBeInTheDocument()
     expect(mockLog).toHaveBeenCalledWith(
       expect.objectContaining({ message: '[shell] strip opens a terminal tab' })
@@ -100,6 +103,21 @@ describe('TerminalStripButton', () => {
       'aria-disabled',
       'true'
     )
+  })
+
+  it('retries a failed detection on open, then offers Try again, and lists the shells once it works', async () => {
+    // The mount detection and the retry on open both fail.
+    mockGetShells
+      .mockResolvedValueOnce({ success: false, error: 'offline' })
+      .mockResolvedValueOnce({ success: false, error: 'offline' })
+    await renderButton()
+    fireEvent.contextMenu(button())
+    const retry = await screen.findByRole('menuitem', {
+      name: 'Could not detect shells. Try again'
+    })
+    fireEvent.click(retry)
+    await waitFor(() => expect(shellItems()).toEqual(['ZshDefault', 'Bash', 'Fish']))
+    expect(mockGetShells).toHaveBeenCalledTimes(3)
   })
 
   it('opens no menu while disabled', async () => {

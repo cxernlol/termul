@@ -21,6 +21,7 @@ import {
 import type { Terminal } from '@/types/project'
 import type { TabReorderPosition } from '@/types/workspace.types'
 import { EditorTab } from './EditorTab'
+import { NewTabMenu } from './NewTabMenu'
 import type { TabBulkMenuProps } from './tab-context-menu'
 import { AgentChatTabInline } from './tabs/agent-chat-tab'
 import { AutomationsTabInline } from './tabs/automations-tab'
@@ -634,8 +635,13 @@ export function WorkspaceTabBar({
           )}
         </div>
 
-        {leafCount > 1 && (
-          <div className="flex h-full shrink-0 items-center pl-1" data-tauri-drag-region={dragAttr}>
+        <div
+          className="flex h-full shrink-0 items-center gap-1 pl-1"
+          data-tauri-drag-region={dragAttr}
+        >
+          {/* One `+` New tab menu: a chat, a terminal or a browser tab in this pane. */}
+          <NewTabMenu paneId={paneId} />
+          {leafCount > 1 && (
             <button
               type="button"
               onClick={() => togglePaneFullscreen(paneId)}
@@ -645,8 +651,8 @@ export function WorkspaceTabBar({
             >
               {isFullscreenPane ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
             </button>
-          </div>
-        )}
+          )}
+        </div>
 
         <WindowControlsInset windowControls={Boolean(topRow?.windowControls)} />
       </div>

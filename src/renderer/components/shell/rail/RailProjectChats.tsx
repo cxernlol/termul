@@ -56,6 +56,11 @@ interface RailProjectChatRowProps extends React.ComponentPropsWithoutRef<'button
   card: ChatCardData
   open: boolean
   dragging: boolean
+  /**
+   * Only the open project's chats drag into a pane: a pane takes no chat of
+   * another project, so its drop zones must not light up for one.
+   */
+  canDrag: boolean
   onOpenChat: (entry: ProjectChatEntry) => void
   onDragChat: (entry: ProjectChatEntry, event: React.DragEvent) => void
   onDragChatEnd: () => void
@@ -75,6 +80,7 @@ function RailProjectChatRow({
   card,
   open,
   dragging,
+  canDrag,
   onOpenChat,
   onDragChat,
   onDragChatEnd,
@@ -98,15 +104,23 @@ function RailProjectChatRow({
         <RailChatRow
           open={open}
           dragging={dragging}
-          draggable
-          onDragStart={(event) => {
-            dragEndedAt.current = null
-            onDragChat(entry, event)
-          }}
-          onDragEnd={() => {
-            dragEndedAt.current = performance.now()
-            onDragChatEnd()
-          }}
+          draggable={canDrag}
+          onDragStart={
+            canDrag
+              ? (event) => {
+                  dragEndedAt.current = null
+                  onDragChat(entry, event)
+                }
+              : undefined
+          }
+          onDragEnd={
+            canDrag
+              ? () => {
+                  dragEndedAt.current = performance.now()
+                  onDragChatEnd()
+                }
+              : undefined
+          }
           onClick={() => {
             const endedAt = dragEndedAt.current
             dragEndedAt.current = null
@@ -195,6 +209,11 @@ function RailChatCollapse({
 
 interface RailProjectChatsProps {
   project: Project
+  /**
+   * This is the open project: its list carries `data-open-project`, and only
+   * its rows drag into a pane.
+   */
+  isOpenProject?: boolean
   /** Inside the chat peek: rows take the 6% hover fill of the hover panel. */
   peek?: boolean
   /** Peek only: the chat whose Rail icon the pointer is on (hover fill). */
@@ -215,9 +234,11 @@ interface RailProjectChatsProps {
 }
 
 /**
- * The active project's chats in the Rail (Sidebar V2): the chat cards scoped
+ * A project's chats in the Rail (Sidebar V2), under its row whether or not
+ * it is the open project: the chat cards scoped
  * by the worktree pick, newest first; the first five, then
- * "Show N more". A click opens or focuses the chat; a drag onto a pane edge
+ * "Show N more". A click opens or focuses the chat (a chat of another
+ * project switches to that project first); a drag onto a pane edge
  * splits the pane, a drag into a pane opens the chat there.
  *
  * Collapsed Rail: one agent icon per chat at the same y, "···" for "Show N
@@ -226,6 +247,7 @@ interface RailProjectChatsProps {
  */
 export function RailProjectChats({
   project,
+  isOpenProject = false,
   peek = false,
   highlightedChatId = null,
   onChatOpened,
@@ -314,6 +336,8 @@ export function RailProjectChats({
       total={cards.length}
       pinnedIndex={openIndex === -1 ? undefined : openIndex}
       data-testid={peek ? 'rail-chat-peek-chats' : 'rail-project-chats'}
+      // Marks the open project's list (every project lists its chats).
+      data-open-project={(isOpenProject && !peek) || undefined}
       // The chat icons sit right of the icon column, so the list fades out
       // as one block and fades back in on the other density.
       className={peek ? undefined : RAIL_BLOCK_FADE_CLASS}
@@ -327,6 +351,7 @@ export function RailProjectChats({
                 card={card}
                 open={isOpenChatCard(card, openChatId)}
                 dragging={id === draggedChatId}
+                canDrag={isOpenProject}
                 onOpenChat={openChat}
                 onDragChat={dragChat}
                 onDragChatEnd={endDragChat}
@@ -379,6 +404,7 @@ export function RailProjectChats({
             <RailWorktreeChip project={project} collapsed={false} />
             <RailProjectChats
               project={project}
+              isOpenProject={isOpenProject}
               peek
               highlightedChatId={hoveredChatId}
               onChatOpened={closePeek}

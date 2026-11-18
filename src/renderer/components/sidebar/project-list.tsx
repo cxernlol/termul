@@ -77,8 +77,8 @@ export interface ProjectListProps {
   onNewGroup?: () => void
   /** Import chats into the open project (the `+` menu); absent hides the item. */
   onImportChats?: () => void
-  /** Shown under the active project's row, inside its drag item (the Rail's chats). */
-  activeProjectContent?: React.ReactNode
+  /** Shown under each project's row, inside its drag item (the Rail's chats). */
+  renderProjectContent?: (project: Project, isActive: boolean) => ReactNode
 }
 
 export function ProjectList({
@@ -120,7 +120,7 @@ export function ProjectList({
   onNewProject,
   onNewGroup,
   onImportChats,
-  activeProjectContent
+  renderProjectContent
 }: ProjectListProps): React.JSX.Element {
   // One draggable active-project row, shared by grouped and ungrouped lists.
   // Dropping on a folder header or group container moves the project there.
@@ -146,7 +146,7 @@ export function ProjectList({
         layout="position"
         transition={layoutTransition}
         data-dragging={liftedId === project.id || undefined}
-        // `gap-px`: the active project's chats sit 1px under its row.
+        // `gap-px`: the project's chats sit 1px under its row.
         className="relative flex list-none flex-col gap-px rounded-lg transition-shadow duration-[110ms] ease-out motion-reduce:transition-none data-[dragging]:bg-sidebar data-[dragging]:shadow-md data-[dragging]:duration-150"
         whileDrag={{
           scale: 1.02,
@@ -209,7 +209,7 @@ export function ProjectList({
             useSettingsModalStore.getState().openProject(undefined, project.id)
           }
         />
-        {project.id === activeProjectId && activeProjectContent}
+        {renderProjectContent?.(project, project.id === activeProjectId)}
       </Reorder.Item>
     )
   }

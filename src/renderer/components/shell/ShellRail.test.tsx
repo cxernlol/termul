@@ -216,7 +216,7 @@ describe('ShellRail', () => {
       })
     })
 
-    it('nests the chats under the active project only', () => {
+    it("nests each project's chats under its own row, open or not", () => {
       useAcpStore.setState({
         sessions: {},
         agentConfigs: [],
@@ -229,7 +229,42 @@ describe('ShellRail', () => {
       const alpha = screen.getByTestId('project-item-p1').closest('li') as HTMLElement
       expect(within(alpha).getByRole('list', { name: 'Chats in Alpha' })).toBeInTheDocument()
       expect(within(alpha).getByRole('button', { name: 'Chat a' })).toBeInTheDocument()
-      expect(screen.queryByRole('button', { name: 'Chat b' })).not.toBeInTheDocument()
+      expect(within(alpha).queryByRole('button', { name: 'Chat b' })).not.toBeInTheDocument()
+      const beta = screen.getByTestId('project-item-p2').closest('li') as HTMLElement
+      expect(within(beta).getByRole('list', { name: 'Chats in Beta' })).toBeInTheDocument()
+      expect(within(beta).getByRole('button', { name: 'Chat b' })).toBeInTheDocument()
+      // Only the open project's list is marked (the e2e helpers scope to it).
+      expect(within(alpha).getByTestId('rail-project-chats')).toHaveAttribute('data-open-project')
+      expect(within(beta).getByTestId('rail-project-chats')).not.toHaveAttribute(
+        'data-open-project'
+      )
+      useAcpStore.setState({ sessionIndex: [] })
+    })
+
+    it("collapses and expands each project's chats on its own chevron, across a switch", () => {
+      useAcpStore.setState({
+        sessions: {},
+        agentConfigs: [],
+        sessionIndex: [
+          mockSessionIndexEntry({ id: 'a', title: 'Chat a', projectId: 'p1', cwd: '/repo/alpha' }),
+          mockSessionIndexEntry({ id: 'b', title: 'Chat b', projectId: 'p2', cwd: '/repo/beta' })
+        ]
+      })
+      const { rerenderRail, props } = renderRail()
+      fireEvent.click(screen.getByRole('button', { name: 'Hide chats in Beta' }))
+      expect(screen.getByRole('button', { name: 'Show chats in Beta' })).toHaveAttribute(
+        'aria-expanded',
+        'false'
+      )
+      // Collapsing an inactive project's chats does not open that project.
+      expect(props.onSelectProject).not.toHaveBeenCalled()
+      expect(screen.getByRole('button', { name: 'Hide chats in Alpha' })).toBeInTheDocument()
+      // Switching to Beta keeps both lists as the user left them.
+      rerenderRail({ activeProjectId: 'p2' })
+      expect(screen.getByRole('button', { name: 'Show chats in Beta' })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Hide chats in Alpha' })).toBeInTheDocument()
+      fireEvent.click(screen.getByRole('button', { name: 'Show chats in Beta' }))
+      expect(screen.getByRole('button', { name: 'Hide chats in Beta' })).toBeInTheDocument()
       useAcpStore.setState({ sessionIndex: [] })
     })
 
@@ -509,6 +544,7 @@ describe('ShellRail', () => {
         'Project: Alpha (active)',
         'Chat a',
         'Project: Beta',
+        'Chat b',
         'Settings',
         'Report a bug',
         'Color themes',

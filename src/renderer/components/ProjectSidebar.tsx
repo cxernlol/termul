@@ -47,7 +47,7 @@ export function ProjectSidebar({
   onSSHConnect,
   onSelectSSHProfile,
   activeSSHProfileId,
-  activeProjectContent
+  renderProjectContent
 }: ProjectSidebarProps): React.JSX.Element {
   const collapsed = useRailCollapsed()
   const {
@@ -375,7 +375,7 @@ export function ProjectSidebar({
         onNewProject={onNewProject}
         onNewGroup={() => setNewGroupModal({})}
         onImportChats={onImportChats}
-        activeProjectContent={activeProjectContent}
+        renderProjectContent={renderProjectContent}
         trailing={<QuickChatsGroup />}
       />
 
