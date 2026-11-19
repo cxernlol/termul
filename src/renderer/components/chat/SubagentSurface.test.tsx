@@ -9,6 +9,7 @@ import {
   type SubagentRecordOverrides,
   subagentToolCall
 } from '@/lib/test-utils/subagent'
+import { agentReuseKey } from '@/stores/acp-reuse-keys'
 import { useAcpStore } from '@/stores/acp-store'
 import type { ChatMessage } from '@/stores/acp-store/types'
 import { useOverlayStackStore } from '@/stores/overlay-stack-store'
@@ -121,6 +122,7 @@ interface ChatProps {
   messages?: ChatMessage[]
   turnActive?: boolean
   filePathContext?: FilePathResolutionContext
+  agentId?: string
 }
 
 /** A chat transcript inside its subagent surface, with the store holding its calls. */
@@ -128,13 +130,14 @@ function Chat({
   toolCalls,
   messages = [user, narration],
   turnActive = true,
-  filePathContext
+  filePathContext,
+  agentId
 }: ChatProps): React.JSX.Element {
   return (
     <TooltipProvider>
       <SubagentSurfaceProvider
         sessionId={SESSION}
-        agentId={undefined}
+        agentId={agentId}
         toolCalls={toolCalls}
         messages={messages}
         turnActive={turnActive}
@@ -313,6 +316,33 @@ describe('subagents in the transcript', () => {
 
     fireEvent.click(row(/^Bare task/))
     expect(panel()).toHaveTextContent("doesn't report what this subagent does.")
+  })
+
+  it("wears the chat agent's icon and name on a subagent the chat agent runs itself", () => {
+    useAcpStore.setState({
+      agentConfigs: [
+        {
+          id: 'acp-registry:claude-acp',
+          name: 'Claude',
+          command: 'claude',
+          args: [],
+          env: {},
+          templateId: 'claude-acp'
+        }
+      ],
+      configToLiveAgent: { [agentReuseKey('acp-registry:claude-acp', '/repo')]: 'agent-live-1' }
+    })
+    renderChat({
+      agentId: 'agent-live-1',
+      toolCalls: [dispatch('own', { title: 'Own task', caps: { transcript: 'final' } })]
+    })
+
+    const avatar = row(/^Own task/).querySelector('[data-subagent-avatar]')
+    expect(avatar?.querySelector('[data-termul-icon="Bot"]')).toBeNull()
+    expect(avatar?.querySelector('[data-agent-brand] svg')).not.toBeNull()
+    fireEvent.click(row(/^Own task/))
+    expect(panel()).toHaveTextContent('Claude did not share the task it gave this subagent.')
+    useAcpStore.setState({ agentConfigs: [], configToLiveAgent: {} })
   })
 
   it('shows the latest message while running and the result once settled, never twice', async () => {

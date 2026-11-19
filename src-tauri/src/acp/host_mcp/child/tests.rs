@@ -270,6 +270,9 @@ async fn initialize_advertises_the_chat_and_canvas_instructions() {
             "call `set_session_title` once",
             "ask with the `ask_user` tool or your client's own question tool",
             "load its definition (for example with tool search)",
+            "Delegate long work through Troupe",
+            "`subagent_list_agents`, `subagent_start` an allowed agent",
+            "Use your client's built-in subagent tool for short lookups",
         ] {
             assert!(instructions.contains(needle), "missing {needle:?}");
         }

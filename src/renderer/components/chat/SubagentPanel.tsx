@@ -5,9 +5,9 @@ import { ArrowLeft, Clock, FileDiff, Folder, GitBranch, Square, X } from '@/comp
 import { Button } from '@/components/ui/button'
 import { IconActionButton } from '@/components/ui/icon-action-button'
 import type { ToolCall } from '@/lib/acp-api'
-import { getAgentById } from '@/lib/agents/custom-agents'
 import type { FilePathResolutionContext } from '@/lib/file-path-links'
 import { cn } from '@/lib/utils'
+import { useAgentIdentity } from '@/stores/acp-store'
 import { AgentProse } from './chat-agent-prose'
 import { SubagentGroup } from './SubagentGroup'
 import { isSubagentWaiting, SubagentAvatar, SubagentStatusLabel } from './SubagentRow'
@@ -403,7 +403,7 @@ export function SubagentPanel({
   const childCalls = useSubagentChildCalls(toolCall.toolCallId)
   const record = toolCall.subagent
   const title = subagentTitle(toolCall)
-  const agentName = (agentId && getAgentById(agentId)?.name) || 'The agent'
+  const agentName = useAgentIdentity(agentId ?? null).name || 'The agent'
   const toolCount = subagentToolCount(toolCall, childCalls)
   const totalTokens = record?.usage?.totalTokens
   const meta = [

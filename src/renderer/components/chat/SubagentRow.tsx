@@ -1,11 +1,9 @@
 import type { SubagentAgent } from '@shared/types/subagent'
 import { memo } from 'react'
-import { AgentIcon } from '@/components/agents/AgentIcon'
-import { Bot, Check, ChevronRight, X } from '@/components/icons'
+import { Check, ChevronRight, X } from '@/components/icons'
 import { badgeVariants } from '@/components/ui/badge'
 import { Spinner } from '@/components/ui/spinner'
 import type { ToolCall } from '@/lib/acp-api'
-import { getAgentById } from '@/lib/agents/custom-agents'
 import { cn } from '@/lib/utils'
 import { useAgentIcon, useAgentTemplateId } from '@/stores/acp-store'
 import { AgentGlyph } from './AgentGlyph'
@@ -115,21 +113,26 @@ export function SubagentStatusLabel({
 }
 
 /**
- * The child agent's own glyph: the persisted config the record's `configId`
- * names (its templateId -> the bundled `acp:` catalog icon, or its custom
- * icon), else the config behind the child's live agent id. Falls back to the
- * generic `Bot` when neither resolves.
+ * An agent's glyph from its persisted config (`configId`, else the config
+ * behind the live `agentId`): its custom icon, else the bundled `acp:`
+ * catalog icon. Falls back to the generic `Bot` when neither resolves.
  */
-function SubagentChildGlyph({ agent }: { agent: SubagentAgent }): React.JSX.Element {
-  const templateId = useAgentTemplateId(agent.agentId, agent.configId)
-  const icon = useAgentIcon(agent.agentId, agent.configId)
+function SubagentGlyph({
+  agentId,
+  configId
+}: {
+  agentId: string | null
+  configId?: string
+}): React.JSX.Element {
+  const templateId = useAgentTemplateId(agentId, configId)
+  const icon = useAgentIcon(agentId, configId)
   return <AgentGlyph templateId={templateId} icon={icon} size={16} />
 }
 
 /**
  * The chat's agent icon in a round well, with a status dot when `status` is
- * given. An orchestrated run carries its own child agent, whose icon replaces
- * the chat's.
+ * given. A subagent the chat's own agent runs natively wears the chat's icon;
+ * an orchestrated run carries its own child agent, whose icon replaces it.
  */
 export function SubagentAvatar({
   agent,
@@ -158,11 +161,9 @@ export function SubagentAvatar({
       )}
     >
       {agent ? (
-        <SubagentChildGlyph agent={agent} />
-      ) : agentId && getAgentById(agentId) ? (
-        <AgentIcon agentId={agentId} className="size-4" />
+        <SubagentGlyph agentId={agent.agentId} configId={agent.configId} />
       ) : (
-        <Bot size={16} className="text-muted-foreground" />
+        <SubagentGlyph agentId={agentId ?? null} />
       )}
       {status && <AvatarStatusMark status={status} waiting={waiting} />}
     </span>

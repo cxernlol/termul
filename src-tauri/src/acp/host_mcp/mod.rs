@@ -91,11 +91,19 @@ list of your own. In the first turn, once the user's intent is clear, call `set_
 once with a short title and a kebab-case `branch` slug. When you need a decision or missing \
 details from the user, ask with the `ask_user` tool or your client's own question tool, not in \
 plain text. When the user gives you a Troupe chat ID or a copied chat reference, read that chat \
-with the `read_chat` tool. To run a task in a parallel chat (a managed Claude chat goes on \
-the account with the most room), call `start_chat`, then use `read_chat` and `send_to_chat`. \
-To install an MCP server from a link, a registry name, or \
-JSON, read it with your own tools and call `mcp_install`. The user approves on a card in the chat. \
-Delegate to another agent with `subagent_start` and `subagent_wait`.";
+with the `read_chat` tool. To run a task in a parallel chat, call `start_chat`, then use \
+`read_chat` and `send_to_chat`. To install an MCP server from a link, a registry name, or \
+JSON, read it with your own tools and call `mcp_install`. The user approves on a card in the chat.";
+
+/// Splits delegation by cost. A long or parallel task, or one for a cheaper
+/// agent, goes through the orchestrator, where the user sees and stops it; a
+/// short lookup stays on the client's lighter built-in subagent, which is also
+/// the fallback when the orchestrator refuses.
+pub const DELEGATION_INSTRUCTIONS: &str = "Delegate long work through Troupe: for a long or \
+parallel task, or to use a cheaper agent, call `subagent_list_agents`, `subagent_start` \
+an allowed agent with a self-contained `task`, then `subagent_wait`. Use your client's built-in \
+subagent tool for short lookups, or when Troupe sub-agents are off, none is allowed, or \
+`subagent_start` refuses.";
 
 /// The context budget Claude Code gives a server's `instructions`: it keeps
 /// this many UTF-16 code units (`CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH`,
@@ -105,14 +113,12 @@ pub const CLAUDE_INSTRUCTIONS_BUDGET: usize = 4096;
 
 /// Markdown affordances of the chat renderer.
 pub const TERMUL_CHAT_INSTRUCTIONS: &str = "Troupe renders your markdown replies in a rich chat UI. \
-Embed images and videos inline with `![alt](path)`, for generated charts, screenshots, diagrams, \
-and screen recordings: paths relative to the session working directory, absolute paths, \
-`file://` URLs, and https URLs render in the desktop app and on the web. A markdown link to an \
-image or video file also shows it inline. \
-Reference files as markdown links `[label](path)`: Troupe renders them as buttons that open \
-the file in its built-in editor — absolute and cwd-relative paths inside the session workspace \
-roots work, a `:line` suffix (or `#L<line>` on the link target) positions the cursor, and \
-bare multi-segment file paths in prose become open-in-editor links too.";
+Embed images and videos (charts, screenshots, recordings) inline with \
+`![alt](path)`: relative, absolute, `file://` and https paths render on desktop and web, and a \
+markdown link to an image or video also shows it inline. Reference files as `[label](path)` \
+links, which open in Troupe's editor (paths inside the session workspace roots; a `:line` \
+suffix or `#L<line>` positions the cursor). Bare multi-segment file paths in prose become \
+editor links too.";
 
 /// Offer to schedule repeatable work. Automation runs never see it: their
 /// sessions get no host MCP server.
@@ -125,7 +131,7 @@ background automation?\" with the options \"Yes, schedule it\" and \"Not now\". 
 again in this chat. Skip the question when the user is already asking for an automation.";
 
 /// The full `instructions` of the child's `initialize` result: the host
-/// tools, the chat guidance, the repeatable-work offer, then the design
+/// tools, delegation, the chat guidance, the repeatable-work offer, then the design
 /// canvas guide. Agents surface it in model context, so it is the
 /// advertisement for the host tools and the chat renderer's markdown
 /// affordances. Most-needed first: Claude Code keeps only the first
@@ -133,7 +139,7 @@ again in this chat. Skip the question when the user is already asking for an aut
 #[must_use]
 pub fn session_instructions() -> String {
     format!(
-        "{TERMUL_TOOL_INSTRUCTIONS}\n\n{TERMUL_CHAT_INSTRUCTIONS}\n\n{AUTOMATION_SUGGESTION_INSTRUCTIONS}\n\n{}",
+        "{TERMUL_TOOL_INSTRUCTIONS}\n\n{DELEGATION_INSTRUCTIONS}\n\n{TERMUL_CHAT_INSTRUCTIONS}\n\n{AUTOMATION_SUGGESTION_INSTRUCTIONS}\n\n{}",
         canvas_tools::instructions()
     )
 }
