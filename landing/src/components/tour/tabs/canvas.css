@@ -1,0 +1,73 @@
+/*
+ * Canvas tour tab motion. The root `.cv` gets `data-step` (0 to 3).
+ * We animate only opacity and transform.
+ * Paper timing notes (Feature tour · Keyframes, row "Canvas"):
+ * - Step 2: the "Home" frame and its layer row fade in, 4px rise, 250ms.
+ * - Step 3: each node and its layer row fade in, 250ms each, 350ms apart.
+ * - Step 4: the selection box shows in 150ms. The Button row highlights.
+ *   The Design panel shows the inspector.
+ */
+
+/* Hidden state. Exits are faster than enters (150ms, no delay). */
+.cv .cv-in {
+  opacity: 0;
+  transform: translateY(4px);
+  pointer-events: none;
+  transition:
+    opacity 150ms cubic-bezier(0.23, 1, 0.32, 1),
+    transform 150ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+/* The selection box and the row highlight only fade. They do not move. */
+.cv .cv-fade {
+  transform: none;
+}
+
+/* Delay steps for "one by one" in step 3. */
+.cv-d1 {
+  --cv-delay: 350ms;
+}
+.cv-d2 {
+  --cv-delay: 700ms;
+}
+.cv-d3 {
+  --cv-delay: 1050ms;
+}
+
+/* Step 2 and later: the frame and the "Home" layer row show. */
+.cv[data-step="1"] .cv-s1,
+.cv[data-step="2"] .cv-s1,
+.cv[data-step="3"] .cv-s1,
+/* Step 3 and later: heading, subtitle, button, image and their rows show. */
+.cv[data-step="2"] .cv-s2,
+.cv[data-step="3"] .cv-s2 {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+  transition-duration: 250ms;
+  transition-delay: var(--cv-delay, 0ms);
+}
+
+/* Step 4: the selection box and the Button row highlight show. */
+.cv[data-step="3"] .cv-s3 {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+  transition-duration: 150ms;
+}
+
+/* Step 4: the inspector in the Design panel shows. */
+.cv[data-step="3"] .cv-s3-panel {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+  transition-duration: 200ms;
+}
+
+/* Reduced motion: no movement. Opacity only, short, no delay. */
+@media (prefers-reduced-motion: reduce) {
+  .cv .cv-in {
+    transform: none !important;
+    transition: opacity 150ms linear !important;
+  }
+}

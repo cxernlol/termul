@@ -1,46 +1,48 @@
-import { ProductCta } from '../ui/ProductCta';
+import { DownloadCta } from '@/components/download/DownloadCta';
+import { buttonClassName } from '@/components/ui/Button';
+import { GitHubIcon } from '@/components/ui/Icons';
+import { GITHUB_REPO_URL } from '@/lib/links';
+import { Container } from './Container';
 
-export const Hero = () => {
+export function Hero() {
   return (
-    <section className="relative pt-40 pb-20 px-6 flex flex-col items-center justify-center text-center overflow-hidden">
-      <img
-        src="/bg-termul.webp"
-        alt=""
-        aria-hidden
-        className="absolute inset-0 w-full h-full object-cover z-0 pointer-events-none"
-      />
-      <div
-        className="absolute inset-x-0 top-0 h-32 bg-gradient-to-b from-white/40 to-transparent z-[1] pointer-events-none"
-        aria-hidden
-      />
-      <div className="relative z-10 w-full flex flex-col items-center text-black">
-        <div className="t-stagger is-shown w-full flex flex-col items-center">
-          <h1 className="text-5xl md:text-7xl font-medium tracking-tighter mb-6 max-w-4xl text-balance drop-shadow-[0_2px_16px_rgba(255,255,255,0.55)]">
-            <span className="t-stagger-line t-stagger-line--1">A Hundred Agents</span>
-            <span className="t-stagger-line t-stagger-line--2">In One Manager.</span>
+    <section id="download" aria-labelledby="hero-title" className="scroll-mt-6">
+      <Container className="pt-12 pb-10 md:pt-[120px] md:pb-[72px]">
+        <div className="flex max-w-[680px] flex-col gap-5 md:gap-6">
+          {/* Entrance: title, copy, actions, then the shot, 100ms apart (.hero-in, index.css). */}
+          <h1
+            id="hero-title"
+            className="hero-in text-[40px] leading-11 font-medium tracking-[-0.03em] text-foreground md:text-[56px] md:leading-[60px]"
+          >
+            Any Agents <br className="md:hidden" />
+            in One UI
           </h1>
-
-          <p className="t-stagger-line t-stagger-line--3 text-lg md:text-xl max-w-2xl mb-10 text-slate-600">
-            Troupe treats workspaces as first-class citizens. Organize terminals by project with persistent sessions, snapshots, and a clean tabbed interface.
+          <p className="hero-in text-base leading-6 text-muted-foreground [--n:1] md:text-lg md:leading-7">
+            Run every coding agent from one desktop app. <br className="hidden md:inline" />
+            Plan, review and ship with a troupe of agents, from your desk or phone.
+          </p>
+          <div className="hero-in flex flex-col gap-2.5 pt-2 [--n:2] md:flex-row md:pt-3">
+            <DownloadCta />
+            <a
+              href={GITHUB_REPO_URL}
+              className={buttonClassName({
+                variant: 'secondary',
+                size: 'lg',
+                className: 'h-11 w-full px-4 text-base md:w-auto md:px-8 md:text-[15px]',
+              })}
+            >
+              <GitHubIcon size={16} />
+              View on GitHub
+            </a>
+          </div>
+          <p className="hero-in text-center text-sm leading-5 text-muted-foreground [--n:2] md:text-left md:text-[13px]">
+            Also for Windows and Linux
+            <span className="hidden md:inline"> · </span>
+            <br className="md:hidden" />
+            Free and open source, MIT
           </p>
         </div>
-
-        <div className="mb-20 t-emphasis-fade">
-          <ProductCta variant="hero" />
-        </div>
-
-        <div className="relative w-full max-w-5xl mx-auto t-emphasis-fade">
-          <img
-            src="/termulmock.png"
-            alt="Troupe application with project workspaces, multiple terminals, and file explorer"
-            className="w-full h-auto rounded-lg shadow-2xl shadow-black/10"
-            width={1024}
-            height={640}
-            loading="eager"
-            decoding="async"
-          />
-        </div>
-      </div>
+      </Container>
     </section>
   );
-};
+}

@@ -1,0 +1,111 @@
+/*
+ * Remote tour tab motion. The root `.rmt` gets `data-step` (0 to 3).
+ * A part with `data-show="0 1"` shows in steps 0 and 1 only.
+ * We animate only opacity and transform (and one small color change).
+ * Paper timing notes (Feature tour · Keyframes, row "Remote"):
+ * - Step 2: the QR popover fades in and grows from the Monitor icon.
+ * - Step 3: the phone slides up from the bottom.
+ * - Step 4: the phone shows its composer; "Approval needed" opens in it.
+ */
+
+/*
+ * The Remote frames in Paper do not use the host's 900px window: steps 1–2
+ * show an 808px window, steps 3–4 show only a phone on the photo. So the tab
+ * sets `frame: 'none'` and the scene draws its own window and phone over the
+ * full 888×640 stage.
+ */
+
+/* Hidden state. This is also the exit transition (150ms). */
+.rmt [data-show] {
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity 150ms cubic-bezier(0.23, 1, 0.32, 1),
+    transform 150ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+/* New parts rise 4px. */
+.rmt .rmt-rise[data-show] {
+  transform: translateY(4px);
+}
+
+/* The QR popover grows from the Monitor icon. Never from scale(0). */
+.rmt .rmt-pop[data-show] {
+  transform: scale(0.97);
+}
+
+/* The desktop window goes back a little as the phone comes in. */
+.rmt .rmt-recede[data-show] {
+  transform: scale(0.98);
+  transition-duration: 200ms;
+}
+
+/* Shown state. This is also the enter transition. */
+.rmt[data-step="0"] [data-show~="0"],
+.rmt[data-step="1"] [data-show~="1"],
+.rmt[data-step="2"] [data-show~="2"],
+.rmt[data-step="3"] [data-show~="3"] {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+  transition-duration: var(--rmt-duration, 200ms);
+  transition-delay: var(--rmt-delay, 0ms);
+}
+
+/* Step 2: the Monitor icon turns to the connection color. */
+.rmt .rmt-monitor {
+  color: var(--color-foreground);
+  transition: color 200ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.rmt[data-step="1"] .rmt-monitor {
+  color: oklch(75.4% 0.139 232.7);
+}
+
+/*
+ * The phone moves on screen, so it uses ease-in-out (450ms).
+ * Steps 1–2: below the stage. Step 3: top at 40px. Step 4: scrolled up
+ * 280px, so the composer at the bottom of the phone is in view.
+ */
+.rmt .rmt-phone {
+  transform: translateY(640px);
+  transition: transform 450ms cubic-bezier(0.65, 0, 0.35, 1);
+}
+
+.rmt[data-step="2"] .rmt-phone {
+  transform: none;
+}
+
+.rmt[data-step="3"] .rmt-phone {
+  transform: translateY(-280px);
+}
+
+/* Spinners turn at a constant speed, so the curve is linear. */
+@keyframes rmt-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.rmt .rmt-spin {
+  animation: rmt-spin 800ms linear infinite;
+}
+
+/* Reduced motion: the host shows step 4 only. No movement, no transitions. */
+@media (prefers-reduced-motion: reduce) {
+  .rmt [data-show],
+  .rmt .rmt-monitor,
+  .rmt .rmt-phone {
+    transition: none;
+  }
+
+  .rmt .rmt-rise[data-show],
+  .rmt .rmt-pop[data-show],
+  .rmt .rmt-recede[data-show] {
+    transform: none;
+  }
+
+  .rmt .rmt-spin {
+    animation: none;
+  }
+}

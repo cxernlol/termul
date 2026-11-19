@@ -1,0 +1,177 @@
+/*
+ * Feature tour · Automation scene.
+ * The scene root has data-step (0–3). Each part has data-show with the steps
+ * where it is visible. CSS transitions do all the motion.
+ * Motion: transform and opacity only (the travel dot uses offset-distance).
+ */
+
+/* A per-part delay. It does not inherit, so a child does not take the delay of its parent. */
+@property --d {
+  syntax: "<time>";
+  inherits: false;
+  initial-value: 0ms;
+}
+
+.au-stack {
+  display: grid;
+}
+
+.au-stack > * {
+  grid-area: 1 / 1;
+}
+
+/* Hidden state. Exit is faster than enter. */
+.au-root [data-show] {
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(4px);
+  transition:
+    opacity 150ms cubic-bezier(0.23, 1, 0.32, 1),
+    transform 150ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+/* In-place swaps (pills, text lines): opacity only. */
+.au-root [data-show][data-swap] {
+  transform: none;
+}
+
+/* Small parts that pop in from their own origin. */
+.au-root [data-show][data-pop] {
+  transform: scale(0.97);
+}
+
+/* Visible state. */
+.au-root[data-step="0"] [data-show~="0"],
+.au-root[data-step="1"] [data-show~="1"],
+.au-root[data-step="2"] [data-show~="2"],
+.au-root[data-step="3"] [data-show~="3"] {
+  opacity: 1;
+  pointer-events: auto;
+  transform: none;
+  transition-duration: 250ms;
+  transition-delay: var(--d);
+}
+
+/*
+ * Step 1: the suggestion card rises under the reply after the scene mounts.
+ * The scene mounts on step 1 each time the tab starts.
+ */
+.au-suggest {
+  transition:
+    opacity 300ms cubic-bezier(0.23, 1, 0.32, 1) 500ms,
+    transform 300ms cubic-bezier(0.23, 1, 0.32, 1) 500ms;
+}
+
+@starting-style {
+  .au-suggest {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+/* Window tab "Summarize open PRs": active only in step 1. */
+.au-tab-fill {
+  opacity: 0;
+  transition: opacity 200ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.au-root[data-step="0"] .au-tab-fill {
+  opacity: 1;
+}
+
+.au-tab-label {
+  color: var(--color-muted-foreground);
+  transition: color 200ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.au-root[data-step="0"] .au-tab-label {
+  color: var(--color-foreground);
+}
+
+/* The selected list row: the run line is one line before approval, two lines after. */
+.au-runline {
+  height: 32px;
+}
+
+.au-root[data-step="0"] .au-runline,
+.au-root[data-step="1"] .au-runline {
+  height: 16px;
+}
+
+/* Enabled switch: on after "Approve and arm". */
+.au-switch-on {
+  opacity: 0;
+  transition: opacity 200ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.au-knob {
+  transition: transform 200ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.au-root[data-step="2"] .au-switch-on,
+.au-root[data-step="3"] .au-switch-on {
+  opacity: 1;
+}
+
+.au-root[data-step="2"] .au-knob,
+.au-root[data-step="3"] .au-knob {
+  transform: translateX(14px);
+}
+
+/*
+ * Step 3: a dot moves along the live edge from "Fetch open PRs" to
+ * "Summarize", then fades. The path is the dashed edge in canvas px.
+ */
+.au-dot {
+  offset-path: path("M284 152 C 312 152, 292 248, 320 248");
+  offset-rotate: 0deg;
+  offset-distance: 0%;
+  opacity: 0;
+}
+
+.au-root[data-step="2"] .au-dot {
+  offset-distance: 100%;
+  opacity: 1;
+  transition:
+    offset-distance 500ms cubic-bezier(0.65, 0, 0.35, 1) 450ms,
+    opacity 100ms linear 450ms;
+}
+
+.au-root[data-step="2"] .au-dot-fade {
+  opacity: 0;
+  transition: opacity 150ms cubic-bezier(0.23, 1, 0.32, 1) 950ms;
+}
+
+/* The running step's spinner. A small loop. */
+@keyframes au-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.au-spin {
+  animation: au-spin 900ms linear infinite;
+}
+
+/*
+ * Step 4: a new "Succeeded" row comes in on top. The older rows start one row
+ * higher and move down; the card clips the oldest row.
+ */
+.au-runs-older {
+  transform: translateY(-44.5px);
+}
+
+.au-root[data-step="3"] .au-runs-older {
+  transform: none;
+  transition: transform 450ms cubic-bezier(0.65, 0, 0.35, 1) 300ms;
+}
+
+/* Reduced motion: the host shows step 4 and stops. No movement, no loops. */
+@media (prefers-reduced-motion: reduce) {
+  .au-root *,
+  .au-root *::before,
+  .au-root *::after {
+    transition: none !important;
+    animation: none !important;
+  }
+}

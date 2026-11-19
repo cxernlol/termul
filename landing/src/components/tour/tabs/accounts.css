@@ -1,0 +1,77 @@
+/*
+ * Accounts tour tab motion. The root `.acc` gets `data-step` (0 to 3).
+ * A part with `data-show="0 3"` shows in steps 0 and 3 only.
+ * We animate only opacity and transform (and one small color change).
+ * Paper timing notes (Feature tour · Keyframes, row "Accounts"):
+ * - Between keyframes only the changed part moves:
+ *   opacity + 4px rise, 200ms, ease-out cubic-bezier(0.23, 1, 0.32, 1).
+ * - Exits are faster than enters (150ms, no delay).
+ */
+
+/* Hidden state. This is also the exit transition. */
+.acc [data-show] {
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity 150ms cubic-bezier(0.23, 1, 0.32, 1),
+    transform 150ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+/* New parts rise 4px. */
+.acc .acc-rise[data-show] {
+  transform: translateY(4px);
+}
+
+/* The account menu grows from its trigger chip. Never from scale(0). */
+.acc .acc-pop[data-show] {
+  transform: scale(0.97);
+}
+
+/* Shown state. This is also the enter transition. */
+.acc[data-step="0"] [data-show~="0"],
+.acc[data-step="1"] [data-show~="1"],
+.acc[data-step="2"] [data-show~="2"],
+.acc[data-step="3"] [data-show~="3"] {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+  transition-duration: var(--acc-duration, 200ms);
+  transition-delay: var(--acc-delay, 0ms);
+}
+
+/* Step 3: the send button dims while the switch runs. */
+.acc .acc-send {
+  transition: opacity 200ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.acc[data-step="2"] .acc-send {
+  opacity: 0.6;
+}
+
+/* Spinners turn at a constant speed, so the curve is linear. */
+@keyframes acc-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.acc .acc-spin {
+  animation: acc-spin 800ms linear infinite;
+}
+
+/* Reduced motion: the host shows step 4 only. No movement, no transitions. */
+@media (prefers-reduced-motion: reduce) {
+  .acc [data-show],
+  .acc .acc-send {
+    transition: none;
+  }
+
+  .acc .acc-rise[data-show],
+  .acc .acc-pop[data-show] {
+    transform: none;
+  }
+
+  .acc .acc-spin {
+    animation: none;
+  }
+}

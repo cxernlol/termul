@@ -1,0 +1,209 @@
+/*
+ * Feature tour · Browser scene.
+ * The scene root has data-step (0–3). Each part has data-show with the steps
+ * where it is visible. CSS transitions do all the motion.
+ * Motion: transform and opacity only (plus one small text shine loop).
+ */
+
+/* A per-part delay. It does not inherit, so a child does not take the delay of its parent. */
+@property --d {
+  syntax: "<time>";
+  inherits: false;
+  initial-value: 0ms;
+}
+
+.br-stack {
+  display: grid;
+}
+
+.br-stack > * {
+  grid-area: 1 / 1;
+}
+
+/* Hidden state. Exit is faster than enter. */
+.br-root [data-show] {
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(4px);
+  transition:
+    opacity 150ms cubic-bezier(0.23, 1, 0.32, 1),
+    transform 150ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+/* In-place swaps (text, buttons, layers): opacity only. */
+.br-root [data-show][data-swap] {
+  transform: none;
+}
+
+/* The browser pane comes in from the right. */
+.br-root [data-show][data-slide] {
+  transform: translateX(24px);
+}
+
+/* Visible state. */
+.br-root[data-step="0"] [data-show~="0"],
+.br-root[data-step="1"] [data-show~="1"],
+.br-root[data-step="2"] [data-show~="2"],
+.br-root[data-step="3"] [data-show~="3"] {
+  opacity: 1;
+  pointer-events: auto;
+  transform: none;
+  transition-duration: 250ms;
+  transition-delay: var(--d);
+}
+
+.br-root[data-step="1"] [data-slide][data-show~="1"] {
+  transition-duration: 300ms;
+}
+
+/*
+ * Step 1: the tool row and the "using the browser" bar come in after the
+ * scene mounts. The scene mounts on step 1 each time the tab starts.
+ */
+.br-enter {
+  transition:
+    opacity 250ms cubic-bezier(0.23, 1, 0.32, 1) var(--d),
+    transform 250ms cubic-bezier(0.23, 1, 0.32, 1) var(--d);
+}
+
+@starting-style {
+  .br-enter {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+/* Step 1: a shine moves over the running tool row. A small loop. */
+@keyframes br-shine {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: 0% 0;
+  }
+}
+
+.br-shine {
+  color: transparent;
+  background-image: linear-gradient(90deg, transparent 40%, rgb(255 255 255 / 0.55) 50%, transparent 60%);
+  background-size: 300% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  animation: br-shine 1.8s linear infinite;
+}
+
+/*
+ * Window chrome that stays on all steps. The chat tab moves 6px left when the
+ * window splits (Paper: the spacer after the lights is 6px, not 12px).
+ */
+.br-chat-tab {
+  transition: transform 450ms cubic-bezier(0.65, 0, 0.35, 1);
+}
+
+.br-root:not([data-step="0"]) .br-chat-tab {
+  transform: translateX(-6px);
+}
+
+/*
+ * Step 3 (consent): the intro line goes, so the tool rows and the consent
+ * card move up by one line (20px text + 12px gap).
+ */
+.br-shift {
+  transition: transform 450ms cubic-bezier(0.65, 0, 0.35, 1);
+}
+
+.br-root[data-step="2"] .br-shift {
+  transform: translateY(-32px);
+}
+
+/*
+ * Agent tab: "Welcome · Acme" is 10px wider than "Sign up · Acme". The tab
+ * has the wide size; on steps 2–3 the fill is narrower and the chip moves
+ * left. On step 4 both go to the wide size.
+ */
+.br-tab-fill {
+  transform-origin: left center;
+  transform: scaleX(0.949);
+  transition: transform 450ms cubic-bezier(0.65, 0, 0.35, 1);
+}
+
+.br-tab-tail {
+  transform: translateX(-10px);
+  transition: transform 450ms cubic-bezier(0.65, 0, 0.35, 1);
+}
+
+.br-root[data-step="3"] .br-tab-fill,
+.br-root[data-step="3"] .br-tab-tail {
+  transform: none;
+}
+
+/*
+ * Iris: a dither grid over the page with a clear circle at the pointer.
+ * The pointer moves to the Email field and the clear circle follows it.
+ * The grid layer moves the other way, so the grid stays in place.
+ */
+.br-iris {
+  position: absolute;
+  left: -560px;
+  top: -524px;
+  width: 1680px;
+  height: 1572px;
+  -webkit-mask-image: radial-gradient(circle 380px at 810px 674px, transparent 36%, #000 78%);
+  mask-image: radial-gradient(circle 380px at 810px 674px, transparent 36%, #000 78%);
+}
+
+.br-iris-grid {
+  position: absolute;
+  left: 560px;
+  top: 524px;
+  width: 560px;
+  height: 524px;
+  opacity: 0.5;
+  background-image: linear-gradient(
+    to bottom right,
+    oklch(0.62 0.19 259.7),
+    oklch(0.6 0.25 301.8),
+    oklch(0.64 0.2 353.9)
+  );
+  -webkit-mask-image:
+    linear-gradient(to right, #000 8px, transparent 8px),
+    linear-gradient(to bottom, #000 8px, transparent 8px);
+  mask-image:
+    linear-gradient(to right, #000 8px, transparent 8px),
+    linear-gradient(to bottom, #000 8px, transparent 8px);
+  -webkit-mask-size: 10px 10px;
+  mask-size: 10px 10px;
+  -webkit-mask-composite: source-in;
+  mask-composite: intersect;
+}
+
+.br-iris,
+.br-pointer {
+  transform: translate(170px, 230px);
+}
+
+.br-iris-grid {
+  transform: translate(-170px, -230px);
+}
+
+.br-root:not([data-step="0"]) .br-iris,
+.br-root:not([data-step="0"]) .br-iris-grid,
+.br-root:not([data-step="0"]) .br-pointer {
+  transform: none;
+  transition: transform 500ms cubic-bezier(0.65, 0, 0.35, 1) 150ms;
+}
+
+/* The grid closes in a little slower than other parts. */
+.br-root[data-step="1"] .br-iris-fade[data-show~="1"] {
+  transition-duration: 350ms;
+}
+
+/* Reduced motion: the host shows step 4 and stops. No movement, no loops. */
+@media (prefers-reduced-motion: reduce) {
+  .br-root *,
+  .br-root *::before,
+  .br-root *::after {
+    transition: none !important;
+    animation: none !important;
+  }
+}

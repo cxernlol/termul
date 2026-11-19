@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
-import { useSeoMeta } from '@unhead/react';
+import { usePageMeta } from '../lib/page-meta';
 
 import { Button } from '../components/ui/Button';
 import { SectionHeader } from '../components/ui/SectionHeader';
@@ -47,9 +47,10 @@ export function TestimonialListPage() {
     initialToken ? 'loading' : 'idle',
   );
   const [message, setMessage] = useState('');
+  const [busyId, setBusyId] = useState<string | null>(null);
 
-  useSeoMeta({
-    title: 'Troupe Testimonial CMS',
+  usePageMeta({
+    title: 'Testimonial moderation — Troupe',
     description: 'Token-protected moderation queue for Troupe testimonials.',
     robots: 'noindex,nofollow',
   });
@@ -120,6 +121,9 @@ export function TestimonialListPage() {
     id: string,
     action: ModerationAction,
   ) => {
+    // One request at a time: a double click must not send it twice.
+    if (busyId) return;
+    setBusyId(id);
     setMessage('');
 
     try {
@@ -132,6 +136,8 @@ export function TestimonialListPage() {
           ? error.message
           : 'Could not update testimonial.',
       );
+    } finally {
+      setBusyId(null);
     }
   };
 
@@ -140,13 +146,14 @@ export function TestimonialListPage() {
       <div className="mx-auto max-w-6xl">
         <div className="mb-10 flex flex-col gap-6 md:flex-row md:items-end md:justify-between">
           <SectionHeader
+            as="h1"
             eyebrow="Private CMS"
             title="Moderate Troupe testimonials."
             description="Review pending submissions before they appear on the public landing page."
             className="max-w-2xl"
           />
           {token && (
-            <Button type="button" variant="dark" onClick={handleClearToken}>
+            <Button type="button" variant="secondary" onClick={handleClearToken}>
               Clear token
             </Button>
           )}
@@ -174,11 +181,14 @@ export function TestimonialListPage() {
           </form>
         ) : (
           <section className="grid gap-4">
-            {status === 'loading' && (
-              <p className="text-sm text-muted-foreground">Loading submissions...</p>
-            )}
-            {message && <p className="text-sm text-warning-red">{message}</p>}
-            {testimonials.length === 0 && status !== 'loading' ? (
+            <p role="status" className="text-sm text-muted-foreground empty:hidden">
+              {status === 'loading' ? 'Loading submissions…' : ''}
+            </p>
+            <p role="alert" className="text-sm text-warning-red empty:hidden">
+              {message}
+            </p>
+            {/* Only a load that worked can say the queue is empty. */}
+            {testimonials.length === 0 && status === 'idle' ? (
               <div className={`p-8 text-muted-foreground ${testimonialPanelClass}`}>
                 No testimonial submissions yet.
               </div>
@@ -188,6 +198,7 @@ export function TestimonialListPage() {
                   key={testimonial.id}
                   testimonial={testimonial}
                   token={token}
+                  busy={busyId === testimonial.id}
                   onModerate={handleModeration}
                 />
               ))
@@ -202,10 +213,12 @@ export function TestimonialListPage() {
 function TestimonialModerationCard({
   testimonial,
   token,
+  busy,
   onModerate,
 }: {
   testimonial: AdminTestimonial;
   token: string;
+  busy: boolean;
   onModerate: (
     id: string,
     action: ModerationAction,
@@ -230,14 +243,14 @@ function TestimonialModerationCard({
               {new Date(testimonial.createdAt).toLocaleString()}
             </span>
           </div>
-          <blockquote className="text-lg leading-relaxed text-foreground">
+          <blockquote className="text-lg leading-relaxed break-words text-foreground">
             "{testimonial.quote}"
           </blockquote>
           <p className="mt-3 text-sm text-muted-foreground">
             {testimonial.name}, {testimonial.role}
           </p>
         </div>
-        <ModerationActions testimonial={testimonial} onModerate={onModerate} />
+        <ModerationActions testimonial={testimonial} busy={busy} onModerate={onModerate} />
       </div>
     </article>
   );
@@ -245,9 +258,11 @@ function TestimonialModerationCard({
 
 function ModerationActions({
   testimonial,
+  busy,
   onModerate,
 }: {
   testimonial: AdminTestimonial;
+  busy: boolean;
   onModerate: (
     id: string,
     action: ModerationAction,
@@ -258,9 +273,9 @@ function ModerationActions({
   };
 
   return (
-    <div className="flex flex-wrap gap-2">
+    <div className="flex flex-wrap gap-2" aria-busy={busy}>
       {testimonial.status !== 'approved' && (
-        <Button type="button" size="sm" onClick={() => runAction('approve')}>
+        <Button type="button" size="sm" disabled={busy} onClick={() => runAction('approve')}>
           {testimonial.status === 'rejected' ? 'Restore' : 'Approve'}
         </Button>
       )}
@@ -268,7 +283,8 @@ function ModerationActions({
         <Button
           type="button"
           size="sm"
-          variant="dark"
+          variant="secondary"
+          disabled={busy}
           onClick={() => runAction('reject')}
         >
           {testimonial.status === 'approved' ? 'Unpublish' : 'Reject'}
@@ -277,7 +293,8 @@ function ModerationActions({
       <Button
         type="button"
         size="sm"
-        variant="dark"
+        variant="secondary"
+        disabled={busy}
         onClick={() => runAction('delete')}
       >
         Delete

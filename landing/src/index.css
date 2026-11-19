@@ -1,153 +1,297 @@
-@import 'https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap';
 @import "tailwindcss";
-@import "./styles/transitions-root.css";
-@import "./styles/transitions.css";
+@import "@fontsource-variable/inter/opsz.css";
 
+/*
+ * Tokens: copied (not imported) from the desktop app's dark theme so the
+ * landing stays a separate app with its own build and CSP.
+ *   Source: src/renderer/index.css (:root dark values, ~lines 158–430)
+ *           src/renderer/components/ui/button.tsx (primary emboss, secondary control)
+ * When the app tokens change, update this copy.
+ */
 @theme {
-  --font-sans: "Neue Haas Grotesk Display Pro", Inter, "helvetica neue", helvetica, arial, sans-serif;
-  --font-mono: "JetBrains Mono", monospace;
+  --font-sans: "Inter Variable", "Inter Fallback", system-ui, sans-serif;
+  --font-mono: "Paper Mono", ui-monospace, "SF Mono", Menlo, monospace;
 
-  /* Brand palette */
-  --color-pitch-black: #08090a;
-  --color-graphite: #0f1011;
-  --color-deep-slate: #161718;
-  --color-charcoal-grey: #23252a;
-  --color-muted-ash: #323334;
-  --color-gunmetal: #383b3f;
-  --color-porcelain: #f7f8f8;
-  --color-light-steel: #d0d6e0;
-  --color-storm-cloud: #8a8f98;
-  --color-fog-grey: #62666d;
-  --color-alabaster: #e5e5e6;
-  --color-neon-lime: #e4f222;
-  --color-aether-blue: #5e6ad2;
-  --color-forest-green: #008d2c;
-  --color-cyan-spark: #02b8cc;
-  --color-emerald: #27a644;
-  --color-warning-red: #eb5757;
-  --color-deep-violet: #6366f1;
-  --color-amethyst: #8b5cf6;
+  --color-background: oklch(13.9% 0.003 246.3);
+  --color-foreground: oklch(92.2% 0.001 286.4);
+  --color-card: oklch(17.2% 0.003 248);
+  --color-popover: oklch(20.4% 0.003 248);
+  --color-secondary: oklch(20.4% 0.003 248);
+  --color-muted: oklch(23.4% 0.002 247.9);
+  --color-muted-foreground: oklch(64.9% 0.015 262.4);
+  --color-border: oklch(26.4% 0.002 247.9);
+  --color-primary: oklch(68.8% 0.169 251.4);
+  --color-primary-fill: oklch(55.6% 0.162 252.2);
+  --color-primary-fill-hover: #0e6abe;
+  --color-primary-fill-active: #0e60ae;
+  --color-primary-foreground: oklch(100% 0 0);
+  --color-destructive: oklch(63.7% 0.208 25.3);
+  --color-success: oklch(72.3% 0.192 149.6);
+  --color-warning: oklch(79.5% 0.162 86);
+  --color-focus-ring: oklch(57.1% 0.003 228.8);
+  --color-secondary-foreground: oklch(87.4% 0.015 260.7);
 
-  /* Semantic aliases */
-  --color-background: var(--color-pitch-black);
-  --color-foreground: var(--color-porcelain);
-  --color-muted: var(--color-graphite);
-  --color-muted-foreground: var(--color-storm-cloud);
-  --color-text-muted: var(--color-fog-grey);
-  --color-text-muted-hover: var(--color-light-steel);
-  --color-accent: color-mix(in srgb, var(--color-muted-ash) 40%, transparent);
-  --color-border: var(--color-muted-ash);
-  --color-border-subtle: color-mix(in srgb, var(--color-porcelain) 10%, transparent);
-  --color-primary: var(--color-neon-lime);
-  --color-ring: var(--color-neon-lime);
+  /* App UI in the window shots (project badges, switches). */
+  --color-project-blue: oklch(62.5% 0.187 259.7);
+  --color-project-purple: oklch(55.7% 0.251 301.9);
+  --color-project-green: oklch(72% 0.192 149.5);
+  --color-project-yellow: oklch(78.6% 0.16 85.7);
+  --color-project-red: oklch(63.6% 0.209 25.4);
+  --color-project-pink: oklch(65.4% 0.214 354.1);
+  --color-project-orange: oklch(70.6% 0.186 48.1);
+  --color-switch-track-on: #0090ff;
+  --color-switch-track-off: #ffffff12;
+  --color-chip-edge: #373839;
+  --color-window: #0b0c0d;
 
-  /* Surface scale (maps legacy gray-* utilities to brand tokens) */
-  --color-gray-900: var(--color-deep-slate);
-  --color-gray-800: var(--color-charcoal-grey);
-  --color-gray-700: var(--color-muted-ash);
-  --color-gray-600: var(--color-gunmetal);
-  --color-gray-500: var(--color-fog-grey);
-  --color-gray-400: var(--color-storm-cloud);
-  --color-gray-300: var(--color-light-steel);
-  --color-gray-200: var(--color-alabaster);
-  --color-gray-100: var(--color-porcelain);
+  /* Derived control tokens (app: --control-fill, --popover-edge). */
+  --color-control-fill: var(--color-muted);
+  --color-control-fill-hover: color-mix(in oklab, var(--color-muted), var(--color-foreground) 5%);
+  --color-popover-edge: color-mix(in oklab, var(--color-popover), var(--color-foreground) 19.5%);
+  --color-hairline: #2d2e2f;
+
+  --shadow-emboss: 0 0 0 0.5px #000000, 0 1px 3px #000000b3, inset 0 0 0 0.5px #ffffff1f, inset 0 1px 0 #ffffff66, inset 0 -2px 0 #00000059;
+  --shadow-control: 0 0 0 0.5px var(--color-popover-edge), 0 1px 2px rgb(0 0 0 / 0.5);
+  --shadow-card: 0 1px 2px #00000080;
+  /* Tactile overlay: a 0.5px outline ring is the edge, then crisp short drops (no big soft blur). */
+  --shadow-menu: 0 0 0 0.5px var(--color-popover-edge), 0 1px 2px 0 rgb(0 0 0 / 0.5), 0 4px 8px -4px rgb(0 0 0 / 0.5);
+
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+
+  /*
+   * Legacy names still used by the testimonial and legal pages
+   * (src/routes/Testimonial*, src/lib/testimonial-ui.ts). They map to the
+   * new tokens. Do not use them in new code.
+   */
+  --color-porcelain: var(--color-foreground);
+  --color-pitch-black: var(--color-background);
+  --color-light-steel: oklch(87.4% 0.015 260.7);
+  --color-border-subtle: color-mix(in oklab, var(--color-foreground) 10%, transparent);
+  --color-aether-blue: var(--color-primary);
+  --color-emerald: var(--color-success);
+  --color-warning-red: var(--color-destructive);
+  --color-gray-300: oklch(87.4% 0.015 260.7);
+  --color-gray-600: var(--color-muted);
+}
+
+/* Paper Mono (OFL): public/fonts/paper-mono. Two weights only. */
+@font-face {
+  font-family: "Paper Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/paper-mono/PaperMono-Regular.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Paper Mono";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/fonts/paper-mono/PaperMono-Medium.woff2") format("woff2");
+}
+
+/* Size-matched fallback so text does not shift when Inter arrives. */
+@font-face {
+  font-family: "Inter Fallback";
+  src: local("Arial");
+  ascent-override: 96.88%;
+  descent-override: 24.15%;
+  line-gap-override: 0%;
+  size-adjust: 107.12%;
 }
 
 @layer base {
-  html,
-  body,
-  #root {
-    height: 100%;
+  html {
+    color-scheme: dark;
+    background-color: var(--color-background);
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
   }
 
   body {
     margin: 0;
-    overflow: hidden;
     background-color: var(--color-background);
     color: var(--color-foreground);
     font-family: var(--font-sans);
+    font-optical-sizing: auto;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
   }
 
-  :root {
-    --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
-    --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  ::selection {
+    background-color: color-mix(in oklab, var(--color-primary-fill) 45%, transparent);
   }
 
-  .os-theme-termul {
-    --os-size: 10px;
-    --os-padding-perpendicular: 3px;
-    --os-padding-axis: 8px;
-    --os-handle-bg: color-mix(in srgb, var(--color-light-steel) 32%, transparent);
-    --os-handle-bg-hover: color-mix(in srgb, var(--color-light-steel) 54%, transparent);
-    --os-handle-bg-active: color-mix(in srgb, var(--color-porcelain) 72%, transparent);
-    --os-handle-border-radius: 999px;
-    --os-track-bg: transparent;
-    --os-track-bg-hover: color-mix(in srgb, var(--color-porcelain) 4%, transparent);
+  :focus-visible {
+    outline: 2px solid var(--color-focus-ring);
+    outline-offset: 2px;
+  }
+
+  /* Paper wraps text normally; keep the same breaks as the design. */
+
+  /* No double-tap-zoom wait on controls. */
+  button,
+  a,
+  input,
+  select,
+  textarea,
+  [role='button'],
+  [role='tab'] {
+    touch-action: manipulation;
+  }
+}
+
+/*
+ * Keyboard focus ring for controls. Pair it with `outline-hidden` (never
+ * `outline-none`): in Tailwind 4, `outline-none` sets --tw-outline-style to
+ * none, which also hides the `focus-visible:outline-*` utilities. A
+ * :focus-visible rule here is more specific than `outline-hidden`, so it wins.
+ */
+@utility focus-ring {
+  &:focus-visible {
+    outline: 2px solid var(--color-focus-ring);
+    outline-offset: 2px;
   }
 }
 
 @layer utilities {
-  .pressable {
-    transition: transform 160ms var(--ease-out), opacity 160ms var(--ease-out), background-color 160ms var(--ease-out);
+  /* App PRESS: .97 squeeze on the strong ease-out, back on release. */
+  .press {
+    transition-property: scale, background-color, box-shadow, color;
+    transition-duration: 150ms;
+    transition-timing-function: var(--ease-out);
   }
-  .pressable:active {
-    transform: scale(0.97);
-  }
-
-  .glass {
-    background: color-mix(in srgb, var(--color-porcelain) 3%, transparent);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
-    border: 1px solid var(--color-border-subtle);
+  .press:active {
+    scale: 0.97;
   }
 
-  .animate-in {
-    opacity: 1;
-    transform: translateY(0);
-    transition: opacity 500ms var(--ease-out), transform 500ms var(--ease-out);
+  /*
+   * CSS dither over a photo: three 4px dot layers (two dark, one light).
+   * Set the photo with --dither-image.
+   */
+  .dither {
+    background-image:
+      radial-gradient(circle at 1px 1px, rgb(0 0 0 / 0.42) 0.85px, transparent 1px),
+      radial-gradient(circle at 3px 3px, rgb(0 0 0 / 0.26) 0.85px, transparent 1px),
+      radial-gradient(circle at 3px 1px, rgb(255 255 255 / 0.1) 0.85px, transparent 1px),
+      var(--dither-image);
+    background-size: 4px 4px, 4px 4px, 4px 4px, cover;
+    background-position: 0 0, 0 0, 0 0, center;
+  }
 
-    @starting-style {
-      opacity: 0;
-      transform: translateY(24px);
+  /*
+   * Phone: scale a fixed-size window shot (--shot-w wide) down to the width of
+   * its `@container` box. tan(atan2(width, --shot-w)) is width ÷ --shot-w as a
+   * plain number, so it needs no JavaScript and the prerendered page does not
+   * jump. From 768px the shot shows at full size.
+   */
+  @media (width < 48rem) {
+    .shot-fit {
+      transform-origin: top left;
+      scale: tan(atan2(100cqw, var(--shot-w)));
     }
   }
 
-  .delay-100 { transition-delay: 100ms; }
-  .delay-200 { transition-delay: 200ms; }
-  .delay-300 { transition-delay: 300ms; }
-  .delay-400 { transition-delay: 400ms; }
-
-  .t-emphasis-fade {
-    opacity: 1;
-    transition: opacity var(--duration-very-slow) var(--ease-smooth-out);
-
-    @starting-style {
-      opacity: 0;
-    }
+  .scrollbar-none {
+    scrollbar-width: none;
+  }
+  .scrollbar-none::-webkit-scrollbar {
+    display: none;
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .animate-in {
-      transition: opacity 200ms ease;
-      transform: none;
-
-      @starting-style {
-        opacity: 0;
-        transform: none;
-      }
+    .press {
+      transition-property: background-color, box-shadow, color;
     }
-
-    .t-emphasis-fade {
-      transition: none;
+    .press:active {
+      scale: 1;
     }
+  }
+}
 
-    .delay-100,
-    .delay-200,
-    .delay-300,
-    .delay-400 {
-      transition-delay: 0ms;
-    }
+/*
+ * Hero entrance, on first paint only. Each block gets --n (0, 1, 2…) and
+ * starts 100ms after the one before. The hidden state lives only in the
+ * keyframe's `from` (held during the delay by `backwards`), so the
+ * prerendered page still shows everything if the animation never runs.
+ */
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    translate: 0 8px;
+    filter: blur(2px);
+  }
+}
+
+/* The hero shot is large: a longer travel, no blur (blur on a big image is slow). */
+@keyframes shot-in {
+  from {
+    opacity: 0;
+    translate: 0 16px;
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+.hero-in {
+  animation: rise-in 400ms var(--ease-out) backwards;
+  animation-delay: calc(var(--n, 0) * 100ms);
+}
+
+.hero-in-shot {
+  animation: shot-in 600ms var(--ease-out) backwards;
+  animation-delay: calc(var(--n, 0) * 100ms);
+}
+
+/*
+ * The inline script in index.html sets .fonts-wait until Inter has loaded
+ * (at most 1s). A paused entrance holds its `from` frame, so the hero stays
+ * hidden while the font changes, then plays in Inter.
+ */
+.fonts-wait :is(.hero-in, .hero-in-shot) {
+  animation-play-state: paused;
+}
+
+/*
+ * Scroll reveal (useReveal): children with .reveal-item rise in, 30ms apart,
+ * when the box scrolls into view. "waiting" hides them with no transition;
+ * "shown" plays the transition. A box that is on screen when the page loads
+ * never waits, so nothing that was already painted disappears.
+ */
+[data-reveal='waiting'] .reveal-item {
+  opacity: 0;
+  translate: 0 8px;
+  filter: blur(2px);
+}
+
+[data-reveal='shown'] .reveal-item {
+  transition:
+    opacity 250ms var(--ease-out),
+    translate 250ms var(--ease-out),
+    filter 250ms var(--ease-out);
+  transition-delay: calc(var(--n, 0) * 30ms);
+}
+
+/* Reduced motion: no movement and no blur, a short fade only. */
+@media (prefers-reduced-motion: reduce) {
+  .hero-in,
+  .hero-in-shot {
+    animation: fade-in 200ms ease-out backwards;
+  }
+
+  [data-reveal='waiting'] .reveal-item {
+    translate: none;
+    filter: none;
+  }
+
+  [data-reveal='shown'] .reveal-item {
+    transition: opacity 200ms ease-out;
   }
 }

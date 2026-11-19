@@ -1,7 +1,6 @@
 import type { ReactNode } from 'react';
 
-import { useInViewOnce } from '../../lib/useInViewOnce';
-import { cn } from '../../lib/utils';
+import { cn } from '@/lib/utils';
 
 type SectionHeaderProps = {
   eyebrow?: ReactNode;
@@ -12,8 +11,11 @@ type SectionHeaderProps = {
   titleClassName?: string;
   descriptionClassName?: string;
   titleId?: string;
+  /** Heading level. Use "h1" when this is the page's main title. */
+  as?: 'h1' | 'h2';
 };
 
+/** Section title block for the testimonial pages. Static: no entrance motion. */
 export function SectionHeader({
   eyebrow,
   title,
@@ -23,55 +25,31 @@ export function SectionHeader({
   titleClassName,
   descriptionClassName,
   titleId,
+  as: Heading = 'h2',
 }: SectionHeaderProps) {
-  const { ref, shown } = useInViewOnce<HTMLDivElement>();
-  const titleLine = eyebrow ? 't-stagger-line--2' : 't-stagger-line--1';
-  const descriptionLine = eyebrow ? 't-stagger-line--3' : 't-stagger-line--2';
-
   return (
-    <div
-      ref={ref}
-      className={cn(
-        't-stagger',
-        shown && 'is-shown',
-        align === 'center' && 'mx-auto text-center',
-        className,
-      )}
-    >
-      {eyebrow && (
-        <div className="t-stagger-line t-stagger-line--1">
-          <div
-            className={cn(
-              'mb-6 flex items-center gap-2 text-xs font-mono tracking-wider text-gray-500 uppercase',
-              align === 'center' && 'justify-center',
-            )}
-          >
-            <div className="h-1.5 w-1.5 rounded-sm bg-porcelain/30" />
-            {eyebrow}
-          </div>
-        </div>
-      )}
-      <h2
-        id={titleId}
-        className={cn(
-          't-stagger-line mb-4 text-4xl font-medium tracking-tight text-balance md:text-5xl',
-          titleLine,
-          titleClassName,
-        )}
-      >
-        {title}
-      </h2>
-      {description && (
-        <p
+    <div className={cn(align === 'center' && 'mx-auto text-center', className)}>
+      {eyebrow ? (
+        <div
           className={cn(
-            't-stagger-line text-lg leading-relaxed text-gray-400',
-            descriptionLine,
-            descriptionClassName,
+            'mb-6 font-mono text-xs tracking-[0.08em] text-primary uppercase',
+            align === 'center' && 'flex justify-center',
           )}
         >
+          {eyebrow}
+        </div>
+      ) : null}
+      <Heading
+        id={titleId}
+        className={cn('mb-4 text-[32px] leading-10 font-medium tracking-[-0.02em] text-foreground md:text-[40px] md:leading-[48px]', titleClassName)}
+      >
+        {title}
+      </Heading>
+      {description ? (
+        <p className={cn('max-w-xl text-base leading-6 text-muted-foreground', align === 'center' && 'mx-auto', descriptionClassName)}>
           {description}
         </p>
-      )}
+      ) : null}
     </div>
   );
 }

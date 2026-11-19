@@ -1,0 +1,860 @@
+/*
+ * Loops for the "More in one place" card illustrations.
+ * Spec: Paper artboard "More in one place · Illustration keyframes".
+ *
+ * Rules:
+ * - Only transform and opacity animate. The pen scribble (Canvas) and the
+ *   arrow (Accounts) also animate stroke-dashoffset.
+ * - Moves use ease-in-out cubic-bezier(0.65, 0, 0.35, 1).
+ *   Things that show or settle use ease-out cubic-bezier(0.23, 1, 0.32, 1).
+ *   Linear is only for the dot path samples and the segment light-up (constant rate).
+ *   Tool and caret changes use step-end (they are UI state changes, not motion).
+ * - The base styles are the still frame. The still frame is the Paper static node.
+ *   Canvas, Skills and Accounts: the 0% and 100% keyframes are equal to the still frame.
+ *   Automations: a 0.4 s intro goes from the still frame to the loop start. Then the loop runs.
+ * - The loops are paused by default. They run only when the root has data-playing="true".
+ * - With reduced motion, nothing animates. The still frame shows.
+ */
+
+.ill-root .ill-anim {
+  animation-play-state: paused;
+  animation-fill-mode: none;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+.ill-root[data-playing='true'] .ill-anim {
+  animation-play-state: running;
+}
+
+/* ───────────────────────────── Canvas · 6.4 s ─────────────────────────────
+ * 0.0 s  still: heading, scribble, pen tool, cursor at the scribble end
+ * 0.9 s  heading, scribble, image and selection fade out (300 ms)
+ * 0.9 s  cursor moves to the image drop spot (500 ms)
+ * 1.2 s  move tool; image shows lifted 28px with drop target and guides (300 ms)
+ * 2.6 s  drop: image and cursor settle down (150 ms ease-out), hints fade out
+ * 2.75 s selection fades in (120 ms)
+ * 3.2 s  cursor moves to the heading (500 ms)
+ * 3.7 s  text tool; heading line 1 types in 6 steps (600 ms), line 2 in 3 steps (300 ms)
+ * 4.6 s  caret blinks (off 500 ms, on 400 ms)
+ * 5.0 s  cursor moves to the scribble start (500 ms)
+ * 5.5 s  pen tool; scribble draws (600 ms ease-out), cursor follows it
+ * 6.1 s  hold (with 0.0 to 0.9 s: 1.2 s), repeat
+ */
+
+.ill-canvas-cursor {
+  animation-name: ill-canvas-cursor;
+  animation-duration: 6.4s;
+  animation-iteration-count: infinite;
+  animation-timing-function: linear;
+}
+
+@keyframes ill-canvas-cursor {
+  0%,
+  14.0625% {
+    transform: translate(0, 0);
+    animation-timing-function: cubic-bezier(0.65, 0, 0.35, 1);
+  }
+  21.875%,
+  40.625% {
+    transform: translate(48px, 42px);
+    animation-timing-function: cubic-bezier(0.23, 1, 0.32, 1);
+  }
+  42.96875%,
+  50% {
+    transform: translate(48px, 70px);
+    animation-timing-function: cubic-bezier(0.65, 0, 0.35, 1);
+  }
+  57.8125%,
+  78.125% {
+    transform: translate(-11px, -19px);
+    animation-timing-function: cubic-bezier(0.65, 0, 0.35, 1);
+  }
+  85.9375% {
+    transform: translate(-71.25px, -40px);
+    animation-timing-function: cubic-bezier(0.23, 1, 0.32, 1);
+  }
+  95.3125%,
+  100% {
+    transform: translate(0, 0);
+  }
+}
+
+/* Toolbar: the outlined tool changes with each step. */
+.ill-canvas-tool-move,
+.ill-canvas-tool-text,
+.ill-canvas-tool-pen {
+  animation-duration: 6.4s;
+  animation-iteration-count: infinite;
+  animation-timing-function: step-end;
+}
+
+.ill-canvas-tool-move {
+  animation-name: ill-canvas-tool-move;
+}
+
+.ill-canvas-tool-text {
+  animation-name: ill-canvas-tool-text;
+}
+
+.ill-canvas-tool-pen {
+  animation-name: ill-canvas-tool-pen;
+}
+
+@keyframes ill-canvas-tool-move {
+  0% {
+    opacity: 0;
+  }
+  18.75% {
+    opacity: 1;
+  }
+  57.8125%,
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes ill-canvas-tool-text {
+  0% {
+    opacity: 0;
+  }
+  57.8125% {
+    opacity: 1;
+  }
+  85.9375%,
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes ill-canvas-tool-pen {
+  0% {
+    opacity: 1;
+  }
+  18.75% {
+    opacity: 0;
+  }
+  85.9375%,
+  100% {
+    opacity: 1;
+  }
+}
+
+/* Drop target and lift guides: show while the image is lifted. */
+.ill-canvas-drag-hint {
+  animation-name: ill-canvas-drag-hint;
+  animation-duration: 6.4s;
+  animation-iteration-count: infinite;
+  animation-timing-function: linear;
+}
+
+@keyframes ill-canvas-drag-hint {
+  0%,
+  18.75% {
+    opacity: 0;
+    animation-timing-function: cubic-bezier(0.23, 1, 0.32, 1);
+  }
+  23.4375%,
+  40.625% {
+    opacity: 1;
+    animation-timing-function: cubic-bezier(0.23, 1, 0.32, 1);
+  }
+  42.96875%,
+  100% {
+    opacity: 0;
+  }
+}
+
+/* Image block: the outer group fades out, then shows again lifted. */
+.ill-canvas-image {
+  animation-name: ill-canvas-image;
+  animation-duration: 6.4s;
+  animation-iteration-count: infinite;
+  animation-timing-function: linear;
+}
+
+@keyframes ill-canvas-image {
+  0%,
+  14.0625% {
+    opacity: 1;
+    animation-timing-function: cubic-bezier(0.23, 1, 0.32, 1);
+  }
+  18.75% {
+    opacity: 0;
+    animation-timing-function: cubic-bezier(0.23, 1, 0.32, 1);
+  }
+  23.4375%,
+  100% {
+    opacity: 1;
+  }
+}
+
+/* Image block: the inner group lifts while hidden, then drops with a short settle. */
+.ill-canvas-image-lift {
+  animation-name: ill-canvas-image-lift;
+  animation-duration: 6.4s;
+  animation-iteration-count: infinite;
+  animation-timing-function: linear;
+}
+
+@keyframes ill-canvas-image-lift {
+  0% {
+    transform: translateY(0);
+    animation-timing-function: step-end;
+  }
+  18.75%,
+  40.625% {
+    transform: translateY(-28px);
+    animation-timing-function: cubic-bezier(0.23, 1, 0.32, 1);
+  }
+  42.96875%,
+  100% {
+    transform: translateY(0);
+  }
+}
+
+/* Selection box and size pill: hidden during the drag, fade in 120 ms after the drop. */
+.ill-canvas-selection {
+  animation-name: ill-canvas-selection;
+  animation-duration: 6.4s;
+  animation-iteration-count: infinite;
+  animation-timing-function: linear;
+}
+
+@keyframes ill-canvas-selection {
+  0%,
+  14.0625% {
+    opacity: 1;
+    animation-timing-function: cubic-bezier(0.23, 1, 0.32, 1);
+  }
+  18.75%,
+  42.96875% {
+    opacity: 0;
+    animation-timing-function: cubic-bezier(0.23, 1, 0.32, 1);
+  }
+  44.84375%,
+  100% {
+    opacity: 1;
+  }
+}
+
+/* Heading: the group fades out. The lines then type in again (scale 0 hides them until then). */
+.ill-canvas-heading {
+  animation-name: ill-canvas-heading;
+  animation-duration: 6.4s;
+  animation-iteration-count: infinite;
+  animation-timing-function: linear;
+}
+
+@keyframes ill-canvas-heading {
+  0%,
+  14.0625% {
+    opacity: 1;
+    animation-timing-function: cubic-bezier(0.23, 1, 0.32, 1);
+  }
+  18.75% {
+    opacity: 0;
+    animation-timing-function: step-end;
+  }
+  57.8125%,
+  100% {
+    opacity: 1;
+  }
+}
+
+/* Heading lines grow from the left in short steps. */
+.ill-root .ill-canvas-type {
+  transform-origin: left center;
+}
+
+.ill-canvas-type-1,
+.ill-canvas-type-2 {
+  animation-duration: 6.4s;
+  animation-iteration-count: infinite;
+  animation-timing-function: linear;
+}
+
+.ill-canvas-type-1 {
+  animation-name: ill-canvas-type-1;
+}
+
+.ill-canvas-type-2 {
+  animation-name: ill-canvas-type-2;
+}
+
+@keyframes ill-canvas-type-1 {
+  0% {
+    transform: scaleX(1);
+    animation-timing-function: step-end;
+  }
+  18.75%,
+  57.8125% {
+    transform: scaleX(0);
+    animation-timing-function: steps(6, jump-start);
+  }
+  67.1875%,
+  100% {
+    transform: scaleX(1);
+  }
+}
+
+@keyframes ill-canvas-type-2 {
+  0% {
+    transform: scaleX(1);
+    animation-timing-function: step-end;
+  }
+  18.75%,
+  67.1875% {
+    transform: scaleX(0);
+    animation-timing-function: steps(3, jump-start);
+  }
+  71.875%,
+  100% {
+    transform: scaleX(1);
+  }
+}
+
+/* Caret: shows while typing, then blinks once at about 1 Hz. */
+.ill-canvas-caret {
+  animation-name: ill-canvas-caret;
+  animation-duration: 6.4s;
+  animation-iteration-count: infinite;
+  animation-timing-function: step-end;
+}
+
+@keyframes ill-canvas-caret {
+  0% {
+    opacity: 0;
+  }
+  57.8125% {
+    opacity: 1;
+  }
+  71.875% {
+    opacity: 0;
+  }
+  79.6875% {
+    opacity: 1;
+  }
+  85.9375%,
+  100% {
+    opacity: 0;
+  }
+}
+
+/*
+ * The caret follows the end of the typed line, in board space.
+ * Line 1 ends at x = 52 + 70 × progress. Line 2 ends at x = 52 + 48 × progress, 8 lower.
+ * The caret sits 4 units after the line end. Its drawn x is 100.
+ */
+.ill-canvas-caret-move {
+  animation-name: ill-canvas-caret-move;
+  animation-duration: 6.4s;
+  animation-iteration-count: infinite;
+  animation-timing-function: linear;
+}
+
+@keyframes ill-canvas-caret-move {
+  0%,
+  57.8125% {
+    transform: translate(-44px, 0);
+    animation-timing-function: steps(6, jump-start);
+  }
+  67.1875% {
+    transform: translate(26px, 0);
+    animation-timing-function: step-end;
+  }
+  67.2% {
+    transform: translate(-44px, 8px);
+    animation-timing-function: steps(3, jump-start);
+  }
+  71.875%,
+  100% {
+    transform: translate(4px, 8px);
+  }
+}
+
+/* Scribble: the group fades out, then the pen draws the line again. */
+.ill-canvas-scribble {
+  animation-name: ill-canvas-scribble;
+  animation-duration: 6.4s;
+  animation-iteration-count: infinite;
+  animation-timing-function: linear;
+}
+
+@keyframes ill-canvas-scribble {
+  0%,
+  14.0625% {
+    opacity: 1;
+    animation-timing-function: cubic-bezier(0.23, 1, 0.32, 1);
+  }
+  18.75% {
+    opacity: 0;
+    animation-timing-function: step-end;
+  }
+  85.9375%,
+  100% {
+    opacity: 1;
+  }
+}
+
+.ill-canvas-scribble-path {
+  animation-name: ill-canvas-scribble-path;
+  animation-duration: 6.4s;
+  animation-iteration-count: infinite;
+  animation-timing-function: linear;
+}
+
+@keyframes ill-canvas-scribble-path {
+  0% {
+    stroke-dashoffset: 0;
+    animation-timing-function: step-end;
+  }
+  18.75%,
+  85.9375% {
+    stroke-dashoffset: 1;
+    animation-timing-function: cubic-bezier(0.23, 1, 0.32, 1);
+  }
+  95.3125%,
+  100% {
+    stroke-dashoffset: 0;
+  }
+}
+
+/* ───────────────────────────── Automations · 3.6 s ─────────────────────────────
+ * Intro (0.4 s, one time): from the still frame to the loop start.
+ * Loop (starts at 0.4 s):
+ * 0.0 s  the dot leaves the clock. It moves along the path for 2.4 s (ease-in-out).
+ *        Each dashed segment goes from 0.25 to 1 while the dot passes it.
+ * 2.4 s  the check fades in (250 ms ease-out)
+ * 2.4 s  hold 800 ms
+ * 3.2 s  reset 400 ms: segments dim, check fades out, the dot goes back to the clock
+ */
+
+.ill-auto-dot,
+.ill-auto-dot-move,
+.ill-auto-seg,
+.ill-auto-check {
+  animation-duration: 0.4s, 3.6s;
+  animation-delay: 0s, 0.4s;
+  animation-iteration-count: 1, infinite;
+  animation-timing-function: linear;
+}
+
+.ill-auto-dot {
+  animation-name: ill-auto-dot-intro, ill-auto-dot;
+}
+
+.ill-auto-dot-move {
+  animation-name: ill-auto-dot-move-intro, ill-auto-dot-move;
+}
+
+.ill-auto-seg-1 {
+  animation-name: ill-auto-seg-intro, ill-auto-seg-1;
+}
+
+.ill-auto-seg-2 {
+  animation-name: ill-auto-seg-intro, ill-auto-seg-2;
+}
+
+.ill-auto-seg-3 {
+  animation-name: ill-auto-seg-intro, ill-auto-seg-3;
+}
+
+.ill-auto-seg-4 {
+  animation-name: ill-auto-seg-intro, ill-auto-seg-4;
+}
+
+.ill-auto-check {
+  animation-name: ill-auto-check-intro, ill-auto-check;
+}
+
+@keyframes ill-auto-dot-intro {
+  0% {
+    opacity: 1;
+    animation-timing-function: cubic-bezier(0.23, 1, 0.32, 1);
+  }
+  50% {
+    opacity: 0;
+    animation-timing-function: cubic-bezier(0.23, 1, 0.32, 1);
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes ill-auto-dot-move-intro {
+  0% {
+    transform: translate(0, 0);
+    animation-timing-function: step-end;
+  }
+  50%,
+  100% {
+    transform: translate(-154px, 70px);
+  }
+}
+
+@keyframes ill-auto-dot {
+  0%,
+  88.889% {
+    opacity: 1;
+    animation-timing-function: cubic-bezier(0.23, 1, 0.32, 1);
+  }
+  94.444% {
+    opacity: 0;
+    animation-timing-function: cubic-bezier(0.23, 1, 0.32, 1);
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+/*
+ * The dot path: clock → segment 1 → first step → segment 2 → segment 3 → middle step → segment 4.
+ * The samples are 100 ms apart. Each sample is the position after
+ * ease-in-out cubic-bezier(0.65, 0, 0.35, 1) on the path length, so linear
+ * steps between them give the eased motion along a bent path.
+ */
+@keyframes ill-auto-dot-move {
+  0% { transform: translate(-154px, 70px); }
+  2.778% { transform: translate(-153.57px, 69.77px); }
+  5.556% { transform: translate(-152.18px, 69.01px); }
+  8.333% { transform: translate(-149.67px, 67.65px); }
+  11.111% { transform: translate(-145.82px, 65.56px); }
+  13.889% { transform: translate(-140.33px, 62.58px); }
+  16.667% { transform: translate(-132.82px, 58.51px); }
+  19.444% { transform: translate(-122.76px, 53.05px); }
+  22.222% { transform: translate(-109.41px, 45.81px); }
+  25% { transform: translate(-90.89px, 38.23px); }
+  27.778% { transform: translate(-65.88px, 29.86px); }
+  30.556% { transform: translate(-34.64px, 17.69px); }
+  33.333% { transform: translate(0, 0); }
+  36.111% { transform: translate(35.1px, -18.52px); }
+  38.889% { transform: translate(66.78px, -29.77px); }
+  41.667% { transform: translate(91.67px, -38.48px); }
+  44.444% { transform: translate(109.5px, -47.65px); }
+  47.222% { transform: translate(122.82px, -54.94px); }
+  50% { transform: translate(132.87px, -60.44px); }
+  52.778% { transform: translate(140.36px, -64.54px); }
+  55.556% { transform: translate(145.83px, -67.53px); }
+  58.333% { transform: translate(149.68px, -69.64px); }
+  61.111% { transform: translate(152.19px, -71.01px); }
+  63.889% { transform: translate(153.57px, -71.76px); }
+  66.667%,
+  94.444% {
+    transform: translate(154px, -72px);
+    animation-timing-function: step-end;
+  }
+  94.5%,
+  100% {
+    transform: translate(-154px, 70px);
+  }
+}
+
+@keyframes ill-auto-seg-intro {
+  0% {
+    opacity: 1;
+    animation-timing-function: cubic-bezier(0.23, 1, 0.32, 1);
+  }
+  100% {
+    opacity: 0.25;
+  }
+}
+
+/* Segment light-up times come from the dot path above. */
+@keyframes ill-auto-seg-1 {
+  0% {
+    opacity: 0.25;
+  }
+  23.36%,
+  88.889% {
+    opacity: 1;
+    animation-timing-function: cubic-bezier(0.23, 1, 0.32, 1);
+  }
+  100% {
+    opacity: 0.25;
+  }
+}
+
+@keyframes ill-auto-seg-2 {
+  0%,
+  29.83% {
+    opacity: 0.25;
+  }
+  32.99%,
+  88.889% {
+    opacity: 1;
+    animation-timing-function: cubic-bezier(0.23, 1, 0.32, 1);
+  }
+  100% {
+    opacity: 0.25;
+  }
+}
+
+@keyframes ill-auto-seg-3 {
+  0%,
+  33.62% {
+    opacity: 0.25;
+  }
+  36.19%,
+  88.889% {
+    opacity: 1;
+    animation-timing-function: cubic-bezier(0.23, 1, 0.32, 1);
+  }
+  100% {
+    opacity: 0.25;
+  }
+}
+
+@keyframes ill-auto-seg-4 {
+  0%,
+  42.05% {
+    opacity: 0.25;
+  }
+  66.667%,
+  88.889% {
+    opacity: 1;
+    animation-timing-function: cubic-bezier(0.23, 1, 0.32, 1);
+  }
+  100% {
+    opacity: 0.25;
+  }
+}
+
+@keyframes ill-auto-check-intro {
+  0% {
+    opacity: 1;
+    animation-timing-function: cubic-bezier(0.23, 1, 0.32, 1);
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes ill-auto-check {
+  0%,
+  66.667% {
+    opacity: 0;
+    animation-timing-function: cubic-bezier(0.23, 1, 0.32, 1);
+  }
+  73.611%,
+  88.889% {
+    opacity: 1;
+    animation-timing-function: cubic-bezier(0.23, 1, 0.32, 1);
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+/* ───────────────────────────── Skills · 3.2 s ─────────────────────────────
+ * 0.0 s  still: the top card is fully raised, "/" and guides show. Hold 1.4 s.
+ * 1.4 s  settle back 500 ms (ease-in-out): the card goes down 60, "/" to 0.35, guides out
+ * 1.9 s  rest 600 ms
+ * 2.5 s  lift 700 ms (ease-out): the card rises 60 → 0, guides fade in with it,
+ *        "/" goes to 1 in the last 300 ms
+ */
+
+.ill-skills-card,
+.ill-skills-slash,
+.ill-skills-guides {
+  animation-duration: 3.2s;
+  animation-iteration-count: infinite;
+  animation-timing-function: linear;
+}
+
+.ill-skills-card {
+  animation-name: ill-skills-card;
+}
+
+.ill-skills-slash {
+  animation-name: ill-skills-slash;
+}
+
+.ill-skills-guides {
+  animation-name: ill-skills-guides;
+}
+
+@keyframes ill-skills-card {
+  0%,
+  43.75% {
+    transform: translateY(0);
+    animation-timing-function: cubic-bezier(0.65, 0, 0.35, 1);
+  }
+  59.375%,
+  78.125% {
+    transform: translateY(60px);
+    animation-timing-function: cubic-bezier(0.23, 1, 0.32, 1);
+  }
+  100% {
+    transform: translateY(0);
+  }
+}
+
+@keyframes ill-skills-slash {
+  0%,
+  43.75% {
+    opacity: 1;
+    animation-timing-function: cubic-bezier(0.65, 0, 0.35, 1);
+  }
+  59.375%,
+  90.625% {
+    opacity: 0.35;
+    animation-timing-function: cubic-bezier(0.23, 1, 0.32, 1);
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes ill-skills-guides {
+  0%,
+  43.75% {
+    opacity: 1;
+    animation-timing-function: cubic-bezier(0.65, 0, 0.35, 1);
+  }
+  59.375%,
+  78.125% {
+    opacity: 0;
+    animation-timing-function: cubic-bezier(0.23, 1, 0.32, 1);
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+/* ───────────────────────────── Accounts · 4.0 s ─────────────────────────────
+ * 0.0 s  still: the middle disc is raised (in use), the arrow shows
+ * 0.0 s  reset 400 ms (ease-in-out): the left disc rises 30, the middle disc goes down 62,
+ *        the arrow fades out
+ * 0.4 s  hold 600 ms: the first account is in use
+ * 1.0 s  limit: the left disc drops and dims to 0.45 (400 ms ease-out)
+ * 1.1 s  the arrow draws (stroke-dashoffset): shaft 400 ms, head 100 ms
+ * 1.6 s  the middle disc rises 600 ms (ease-out)
+ * 2.2 s  hold 1.4 s
+ * 3.6 s  the left disc comes back to full opacity (400 ms ease-out) = still frame
+ */
+
+.ill-accounts-left,
+.ill-accounts-middle,
+.ill-accounts-arrow,
+.ill-accounts-arrow-shaft,
+.ill-accounts-arrow-head {
+  animation-duration: 4s;
+  animation-iteration-count: infinite;
+  animation-timing-function: linear;
+}
+
+.ill-accounts-left {
+  animation-name: ill-accounts-left;
+}
+
+.ill-accounts-middle {
+  animation-name: ill-accounts-middle;
+}
+
+.ill-accounts-arrow {
+  animation-name: ill-accounts-arrow;
+}
+
+.ill-accounts-arrow-shaft {
+  animation-name: ill-accounts-arrow-shaft;
+}
+
+.ill-accounts-arrow-head {
+  animation-name: ill-accounts-arrow-head;
+}
+
+@keyframes ill-accounts-left {
+  0% {
+    transform: translateY(0);
+    opacity: 1;
+    animation-timing-function: cubic-bezier(0.65, 0, 0.35, 1);
+  }
+  10%,
+  25% {
+    transform: translateY(-30px);
+    opacity: 1;
+    animation-timing-function: cubic-bezier(0.23, 1, 0.32, 1);
+  }
+  35%,
+  90% {
+    transform: translateY(0);
+    opacity: 0.45;
+    animation-timing-function: cubic-bezier(0.23, 1, 0.32, 1);
+  }
+  100% {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+@keyframes ill-accounts-middle {
+  0% {
+    transform: translateY(0);
+    animation-timing-function: cubic-bezier(0.65, 0, 0.35, 1);
+  }
+  10%,
+  40% {
+    transform: translateY(62px);
+    animation-timing-function: cubic-bezier(0.23, 1, 0.32, 1);
+  }
+  55%,
+  100% {
+    transform: translateY(0);
+  }
+}
+
+@keyframes ill-accounts-arrow {
+  0% {
+    opacity: 1;
+    animation-timing-function: cubic-bezier(0.23, 1, 0.32, 1);
+  }
+  10% {
+    opacity: 0;
+    animation-timing-function: step-end;
+  }
+  27.5%,
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes ill-accounts-arrow-shaft {
+  0% {
+    stroke-dashoffset: 0;
+    animation-timing-function: step-end;
+  }
+  10%,
+  27.5% {
+    stroke-dashoffset: 1;
+    animation-timing-function: cubic-bezier(0.23, 1, 0.32, 1);
+  }
+  37.5%,
+  100% {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes ill-accounts-arrow-head {
+  0% {
+    stroke-dashoffset: 0;
+    animation-timing-function: step-end;
+  }
+  10%,
+  37.5% {
+    stroke-dashoffset: 1;
+    animation-timing-function: cubic-bezier(0.23, 1, 0.32, 1);
+  }
+  40%,
+  100% {
+    stroke-dashoffset: 0;
+  }
+}
+
+/* ───────────────────────────── Reduced motion ───────────────────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  .ill-root .ill-anim {
+    animation: none;
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "stable": {
+    "version": "0.4.60",
+    "tag": "v0.4.60",
+    "publishedAt": "2026-11-07T05:44:20Z",
+    "releaseUrl": "https://github.com/gnoviawan/troupe/releases/tag/v0.4.60",
+    "assets": {
+      "macArm": "https://github.com/gnoviawan/troupe/releases/download/v0.4.60/Termul.Manager_0.4.60_aarch64.dmg",
+      "macIntel": "https://github.com/gnoviawan/troupe/releases/download/v0.4.60/Termul.Manager_0.4.60_x64.dmg",
+      "windows": "https://github.com/gnoviawan/troupe/releases/download/v0.4.60/Termul.Manager_0.4.60_x64-setup.exe",
+      "linuxAppImage": "https://github.com/gnoviawan/troupe/releases/download/v0.4.60/Termul.Manager_0.4.60_amd64.AppImage"
+    }
+  },
+  "nightly": {
+    "version": "0.5.0-nightly",
+    "tag": "nightly",
+    "publishedAt": "2026-11-19T00:00:00.000Z",
+    "build": 108,
+    "commit": "3e31072",
+    "releaseUrl": "https://github.com/gnoviawan/troupe/releases/tag/nightly",
+    "assets": {
+      "macArm": "https://github.com/gnoviawan/troupe/releases/download/nightly/Troupe_0.5.0-nightly.20261119.108.3e31072_aarch64.dmg",
+      "macIntel": "https://github.com/gnoviawan/troupe/releases/download/nightly/Troupe_0.5.0-nightly.20261119.108.3e31072_x64.dmg",
+      "windows": "https://github.com/gnoviawan/troupe/releases/download/nightly/Troupe_0.5.0-nightly.20261119.108.3e31072_x64-setup.exe",
+      "linuxAppImage": "https://github.com/gnoviawan/troupe/releases/download/nightly/Troupe_0.5.0-nightly.20261119.108.3e31072_amd64.AppImage"
+    }
+  },
+  "fetchedAt": "2026-11-19T08:52:02.113Z"
+}

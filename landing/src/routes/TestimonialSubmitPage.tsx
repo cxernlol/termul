@@ -1,10 +1,9 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { flushSync } from 'react-dom';
-import { useSeoMeta } from '@unhead/react';
+import { useState, type FormEvent } from 'react';
 
 import { Button } from '../components/ui/Button';
 import { SectionHeader } from '../components/ui/SectionHeader';
-import { readCssTime } from '../lib/read-css-time';
+import { usePageMeta } from '../lib/page-meta';
+import { shrinkAvatar } from '../lib/shrink-avatar';
 import { submitTestimonial } from '../lib/testimonials-api';
 import { cn } from '../lib/utils';
 import {
@@ -17,70 +16,18 @@ import {
 
 type SubmitStatus = 'idle' | 'submitting' | 'success' | 'error';
 
-function StatusSwap({
-  message,
-  status,
-}: {
-  message: string;
-  status: SubmitStatus;
-}) {
-  const elRef = useRef<HTMLParagraphElement>(null);
-  const visibleRef = useRef(message);
-  const [visible, setVisible] = useState(message);
-  const [visibleStatus, setVisibleStatus] = useState(status);
-  const [phase, setPhase] = useState<'idle' | 'exit' | 'enter-start'>('idle');
-
-  useEffect(() => {
-    if (message === visibleRef.current) {
-      setVisibleStatus(status);
-      setPhase((current) => (current === 'idle' ? current : 'idle'));
-      return;
-    }
-
-    if (!visibleRef.current) {
-      flushSync(() => {
-        visibleRef.current = message;
-        setVisible(message);
-        setVisibleStatus(status);
-        setPhase('enter-start');
-      });
-      if (elRef.current) void elRef.current.offsetHeight;
-      setPhase('idle');
-      return;
-    }
-
-    const dur = readCssTime('--text-swap-dur', 150);
-    setPhase('exit');
-
-    const timer = window.setTimeout(() => {
-      flushSync(() => {
-        visibleRef.current = message;
-        setVisible(message);
-        setVisibleStatus(status);
-        setPhase(message ? 'enter-start' : 'idle');
-      });
-      if (elRef.current) void elRef.current.offsetHeight;
-      if (message) setPhase('idle');
-    }, dur);
-
-    return () => window.clearTimeout(timer);
-  }, [message, status]);
-
-  if (!visible && phase === 'idle') return null;
-
+/**
+ * The submit result. The live region stays in the DOM (empty until there is a
+ * message), so screen readers announce the result when the text arrives.
+ */
+function SubmitStatusMessage({ message, status }: { message: string; status: SubmitStatus }) {
   return (
     <p
-      ref={elRef}
       aria-atomic="true"
-      aria-live="polite"
-      className={cn(
-        't-text-swap text-sm',
-        phase === 'exit' && 'is-exit',
-        phase === 'enter-start' && 'is-enter-start',
-        visibleStatus === 'success' ? 'text-emerald' : 'text-warning-red',
-      )}
+      aria-live={status === 'error' ? 'assertive' : 'polite'}
+      className={cn('text-sm', status === 'success' ? 'text-emerald' : 'text-warning-red')}
     >
-      {visible}
+      {message}
     </p>
   );
 }
@@ -89,11 +36,11 @@ export function TestimonialSubmitPage() {
   const [status, setStatus] = useState<SubmitStatus>('idle');
   const [message, setMessage] = useState('');
 
-  useSeoMeta({
-    title: 'Submit a Troupe Testimonial',
+  usePageMeta({
+    title: 'Submit a testimonial — Troupe',
     description:
       'Share how Troupe helps your workflow. Approved testimonials may appear on the Troupe landing page.',
-    robots: 'index,follow',
+    path: '/testimonial/submit/',
   });
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
@@ -105,6 +52,12 @@ export function TestimonialSubmitPage() {
     setMessage('');
 
     try {
+      // Send a small avatar (max 256px, WebP) instead of the full photo.
+      const avatar = formData.get('avatar');
+      if (avatar instanceof File && avatar.size > 0) {
+        formData.set('avatar', await shrinkAvatar(avatar));
+      }
+
       await submitTestimonial(formData);
       form.reset();
       setStatus('success');
@@ -123,6 +76,7 @@ export function TestimonialSubmitPage() {
     <main id="main-content" className="px-6 pb-24 pt-32">
       <div className="mx-auto grid max-w-6xl gap-12 lg:grid-cols-[0.9fr_1.1fr] lg:items-start">
         <SectionHeader
+          as="h1"
           eyebrow="Share your workflow"
           title="Tell developers how Troupe helps you."
           description="Send a short testimonial with your name, role, and avatar. We review submissions before they appear publicly."
@@ -149,7 +103,7 @@ export function TestimonialSubmitPage() {
                 minLength={20}
                 maxLength={500}
                 rows={6}
-                placeholder="Troupe helps me..."
+                placeholder="Troupe helps me…"
                 className={testimonialTextareaClass}
               />
             </label>
@@ -161,6 +115,8 @@ export function TestimonialSubmitPage() {
                   name="name"
                   required
                   maxLength={80}
+                  autoComplete="name"
+                  enterKeyHint="next"
                   className={`w-full ${testimonialInputClass}`}
                   placeholder="Alex Chen"
                 />
@@ -171,6 +127,8 @@ export function TestimonialSubmitPage() {
                   name="role"
                   required
                   maxLength={120}
+                  autoComplete="organization-title"
+                  enterKeyHint="next"
                   className={`w-full ${testimonialInputClass}`}
                   placeholder="Staff Engineer"
                 />
@@ -205,9 +163,9 @@ export function TestimonialSubmitPage() {
                 disabled={status === 'submitting'}
                 className="disabled:pointer-events-none disabled:opacity-60"
               >
-                {status === 'submitting' ? 'Submitting...' : 'Submit testimonial'}
+                {status === 'submitting' ? 'Submitting…' : 'Submit testimonial'}
               </Button>
-              <StatusSwap message={message} status={status} />
+              <SubmitStatusMessage message={message} status={status} />
             </div>
           </div>
         </form>

@@ -6,7 +6,6 @@ import {
   RouterProvider,
   type HydrationState,
 } from 'react-router'
-import 'overlayscrollbars/overlayscrollbars.css'
 import './index.css'
 import { routes } from './routes'
 

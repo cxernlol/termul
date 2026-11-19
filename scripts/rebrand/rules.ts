@@ -164,10 +164,10 @@ export const KEEP_PATTERNS: readonly KeepPattern[] = [
   {
     id: 'legacy-artifact-names',
     reason:
-      'Releases up to 0.4.60 shipped "Termul Manager.app" and Termul.Manager_* assets; install docs and upgrade code still name them.',
+      'Releases up to 0.4.60 shipped "Termul Manager.app" and Termul.Manager_* assets, with release titles like "Termul Manager v0.4.60"; install docs, upgrade code and release-data test fixtures still name them.',
     owner: 'keep forever',
     pattern:
-      /\bTermul\.Manager(?![A-Za-z])|\bTermul Manager(?=\.(?:app|AppImage|exe|dmg|msi|deb|rpm)\b|_\d)/g
+      /\bTermul\.Manager(?![A-Za-z])|\bTermul Manager(?=\.(?:app|AppImage|exe|dmg|msi|deb|rpm)\b|_\d| v\d)/g
   },
   {
     id: 'font-family',
@@ -186,7 +186,9 @@ export const KEEP_PATTERNS: readonly KeepPattern[] = [
       'DESIGN.md',
       'docs/design/sidebar-v2-handoff.md',
       'docs/design/status-rail-handoff.md',
-      'docs/design/composer-v2-handoff.md'
+      'docs/design/composer-v2-handoff.md',
+      'landing/DESIGN.md',
+      'docs/pocket/spec/2026-11-19-landing-redesign/plan.md'
     ]
   },
   {
@@ -296,6 +298,13 @@ export const KEEP_PATHS: readonly KeepPath[] = [
       'The Worker that sends termul.dev and docs.termul.dev to usetroupe.dev has to name the old hosts.',
     owner: 'keep while termul.dev redirects',
     globs: ['scripts/termul-dev-redirect/**']
+  },
+  {
+    id: 'landing-testimonials-snapshot',
+    reason:
+      "Build-time copy of the approved testimonials from the live database (scripts/sync-testimonials.ts). Quotes are the authors' own words and may name the old product.",
+    owner: 'keep forever',
+    globs: ['landing/src/data/testimonials.snapshot.json']
   },
   {
     id: 'design-files',

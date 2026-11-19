@@ -1,29 +1,25 @@
-import { useCallback, useState } from 'react';
 import { Outlet } from 'react-router';
 
-import { Header } from './components/layout/Header';
+import { DownloadProvider } from './components/download/DownloadContext';
 import { Footer } from './components/layout/Footer';
-import { ScrollContainer } from './components/layout/ScrollContainer';
+import { Header } from './components/layout/Header';
 
 export function App() {
-  const [scrollTop, setScrollTop] = useState(0);
-  const handleScrollTopChange = useCallback((nextScrollTop: number) => {
-    setScrollTop(nextScrollTop);
-  }, []);
-
   return (
-    <ScrollContainer onScrollTopChange={handleScrollTopChange}>
-      <div className="min-h-screen">
+    <DownloadProvider>
+      <div className="flex min-h-dvh flex-col">
         <a
           href="#main-content"
-          className="sr-only focus:not-sr-only focus:fixed focus:top-4 focus:left-4 focus:z-[100] focus:rounded-lg focus:bg-white focus:px-4 focus:py-2 focus:text-sm focus:font-medium focus:text-black focus:outline-none"
+          className="sr-only focus:not-sr-only focus:fixed focus:top-4 focus:left-4 focus:z-[100] focus:rounded-lg focus:bg-foreground focus:px-4 focus:py-2 focus:text-sm focus:font-medium focus:text-background"
         >
           Skip to content
         </a>
-        <Header scrollTop={scrollTop} />
-        <Outlet />
+        <Header />
+        <div className="flex-1">
+          <Outlet />
+        </div>
         <Footer />
       </div>
-    </ScrollContainer>
+    </DownloadProvider>
   );
 }

@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { useHead, useSeoMeta } from '@unhead/react';
+import { usePageMeta } from '@/lib/page-meta';
 
 type LegalPageProps = {
   title: string;
@@ -16,14 +16,7 @@ export function LegalPage({
   lastUpdated,
   children,
 }: LegalPageProps) {
-  useSeoMeta({
-    title: `${title} — Troupe`,
-    description,
-    robots: 'index,follow',
-  });
-  useHead({
-    link: [{ rel: 'canonical', href: `https://usetroupe.dev${path}` }],
-  });
+  usePageMeta({ title: `${title} — Troupe`, description, path });
 
   return (
     <main id="main-content" className="px-6 pb-24 pt-32">

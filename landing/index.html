@@ -10,24 +10,19 @@
     <!-- End Google Tag Manager -->
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <link rel="canonical" href="https://usetroupe.dev/" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Troupe — A Hundred Agents In One Manager</title>
-    <meta name="description" content="Troupe treats workspaces as first-class citizens. Organize terminals by project with persistent sessions, snapshots, and a clean tabbed interface. Built with Tauri 2 for Windows, macOS, and Linux." />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#0b0c0d" />
+    <!-- Title, description, canonical, og:title/description/url and twitter:title/description are set per route (src/lib/page-meta.ts). -->
     <meta property="og:site_name" content="Troupe" />
-    <meta property="og:url" content="https://usetroupe.dev/" />
-    <meta property="og:title" content="Troupe — A Hundred Agents In One Manager" />
-    <meta property="og:description" content="Troupe treats workspaces as first-class citizens. Organize terminals by project with persistent sessions, snapshots, and a clean tabbed interface." />
     <meta property="og:type" content="website" />
     <meta property="og:image" content="https://usetroupe.dev/og-image.png" />
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />
-    <meta property="og:image:alt" content="Troupe — A Hundred Agents In One Manager" />
+    <meta property="og:image:alt" content="Troupe: Any Agents in One UI. The Troupe app window with projects and chats." />
     <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:title" content="Troupe — A Hundred Agents In One Manager" />
-    <meta name="twitter:description" content="Troupe treats workspaces as first-class citizens. Organize terminals by project with persistent sessions, snapshots, and a clean tabbed interface." />
     <meta name="twitter:image" content="https://usetroupe.dev/og-image.png" />
-    <!-- softwareVersion below is the latest stable release (https://github.com/gnoviawan/troupe/releases/latest). Update it when a new stable version ships. -->
     <script type="application/ld+json">
       {
         "@context": "https://schema.org",
@@ -35,10 +30,10 @@
         "name": "Troupe",
         "applicationCategory": "DeveloperApplication",
         "operatingSystem": "Windows, macOS, Linux",
-        "description": "A Hundred agents in one manager. Organize terminals by project with persistent sessions, snapshots, and a clean tabbed interface. Built with Tauri 2 for Windows, macOS, and Linux.",
+        "description": "Run every coding agent from one desktop app. Plan, review and ship with Claude Code, Codex, Gemini CLI and more, from your desk or phone.",
         "url": "https://usetroupe.dev/",
         "downloadUrl": "https://github.com/gnoviawan/troupe/releases/latest",
-        "softwareVersion": "0.4.60",
+        "softwareVersion": "%TROUPE_STABLE_VERSION%",
         "license": "https://github.com/gnoviawan/troupe/blob/dev/LICENSE",
         "offers": {
           "@type": "Offer",
@@ -49,6 +44,17 @@
     </script>
   </head>
   <body>
+    <!-- Hold the hero entrance until Inter is ready (at most 1s), so the hero
+         never changes from the fallback font to Inter in mid-animation.
+         It must stay here, first in <body>: an inline script waits for the
+         stylesheets above it, so the Inter @font-face rules exist (in <head>,
+         fonts.load() finds no face and resolves at once), and it still runs
+         before the hero can paint. Without JavaScript the class is never set
+         and the entrance plays as usual. CSS: .fonts-wait in src/index.css. -->
+    <script>(function(d){var r=d.documentElement;if(!d.fonts||!d.fonts.load)return;r.classList.add('fonts-wait');
+    var done=function(){r.classList.remove('fonts-wait')};
+    Promise.race([d.fonts.load('500 40px "Inter Variable"'),new Promise(function(f){setTimeout(f,1000)})]).then(done,done);
+    })(document);</script>
     <!-- Google Tag Manager (noscript) -->
     <noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-M7G7GR3C"
     height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>

@@ -30,6 +30,11 @@ export type Env = {
    * Unset keeps the legacy unsalted hash so existing rows stay consistent.
    */
   TESTIMONIAL_RATE_LIMIT_SALT?: string;
+  /**
+   * Optional GitHub token for /api/releases (raises the GitHub rate limit).
+   * Read-only public data; set as a secret, never committed.
+   */
+  GITHUB_TOKEN?: string;
 };
 
 // Kept for internal use by the existing handler functions below.
@@ -200,7 +205,9 @@ export async function serveAvatar({ env }: PagesContext, key: string) {
 
   return new Response(object.body, {
     headers: {
-      'Cache-Control': 'no-cache, must-revalidate',
+      // Each upload has its own key, so a cached copy is never a different
+      // picture. One hour keeps an unpublished avatar from lingering long.
+      'Cache-Control': 'public, max-age=3600',
       'Content-Type': object.httpMetadata?.contentType ?? 'application/octet-stream',
       'X-Content-Type-Options': 'nosniff',
     },

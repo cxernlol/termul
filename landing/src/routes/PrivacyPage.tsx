@@ -46,22 +46,19 @@ export function PrivacyPage() {
             verified.
           </li>
           <li>
-            <strong>Google Fonts</strong> (fonts.googleapis.com and
-            fonts.gstatic.com) are loaded for the Inter and JetBrains Mono
-            fonts. Your browser sends a request, including your IP address, to
-            Google.
+            <strong>Fonts</strong> (Inter and Paper Mono) are served from
+            usetroupe.dev. The site does not load fonts from Google.
           </li>
           <li>
-            <strong>Images</strong> for contributors and testimonials may be
-            loaded from GitHub and unavatar.io. A demo video is loaded from
-            CloudFront.
+            <strong>Images</strong> for testimonials may be loaded from the
+            address the author gave, for example GitHub or unavatar.io. When a
+            testimonial has no image, the page shows the author&apos;s
+            initials. No other third-party images or videos are loaded.
           </li>
           <li>
-            <strong>DiceBear avatars</strong>: when a testimonial has no avatar
-            image, the browser computes a SHA-256 hash of the displayed name
-            and requests a generated avatar from api.dicebear.com using only
-            that hash as the seed. The raw name is not sent. If hashing is not
-            available, local initials are shown instead.
+            The homepage asks <code>/api/releases</code> on usetroupe.dev for
+            the latest Troupe versions. That endpoint reads the public GitHub
+            releases; your browser does not contact GitHub for it.
           </li>
           <li>
             The site sets the <code>Referrer-Policy: no-referrer</code>{' '}

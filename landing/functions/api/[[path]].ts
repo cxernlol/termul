@@ -15,6 +15,8 @@ import {
   type Env,
   type PagesContext,
 } from './_lib';
+// Files that start with "_" are not routes in Cloudflare Pages Functions.
+import { getReleases } from './_releases-handler';
 
 // Re-export helpers and types used by tests or other modules
 export {
@@ -48,6 +50,9 @@ app.notFound((c) =>
   json({ error: `No API route for ${c.req.path}` }, 404));
 
 // Public routes
+app.get('/releases', (c) =>
+  getReleases(c.req.raw, c.env.GITHUB_TOKEN));
+
 app.get('/testimonials', (c) =>
   listApprovedTestimonials(ctx(c)));
 

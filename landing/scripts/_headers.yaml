@@ -9,7 +9,7 @@
           "https://www.googletagmanager.com",
           "https://static.cloudflareinsights.com",
         ]
-      style-src: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"]
+      style-src: ["'self'", "'unsafe-inline'"]
       img-src:
         [
           "'self'",
@@ -23,11 +23,10 @@
           "*.github.com",
           "*.unavatar.io",
           "unavatar.io",
-          "api.dicebear.com",
           "*.cloudflareinsights.com",
         ]
-      media-src: ["'self'", "https://d8j0ntlcm91z4.cloudfront.net"]
-      font-src: ["'self'", "https://fonts.gstatic.com"]
+      media-src: ["'self'"]
+      font-src: ["'self'"]
       frame-src: ["'self'", "https://www.googletagmanager.com"]
       connect-src:
         [

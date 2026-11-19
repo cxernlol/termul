@@ -1,9 +1,9 @@
-import { useSeoMeta } from '@unhead/react';
+import { usePageMeta } from '../lib/page-meta';
 
-import { Button } from '../components/ui/Button';
+import { buttonClassName } from '../components/ui/Button';
 
 export function NotFoundPage() {
-  useSeoMeta({
+  usePageMeta({
     title: 'Page not found — Troupe',
     description: 'The page you are looking for does not exist.',
     robots: 'noindex,nofollow',
@@ -12,7 +12,7 @@ export function NotFoundPage() {
   return (
     <main
       id="main-content"
-      className="flex min-h-screen items-center justify-center px-6 pb-24 pt-32"
+      className="flex min-h-[60dvh] items-center justify-center px-6 pt-24 pb-24"
     >
       <div className="mx-auto max-w-xl text-center">
         <p className="text-sm font-medium text-muted-foreground">404</p>
@@ -23,9 +23,9 @@ export function NotFoundPage() {
           The page you are looking for does not exist or has moved.
         </p>
         <div className="mt-8 flex justify-center">
-          <Button as="a" href="/">
+          <a href="/" className={buttonClassName()}>
             Back to home
-          </Button>
+          </a>
         </div>
       </div>
     </main>

@@ -1,85 +1,94 @@
-import { FooterColumn, FooterLink, type FooterLink as FooterLinkData } from './FooterLinks';
-import { Logo } from "../ui/Logo";
-import { ProductCta } from '../ui/ProductCta';
-import { SectionHeader } from '../ui/SectionHeader';
+import { Link } from 'react-router';
+
+import { Logo } from '@/components/ui/Logo';
 import {
-  CONTRIBUTING_URL,
-  DOCS_URL,
+  CHANGELOG_URL,
+  DOCS,
   GITHUB_REPO_URL,
   ISSUES_URL,
-  LATEST_RELEASE_URL,
-  LICENSE_URL,
-  PULLS_URL,
-} from "../../lib/links";
+  RELEASES_PAGE_URL,
+  SECTION,
+} from '@/lib/links';
 
-const footerColumns: { title: string; links: FooterLinkData[] }[] = [
+const COLUMNS = [
   {
-    title: 'Downloads',
+    title: 'Product',
     links: [
-      { label: 'Windows (x64)', href: LATEST_RELEASE_URL },
-      { label: 'macOS (Apple Silicon)', href: LATEST_RELEASE_URL },
-      { label: 'macOS (Intel)', href: LATEST_RELEASE_URL },
-      { label: 'Linux (x64)', href: LATEST_RELEASE_URL },
+      { label: 'Download', href: '/#download' },
+      { label: 'Features', href: `/#${SECTION.tour}` },
+      { label: 'Changelog', href: CHANGELOG_URL },
     ],
   },
   {
-    title: 'Resources',
+    title: 'Docs',
     links: [
-      { label: 'Documentation', href: DOCS_URL },
-      { label: 'Report an Issue', href: ISSUES_URL },
-      { label: 'Pull Requests', href: PULLS_URL },
-      { label: 'Contributing', href: CONTRIBUTING_URL },
+      { label: 'Getting started', href: DOCS.gettingStarted },
+      { label: 'Agent setup', href: DOCS.agentSetup },
+      { label: 'Browser and phone', href: DOCS.remote },
+      { label: 'Server API', href: DOCS.serverApi },
     ],
   },
   {
-    title: 'Project',
+    title: 'Community',
     links: [
-      { label: 'GitHub Repository', href: GITHUB_REPO_URL },
-      { label: 'License (MIT)', href: LICENSE_URL },
-      { label: 'Built with Tauri', href: 'https://tauri.app' },
+      { label: 'GitHub', href: GITHUB_REPO_URL },
+      { label: 'Issues', href: ISSUES_URL },
+      { label: 'Releases', href: RELEASES_PAGE_URL },
     ],
   },
-];
+] as const;
 
-const legalLinkClassName =
-  'hover:text-white transition-[color,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.97]';
-
-export const Footer = () => {
+export function Footer() {
   return (
-    <footer id="download" className="mt-20 border-t border-border-subtle pt-20 pb-10 px-6 bg-background">
-      <div className="max-w-6xl mx-auto">
-        <div className="flex flex-col items-center text-center mb-24">
-          <SectionHeader
-            align="center"
-            title="Take control of your terminal."
-            className="mb-8"
-            titleClassName="mb-0 text-3xl md:text-5xl"
-          />
-          <ProductCta variant="footer" />
-        </div>
-        
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-8 border-t border-border-subtle pt-12">
-          <div className="col-span-2 md:col-span-2">
-            <Logo className="mb-6" textClassName="text-lg" />
-            <p className="text-sm text-gray-500 max-w-xs leading-relaxed">
-              A modern, project-aware terminal manager built with Tauri. Organize terminals by project with persistent sessions.
-            </p>
+    <footer className="border-t-[0.5px] border-border bg-card">
+      <div className="mx-auto flex max-w-[1248px] flex-col gap-9 px-6 pt-10 pb-12 md:flex-row md:justify-between md:pt-16 xl:px-0">
+        <div className="flex flex-col justify-between gap-6 md:gap-20">
+          <Logo size={22} />
+          <div className="hidden flex-col gap-2 text-[13px] leading-5 text-muted-foreground md:flex">
+            <span>usetroupe.dev · MIT License</span>
+            <LegalLinks />
           </div>
-          
-          {footerColumns.map((column) => (
-            <FooterColumn key={column.title} {...column} />
+        </div>
+
+        <nav aria-label="Footer" className="grid grid-cols-2 gap-x-6 gap-y-8 md:flex md:gap-24">
+          {COLUMNS.map((column) => (
+            <div key={column.title} className="flex flex-col">
+              <h2 className="pb-1 text-[15px] leading-[22px] font-medium text-foreground md:text-sm md:leading-5">{column.title}</h2>
+              <ul className="flex flex-col">
+                {column.links.map((link) => (
+                  <li key={link.label}>
+                    <a
+                      href={link.href}
+                      className="flex min-h-11 items-center text-[15px] text-muted-foreground transition-colors duration-150 hover:text-foreground md:min-h-0 md:py-[5px] md:text-sm md:leading-5"
+                    >
+                      {link.label}
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            </div>
           ))}
-        </div>
-        
-        <div className="mt-12 pt-8 border-t border-border-subtle flex flex-col md:flex-row items-center justify-between gap-4 text-sm text-gray-600">
-          <p>© {new Date().getFullYear()} Troupe Contributors. MIT Licensed.</p>
-          <div className="flex items-center gap-4 text-gray-400">
-            <a href="/privacy/" className={legalLinkClassName}>Privacy</a>
-            <a href="/terms/" className={legalLinkClassName}>Terms</a>
-            <FooterLink href={GITHUB_REPO_URL}>GitHub</FooterLink>
-          </div>
+        </nav>
+
+        <div className="flex flex-col gap-2 text-sm leading-5 text-muted-foreground md:hidden">
+          <span>usetroupe.dev · MIT License</span>
+          <LegalLinks />
         </div>
       </div>
     </footer>
   );
-};
+}
+
+function LegalLinks() {
+  return (
+    <span className="flex gap-3">
+      <Link to="/privacy" className="inline-flex min-h-11 items-center hover:text-foreground md:min-h-0">
+        Privacy
+      </Link>
+      <span aria-hidden="true" className="inline-flex items-center">·</span>
+      <Link to="/terms" className="inline-flex min-h-11 items-center hover:text-foreground md:min-h-0">
+        Terms
+      </Link>
+    </span>
+  );
+}
