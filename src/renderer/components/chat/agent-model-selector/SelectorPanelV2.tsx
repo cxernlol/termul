@@ -47,6 +47,7 @@ import { OtherAgentSignIn } from './SignInActions'
 import {
   AGENT_TRACK_CLASS,
   type AgentTab,
+  agentTabSelected,
   agentTrackCapacity,
   type CatalogModel,
   entryDisableReason,
@@ -700,7 +701,7 @@ export function SelectorPanelV2(props: SelectorPanelV2Props): React.JSX.Element 
     key: tab.configId,
     label: tab.name,
     glyph: <TabGlyph tab={tab} colorClassName="text-current" />,
-    selected: !showingMore && tab.configId === viewId,
+    selected: !showingMore && agentTabSelected(tab, viewId),
     title: state.hasUpdate(tab) ? `${tab.name} · update available` : tab.name,
     onSelect: () => state.openAgent(tab)
   }))

@@ -22,6 +22,7 @@ import {
   isCodexAccountSignedOutError,
   isDefiniteSpawnRejection
 } from '@/lib/agents/acp-spawn-errors'
+import { findStoredAgentConfig } from '@/lib/agents/agent-aliases'
 import { __resetCommandEngineForTesting } from '@/lib/command-engine'
 import { __clearCommandJournalForTesting } from '@/lib/command-journal'
 import { projectForCwd, resolveAgentSpawnEnv } from '@/lib/env-parser'
@@ -861,7 +862,7 @@ function currentLaunch(
   env: Record<string, string>
   signature: string
 } | null {
-  const config = state.agentConfigs.find((c) => c.id === configId)
+  const config = findStoredAgentConfig(state.agentConfigs, configId)
   if (!config) return null
   const project = resolveSpawnProject(cwd, projectId)
   const resolvedProjectId = project?.id ?? ''
@@ -869,13 +870,17 @@ function currentLaunch(
   // terminal tab in that project gets it (`spawnTerminalInPane`) and as a
   // terminal-native agent does (`launchAgentInPane`).
   const env = resolveAgentSpawnEnv(project?.envVars, config.env)
+  // A legacy id such as `opencode-v2` launches the saved config it resolved to.
+  // The process is registered under that saved id, so a later check does not
+  // kill it for failing an exact match on the requested id.
+  const launchId = config.id
   return {
     config,
     project,
     projectId: resolvedProjectId,
-    reuseKey: agentReuseKey(configId, cwd, resolvedProjectId || undefined, sessionId),
+    reuseKey: agentReuseKey(launchId, cwd, resolvedProjectId || undefined, sessionId),
     env,
-    signature: spawnSignature(config, env, configId, resolvedProjectId)
+    signature: spawnSignature(config, env, launchId, resolvedProjectId)
   }
 }
 
@@ -998,7 +1003,7 @@ export function ensureLiveAgent(
     set((s) => ({ warmingConfigs: { ...s.warmingConfigs, [reuseKey]: true } }))
   }
 
-  if (projectId && otherProjectHoldsAgent(get(), configId, trimmedCwd, projectId)) {
+  if (projectId && otherProjectHoldsAgent(get(), config.id, trimmedCwd, projectId)) {
     void logFrontendError({
       level: 'info',
       source: 'acp-store.ensureLiveAgent',
@@ -1019,7 +1024,7 @@ export function ensureLiveAgent(
       }
       const agentId = await get().spawnAgent(
         {
-          configId,
+          configId: config.id,
           name: config.name,
           command: config.command,
           args: config.args,
@@ -1030,7 +1035,7 @@ export function ensureLiveAgent(
         options.sessionId
       )
       definiteSpawnRejections.delete(reuseKey)
-      if (get().agentConfigs.some((c) => c.id === configId)) {
+      if (get().agentConfigs.some((c) => c.id === config.id)) {
         liveAgentSignatures.set(agentId, signature)
         // A newer launch took the key while this spawn ran (the project's
         // Claude account changed): keep this agent for its own caller only.

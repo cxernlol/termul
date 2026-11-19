@@ -79,6 +79,7 @@ import {
 } from '@/lib/acp-api'
 import { AcpConnectionCoordinator, type AcpRecovery } from '@/lib/acp-connection'
 import { getAcpTransport, isTransientAcpTransportError } from '@/lib/acp-transport'
+import { canonicalAgentId } from '@/lib/agents/agent-aliases'
 import { splitReadOnlyGuard } from '@/lib/github-handoff/read-only-guard'
 import { logFrontendError } from '@/lib/log-api'
 import type { McpInstallRequestEvent, McpInstallResolvedEvent } from '@/lib/mcp-install-request'
@@ -773,7 +774,7 @@ export function useAgentTemplateId(agentId: AgentId | null, agentConfigId?: stri
     useShallow((s) => {
       if (agentConfigId) {
         const config = s.agentConfigs.find((c) => c.id === agentConfigId)
-        if (config?.templateId) return config.templateId
+        if (config?.templateId) return canonicalAgentId(config.templateId)
       }
       return selectAgentIdentity(s, agentId).templateId
     })

@@ -611,6 +611,10 @@ impl AcpInstallService {
                 "invalid agent id",
             ));
         }
+        // A legacy id installs the canonical agent. An existing legacy install
+        // stays on disk and is reused by the catalog until a canonical install
+        // exists.
+        let agent_id = crate::acp::agent_aliases::canonical_agent_id(agent_id);
         let catalog = self.catalog.list_catalog(false).await.map_err(|error| {
             InstallError::new(
                 code::INSTALL_FAILED,

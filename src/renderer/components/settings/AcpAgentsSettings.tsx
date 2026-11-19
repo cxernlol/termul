@@ -413,7 +413,7 @@ export function AcpAgentsSettings(): React.JSX.Element {
     const updateIds = new Set(updates.map((u) => u.configId))
     return new Set(
       deriveSpawnBasis(supportedAgents)
-        .map((basis) => `acp-registry:${basis.agentId}`)
+        .map((basis) => basis.configId ?? `acp-registry:${basis.agentId}`)
         .filter((configId) => !updateIds.has(configId))
     )
   }, [usingRemoteRegistry, activeRegistry, remoteRegistry, supportedAgents, updates])

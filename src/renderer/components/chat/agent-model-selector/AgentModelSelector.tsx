@@ -15,6 +15,7 @@ import { Popover, PopoverTrigger } from '@/components/ui/popover'
 import { Sheet, SheetTrigger } from '@/components/ui/sheet'
 import { useMobileWebShell } from '@/hooks/use-mobile-web-shell'
 import type { SessionConfigOption, SessionModeState, SessionUsage } from '@/lib/acp-api'
+import { canonicalAgentDisplayName } from '@/lib/agents/acp-registry'
 import { isModelPickerV2Enabled } from '@/lib/model-picker-flag'
 import { cn } from '@/lib/utils'
 import { useAcpStore } from '@/stores/acp-store'
@@ -106,10 +107,14 @@ function useComposerAgentLabel(sessionId: string): {
   const currentConfigId = useCurrentAgentConfigId(sessionId)
   const armedName = useAcpStore((s) => {
     const to = s.sessions?.[sessionId]?.switching?.toConfigId
-    return to ? (s.agentConfigs?.find((config) => config.id === to)?.name ?? to) : null
+    const config = to ? s.agentConfigs?.find((item) => item.id === to) : undefined
+    return config ? canonicalAgentDisplayName(config.id, config.name) : (to ?? null)
   })
   const sessionAgentId = useAcpStore((s) => s.sessions?.[sessionId]?.agentId ?? '')
-  const currentName = agentConfigs?.find((config) => config.id === currentConfigId)?.name
+  const currentConfig = agentConfigs?.find((config) => config.id === currentConfigId)
+  const currentName = currentConfig
+    ? canonicalAgentDisplayName(currentConfig.id, currentConfig.name)
+    : undefined
   const present = Boolean(sessionAgentId || currentConfigId)
   const aria = armedName
     ? `Switch to ${armedName} on next send. Cancel to keep ${currentName ?? 'the current agent'}`

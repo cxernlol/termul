@@ -60,6 +60,39 @@ function project(overrides: Partial<Project> = {}): Project {
 const spawnedEnv = (spawnAgent: ReturnType<typeof vi.fn>, call = 0): Record<string, string> =>
   spawnAgent.mock.calls[call]?.[0]?.env
 
+describe('ensureLiveAgent — a legacy OpenCode id', () => {
+  beforeEach(() => {
+    _resetDefiniteSpawnRejectionsForTesting()
+    seedProjectStore([])
+  })
+
+  it('spawns and keeps the saved OpenCode config when the chat names opencode-v2', async () => {
+    const { state, get, set } = makeStore({
+      id: 'acp-registry:opencode',
+      name: 'OpenCode',
+      command: '/managed/opencode',
+      args: ['acp']
+    })
+    state.spawnAgent.mockResolvedValue('agent-oc')
+
+    expect(await ensureLiveAgent(get, set, 'acp-registry:opencode-v2', '/work/app')).toBe(
+      'agent-oc'
+    )
+    expect(state.spawnAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        configId: 'acp-registry:opencode',
+        command: '/managed/opencode'
+      }),
+      undefined,
+      undefined
+    )
+    expect(state.killAgent).not.toHaveBeenCalled()
+    expect(state.configToLiveAgent[agentReuseKey('acp-registry:opencode', '/work/app')]).toBe(
+      'agent-oc'
+    )
+  })
+})
+
 describe('ensureLiveAgent — project environment variables (#1118)', () => {
   beforeEach(() => {
     _resetDefiniteSpawnRejectionsForTesting()

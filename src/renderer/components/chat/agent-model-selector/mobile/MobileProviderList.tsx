@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { SheetGroup, SheetRow, SheetSearchField } from '@/components/ui/mobile-sheet'
 import { ListMessage, TabGlyph } from '../SelectorRows'
-import { type AgentTab, isInstalledTab } from '../selector-model'
+import { type AgentTab, agentTabSelected, isInstalledTab } from '../selector-model'
 import { useKnownCatalogs } from '../use-model-catalog'
 import { setupRouteKey } from './MobileProviderSetup'
 
@@ -90,7 +90,7 @@ export function ProviderList({
                     subtitle={count === null ? undefined : modelCount(count)}
                     value={badge}
                     accessory="check"
-                    selected={tab.configId === viewId}
+                    selected={agentTabSelected(tab, viewId)}
                     disabled={disabled}
                     onSelect={() => onPick(tab)}
                   />

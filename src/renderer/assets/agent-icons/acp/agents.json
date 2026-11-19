@@ -723,39 +723,57 @@
   {
     "id": "opencode",
     "name": "OpenCode",
-    "version": "2.0.25",
+    "version": "2.3.2",
     "description": "The open source coding agent",
     "distribution": {
       "binary": {
         "darwin-aarch64": {
-          "cmd": "./package/bin/opencode",
-          "archive": "https://registry.npmjs.org/@opencode/cli-darwin-arm64/-/cli-darwin-arm64-2.0.25.tgz",
-          "args": ["acp"]
+          "cmd": "./opencode",
+          "archive": "https://github.com/anomalyco/opencode/releases/download/v2.3.2/opencode-darwin-arm64.zip",
+          "args": ["acp"],
+          "sha256": "31ab5a06a29edc7e49b895f35c2b64ebfe7c7f0437b0f2581b006efcd79fee1a"
         },
         "darwin-x86_64": {
-          "cmd": "./package/bin/opencode",
-          "archive": "https://registry.npmjs.org/@opencode/cli-darwin-x64/-/cli-darwin-x64-2.0.25.tgz",
-          "args": ["acp"]
+          "cmd": "./opencode",
+          "archive": "https://github.com/anomalyco/opencode/releases/download/v2.3.2/opencode-darwin-x64.zip",
+          "args": ["acp"],
+          "sha256": "1875a6d1106702f04c9468831563c061bd00337f891a1b4a6cd151155e6aaf5c"
         },
         "linux-aarch64": {
-          "cmd": "./package/bin/opencode",
-          "archive": "https://registry.npmjs.org/@opencode/cli-linux-arm64/-/cli-linux-arm64-2.0.25.tgz",
-          "args": ["acp"]
+          "cmd": "./opencode",
+          "archive": "https://github.com/anomalyco/opencode/releases/download/v2.3.2/opencode-linux-arm64.tar.gz",
+          "args": ["acp"],
+          "sha256": "9d10185acdb72336e086e699ca363a6065f410fd3c1caed0dc8046e95ac06ccb"
+        },
+        "linux-aarch64-musl": {
+          "cmd": "./opencode",
+          "archive": "https://github.com/anomalyco/opencode/releases/download/v2.3.2/opencode-linux-arm64-musl.tar.gz",
+          "args": ["acp"],
+          "sha256": "2148ba748f5410177868ed67d59ef70626cb6bd4fb2abc5177c807adfdc24fc3"
         },
         "linux-x86_64": {
-          "cmd": "./package/bin/opencode",
-          "archive": "https://registry.npmjs.org/@opencode/cli-linux-x64/-/cli-linux-x64-2.0.25.tgz",
-          "args": ["acp"]
+          "cmd": "./opencode",
+          "archive": "https://github.com/anomalyco/opencode/releases/download/v2.3.2/opencode-linux-x64.tar.gz",
+          "args": ["acp"],
+          "sha256": "563b5d663637226b6e3bb4bb6803281bc39b0d2cd88db06d674b6420aab009b0"
+        },
+        "linux-x86_64-musl": {
+          "cmd": "./opencode",
+          "archive": "https://github.com/anomalyco/opencode/releases/download/v2.3.2/opencode-linux-x64-musl.tar.gz",
+          "args": ["acp"],
+          "sha256": "4e952a67874cfdb4f53eeae5840f9813acc9f109c10e61bc26020271f56d7d84"
         },
         "windows-aarch64": {
-          "cmd": "./package/bin/opencode.exe",
-          "archive": "https://registry.npmjs.org/@opencode/cli-windows-arm64/-/cli-windows-arm64-2.0.25.tgz",
-          "args": ["acp"]
+          "cmd": "./opencode.exe",
+          "archive": "https://github.com/anomalyco/opencode/releases/download/v2.3.2/opencode-windows-arm64.zip",
+          "args": ["acp"],
+          "sha256": "13dabbf6874c8abfc7ff44bee0e64c3758e918a0e27f56f74173c353d56a842d"
         },
         "windows-x86_64": {
-          "cmd": "./package/bin/opencode.exe",
-          "archive": "https://registry.npmjs.org/@opencode/cli-windows-x64/-/cli-windows-x64-2.0.25.tgz",
-          "args": ["acp"]
+          "cmd": "./opencode.exe",
+          "archive": "https://github.com/anomalyco/opencode/releases/download/v2.3.2/opencode-windows-x64.zip",
+          "args": ["acp"],
+          "sha256": "8ad59f1992a0594d8bd72b5ed3be1f5bfffcd9d1756853eec7e5d3141c25be1f"
         }
       }
     }

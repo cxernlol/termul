@@ -10,6 +10,7 @@
 import { arch as osArch, platform as osPlatform } from '@tauri-apps/plugin-os'
 import agentsSnapshot from '@/assets/agent-icons/acp/agents.json'
 import type { AgentConfig } from '@/lib/acp-api'
+import { canonicalAgentId, isLegacyAgentId } from '@/lib/agents/agent-aliases'
 
 /** A launcher block for the `npx` / `uvx` distribution kinds. */
 export interface RegistryLauncher {
@@ -202,7 +203,7 @@ function normalizeSnapshot(raw: unknown): RegistryAgent[] {
     if (!entry || typeof entry !== 'object') continue
     const e = entry as Partial<RegistryAgent>
     const id = typeof e.id === 'string' ? e.id : ''
-    if (!id || seen.has(id)) continue
+    if (!id || seen.has(id) || isLegacyAgentId(id)) continue
     if (!e.distribution || typeof e.distribution !== 'object') continue
     seen.add(id)
     out.push({
@@ -224,15 +225,32 @@ export function normalizeRegistrySnapshot(raw: unknown): RegistryAgent[] {
   return normalizeSnapshot(raw)
 }
 
+/** Drop legacy alias rows. Callers that already ran `normalizeRegistrySnapshot` are unchanged. */
+export function omitLegacyRegistryAgents(agents: readonly RegistryAgent[]): RegistryAgent[] {
+  return agents.filter((agent) => !isLegacyAgentId(agent.id))
+}
+
+/**
+ * Display name for a saved id. A legacy alias shows the canonical catalog
+ * name. Other ids keep `fallback`.
+ */
+export function canonicalAgentDisplayName(id: string, fallback: string): string {
+  if (!isLegacyAgentId(id)) return fallback
+  const canonical = REGISTRY_AGENTS.find((agent) => agent.id === canonicalAgentId(id))
+  return canonical?.name ?? fallback
+}
+
 export function compareRegistryVersions(
   bundled: readonly RegistryAgent[],
   remote: readonly RegistryAgent[]
 ): { updatedCount: number; newAgentIds: string[] } {
-  const bundledById = new Map(bundled.map((agent) => [agent.id, agent.version]))
-  const remoteIds = new Set(remote.map((agent) => agent.id))
+  const listedBundled = omitLegacyRegistryAgents(bundled)
+  const listedRemote = omitLegacyRegistryAgents(remote)
+  const bundledById = new Map(listedBundled.map((agent) => [agent.id, agent.version]))
+  const remoteIds = new Set(listedRemote.map((agent) => agent.id))
   const newAgentIds: string[] = []
   let updatedCount = 0
-  for (const agent of remote) {
+  for (const agent of listedRemote) {
     const bundledVersion = bundledById.get(agent.id)
     if (bundledVersion === undefined) {
       newAgentIds.push(agent.id)
@@ -243,7 +261,7 @@ export function compareRegistryVersions(
   }
   // Count removed agents (bundled but absent from remote) so the summary can't
   // report "up to date" while the available agent list has actually shrunk.
-  for (const agent of bundled) {
+  for (const agent of listedBundled) {
     if (!remoteIds.has(agent.id)) updatedCount++
   }
   return { updatedCount, newAgentIds }

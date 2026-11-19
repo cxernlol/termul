@@ -252,6 +252,41 @@ impl LiveShell {
         }
     }
 
+    /// Read until `needle` is in the forwarded output. A quiet stretch is not
+    /// completion: the command can do file work before it prints anything.
+    pub fn read_until_output_contains(&mut self, needle: &str) -> Vec<Frame> {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut frames = Vec::new();
+        loop {
+            if String::from_utf8_lossy(&self.forwarded).contains(needle) {
+                return frames;
+            }
+            let timeout = deadline.saturating_duration_since(Instant::now());
+            assert!(
+                !timeout.is_zero(),
+                "PTY output never contained {needle:?}: {:?}",
+                String::from_utf8_lossy(&self.forwarded)
+            );
+            match self
+                .chunks
+                .recv_timeout(timeout.min(Duration::from_millis(200)))
+            {
+                Ok(chunk) if self.gated => {
+                    self.forwarded.extend(chunk.expect("PTY read failed").bytes);
+                }
+                Ok(chunk) => match self.filter.process(&chunk.expect("PTY read failed").bytes) {
+                    FilterResult::Forwarded { bytes, frames: new } => {
+                        self.forwarded.extend(bytes);
+                        frames.extend(new);
+                    }
+                    other => panic!("unexpected filter result: {other:?}"),
+                },
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(error) => panic!("PTY closed before {needle:?}: {error}"),
+            }
+        }
+    }
+
     pub fn frames_until_prompt(&mut self) -> Vec<Frame> {
         let deadline = Instant::now() + Duration::from_secs(10);
         let mut frames = Vec::new();
@@ -616,12 +651,13 @@ printf 'ROLLBACK:%s:%s\n' "$result" "$mutation_count"
 "#;
                 std::fs::write(home.path().join("verify"), verify).unwrap();
                 live.write(b". \"$HOME/verify\"\r");
-                let frames = live.read_until_idle();
-                assert!(frames.is_empty());
-                let output = String::from_utf8_lossy(&live.forwarded);
+                // `bind` and `cmp` print nothing, so an idle read can return
+                // before ROLLBACK on a busy runner.
+                let marker = format!("ROLLBACK:OK:{failure}\r\n");
+                let frames = live.read_until_output_contains(&marker);
                 assert!(
-                    output.contains(&format!("ROLLBACK:OK:{failure}\r\n")),
-                    "{shell:?}/{failure}/{originals}: {output:?}"
+                    frames.is_empty(),
+                    "{shell:?}/{failure}/{originals}: {frames:?}"
                 );
             }
         }

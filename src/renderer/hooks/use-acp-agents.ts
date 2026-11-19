@@ -2,9 +2,11 @@ import type { LastSelectedAgent } from '@shared/types/persistence.types'
 import { PersistenceKeys } from '@shared/types/persistence.types'
 import { useEffect, useRef } from 'react'
 import {
+  findEntryForSavedId,
   pickDefaultConfiguredAgent,
   pickDefaultSupportedAgent,
-  resolveSupportedAcpAgents
+  resolveSupportedAcpAgents,
+  type SupportedAcpAgentEntry
 } from '@/lib/agents/supported-acp-agents'
 import { persistenceApi } from '@/lib/api'
 import { isTauriContext } from '@/lib/tauri-runtime'
@@ -65,17 +67,16 @@ export function useAcpAgents(): void {
       // entry therefore also restores its SELECTION — but selection-only:
       // web boot still never persists or prewarms, so the #840 no-auto-spawn
       // invariant holds (the spawn harm #840 guarded against).
-      const selected =
-        saved?.mode === 'acp' && typeof saved.agentId === 'string'
-          ? supportedAgents.find(
-              (entry) =>
-                entry.configId === saved.agentId &&
-                entry.status === 'ready' &&
-                (desktop ||
-                  Boolean(entry.config) ||
-                  agentConfigs.some((config) => config.id === entry.config?.id))
-            )
-          : null
+      const savedAgentId =
+        saved?.mode === 'acp' && typeof saved.agentId === 'string' ? saved.agentId : null
+      const restorable = (entry: SupportedAcpAgentEntry): boolean =>
+        entry.status === 'ready' &&
+        (desktop ||
+          Boolean(entry.config) ||
+          agentConfigs.some((config) => config.id === entry.config?.id))
+      const selected = savedAgentId
+        ? (findEntryForSavedId(supportedAgents.filter(restorable), savedAgentId) ?? null)
+        : null
       // Issue #840: on web the default is restricted to CONFIGURED agents —
       // the catalog-derived preferred default (Codex via `npx`) must not be
       // auto-selected (and auto-persisted) on every page load, because that

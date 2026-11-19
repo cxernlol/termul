@@ -522,6 +522,215 @@ fn opencode_agent(version: &str, installed: Option<InstalledCatalogInfo>) -> Cat
     }
 }
 
+fn installed_record(
+    agent_id: &str,
+    command: &str,
+    version: &str,
+) -> crate::acp::install::InstalledAgent {
+    crate::acp::install::InstalledAgent {
+        agent_id: agent_id.to_string(),
+        version: version.to_string(),
+        platform_target: "linux-x86_64".to_string(),
+        sha256: String::new(),
+        command: command.to_string(),
+        args: vec!["acp".to_string()],
+        installed_at: 0,
+    }
+}
+
+/// An existing `opencode-v2` install is the OpenCode binary. The catalog row
+/// becomes ready from that record. The record itself is not rewritten or removed.
+#[test]
+fn legacy_opencode_install_is_reused_and_not_rewritten() {
+    let mut catalog = AcpCatalog {
+        host: host_with_runtimes(false, false),
+        agents: vec![
+            opencode_agent("2.3.2", None),
+            CatalogAgent {
+                id: "gemini".to_string(),
+                name: "Gemini".to_string(),
+                version: "1.0.0".to_string(),
+                description: "d".to_string(),
+                source: CatalogSource::Bundled,
+                distribution: serde_json::json!({ "npx": { "package": "gemini@1.0.0" } }),
+                runtime_requirements: Vec::new(),
+                status: SupportedAcpAgentStatus::NeedsRuntime,
+                platform_targets: Vec::new(),
+                installed: None,
+            },
+        ],
+    };
+    let installed = vec![installed_record("opencode-v2", "/legacy/opencode", "2.3.2")];
+    overlay_installed(&mut catalog, &installed);
+    assert_eq!(installed[0].agent_id, "opencode-v2");
+    assert_eq!(installed[0].command, "/legacy/opencode");
+    assert_eq!(installed[0].version, "2.3.2");
+    assert!(catalog.agents.iter().all(|agent| agent.id != "opencode-v2"));
+    let opencode = catalog
+        .agents
+        .iter()
+        .find(|agent| agent.id == "opencode")
+        .unwrap();
+    assert_eq!(opencode.name, "OpenCode");
+    assert_eq!(opencode.status, SupportedAcpAgentStatus::Ready);
+    assert_eq!(
+        opencode.installed.as_ref().unwrap().command,
+        "/legacy/opencode"
+    );
+    let gemini = catalog
+        .agents
+        .iter()
+        .find(|agent| agent.id == "gemini")
+        .unwrap();
+    assert_eq!(gemini.status, SupportedAcpAgentStatus::NeedsRuntime);
+    assert!(gemini.installed.is_none());
+}
+
+/// A managed `opencode` install wins. The legacy record stays, unused for the row.
+#[test]
+fn canonical_opencode_install_wins_over_the_legacy_install() {
+    let mut catalog = AcpCatalog {
+        host: host_with_runtimes(false, false),
+        agents: vec![opencode_agent("2.3.2", None)],
+    };
+    let installed = vec![
+        installed_record("opencode-v2", "/legacy/opencode", "2.0.25"),
+        installed_record("opencode", "/managed/opencode", "2.3.2"),
+    ];
+    overlay_installed(&mut catalog, &installed);
+    let info = catalog.agents[0].installed.as_ref().unwrap();
+    assert_eq!(info.command, "/managed/opencode");
+    assert_eq!(info.version, "2.3.2");
+}
+
+fn opencode_registry_snapshot(legacy_name: &str) -> ResolvedSnapshot {
+    let target = |archive: &str| {
+        serde_json::json!({
+            "cmd": "./opencode",
+            "archive": archive,
+            "args": ["acp"]
+        })
+    };
+    ResolvedSnapshot {
+        snapshot: AcpRegistrySnapshot {
+            agents: vec![
+                acp_registry_snapshot::AcpRegistrySnapshotAgent {
+                    id: "opencode".to_string(),
+                    name: "OpenCode".to_string(),
+                    version: "2.3.2".to_string(),
+                    description: "The open source coding agent".to_string(),
+                    distribution: serde_json::json!({
+                        "binary": {
+                            "linux-x86_64": target(
+                                "https://github.com/anomalyco/opencode/releases/download/v2.3.2/opencode-linux-x64.tar.gz"
+                            )
+                        }
+                    }),
+                },
+                acp_registry_snapshot::AcpRegistrySnapshotAgent {
+                    id: "opencode-v2".to_string(),
+                    name: legacy_name.to_string(),
+                    version: "9.9.9".to_string(),
+                    description: "legacy id".to_string(),
+                    distribution: serde_json::json!({
+                        "binary": {
+                            "linux-x86_64": target(
+                                "https://opencode.ai/files/bin/9.9.9/opencode-linux-x64.tar.gz"
+                            )
+                        }
+                    }),
+                },
+                acp_registry_snapshot::AcpRegistrySnapshotAgent {
+                    id: "registry-other-agent".to_string(),
+                    name: "Other Agent".to_string(),
+                    version: "1.2.3".to_string(),
+                    description: "unaffected".to_string(),
+                    distribution: serde_json::json!({ "npx": { "package": "other@1.2.3" } }),
+                },
+            ],
+            source: "network".to_string(),
+            fetched_at: None,
+        },
+        outcome: SnapshotFetchOutcome::NetworkFresh,
+        persisted: true,
+    }
+}
+
+async fn assert_one_opencode(legacy_name: &str) {
+    let root = temp_dir(&format!("opencode-alias-{legacy_name}"));
+    let legacy = legacy_name.to_string();
+    let service = service_with_fetcher(
+        root.join("catalog"),
+        Arc::new(move |_, _| {
+            let snapshot = opencode_registry_snapshot(&legacy);
+            Box::pin(async move { Ok(snapshot) })
+        }),
+    );
+    service.set_opt_in(true).unwrap();
+    let catalog = service.list_catalog(false).await.unwrap();
+    let opencode: Vec<_> = catalog
+        .agents
+        .iter()
+        .filter(|agent| agent.id == "opencode" || agent.name == legacy_name)
+        .collect();
+    assert_eq!(opencode.len(), 1, "the catalog lists one OpenCode");
+    assert_eq!(opencode[0].id, "opencode");
+    assert_eq!(opencode[0].name, "OpenCode");
+    assert_eq!(opencode[0].version, "2.3.2");
+    let archive = opencode[0].distribution["binary"]["linux-x86_64"]["archive"]
+        .as_str()
+        .unwrap();
+    assert!(
+        archive.contains("github.com/anomalyco/opencode"),
+        "the canonical entry keeps its archive, got {archive}"
+    );
+    assert!(catalog.agents.iter().all(|agent| agent.id != "opencode-v2"));
+    assert!(
+        catalog
+            .agents
+            .iter()
+            .any(|agent| agent.id == "registry-other-agent"),
+        "other registry agents stay"
+    );
+    assert!(
+        catalog.agents.iter().any(|agent| agent.id == "gemini"),
+        "bundled agents stay"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn registry_with_opencode_and_opencode_v2_lists_one_opencode() {
+    assert_one_opencode("OpenCode V2").await;
+}
+
+#[tokio::test]
+async fn registry_legacy_id_label_lists_one_opencode() {
+    assert_one_opencode("OpenCode (legacy ID)").await;
+}
+
+#[test]
+fn bundled_opencode_follows_the_canonical_registry_release() {
+    let agents = parse_bundled_catalog().unwrap();
+    let opencode = agents
+        .iter()
+        .find(|agent| agent.id == "opencode")
+        .expect("bundled opencode");
+    assert_eq!(opencode.name, "OpenCode");
+    assert_eq!(opencode.version, "2.3.2");
+    assert!(agents.iter().all(|agent| agent.id != "opencode-v2"));
+    let linux = &opencode.distribution["binary"]["linux-x86_64"];
+    assert_eq!(linux["cmd"], "./opencode");
+    assert!(linux["archive"]
+        .as_str()
+        .unwrap()
+        .starts_with("https://github.com/anomalyco/opencode/releases/download/v2.3.2/"));
+    assert_eq!(
+        opencode.distribution["binary"]["windows-x86_64"]["cmd"],
+        "./opencode.exe"
+    );
+}
+
 #[test]
 fn external_opencode_v2_binary_marks_the_row_ready() {
     let mut catalog = AcpCatalog {
@@ -1181,7 +1390,11 @@ async fn opt_in_newer_schema_is_refused_and_never_overwritten() {
         matches!(&error, CatalogError::NewerSchema(n) if n.found == 99),
         "got {error:?}"
     );
-    assert_eq!(fs::read(&config_path).unwrap(), newer, "file byte-identical");
+    assert_eq!(
+        fs::read(&config_path).unwrap(),
+        newer,
+        "file byte-identical"
+    );
     let names: Vec<_> = fs::read_dir(&catalog_dir)
         .unwrap()
         .flatten()

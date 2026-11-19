@@ -13,6 +13,7 @@ import {
   type PrepareChatError,
   SETUP_ERROR_LABELS
 } from '@/lib/agents/acp-spawn-errors'
+import { findStoredAgentConfig } from '@/lib/agents/agent-aliases'
 import { logFrontendError } from '@/lib/log-api'
 import { pendingRestartVersionsAfterSpawn } from '../../agent-update-orchestration'
 import { dropPromptQueueForSession } from '../../prompt-queue-orchestration'
@@ -433,7 +434,7 @@ export const createLaunchSlice: StateCreator<AcpState, [], [], LaunchSliceState>
 
   startChat: async (configId, cwd, mcpServers, projectId, opts) => {
     const trimmedCwd = cwd.trim()
-    const config = get().agentConfigs.find((c) => c.id === configId)
+    const config = findStoredAgentConfig(get().agentConfigs, configId)
     if (!config) throw new Error(`unknown agent config ${configId}`)
     const key = prepareChatKey(configId, trimmedCwd, mcpServers)
     // Loop so a cancelled in-flight prepare that returns null can pick up a
@@ -465,7 +466,7 @@ export const createLaunchSlice: StateCreator<AcpState, [], [], LaunchSliceState>
   },
 
   startQuickChat: async (configId) => {
-    const config = get().agentConfigs.find((item) => item.id === configId)
+    const config = findStoredAgentConfig(get().agentConfigs, configId)
     if (!config) throw new Error(`unknown agent config ${configId}`)
     // The spawn key is not a project path, so no project env (and no
     // per-project CODEX_HOME) is applied. The session cwd comes from the host.

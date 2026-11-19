@@ -75,7 +75,9 @@ pub enum SupportedAcpAgentStatus {
 /// (`config.rs:141-154`) to cover `node`/`bun`/`python3` + named binary probes.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[schemars(description = r#"Which agent runtimes the host can run: the `npx`, `uvx`, `npm`, `node`, `bun` and `python3` commands and the Claude CLI."#)]
+#[schemars(
+    description = r#"Which agent runtimes the host can run: the `npx`, `uvx`, `npm`, `node`, `bun` and `python3` commands and the Claude CLI."#
+)]
 pub struct CatalogRuntimeAvailability {
     pub npx: bool,
     pub uvx: bool,
@@ -479,7 +481,9 @@ impl AcpCatalogService {
                 resolved.snapshot.agents.len()
             ),
             Err(error) => {
-                log::warn!("[acp-catalog] registry check force_refresh={force_refresh} failed: {error}")
+                log::warn!(
+                    "[acp-catalog] registry check force_refresh={force_refresh} failed: {error}"
+                )
             }
         }
         self.apply_snapshot_fetch_outcome(&result, force_refresh);
@@ -703,6 +707,7 @@ impl AcpCatalogService {
         // Optional CDN augmentation (gated on the host-persisted opt-in).
         let mut agents: Vec<CatalogAgent> = bundled
             .iter()
+            .filter(|agent| !crate::acp::agent_aliases::is_legacy_agent_id(&agent.id))
             .map(|agent| {
                 compute_catalog_agent(agent, &host, &platform_arch, CatalogSource::Bundled)
             })
@@ -742,6 +747,22 @@ impl AcpCatalogService {
                         // Validate the CDN entry (reuse the snapshot's
                         // `is_safe_agent_id` + `sanitize_distribution`).
                         if !acp_registry_snapshot::is_safe_agent_id(&snapshot_agent.id) {
+                            continue;
+                        }
+                        // A legacy id such as `opencode-v2` is the same agent as
+                        // its canonical id. Listing it would show two OpenCode
+                        // rows. Saved installs still resolve in `overlay_installed`.
+                        if crate::acp::agent_aliases::is_legacy_agent_id(&snapshot_agent.id) {
+                            let canonical =
+                                crate::acp::agent_aliases::canonical_agent_id(&snapshot_agent.id);
+                            log::info!(
+                                "[acp-catalog] legacy agent id {} resolves to {canonical}; omitted from the catalog",
+                                snapshot_agent.id
+                            );
+                            tracing::info!(
+                                "[acp-catalog] legacy agent id {} resolves to {canonical}; omitted from the catalog",
+                                snapshot_agent.id
+                            );
                             continue;
                         }
                         let Some(distribution) = acp_registry_snapshot::sanitize_distribution(
@@ -1139,7 +1160,26 @@ pub fn overlay_installed(
     let by_id: std::collections::HashMap<&str, &crate::acp::install::InstalledAgent> =
         installed.iter().map(|i| (i.agent_id.as_str(), i)).collect();
     for agent in &mut catalog.agents {
-        if let Some(inst) = by_id.get(agent.id.as_str()) {
+        // Exact id first. A legacy install is reused when the canonical id
+        // has no record. The manifest is not rewritten or deleted.
+        let inst = by_id.get(agent.id.as_str()).copied().or_else(|| {
+            crate::acp::agent_aliases::legacy_ids_for(&agent.id)
+                .into_iter()
+                .find_map(|alias| by_id.get(alias).copied())
+        });
+        if let Some(inst) = inst {
+            if inst.agent_id != agent.id {
+                log::info!(
+                    "[acp-catalog] reusing install {} for {}; the install record stays on disk",
+                    inst.agent_id,
+                    agent.id
+                );
+                tracing::info!(
+                    "[acp-catalog] reusing install {} for {}; the install record stays on disk",
+                    inst.agent_id,
+                    agent.id
+                );
+            }
             if agent.id == "claude-acp" {
                 // Single policy source (see `claude_agent::claude_status`) —
                 // installed agents still pass the Node/npm + CLI preflight.

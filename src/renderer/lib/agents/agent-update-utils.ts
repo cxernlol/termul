@@ -25,6 +25,11 @@ export interface AgentUpdate {
 /** The version a user's next spawn would launch, per agent. */
 export interface AgentSpawnBasis {
   agentId: string
+  /**
+   * The saved config id the row launches. Omitted when it is the canonical
+   * `acp-registry:<agentId>` id. A legacy alias keeps its own id.
+   */
+  configId?: string
   /** `undefined` = no persisted state; the next spawn derives fresh (current). */
   spawnVersion?: string
 }
@@ -73,7 +78,14 @@ export function deriveSpawnBasis(
     const pinned = pinnedVersionFromLauncherArgs(entry.config.command, entry.config.args)
     const spawnVersion = pinned ?? entry.installedVersion
     if (!spawnVersion) continue
-    basis.push({ agentId: entry.id, spawnVersion })
+    const canonicalConfigId = registryConfigId(entry.id)
+    basis.push({
+      agentId: entry.id,
+      // A legacy alias keeps the id its chats already use. The canonical id
+      // stays the default so an equal version still produces no update.
+      ...(entry.configId !== canonicalConfigId ? { configId: entry.configId } : {}),
+      spawnVersion
+    })
   }
   return basis
 }
@@ -100,7 +112,7 @@ export function deriveAgentUpdates(params: DeriveAgentUpdatesParams): AgentUpdat
     if (basis.spawnVersion === registryAgent.version) continue
     updates.push({
       agentId: basis.agentId,
-      configId: registryConfigId(basis.agentId),
+      configId: basis.configId ?? registryConfigId(basis.agentId),
       fromVersion: basis.spawnVersion,
       toVersion: registryAgent.version
     })

@@ -21,6 +21,7 @@ import {
 import { OtherAgentSignIn } from './SignInActions'
 import {
   type AgentTab,
+  agentTabSelected,
   type CatalogModel,
   entryDisableReason,
   type ModelCatalog
@@ -256,7 +257,7 @@ export function SelectorPanel(props: SelectorPanelProps): React.JSX.Element {
   }
 
   const tabItems: TrackItem[] = tabs.visible.map((tab) => {
-    const selected = !showingMore && tab.configId === viewId
+    const selected = !showingMore && agentTabSelected(tab, viewId)
     return {
       key: tab.configId,
       span: selected ? 2 : 1,

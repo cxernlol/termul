@@ -4,13 +4,22 @@ import {
   agentPolicy,
   deriveAgentConfig,
   type ManagedNpmInstallPolicy,
+  omitLegacyRegistryAgents,
   REGISTRY_AGENTS,
   type RegistryAgent,
   type RegistryBinaryTarget,
   registryOsFromHostOs
 } from '@/lib/agents/acp-registry'
+import {
+  canonicalAgentId,
+  isLegacyAgentId,
+  legacyAgentIds,
+  registryAgentIdFromConfigs,
+  sameAgentId
+} from '@/lib/agents/agent-aliases'
 import { registryConfigId } from '@/lib/agents/registry-config-id'
 import { acpCatalogApi } from '@/lib/api'
+import { logFrontendError } from '@/lib/log-api'
 
 const REGISTRY_AGENT_IDS = new Set(REGISTRY_AGENTS.map((agent) => agent.id))
 
@@ -206,6 +215,67 @@ export function manualBinaryConfig(
   )
 }
 
+const reportedAliasReuse = new Set<string>()
+
+/**
+ * The saved config for a canonical agent. A canonical config wins. A legacy
+ * alias config is reused and shown under the canonical name. The saved object
+ * is not changed.
+ */
+function savedConfigForAgent(
+  agent: Pick<RegistryAgent, 'id' | 'name'>,
+  persistedByConfigId: ReadonlyMap<string, StoredAgentConfig>
+): StoredAgentConfig | undefined {
+  const canonical = persistedByConfigId.get(registryConfigId(agent.id))
+  if (canonical) return canonical
+  for (const alias of legacyAgentIds(agent.id)) {
+    const saved = persistedByConfigId.get(registryConfigId(alias))
+    if (!saved) continue
+    if (!reportedAliasReuse.has(saved.id)) {
+      reportedAliasReuse.add(saved.id)
+      void logFrontendError({
+        level: 'info',
+        source: 'acp.agent-alias',
+        message: `Saved agent ${saved.id} resolves to ${agent.name} (${agent.id}). The saved config and sessions stay on disk.`
+      })
+    }
+    return { ...saved, name: agent.name, templateId: agent.id }
+  }
+  return undefined
+}
+
+/** True when a saved id is this catalog entry, including a legacy alias. */
+export function entryServesConfigId(
+  entry: Pick<SupportedAcpAgentEntry, 'id' | 'configId' | 'config'>,
+  configId: string
+): boolean {
+  if (entry.configId === configId || entry.config?.id === configId) return true
+  if (sameAgentId(entry.configId, configId)) return true
+  if (entry.config != null && sameAgentId(entry.config.id, configId)) return true
+  // A registry row's bare id (`opencode`) serves a legacy config id. A custom
+  // entry that reused that bare string does not, because it has no registry id.
+  const registryId = registryAgentIdFromConfigs(entry.config?.id, entry.configId)
+  return (
+    isLegacyAgentId(configId) &&
+    registryId === canonicalAgentId(configId) &&
+    entry.id === canonicalAgentId(configId)
+  )
+}
+
+/**
+ * The entry a saved id should open. An exact config id wins, so a custom
+ * agent whose id equals a registry id stays that custom agent. Alias matching
+ * runs only when nothing matches exactly.
+ */
+export function findEntryForSavedId<
+  T extends Pick<SupportedAcpAgentEntry, 'id' | 'configId' | 'config'>
+>(entries: readonly T[], savedId: string): T | undefined {
+  return (
+    entries.find((entry) => entry.configId === savedId || entry.config?.id === savedId) ??
+    entries.find((entry) => entryServesConfigId(entry, savedId))
+  )
+}
+
 export function buildSupportedAcpAgents(
   persistedConfigs: readonly StoredAgentConfig[],
   platformArch: string,
@@ -215,10 +285,14 @@ export function buildSupportedAcpAgents(
   const persistedById = new Map(persistedConfigs.map((config) => [config.id, config]))
   const entries: SupportedAcpAgentEntry[] = []
 
-  for (const agent of [...registry].sort((a, b) => a.name.localeCompare(b.name))) {
+  for (const agent of omitLegacyRegistryAgents(registry).sort((a, b) =>
+    a.name.localeCompare(b.name)
+  )) {
     const id = agent.id
-    const configId = registryConfigId(id)
-    const persisted = persistedById.get(configId)
+    const persisted = savedConfigForAgent(agent, persistedById)
+    // A reused legacy config keeps its id so chats that name it still launch.
+    const configId =
+      persisted && isLegacyAgentId(persisted.id) ? persisted.id : registryConfigId(id)
     if (persisted) {
       entries.push({
         id,
@@ -339,7 +413,7 @@ export function isSupportedAcpConfigId(configId: string): boolean {
   const id = configId.startsWith('acp-registry:')
     ? configId.slice('acp-registry:'.length)
     : configId
-  return REGISTRY_AGENT_IDS.has(id)
+  return REGISTRY_AGENT_IDS.has(canonicalAgentId(id))
 }
 
 /** Compare launch-defining fields when reconciling catalog migrations. */
@@ -494,9 +568,20 @@ export async function resolveSupportedAcpAgents(
 
   for (const agent of catalog.agents) {
     const id = agent.id
-    const configId = registryConfigId(id)
+    const persisted = savedConfigForAgent({ id, name: agent.name }, persistedByConfigId)
+    // A reused legacy config keeps its id so chats that name it still launch.
+    const configId =
+      persisted && isLegacyAgentId(persisted.id) ? persisted.id : registryConfigId(id)
     seenConfigIds.add(configId)
-    const persisted = persistedByConfigId.get(configId)
+    seenConfigIds.add(registryConfigId(id))
+    // A custom config can point at the legacy id through `configId` while its
+    // own id stays custom. Record that lookup key so it is not appended again.
+    if (persisted) {
+      seenConfigIds.add(persisted.id)
+      if (typeof persisted.configId === 'string' && persisted.configId.length > 0) {
+        seenConfigIds.add(persisted.configId)
+      }
+    }
     // S2-TS: managed-install behavior comes from the registry policy, not an
     // id comparison. Agents without a managed-npm policy never migrate.
     const installPolicy = agentPolicy(id).install

@@ -5,6 +5,7 @@
 //! and bridges agent events to the renderer over Tauri IPC. The chat UI lives in
 //! `src/renderer`.
 
+pub mod agent_aliases;
 pub mod agent_process;
 pub mod agent_session_import;
 pub mod archive;

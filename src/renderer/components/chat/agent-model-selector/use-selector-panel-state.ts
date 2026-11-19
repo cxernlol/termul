@@ -1,6 +1,7 @@
 import type { PersistedComposerOptions } from '@shared/types/persistence.types'
 import { useEffect, useMemo, useState } from 'react'
 import type { SessionConfigOption } from '@/lib/acp-api'
+import { sameAgentId } from '@/lib/agents/agent-aliases'
 import type { SupportedAcpAgentEntry } from '@/lib/agents/supported-acp-agents'
 import { useAcpStore } from '@/stores/acp-store'
 import {
@@ -18,6 +19,8 @@ import {
 import type { SelectorPanelProps } from './SelectorPanel'
 import {
   type AgentTab,
+  agentTabSelected,
+  agentTabViewId,
   armableConfigId,
   buildAgentTabs,
   type CatalogModel,
@@ -37,6 +40,15 @@ import { loadPersistedCatalog, useKnownCatalogs, useOtherAgentCatalog } from './
 
 const NO_IDS: readonly string[] = []
 const NO_FAVORITES: readonly FavoriteModel[] = []
+
+/**
+ * True when both ids name one agent, including a legacy alias. Two missing
+ * ids match, so a chat with no agent still shows its own model options.
+ */
+function sameConfig(left: string | null, right: string | null): boolean {
+  if (left == null || right == null) return left === right
+  return sameAgentId(left, right)
+}
 
 export interface ModelHit {
   configId: string
@@ -203,11 +215,14 @@ export function useSelectorPanelState(
     reserveMoreTab,
     stableTabCapacity
   ])
-  const viewInOverflow = viewId != null && tabs.overflow.some((t) => t.configId === viewId)
   const allTabs = useMemo(() => [...tabs.visible, ...tabs.overflow], [tabs])
   const tabById = useMemo(() => new Map(allTabs.map((t) => [t.configId, t])), [allTabs])
-  const tabOf = (configId: string | null): AgentTab | null =>
-    configId ? (tabById.get(configId) ?? null) : null
+  const tabOf = (configId: string | null): AgentTab | null => {
+    if (!configId) return null
+    return tabById.get(configId) ?? allTabs.find((tab) => agentTabSelected(tab, configId)) ?? null
+  }
+  const viewInOverflow =
+    viewId != null && tabs.overflow.some((tab) => agentTabSelected(tab, viewId))
   // Chat cannot arm a ready agent that has no stored config (the store
   // rejects the arm). The launcher can: an explicit pick persists that config
   // and prewarms it (issue #907). Do not disable those rows in the launcher.
@@ -228,8 +243,11 @@ export function useSelectorPanelState(
     for (const configId of tabIdsKey.split('\n')) if (configId) loadPersistedCatalog(configId)
   }, [tabIdsKey])
 
-  const viewKind: 'effective' | 'current' | 'other' =
-    viewId === effectiveId ? 'effective' : viewId === sw.currentConfigId ? 'current' : 'other'
+  const viewKind: 'effective' | 'current' | 'other' = sameConfig(viewId, effectiveId)
+    ? 'effective'
+    : sameConfig(viewId, sw.currentConfigId)
+      ? 'current'
+      : 'other'
   const viewEntry = viewTab?.entry ?? null
   const viewReady = viewEntry ? viewEntry.status === 'ready' : Boolean(viewTab?.config)
   const other = useOtherAgentCatalog(
@@ -245,16 +263,20 @@ export function useSelectorPanelState(
   const lookupIds = useMemo(() => {
     const ids = new Set<string>()
     if (searching) {
-      for (const t of allTabs) if (t.configId !== effectiveId) ids.add(t.configId)
+      for (const t of allTabs) if (!sameConfig(t.configId, effectiveId)) ids.add(t.configId)
     }
     if (showFavorites) {
       for (const id of favoriteIdsKey.split('\n')) {
-        const tab = tabById.get(id)
-        if (id && id !== effectiveId && tab && isInstalledTab(tab)) ids.add(id)
+        const tab = allTabs.find((candidate) => agentTabSelected(candidate, id))
+        if (id && !sameConfig(id, effectiveId) && tab && isInstalledTab(tab)) ids.add(id)
       }
     }
     return ids.size > 0 ? [...ids] : NO_IDS
-  }, [searching, showFavorites, allTabs, tabById, effectiveId, favoriteIdsKey])
+  }, [searching, showFavorites, allTabs, effectiveId, favoriteIdsKey])
+  const lookupIdsKey = lookupIds.join('\n')
+  useEffect(() => {
+    for (const configId of lookupIdsKey.split('\n')) if (configId) loadPersistedCatalog(configId)
+  }, [lookupIdsKey])
   const known = useKnownCatalogs(sw.workspace.cwd, lookupIds)
   const knownById = new Map(lookupIds.map((id, i) => [id, known[i] ?? null]))
 
@@ -279,13 +301,13 @@ export function useSelectorPanelState(
     favoriteKey(
       configId,
       modelId,
-      configId === effectiveId && modelId === confirmedModel
+      sameConfig(configId, effectiveId) && modelId === confirmedModel
         ? liveValues
         : saved[configId]?.modelValues?.[modelId]
     )
   const cachedOptions = useAcpStore((s) => s.agentOptionsCache)
   const optionsOf = (configId: string): readonly SessionConfigOption[] =>
-    configId === effectiveId
+    sameConfig(configId, effectiveId)
       ? [thoughtLevel, fastMode, ...genericOptions].filter(
           (option): option is SessionConfigOption => option != null
         )
@@ -316,11 +338,11 @@ export function useSelectorPanelState(
     value: string,
     values?: OptionValues
   ): void => {
-    if (configId === effectiveId) {
+    if (sameConfig(configId, effectiveId)) {
       props.onPickModel(value, values)
       return
     }
-    if (configId && configId === sw.currentConfigId) {
+    if (configId && sameConfig(configId, sw.currentConfigId)) {
       sw.pickCurrentModel(catalog, value, values)
       return
     }
@@ -351,7 +373,7 @@ export function useSelectorPanelState(
       setView(null)
       return
     }
-    setView(tab.configId)
+    setView(agentTabViewId(tab, sw.currentConfigId))
   }
 
   const showMore = (): void => {
@@ -403,7 +425,7 @@ export function useSelectorPanelState(
     })
     const needle = query.trim().toLowerCase()
     const agents = allTabs.filter(
-      (t) => t.configId !== effectiveId && t.name.toLowerCase().includes(needle)
+      (t) => !sameConfig(t.configId, effectiveId) && t.name.toLowerCase().includes(needle)
     )
     body = {
       kind: 'search',
@@ -421,7 +443,7 @@ export function useSelectorPanelState(
     const status = sw.modelStatus
     if (modelOption || !(status?.loading || status?.error)) {
       const catalogOf = (id: string): ModelCatalog | null =>
-        id === effectiveId ? effectiveCatalog : (knownById.get(id) ?? null)
+        sameConfig(id, effectiveId) ? effectiveCatalog : (knownById.get(id) ?? null)
       body = {
         kind: 'effective',
         catalog: effectiveCatalog,
@@ -432,7 +454,8 @@ export function useSelectorPanelState(
                 catalogOf,
                 (id) => {
                   // Uninstalled agents hide their favorites; reinstalling shows them again.
-                  const tab = tabById.get(id)
+                  // A favorite saved as opencode-v2 still belongs to the OpenCode tab.
+                  const tab = tabOf(id)
                   return tab ? isInstalledTab(tab) : false
                 },
                 optionsOf
@@ -443,7 +466,7 @@ export function useSelectorPanelState(
                 favorite,
                 label,
                 active:
-                  favorite.configId === effectiveId &&
+                  sameConfig(favorite.configId, effectiveId) &&
                   favorite.modelId === modelValue &&
                   snapshotMatches(favorite.options, liveValues)
               }))
@@ -489,7 +512,7 @@ export function useSelectorPanelState(
     body = { kind: 'loading', title: `Loading ${nameOf(viewId)} models…` }
   }
 
-  const ownFooter = searching || (!showingMore && viewId === effectiveId)
+  const ownFooter = searching || (!showingMore && sameConfig(viewId, effectiveId))
   const otherHintTab =
     !ownFooter && !showingMore && viewTab && (viewKind === 'current' || other.catalog)
       ? viewTab

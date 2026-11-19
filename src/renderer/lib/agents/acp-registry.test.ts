@@ -3,6 +3,7 @@ import {
   compareRegistryVersions,
   currentPlatformArch,
   deriveAgentConfig,
+  normalizeRegistrySnapshot,
   REGISTRY_AGENTS,
   type RegistryAgent
 } from '@/lib/agents/acp-registry'
@@ -237,6 +238,17 @@ describe('compareRegistryVersions', () => {
       newAgentIds: []
     })
   })
+
+  it('does not count opencode-v2 as a new or updated agent', () => {
+    const opencode = reg('opencode', '2.3.2')
+    const gemini = reg('gemini', '1.0.0')
+    expect(
+      compareRegistryVersions(
+        [opencode, gemini],
+        [reg('opencode', '2.3.2'), reg('opencode-v2', '2.3.2'), gemini]
+      )
+    ).toEqual({ updatedCount: 0, newAgentIds: [] })
+  })
 })
 
 describe('REGISTRY_AGENTS snapshot', () => {
@@ -255,5 +267,58 @@ describe('REGISTRY_AGENTS snapshot', () => {
   it('contains no duplicate ids', () => {
     const ids = REGISTRY_AGENTS.map((a) => a.id)
     expect(new Set(ids).size).toBe(ids.length)
+  })
+
+  it('pins OpenCode to the canonical registry release', () => {
+    const rows = REGISTRY_AGENTS.filter(
+      (agent) => agent.id === 'opencode' || agent.id === 'opencode-v2'
+    )
+    expect(rows.map((agent) => agent.id)).toEqual(['opencode'])
+    expect(rows[0]?.name).toBe('OpenCode')
+    expect(rows[0]?.version).toBe('2.3.2')
+    expect(rows[0]?.distribution.binary?.['linux-x86_64']?.cmd).toBe('./opencode')
+    expect(rows[0]?.distribution.binary?.['linux-x86_64']?.archive).toContain(
+      'https://github.com/anomalyco/opencode/releases/download/v2.3.2/'
+    )
+    expect(rows[0]?.distribution.binary?.['windows-x86_64']?.cmd).toBe('./opencode.exe')
+  })
+})
+
+describe('normalizeRegistrySnapshot OpenCode alias', () => {
+  function row(id: string, name: string, version = '2.3.2'): RegistryAgent {
+    return {
+      id,
+      name,
+      version,
+      description: name,
+      distribution: {
+        binary: {
+          'linux-x86_64': {
+            cmd: './opencode',
+            archive: `https://example.com/${id}.tar.gz`,
+            args: ['acp']
+          }
+        }
+      }
+    }
+  }
+
+  it.each([
+    'OpenCode V2',
+    'OpenCode (legacy ID)'
+  ])('lists one OpenCode when the snapshot also has %s', (legacyName) => {
+    const agents = normalizeRegistrySnapshot([
+      row('opencode', 'OpenCode'),
+      row('opencode-v2', legacyName, '9.9.9'),
+      row('gemini', 'Gemini', '1.0.0')
+    ])
+    expect(agents.map((agent) => agent.id)).toEqual(['opencode', 'gemini'])
+    expect(agents[0]).toMatchObject({
+      name: 'OpenCode',
+      version: '2.3.2'
+    })
+    expect(agents[0]?.distribution.binary?.['linux-x86_64']?.archive).toBe(
+      'https://example.com/opencode.tar.gz'
+    )
   })
 })
