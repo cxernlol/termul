@@ -62,13 +62,13 @@ Some agents hand part of a task to a helper agent, called a subagent. Subagents 
 
 Each row shows the subagent's title and type, its latest step while it runs or the first line of its result when it ends, its status (**Working**, **Needs input** when it waits for you, **Done**, **Failed** or **Stopped**) and its time.
 
-Click a row to open the subagent. On a wide window it opens beside the chat; on a narrow one it slides in from the right, and on a phone it opens as a full-height sheet. The panel shows:
+Click a row to open the subagent. On a wide window it opens beside the chat; on a narrow one it slides in from the right, and on a phone it opens as a full-height sheet. The panel reads like the main chat:
 
-- **Task**, the prompt the agent gave the subagent. Click **Show full prompt** for the rest of a long prompt.
-- **Activity**, the steps the subagent ran. Click a step to expand it. A subagent that started its own subagents shows them here too; click one to open it, and click **Back** to return.
-- **Latest message** while the subagent runs, or **Result** when it ends.
+- The task, the prompt the agent gave the subagent, sits at the top as a message bubble. Click **Show full prompt** for the rest of a long prompt, and **Show less** to fold it again.
+- Below it, the subagent's messages and steps show in the order they happened, the same way as [in the chat](#see-each-step): a message, a folded group of steps such as "Read 1 file", then the next message. Click a group to see its steps. A subagent that started its own subagents shows them among its steps; click one to open it, and click **Back** to return.
+- When the subagent ends, a **Result** section shows its result only when the result adds something its last message doesn't already say. The section also shows an error if the subagent failed.
 
-A subagent that the agent started from another of your agents, such as Codex, shows that agent's icon. Its row starts the detail line with the agent and the model, for example "Codex · gpt-5.5", and shows where it works, for example "worktree · troupe/sub/sub-9f2c1a3b4d5e". Its panel adds a **Workspace** section, and when it ends, a summary of what it changed. See [Let an agent start other agents](/docs/agents/start-other-agents).
+A subagent that the chat's agent runs itself, with its built-in subagent tool, shows the chat agent's icon. When its panel explains a missing section, it names that agent instead of "The agent". A subagent that the agent started from another of your agents, such as Codex, shows that agent's icon. Its row starts the detail line with the agent and the model, for example "Codex · gpt-5.5", and shows where it works, for example "worktree · troupe/sub/sub-9f2c1a3b4d5e". Its panel adds a **Workspace** section, and when it ends, a summary of what it changed. See [Let an agent start other agents](/docs/agents/start-other-agents).
 
 When the focus is on a control in the panel header, such as **Back**, use the up and down arrow keys to move between subagents. The keys don't switch subagents while the focus is in the panel body. From a group row, the keys stay within that group. When the agent did not report a section, the panel says why.
 

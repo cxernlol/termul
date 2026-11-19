@@ -7,6 +7,8 @@ A chat's agent can hand part of a task to another agent you installed, for examp
 
 Every agent in Troupe has the tools for this. Ask for it in your prompt, for example "Ask Codex to review the cart changes and tell me what it finds". The agent can also decide to use it itself.
 
+Troupe tells each chat's agent when to do that. For a long task, work that can run in parallel, or work a cheaper agent can do, the agent starts one of your allowed agents through Troupe, so you can follow and stop it in the chat. For a short lookup, the agent uses its own built-in subagent, if it has one, such as Claude Code's Task tool. It also falls back to its built-in subagent when this feature is off, none of your agents is allowed, or Troupe refuses the start.
+
 ## How it works
 
 1. The agent picks one of your agents and writes its task. The task has to stand on its own, because the other agent does not get this chat's conversation. A task can be up to 8,000 characters.
