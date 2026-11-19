@@ -12,6 +12,7 @@ import {
   deriveTitle,
   isUntitledTitle,
   maxPayloadSeq,
+  payloadSeqFloor,
   type SessionIndexEntry,
   type SessionPayload,
   UNTITLED_CHAT_RE
@@ -170,7 +171,7 @@ export function noteHistoryWatermark(sessionId: SessionId, payload: SessionPaylo
   // Keep the local seq counter above the server watermark (the recovery path
   // rebases the same way) so post-install live messages never receive local
   // stamps below the envelope seqs they arrived with.
-  rebaseSeqCounter(watermark)
+  rebaseSeqCounter(Math.max(watermark, payloadSeqFloor(payload)))
 }
 
 /** Test-only: clear per-session history watermarks between tests. */

@@ -363,7 +363,16 @@ async function installTransportRecovery(
         const text = subagentChunkText(payload.role, payload.content)
         const idx = recoveredToolCalls.findIndex((t) => t.toolCallId === payload.parentToolCallId)
         if (text !== null && idx !== -1) {
-          recoveredToolCalls[idx] = withSubagentText(recoveredToolCalls[idx], text)
+          recoveredToolCalls[idx] = withSubagentText(
+            recoveredToolCalls[idx],
+            text,
+            {
+              seq: event.seq,
+              timestamp: Date.now(),
+              messageId: typeof payload.messageId === 'string' ? payload.messageId : undefined
+            },
+            recoveredToolCalls
+          )
         }
         continue
       }

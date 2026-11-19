@@ -208,6 +208,16 @@ export interface ToolCallLocation {
   line?: number
 }
 
+/** One stretch of text a subagent wrote between two of its tool calls. */
+export interface SubagentMessage {
+  /** Timeline seq of the chunk that opened it; orders it among the subagent's tool calls. */
+  seq: number
+  timestamp: number
+  text: string
+  /** ACP `messageId` of its chunks, when the agent sent one. */
+  messageId?: string
+}
+
 export interface ToolCall {
   toolCallId: string
   title?: string
@@ -242,8 +252,8 @@ export interface ToolCall {
   /** Subagent dispatch that made this call (`_meta.claudeCode.parentToolUseId`).
    * The timeline shows such a call inside its subagent, not in the main turn. */
   parentToolCallId?: string
-  /** Latest text the subagent wrote (bounded tail), kept on its dispatch call. */
-  subagentText?: string
+  /** What the subagent wrote between its tool calls, oldest first (bounded), kept on its dispatch call. */
+  subagentMessages?: SubagentMessage[]
   [k: string]: unknown
 }
 

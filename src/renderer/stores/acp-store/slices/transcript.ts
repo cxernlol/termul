@@ -76,11 +76,7 @@ import {
   rejectTerminalAssistCollector,
   terminalAssistCollectors
 } from '../shared-state'
-import {
-  appendSubagentChunk,
-  MAX_SUBAGENT_TEXT_CHARS,
-  withSubagentIngest
-} from '../subagent-transcript'
+import { appendSubagentChunk, withSubagentIngest } from '../subagent-transcript'
 import type {
   AcpSession,
   AcpState,
@@ -575,10 +571,10 @@ export function clampLiveToolCallFields<T extends LiveToolCallShape>(
     reduced.parentToolCallId = next.parentToolCallId
   }
   if (
-    typeof next.subagentText === 'string' &&
-    next.subagentText.length <= MAX_SUBAGENT_TEXT_CHARS
+    Array.isArray(next.subagentMessages) &&
+    serializedLength(next.subagentMessages) <= MAX_LIVE_TOOL_CALL_FIELD_CHARS
   ) {
-    reduced.subagentText = next.subagentText
+    reduced.subagentMessages = next.subagentMessages
   }
   if (
     typeof next.terminalOutput === 'string' &&
@@ -1307,8 +1303,9 @@ export const createTranscriptSlice: StateCreator<AcpState, [], [], TranscriptSli
       // Subagent text belongs to its dispatch card, which the open turn's
       // attach replay rebuilds, so it follows the tool-event coverage rule.
       if (isHistoryCoveredToolEvent(e.sessionId, eventSeq)) return
+      const replaySeq = liveTurnReplaySeq(e.sessionId, eventSeq)
       const applyChild = (s: AcpState): Partial<AcpState> =>
-        appendSubagentChunk(s, { ...e, parentToolCallId })
+        appendSubagentChunk(s, { ...e, parentToolCallId }, replaySeq)
       if (useCoalesce) coalesceSet(e.sessionId, applyChild)
       else set(applyChild)
       return

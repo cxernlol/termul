@@ -4071,7 +4071,7 @@ async fn a_tail_payload_restores_each_subagents_calls_text_and_result() {
     assert!(tail.messages.iter().all(|message| message.seq > 6), "turn 1 is outside the window");
     let calls = serde_json::to_value(&tail.tool_calls).unwrap();
     assert_eq!(calls[0]["toolCallId"], "d1");
-    assert_eq!(calls[0]["subagentText"], "Found one bug.");
+    assert_eq!(calls[0]["subagentMessages"][0]["text"], "Found one bug.");
     assert_eq!(calls[0]["content"][0]["content"]["text"], "One bug.");
     assert_eq!(calls[1]["toolCallId"], "c1");
     assert_eq!(calls[1]["_meta"]["claudeCode"]["parentToolUseId"], "d1");

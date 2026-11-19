@@ -2,17 +2,20 @@ import type { Subagent, SubagentWorkspace } from '@shared/types/subagent'
 import { useReducedMotion } from 'framer-motion'
 import { type ReactNode, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { ArrowLeft, Clock, FileDiff, Folder, GitBranch, Square, X } from '@/components/icons'
+import { Bubble, BubbleContent } from '@/components/ui/bubble'
 import { Button } from '@/components/ui/button'
 import { IconActionButton } from '@/components/ui/icon-action-button'
+import { Message, MessageContent } from '@/components/ui/message'
 import type { ToolCall } from '@/lib/acp-api'
 import type { FilePathResolutionContext } from '@/lib/file-path-links'
 import { cn } from '@/lib/utils'
-import { useAgentIdentity } from '@/stores/acp-store'
+import { type ChatMessage as ChatMessageType, useAgentIdentity } from '@/stores/acp-store'
 import { AgentProse } from './chat-agent-prose'
-import { SubagentGroup } from './SubagentGroup'
+import { buildTimeline, consolidateThoughtGroups } from './chat-timeline'
 import { isSubagentWaiting, SubagentAvatar, SubagentStatusLabel } from './SubagentRow'
 import {
   formatTokens,
+  lastSubagentMessage,
   type SubagentStatus,
   subagentResultText,
   subagentTitle,
@@ -21,12 +24,10 @@ import {
 } from './subagent-strip'
 import { useSubagentChildCalls, useSubagentSurface } from './subagent-surface-context'
 import { SubagentElapsed } from './subagent-time'
-import { ToolCallCard } from './ToolCallCard'
-import { isSubagentCall, type ParentTurn } from './tool-call-summary'
+import { layoutTurnSteps, TurnSteps, useTurnStepWindow } from './TurnSteps'
+import type { ParentTurn } from './tool-call-summary'
+import { useEnterTracker } from './use-enter-tracker'
 import { useStopSubagent } from './use-stop-subagent'
-
-/** Activity rows shown; the newest win when a subagent made more. */
-export const MAX_SUBAGENT_ACTIVITY_ROWS = 50
 
 function Section({
   title,
@@ -48,7 +49,11 @@ function Missing({ children }: { children: ReactNode }): React.JSX.Element {
   return <p className="text-xs text-muted-foreground">{children}</p>
 }
 
-function TaskPrompt({ prompt }: { prompt: string }): React.JSX.Element {
+/**
+ * The task the subagent was given, as the opening user turn of its chat. A
+ * long prompt is clamped to a few lines until the reader expands it.
+ */
+function PromptTurn({ prompt }: { prompt: string }): React.JSX.Element {
   const [expanded, setExpanded] = useState(false)
   const [overflows, setOverflows] = useState(false)
   const ref = useRef<HTMLParagraphElement>(null)
@@ -59,28 +64,28 @@ function TaskPrompt({ prompt }: { prompt: string }): React.JSX.Element {
     if (el && !expanded) setOverflows(el.scrollHeight > el.clientHeight + 1)
   }, [expanded, prompt])
   return (
-    <Section title="Task">
-      <p
-        ref={ref}
-        className={cn(
-          'whitespace-pre-wrap break-words rounded-lg bg-muted px-3 py-2 text-sm text-foreground',
-          !expanded && 'line-clamp-3'
+    <Message align="end" className="py-2">
+      <MessageContent className="w-fit max-w-[85%] items-end">
+        <Bubble variant="tinted" align="end" className="max-w-full">
+          <BubbleContent>
+            <p ref={ref} className={cn('whitespace-pre-wrap', !expanded && 'line-clamp-3')}>
+              {prompt}
+            </p>
+          </BubbleContent>
+        </Bubble>
+        {(overflows || expanded) && (
+          <Button
+            type="button"
+            variant="link"
+            size="xs"
+            className="px-0"
+            onClick={() => setExpanded((value) => !value)}
+          >
+            {expanded ? 'Show less' : 'Show full prompt'}
+          </Button>
         )}
-      >
-        {prompt}
-      </p>
-      {(overflows || expanded) && (
-        <Button
-          type="button"
-          variant="link"
-          size="xs"
-          className="self-start px-0"
-          onClick={() => setExpanded((value) => !value)}
-        >
-          {expanded ? 'Show less' : 'Show full prompt'}
-        </Button>
-      )}
-    </Section>
+      </MessageContent>
+    </Message>
   )
 }
 
@@ -175,67 +180,85 @@ function useRecordFilePathContext(
   )
 }
 
-type ActivitySegment =
-  | { kind: 'tool'; toolCall: ToolCall }
-  | { kind: 'subagents'; key: string; calls: ToolCall[] }
-
-/** Child calls in order, with consecutive nested subagents folded into one group. */
-function activitySegments(calls: readonly ToolCall[]): ActivitySegment[] {
-  const segments: ActivitySegment[] = []
-  for (const call of calls) {
-    const last = segments[segments.length - 1]
-    if (!isSubagentCall(call)) segments.push({ kind: 'tool', toolCall: call })
-    else if (last?.kind === 'subagents') last.calls.push(call)
-    else segments.push({ kind: 'subagents', key: call.toolCallId, calls: [call] })
-  }
-  return segments
+/** The subagent's messages as chat messages; only the newest streams, and only while it runs. */
+function subagentChatMessages(toolCall: ToolCall, running: boolean): ChatMessageType[] {
+  const messages = toolCall.subagentMessages ?? []
+  return messages.map((message, index) => ({
+    id: `${toolCall.toolCallId}:${message.seq}`,
+    role: 'agent',
+    blocks: [{ type: 'text', text: message.text }],
+    streaming: running && index === messages.length - 1,
+    timestamp: message.timestamp,
+    seq: message.seq
+  }))
 }
 
-function Activity({
+/**
+ * What the subagent did, laid out like the main chat: its messages with its
+ * tool calls between them, folded into work runs, and nested subagents as
+ * groups. A muted line says why when the agent reports nothing.
+ */
+function Steps({
   toolCall,
+  status,
   childCalls,
   parentTurn,
   agentName
 }: {
   toolCall: ToolCall
+  status: SubagentStatus
   childCalls: readonly ToolCall[]
   parentTurn: ParentTurn
   agentName: string
-}): React.JSX.Element {
+}): React.JSX.Element | null {
   const filePathContext = useRecordFilePathContext(toolCall.subagent)
-  const hidden = Math.max(0, childCalls.length - MAX_SUBAGENT_ACTIVITY_ROWS)
-  const segments = useMemo(
-    () => activitySegments(hidden > 0 ? childCalls.slice(hidden) : childCalls),
-    [childCalls, hidden]
+  const running = status === 'running'
+  const items = useMemo(
+    () =>
+      consolidateThoughtGroups(
+        buildTimeline(subagentChatMessages(toolCall, running), [...childCalls])
+      ),
+    [toolCall, running, childCalls]
   )
-  const transcript = toolCall.subagent?.caps.transcript ?? 'none'
-  if (childCalls.length === 0) {
+  const layout = useMemo(() => layoutTurnSteps(items), [items])
+  const stepWindow = useTurnStepWindow(`subagent:${toolCall.toolCallId}`)
+  const itemKeys = useMemo(() => items.map((item) => item.key), [items])
+  const enter = useEnterTracker(toolCall.toolCallId, itemKeys)
+  if (items.length === 0) {
+    const transcript = toolCall.subagent?.caps.transcript ?? 'none'
     if (transcript === 'final') {
       return <Missing>{agentName} reports only this subagent's result, not its steps.</Missing>
     }
     if (transcript === 'none') {
       return <Missing>{agentName} doesn't report what this subagent does.</Missing>
     }
-    return <Missing>No tool calls to show.</Missing>
+    return running ? <Missing>Nothing to show yet.</Missing> : null
   }
   return (
-    <Section title={<span className="tabular-nums">Activity · {childCalls.length}</span>}>
-      {hidden > 0 && <Missing>{hidden} earlier tool calls are not shown.</Missing>}
-      <div className="flex min-w-0 flex-col">
-        {segments.map((segment) =>
-          segment.kind === 'tool' ? (
-            <ToolCallCard
-              key={segment.toolCall.toolCallId}
-              toolCall={segment.toolCall}
-              filePathContext={filePathContext}
-            />
-          ) : (
-            <SubagentGroup key={segment.key} calls={segment.calls} parentTurn={parentTurn} nested />
-          )
-        )}
-      </div>
-    </Section>
+    <div data-subagent-steps="" className="flex min-w-0 flex-col">
+      <TurnSteps
+        items={items}
+        layout={layout}
+        stepWindow={stepWindow}
+        active={running}
+        parentTurn={parentTurn}
+        enter={enter}
+        filePathContext={filePathContext}
+        nested
+      />
+    </div>
   )
+}
+
+/**
+ * True when the result is the end of what the subagent wrote, so the steps
+ * above already show it: its last message, or (an orchestrated run's settle
+ * card) every message it wrote, joined as streamed.
+ */
+function endsTheSteps(toolCall: ToolCall, result: string): boolean {
+  const answer = result.trim()
+  const written = (toolCall.subagentMessages ?? []).map((message) => message.text).join('')
+  return answer.length > 0 && written.trim().endsWith(answer)
 }
 
 function Outcome({
@@ -246,35 +269,20 @@ function Outcome({
   toolCall: ToolCall
   status: SubagentStatus
   agentName: string
-}): React.JSX.Element {
+}): React.JSX.Element | null {
   const reduced = useReducedMotion() ?? false
   const record = toolCall.subagent
   const filePathContext = useRecordFilePathContext(record)
-  const prose = (text: string, streaming: boolean) => (
-    <AgentProse
-      text={text}
-      streaming={streaming}
-      reduced={reduced}
-      filePathContext={filePathContext}
-      linkScope={`subagent:${toolCall.toolCallId}`}
-    />
-  )
-
   const outputFile = record?.background ? record.outputFile : undefined
   const outputLine = outputFile && (
     <p className="break-all font-mono text-xs text-muted-foreground">Output file: {outputFile}</p>
   )
 
   if (status === 'running') {
-    const latest = toolCall.subagentText?.trim() ? toolCall.subagentText : undefined
     return (
       <>
-        {latest ? (
-          <Section title="Latest message">{prose(latest, true)}</Section>
-        ) : (
-          record?.caps.transcript !== 'live' && (
-            <Missing>The result shows here when it finishes.</Missing>
-          )
+        {record?.caps.transcript !== 'live' && !lastSubagentMessage(toolCall) && (
+          <Missing>The result shows here when it finishes.</Missing>
         )}
         {outputLine}
       </>
@@ -282,6 +290,7 @@ function Outcome({
   }
 
   const result = subagentResultText(toolCall)
+  const shown = result && !endsTheSteps(toolCall, result) ? result : undefined
   const error = record?.activity === 'idle' ? record.end.error?.trim() : undefined
   // A settled worktree run keeps its diff summary next to the result; the
   // worktree survives, so the changes are where the user can find them.
@@ -302,12 +311,22 @@ function Outcome({
       </>
     )
   }
+  const errorLine = error && error !== result?.trim() && (
+    <p className="whitespace-pre-wrap break-words text-sm text-destructive">{error}</p>
+  )
+  if (!shown && !errorLine && !outputLine && !diff) return null
   return (
     <Section title="Result">
-      {error && error !== result?.trim() && (
-        <p className="whitespace-pre-wrap break-words text-sm text-destructive">{error}</p>
+      {errorLine}
+      {shown && (
+        <AgentProse
+          text={shown}
+          streaming={false}
+          reduced={reduced}
+          filePathContext={filePathContext}
+          linkScope={`subagent:${toolCall.toolCallId}`}
+        />
       )}
-      {result && prose(result, false)}
       {outputLine}
       {diff}
     </Section>
@@ -382,9 +401,11 @@ function useAvatarMorph(
 }
 
 /**
- * The detail view of one subagent: who it is and how it stands, the task it
- * was given, the tool calls it made, and its latest message or result. A
- * section the agent did not report is one muted line saying why.
+ * The detail view of one subagent: who it is and how it stands, then its
+ * work read like a chat: the task it was given as the opening user turn, the
+ * messages it wrote with its tool calls between them, and the result when it
+ * adds something. A section the agent did not report is one muted line
+ * saying why.
  */
 export function SubagentPanel({
   toolCall,
@@ -476,18 +497,22 @@ export function SubagentPanel({
         data-subagent-panel-body
         className="scroller-thin flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto overscroll-contain px-4 py-4"
       >
-        {record?.prompt?.trim() ? (
-          <TaskPrompt key={toolCall.toolCallId} prompt={record.prompt} />
-        ) : (
-          <Missing>{agentName} did not share the task it gave this subagent.</Missing>
-        )}
         {record?.workspace && <WorkspaceSection workspace={record.workspace} />}
-        <Activity
-          toolCall={toolCall}
-          childCalls={childCalls}
-          parentTurn={parentTurn}
-          agentName={agentName}
-        />
+        <div className="flex min-w-0 flex-col">
+          {record?.prompt?.trim() ? (
+            <PromptTurn key={toolCall.toolCallId} prompt={record.prompt} />
+          ) : (
+            <Missing>{agentName} did not share the task it gave this subagent.</Missing>
+          )}
+          <Steps
+            key={toolCall.toolCallId}
+            toolCall={toolCall}
+            status={status}
+            childCalls={childCalls}
+            parentTurn={parentTurn}
+            agentName={agentName}
+          />
+        </div>
         <Outcome toolCall={toolCall} status={status} agentName={agentName} />
       </div>
       <div className="flex items-center gap-2 border-t border-border px-4 py-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] text-xs text-muted-foreground">

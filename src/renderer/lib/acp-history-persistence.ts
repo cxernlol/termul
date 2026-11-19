@@ -340,6 +340,27 @@ export function maxPayloadSeq(
   return maxSeq
 }
 
+/**
+ * Lowest the local seq counter may sit after installing `payload`: above
+ * every timeline seq and every subagent message seq. A subagent message can
+ * open after the last timeline item, and a later child tool call must still
+ * sort after it.
+ */
+export function payloadSeqFloor(
+  payload: Pick<SessionPayload, 'messages' | 'toolCalls' | 'switches'>
+): number {
+  let floor = maxPayloadSeq(payload)
+  for (const toolCall of normalizedToolCalls(payload.toolCalls)) {
+    const messages: unknown = toolCall.subagentMessages
+    if (!Array.isArray(messages)) continue
+    for (const message of messages) {
+      const seq = (message as { seq?: unknown } | null)?.seq
+      if (typeof seq === 'number' && Number.isFinite(seq) && seq > floor) floor = seq
+    }
+  }
+  return floor
+}
+
 /** True for a restorable switch record: object + finite numeric seq + non-empty id. */
 function isRestorableSwitch(value: unknown): value is AgentSwitchRecord {
   if (typeof value !== 'object' || value === null) return false

@@ -1515,7 +1515,10 @@ describe('replay render dedup on reconnect (story 11 / CAP-3 client half)', () =
           seq: 7,
           timestamp: 7,
           content: [{ type: 'content', content: { type: 'text', text: 'Async agent launched.' } }],
-          subagentText: 'Found one stale selector.',
+          subagentMessages: [
+            { seq: 9, timestamp: 9, text: 'Reading the store.' },
+            { seq: 10, timestamp: 10, text: 'Found one stale selector.' }
+          ],
           _meta: subagentMeta(record),
           restoredSummary: false
         },

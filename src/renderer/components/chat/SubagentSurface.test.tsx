@@ -168,6 +168,7 @@ function renderChat(props: ChatProps) {
 }
 
 const panel = () => screen.getByTestId('subagent-panel')
+const steps = () => panel().querySelector('[data-subagent-steps]')
 const row = (name: RegExp) => screen.getByRole('button', { name })
 
 describe('subagents in the transcript', () => {
@@ -289,7 +290,7 @@ describe('subagents in the transcript', () => {
     expect(within(panel()).getByRole('heading', { name: 'Fix session tests' })).toBeVisible()
     expect(panel()).toHaveTextContent('Explore · Opus 4.5 · 2 tools · 37.8k tok')
     expect(panel()).toHaveTextContent('Fix the failing session tests.')
-    expect(panel()).toHaveTextContent('Activity · 2')
+    expect(steps()).toHaveTextContent('Read 2 files')
     expect(row(/^Fix session tests/)).toHaveAttribute('aria-current', 'true')
 
     fireEvent.keyDown(panel(), { key: 'ArrowUp' })
@@ -311,8 +312,6 @@ describe('subagents in the transcript', () => {
     expect(panel()).toHaveTextContent('The agent did not share the task it gave this subagent.')
     expect(panel()).toHaveTextContent("reports only this subagent's result, not its steps.")
     expect(panel()).toHaveTextContent('The result shows here when it finishes.')
-    expect(within(panel()).queryByRole('heading', { name: /^Activity/ })).toBeNull()
-    expect(within(panel()).queryByRole('heading', { name: 'Task' })).toBeNull()
 
     fireEvent.click(row(/^Bare task/))
     expect(panel()).toHaveTextContent("doesn't report what this subagent does.")
@@ -345,16 +344,22 @@ describe('subagents in the transcript', () => {
     useAcpStore.setState({ agentConfigs: [], configToLiveAgent: {} })
   })
 
-  it('shows the latest message while running and the result once settled, never twice', async () => {
+  it('reads like a chat: the task, its text with its tool calls between, then the result once', async () => {
+    const first = { seq: 15, timestamp: 1_250, text: 'Looking at the refresh path.' }
     const running = dispatch(
       'a',
-      { title: 'Audit auth flow' },
-      { subagentText: 'So far the race is in session.ts:143.' }
+      { title: 'Audit auth flow', prompt: 'Find the auth race.' },
+      {
+        subagentMessages: [first, { seq: 25, timestamp: 1_350, text: 'So far: session.ts:143.' }]
+      }
     )
-    const { update } = renderChat({ toolCalls: [running] })
+    const read = child('a', 'c1', { seq: 20 })
+    const { update } = renderChat({ toolCalls: [running, read] })
     fireEvent.click(row(/^Audit auth flow/))
-    expect(within(panel()).getByRole('heading', { name: 'Latest message' })).toBeVisible()
-    expect(within(panel()).getByTestId('agent-prose')).toHaveTextContent('session.ts:143')
+    expect(panel()).toHaveTextContent(
+      /Find the auth race\..*Looking at the refresh path\..*Read 1 file.*So far: session\.ts:143\./
+    )
+    expect(within(panel()).queryByRole('heading', { name: 'Result' })).toBeNull()
 
     const finalText = 'The race is in session.ts:143; refresh() runs without the lock.'
     update({
@@ -362,23 +367,41 @@ describe('subagents in the transcript', () => {
         {
           ...running,
           status: 'completed',
-          subagentText: finalText,
+          subagentMessages: [first, { seq: 25, timestamp: 1_350, text: `${finalText}\n` }],
           content: [{ type: 'content', content: { type: 'text', text: finalText } }],
           subagent: { ...running.subagent!, ...endedState() }
-        }
+        },
+        read
       ],
       messages: [user, narration, finalReply],
       turnActive: false
     })
-    await waitFor(() =>
-      expect(within(panel()).getByRole('heading', { name: 'Result' })).toBeVisible()
-    )
-    expect(within(panel()).queryByRole('heading', { name: 'Latest message' })).toBeNull()
+    await waitFor(() => expect(within(panel()).getByText('Done')).toBeVisible())
     expect(within(panel()).getAllByText(finalText)).toHaveLength(1)
-    expect(within(panel()).getByText('Done')).toBeVisible()
+    expect(within(panel()).queryByRole('heading', { name: 'Result' })).toBeNull()
   })
 
-  it('opens a nested subagent from Activity and returns to its parent on Back', () => {
+  it('shows a result that differs from the last message under Result', () => {
+    renderChat({
+      toolCalls: [
+        dispatch(
+          'a',
+          { title: 'Audit auth flow', state: endedState() },
+          {
+            status: 'completed',
+            subagentMessages: [{ seq: 15, timestamp: 1_250, text: 'Writing it up.' }],
+            rawOutput: { text: 'One race in session.ts.' }
+          }
+        )
+      ]
+    })
+    fireEvent.click(row(/^Audit auth flow/))
+    expect(steps()).toHaveTextContent('Writing it up.')
+    const result = within(panel()).getByRole('heading', { name: 'Result' }).closest('section')
+    expect(result).toHaveTextContent('One race in session.ts.')
+  })
+
+  it('opens a nested subagent from its steps and returns to its parent on Back', () => {
     renderChat({
       toolCalls: [
         dispatch('parent', { title: 'Plan the fix' }),
@@ -388,7 +411,7 @@ describe('subagents in the transcript', () => {
     })
     expect(screen.queryByRole('button', { name: /^Read the spec/ })).toBeNull()
     fireEvent.click(row(/^Plan the fix/))
-    expect(panel()).toHaveTextContent('Activity · 2')
+    expect(steps()).toHaveTextContent('Read 1 file')
     fireEvent.click(within(panel()).getByRole('button', { name: /^Read the spec/ }))
     expect(within(panel()).getByRole('heading', { name: 'Read the spec' })).toBeVisible()
     fireEvent.click(within(panel()).getByRole('button', { name: 'Back' }))
@@ -690,6 +713,34 @@ describe('orchestrated subagents in the transcript', () => {
     expect(within(panel()).getAllByText('troupe/sub/retry-fix')).toHaveLength(2)
   })
 
+  it('reads an orchestrated run as a chat and keeps its settle-card result out of a repeat', () => {
+    const before = 'Reading the retry loop. '
+    const after = 'Fixed: the backoff resets on success.'
+    renderChat({
+      toolCalls: [
+        orchestrated(
+          'sub-1',
+          { state: endedState() },
+          {
+            status: 'completed',
+            subagentMessages: [
+              { seq: 15, timestamp: 1_250, text: before, messageId: 'm1' },
+              { seq: 25, timestamp: 1_350, text: after, messageId: 'm2' }
+            ],
+            rawOutput: { text: `${before}${after}` }
+          }
+        ),
+        child('sub-1', 'c1', { seq: 20 })
+      ]
+    })
+    fireEvent.click(row(/^Implement the retry fix/))
+    expect(steps()).toHaveTextContent(
+      /Reading the retry loop\..*Read 1 file.*Fixed: the backoff resets on success\./
+    )
+    expect(within(panel()).getAllByText(after)).toHaveLength(1)
+    expect(within(panel()).queryByTestId('agent-prose')).toBeNull()
+  })
+
   it('says a stopped run returned no result, not that it reported to the agent', () => {
     renderChat({
       toolCalls: [orchestrated('sub-1', { state: endedState('cancelled') }, { status: 'failed' })]
@@ -720,6 +771,7 @@ describe('orchestrated subagents in the transcript', () => {
     expect(result).toHaveAttribute('data-cwd', worktree)
     expect(result).toHaveAttribute('data-project-root', worktree)
 
+    fireEvent.click(within(panel()).getByRole('button', { name: /^Read 1 file/ }))
     fireEvent.click(within(panel()).getByRole('button', { name: 'Open file' }))
     expect(openFilePathFromTerminal).toHaveBeenCalledWith('src/auth/refresh.rs', {
       cwd: worktree,

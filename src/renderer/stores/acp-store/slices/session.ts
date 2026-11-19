@@ -23,6 +23,7 @@ import {
   loadSessionPayload,
   loadSessionPayloadTail,
   maxPayloadSeq,
+  payloadSeqFloor,
   queueSessionPayloadDelete,
   restoredSwitches,
   restoredToolCalls,
@@ -849,7 +850,7 @@ async function openHistorySessionInner(
 
   // Rebase the process-wide seq counter so live events appended after the
   // restored transcript sort after it (nextSeq() returns > max restored seq).
-  rebaseSeqCounter(maxPayloadSeq(payload))
+  rebaseSeqCounter(payloadSeqFloor(payload))
 
   // The host refused a reopen naming a DIFFERENT live owner mid-turn
   // (`ACP_SESSION_OWNED_BY_OTHER` — in-band proof the turn lives). The

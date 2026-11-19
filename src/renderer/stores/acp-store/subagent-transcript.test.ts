@@ -44,6 +44,7 @@ import {
 } from '@/stores/acp-store'
 import {
   _resetSubagentTranscriptLogsForTesting,
+  MAX_SUBAGENT_MESSAGES,
   MAX_SUBAGENT_TEXT_CHARS,
   withParentToolCallId
 } from './subagent-transcript'
@@ -66,16 +67,29 @@ function toolCall(payload: Record<string, unknown>): void {
   _flushCoalescedForTesting()
 }
 
-function chunk(text: string, parentToolCallId?: string, role: 'agent' | 'thought' = 'agent'): void {
+function chunk(
+  text: string,
+  parentToolCallId?: string,
+  role: 'agent' | 'thought' = 'agent',
+  messageId?: string
+): void {
   useAcpStore.getState()._onMessageChunk({
     agentId: 'agent-1',
     sessionId: 's1',
     role,
     content: { type: 'text', text },
-    ...(parentToolCallId ? { parentToolCallId } : {})
+    ...(parentToolCallId ? { parentToolCallId } : {}),
+    ...(messageId ? { messageId } : {})
   })
   _flushCoalescedForTesting()
 }
+
+function childCall(id: string, parent: string): void {
+  toolCall({ toolCallId: id, kind: 'read', status: 'completed', _meta: childMeta(parent) })
+}
+
+const texts = (id: string): string[] =>
+  (stored(id).subagentMessages ?? []).map((message) => message.text)
 
 const stored = (id: string, sid = 's1'): ToolCall => {
   const call = useAcpStore.getState().toolCalls[sid]?.find((tc) => tc.toolCallId === id)
@@ -128,10 +142,56 @@ describe('subagent transcript ingest (live)', () => {
     chunk(' in the renderer.', 'd1')
     chunk('internal thinking', 'd1', 'thought')
 
-    expect(stored('d1').subagentText).toBe('Found 3 issues in the renderer.')
+    expect(texts('d1')).toEqual(['Found 3 issues in the renderer.'])
     const messages = useAcpStore.getState().messages.s1
     expect(messages).toHaveLength(1)
     expect(messages[0].blocks).toEqual([{ type: 'text', text: 'Starting the audit. ' }])
+  })
+
+  it('starts a new message after a tool call the subagent made, in timeline order', () => {
+    toolCall({ toolCallId: 'd1', status: 'in_progress', rawInput: dispatchInput })
+    chunk('Reading the store.', 'd1')
+    childCall('c1', 'd1')
+    chunk('Found ', 'd1')
+    chunk('one bug.', 'd1')
+
+    expect(texts('d1')).toEqual(['Reading the store.', 'Found one bug.'])
+    const [before, after] = stored('d1').subagentMessages ?? []
+    const childSeq = stored('c1').seq ?? Number.NaN
+    expect(before.seq < childSeq && childSeq < after.seq).toBe(true)
+  })
+
+  it('starts a new message when the agent starts a new ACP message, with no tool call between', () => {
+    toolCall({ toolCallId: 'd1', status: 'in_progress', rawInput: dispatchInput })
+    chunk('Checking ', 'd1', 'agent', 'm1')
+    chunk('now.', 'd1', 'agent', 'm1')
+    chunk('de28c202f is the fix.', 'd1', 'agent', 'm2')
+    chunk(' Done.', 'd1')
+    expect(
+      stored('d1').subagentMessages?.map(({ text, messageId }) => ({ text, messageId }))
+    ).toEqual([
+      { text: 'Checking now.', messageId: 'm1' },
+      { text: 'de28c202f is the fix. Done.', messageId: 'm2' }
+    ])
+  })
+
+  it('keeps a messageId of 256 code points apart, as the host does, even past 256 UTF-16 units', () => {
+    const first = `${'\u{1F600}'.repeat(128)}a`
+    const second = `${'\u{1F600}'.repeat(128)}b`
+    toolCall({ toolCallId: 'd1', status: 'in_progress', rawInput: dispatchInput })
+    chunk('Checking now.', 'd1', 'agent', first)
+    chunk('Done.', 'd1', 'agent', second)
+    expect(texts('d1')).toEqual(['Checking now.', 'Done.'])
+  })
+
+  it('keeps one message across tool calls another subagent or the main turn made', () => {
+    toolCall({ toolCallId: 'd1', status: 'in_progress', rawInput: dispatchInput })
+    toolCall({ toolCallId: 'd2', status: 'in_progress', rawInput: dispatchInput })
+    chunk('Still ', 'd1')
+    childCall('c2', 'd2')
+    toolCall({ toolCallId: 'r1', kind: 'read', status: 'completed' })
+    chunk('reading.', 'd1')
+    expect(texts('d1')).toEqual(['Still reading.'])
   })
 
   it('drops text for an unknown dispatch and logs it once', () => {
@@ -139,18 +199,44 @@ describe('subagent transcript ingest (live)', () => {
     chunk('orphan two', 'missing')
     expect(useAcpStore.getState().messages.s1).toEqual([])
     const orphanLogs = logMock.mock.calls.filter(
-      (call) => (call as unknown[])[0] && JSON.stringify(call).includes('acp-store.subagentText')
+      (call) =>
+        (call as unknown[])[0] && JSON.stringify(call).includes('acp-store.subagentMessages')
     )
     expect(orphanLogs).toHaveLength(1)
   })
 
-  it('keeps only the newest tail of a long subagent text', () => {
+  it('keeps the newest text: older messages go first, then the head of the oldest kept', () => {
     toolCall({ toolCallId: 'd1', status: 'in_progress', rawInput: dispatchInput })
-    chunk('a'.repeat(MAX_SUBAGENT_TEXT_CHARS), 'd1')
+    chunk('old', 'd1')
+    childCall('c1', 'd1')
+    chunk('a'.repeat(MAX_SUBAGENT_TEXT_CHARS - 2), 'd1')
+    childCall('c2', 'd1')
     chunk('END', 'd1')
-    const text = stored('d1').subagentText ?? ''
-    expect(text).toHaveLength(MAX_SUBAGENT_TEXT_CHARS)
-    expect(text.endsWith('END')).toBe(true)
+    const kept = texts('d1')
+    expect(kept.map((text) => text.length)).toEqual([MAX_SUBAGENT_TEXT_CHARS - 3, 3])
+    expect(kept[1]).toBe('END')
+  })
+
+  it('keeps the newest messages past the message cap', () => {
+    toolCall({ toolCallId: 'd1', status: 'in_progress', rawInput: dispatchInput })
+    for (let i = 0; i < MAX_SUBAGENT_MESSAGES + 5; i++) {
+      chunk(`m${i}`, 'd1')
+      childCall(`c${i}`, 'd1')
+    }
+    const kept = texts('d1')
+    expect(kept).toHaveLength(MAX_SUBAGENT_MESSAGES)
+    expect([kept[0], kept[kept.length - 1]]).toEqual(['m5', `m${MAX_SUBAGENT_MESSAGES + 4}`])
+  })
+
+  it('keeps only well-formed subagent messages a tool call carries', () => {
+    toolCall({
+      toolCallId: 'd1',
+      status: 'completed',
+      subagentMessages: [{ seq: 4, timestamp: 9, text: 'Kept.', extra: true }, { seq: 'x' }, null]
+    })
+    toolCall({ toolCallId: 'd2', status: 'completed', subagentMessages: 'not a list' })
+    expect(stored('d1').subagentMessages).toEqual([{ seq: 4, timestamp: 9, text: 'Kept.' }])
+    expect(stored('d2')).not.toHaveProperty('subagentMessages')
   })
 })
 
@@ -224,12 +310,35 @@ describe('subagent transcript ingest (reconnect recovery)', () => {
         {
           sid: 's-rec',
           seq: 15,
+          type: 'tool_call',
+          payload: {
+            toolCall: {
+              toolCallId: 'c2',
+              kind: 'read',
+              status: 'completed',
+              _meta: childMeta('d1')
+            }
+          }
+        },
+        {
+          sid: 's-rec',
+          seq: 16,
+          type: 'message_chunk',
+          payload: {
+            role: 'agent',
+            parentToolCallId: 'd1',
+            content: { type: 'text', text: 'Second look' }
+          }
+        },
+        {
+          sid: 's-rec',
+          seq: 17,
           type: 'message_chunk',
           payload: { role: 'agent', content: { type: 'text', text: 'Still waiting.' } }
         },
         {
           sid: 's-rec',
-          seq: 16,
+          seq: 18,
           type: 'tool_call_update',
           payload: { update: { toolCallId: 'd1', status: 'completed' } }
         }
@@ -238,7 +347,10 @@ describe('subagent transcript ingest (reconnect recovery)', () => {
     _flushCoalescedForTesting()
 
     const dispatch = stored('d1', 's-rec')
-    expect(dispatch.subagentText).toBe('Child report')
+    expect(dispatch.subagentMessages?.map(({ seq, text }) => ({ seq, text }))).toEqual([
+      { seq: 14, text: 'Child report' },
+      { seq: 16, text: 'Second look' }
+    ])
     // The status update carries no record, so the persisted one stays.
     expect(dispatch.subagent).toEqual(record)
     expect(dispatch.status).toBe('completed')

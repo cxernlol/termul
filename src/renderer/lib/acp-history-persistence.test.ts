@@ -72,6 +72,7 @@ import {
   normalizeCwdForScope,
   PERSISTED_TOOL_CALL_BYTE_BUDGET,
   PERSISTED_TOOL_CALLS_LIMIT,
+  payloadSeqFloor,
   queueSessionPayloadDelete,
   queueSessionPayloadSave,
   reloadSessionPayloadFromHost,
@@ -512,6 +513,33 @@ describe('payload restore helpers', () => {
         toolCalls: [{ toolCallId: 'tc', seq: 2 }]
       })
     ).toBe(9)
+  })
+
+  it('payloadSeqFloor sits above a subagent message that opened after every timeline item', () => {
+    const payload = {
+      messages: [
+        { id: 'm', role: 'user' as const, blocks: [], streaming: false, timestamp: 0, seq: 3 }
+      ],
+      toolCalls: [
+        {
+          toolCallId: 'dispatch',
+          seq: 4,
+          subagentMessages: [
+            { seq: 5, timestamp: 0, text: 'Reading.' },
+            { seq: 11, timestamp: 0, text: 'Still going.' }
+          ]
+        },
+        { toolCallId: 'child', seq: 8, parentToolCallId: 'dispatch' }
+      ]
+    }
+    expect(maxPayloadSeq(payload)).toBe(8)
+    expect(payloadSeqFloor(payload)).toBe(11)
+    expect(
+      payloadSeqFloor({
+        messages: [],
+        toolCalls: [{ toolCallId: 'x', seq: 2, subagentMessages: 'bad' as never }]
+      })
+    ).toBe(2)
   })
 
   it('restore helpers degrade corrupt toolCalls shapes instead of throwing', () => {

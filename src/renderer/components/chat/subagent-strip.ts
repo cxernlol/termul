@@ -265,14 +265,21 @@ function lastLine(text: string | undefined): string | undefined {
   return undefined
 }
 
+/** The subagent's newest message; undefined when it wrote nothing or only whitespace. */
+export function lastSubagentMessage(toolCall: ToolCall): string | undefined {
+  const text = toolCall.subagentMessages?.at(-1)?.text
+  return text?.trim() ? text : undefined
+}
+
 /**
  * The subagent's final answer, once. A foreground dispatch returns it as the
  * call's result; a background launch returns only a receipt, so its answer is
- * the text it streamed, if any. An orchestrated run is background-marked but
- * its settle card carries the result as the call's content, which wins.
+ * the last message it streamed, if any. An orchestrated run is
+ * background-marked but its settle card carries the result as the call's
+ * content, which wins.
  */
 export function subagentResultText(toolCall: ToolCall): string | undefined {
-  const streamed = toolCall.subagentText?.trim() ? toolCall.subagentText : undefined
+  const streamed = lastSubagentMessage(toolCall)
   if (toolCall.subagent?.background && toolCall.subagent.source !== 'orchestrated') {
     return streamed
   }
@@ -328,7 +335,7 @@ export function subagentDetail(
           const { verb, primary } = describeToolCall(latest)
           return `${verb} ${primary}`.trim()
         })()
-      : lastLine(toolCall.subagentText)
+      : lastLine(lastSubagentMessage(toolCall))
     const text = [...identity, progress, tools].filter(Boolean).join(' · ')
     return text ? { text, tone: 'muted' } : undefined
   }

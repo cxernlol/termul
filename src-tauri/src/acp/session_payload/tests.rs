@@ -1,5 +1,5 @@
 use super::*;
-use crate::acp::session_persistence::SESSION_SCHEMA_VERSION;
+use crate::acp::session_persistence::{MAX_DURABLE_SUBAGENT_TEXT_CHARS, SESSION_SCHEMA_VERSION};
 use serde_json::json;
 
 fn metadata() -> SessionMetadata {
@@ -934,21 +934,36 @@ fn a_restored_dispatch_carries_its_result_and_its_subagents_text() {
         subagent_chunk(3, "d1", "agent", "Checked a. "),
         subagent_chunk(4, "d1", "thought", "hmm"),
         subagent_chunk(5, "unknown", "agent", "lost"),
-        subagent_chunk(6, "d1", "agent", "Checked b."),
         tool_record(
-            7,
+            6,
+            "tool_call",
+            json!({"toolCallId": "c1", "kind": "read",
+                "_meta": {"claudeCode": {"parentToolUseId": "d1"}}}),
+        ),
+        subagent_chunk(7, "d1", "agent", "Checked "),
+        subagent_chunk(8, "d1", "agent", "b."),
+        // A call the main turn made does not split the subagent's message.
+        tool_record(9, "tool_call", json!({"toolCallId": "r1", "kind": "read"})),
+        subagent_chunk(10, "d1", "agent", " Done."),
+        tool_record(
+            11,
             "tool_call_update",
             json!({"toolCallId": "d1", "status": "completed", "content": result,
                 "_meta": {"termul/subagent": record}}),
         ),
-        prompt_complete(8, "turn-1"),
+        prompt_complete(12, "turn-1"),
     ];
     let payload = materialize_session_payload(&metadata(), &records);
     let value = serde_json::to_value(&payload).unwrap();
     assert_eq!(
-        value["toolCalls"][0]["subagentText"],
-        json!("Checked a. Checked b.")
+        value["toolCalls"][0]["subagentMessages"],
+        json!([
+            {"seq": 3, "timestamp": 103, "text": "Checked a. "},
+            {"seq": 7, "timestamp": 107, "text": "Checked b. Done."},
+        ])
     );
+    assert_eq!(value["toolCalls"][1]["toolCallId"], json!("c1"));
+    assert_eq!(value["toolCalls"][1]["seq"], json!(6));
     assert_eq!(value["toolCalls"][0]["content"], result);
     assert_eq!(
         payload.messages.len(),
@@ -1003,9 +1018,103 @@ fn a_restored_subagent_keeps_only_its_newest_text_and_calls() {
     assert!(calls[1].restored_summary);
     assert_eq!(ids[2], "c5", "the oldest calls go first");
     assert!(!ids.contains(&"stray"));
-    let text = calls[0].subagent_text.as_deref().unwrap();
-    assert_eq!(text.chars().count(), MAX_DURABLE_SUBAGENT_TEXT_CHARS);
-    assert!(text.ends_with("éend"));
+    let messages = &calls[0].subagent_messages;
+    assert_eq!(messages.len(), 1);
+    assert_eq!(
+        messages[0].text.chars().count(),
+        MAX_DURABLE_SUBAGENT_TEXT_CHARS
+    );
+    assert!(messages[0].text.ends_with("éend"));
+}
+
+#[test]
+fn a_restored_subagent_starts_a_new_message_on_a_new_acp_message_id() {
+    let record = json!({"id": "child-1", "activity": "running"});
+    let with_id = |seq: u64, text: &str, id: Option<&str>| {
+        let mut chunk = subagent_chunk(seq, "d1", "agent", text);
+        if let Some(id) = id {
+            chunk.payload["messageId"] = json!(id);
+        }
+        chunk
+    };
+    let records = vec![
+        tool_record(
+            1,
+            "tool_call",
+            json!({"toolCallId": "d1", "_meta": {"termul/subagent": record}}),
+        ),
+        with_id(2, "Checking ", Some("m1")),
+        with_id(3, "now.", Some("m1")),
+        with_id(4, "de28c202f is the fix.", Some("m2")),
+        with_id(5, " Done.", None),
+    ];
+    let calls = fold_tool_call_summaries(&records);
+    let value = serde_json::to_value(&calls[0].subagent_messages).unwrap();
+    assert_eq!(
+        value,
+        json!([
+            {"seq": 2, "timestamp": 102, "text": "Checking now.", "messageId": "m1"},
+            {"seq": 4, "timestamp": 104, "text": "de28c202f is the fix. Done.", "messageId": "m2"},
+        ])
+    );
+}
+
+#[test]
+fn a_restored_subagent_keeps_its_newest_messages_within_both_bounds() {
+    use crate::acp::session_payload::subagent_messages::MAX_DURABLE_SUBAGENT_MESSAGES;
+    let record = json!({"id": "child-1", "activity": "running"});
+    let dispatch = tool_record(
+        1,
+        "tool_call",
+        json!({"toolCallId": "d1", "_meta": {"termul/subagent": record}}),
+    );
+    let mut seq = 1;
+    let child = |seq: u64| {
+        tool_record(
+            seq,
+            "tool_call",
+            json!({"toolCallId": format!("c{seq}"), "kind": "read",
+                "_meta": {"claudeCode": {"parentToolUseId": "d1"}}}),
+        )
+    };
+
+    let mut by_count = vec![dispatch.clone()];
+    for step in 0..(MAX_DURABLE_SUBAGENT_MESSAGES + 5) {
+        seq += 1;
+        by_count.push(subagent_chunk(seq, "d1", "agent", &format!("m{step}")));
+        seq += 1;
+        by_count.push(child(seq));
+    }
+    let calls = fold_tool_call_summaries(&by_count);
+    let texts: Vec<&str> = calls[0]
+        .subagent_messages
+        .iter()
+        .map(|message| message.text.as_str())
+        .collect();
+    assert_eq!(texts.len(), MAX_DURABLE_SUBAGENT_MESSAGES);
+    assert_eq!(texts[0], "m5", "the oldest messages go first");
+    assert_eq!(calls[0].subagent_messages[0].seq, 12);
+
+    let long = "é".repeat(MAX_DURABLE_SUBAGENT_TEXT_CHARS - 2);
+    let by_text = vec![
+        dispatch,
+        subagent_chunk(2, "d1", "agent", "old"),
+        child(3),
+        subagent_chunk(4, "d1", "agent", &long),
+        child(5),
+        subagent_chunk(6, "d1", "agent", "END"),
+    ];
+    let calls = fold_tool_call_summaries(&by_text);
+    let kept: Vec<(u64, usize)> = calls[0]
+        .subagent_messages
+        .iter()
+        .map(|message| (message.seq, message.text.chars().count()))
+        .collect();
+    assert_eq!(
+        kept,
+        vec![(4, MAX_DURABLE_SUBAGENT_TEXT_CHARS - 3), (6, 3)],
+        "older messages go first, then the head of the oldest kept"
+    );
 }
 
 #[test]

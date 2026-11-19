@@ -3,39 +3,20 @@ import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronRight } from '@/components/icons'
 import { CollapseExpandMotion } from '@/components/ui/collapse-expand-motion'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
-import type { ToolCall } from '@/lib/acp-api'
 import type { FilePathResolutionContext } from '@/lib/file-path-links'
 import { cn } from '@/lib/utils'
 import { useToolCallReveal } from '@/stores/tool-call-reveal-store'
-import { ChatMessage } from './ChatMessage'
 import { CHAT_ROW_MIN_H } from './chat-layout'
 import { CHEVRON_TRANSITION } from './chat-motion'
 import type { TimelineItem } from './chat-timeline'
 import { formatTurnDuration } from './format-turn-duration'
-import { RowReveal } from './RowReveal'
 import { SubagentGroup } from './SubagentGroup'
 import { useSubagentSurface } from './subagent-surface-context'
 import { ThinkingStatus } from './ThinkingStatus'
-import { ThoughtGroup } from './ThoughtGroup'
-import {
-  isSubagentCall,
-  type ParentTurn,
-  summarizeToolActivity,
-  type ToolActivitySummary
-} from './tool-call-summary'
+import { layoutTurnSteps, TurnSteps, useTurnStepWindow } from './TurnSteps'
+import type { ParentTurn } from './tool-call-summary'
 import type { EnterTracker } from './use-enter-tracker'
-import { DiffStat, WorkRunGroup, type WorkRunItem } from './WorkRunGroup'
-
-/** Steps a turn shows at first, and how many each "Show earlier" adds. */
-const TURN_STEP_WINDOW = 40
-const TURN_STEP_PAGE = 50
-
-/**
- * How far each turn was expanded, by its first item's key. A tab switch
- * unmounts the chat, and the earlier steps a user asked for must still be
- * there when they come back.
- */
-const expandedStepLimits = new Map<string, number>()
+import { DiffStat } from './WorkRunGroup'
 
 interface TurnActivityProps {
   items: TimelineItem[]
@@ -78,66 +59,8 @@ function TurnActivityComponent({
   }, [active, attentionRequired, hasFinalResponse])
 
   const duration = formatTurnDuration(durationMs)
-  const lastItem = items[items.length - 1]
-  // Each contiguous run of thoughts and tool calls gets its own nested
-  // disclosure, so narration between two runs keeps its seat: work, text,
-  // work. `workRuns` maps every member's key to its run, so a lone thought
-  // (absent) still renders bare. Subagents launched between two narration
-  // messages sit outside the runs as one group, at the first one's place;
-  // `subagentGroups` maps each member's key to it. `summary` still covers
-  // every call in the turn for the trigger's aggregate diffstat.
-  const { summary, workRuns, subagentGroups } = useMemo(() => {
-    const allCalls: ToolCall[] = []
-    const runs = new Map<
-      string,
-      {
-        items: WorkRunItem[]
-        summary: ToolActivitySummary
-        failed: boolean
-      }
-    >()
-    const groups = new Map<string, { key: string; calls: ToolCall[] }>()
-    let run: WorkRunItem[] | null = null
-    let group: { key: string; calls: ToolCall[] } | null = null
-    const flush = (): void => {
-      if (run) {
-        const calls = run.flatMap((item) => (item.kind === 'tool' ? [item.tool] : []))
-        const runSummary =
-          calls.length > 0
-            ? summarizeToolActivity(calls, { thoughts: run.length - calls.length })
-            : null
-        if (runSummary) {
-          const entry = {
-            items: run,
-            summary: runSummary,
-            failed: run.some((member) => member.kind === 'tool' && member.tool.status === 'failed')
-          }
-          for (const member of run) runs.set(member.key, entry)
-        }
-      }
-      run = null
-    }
-    for (const item of items) {
-      if (item.kind === 'tool') allCalls.push(item.tool)
-      if (item.kind === 'tool' && isSubagentCall(item.tool)) {
-        if (group) {
-          group.calls.push(item.tool)
-        } else {
-          flush()
-          group = { key: item.key, calls: [item.tool] }
-        }
-        groups.set(item.key, group)
-      } else if (item.kind === 'tool' || item.kind === 'thought-group') {
-        if (!run) run = []
-        run.push(item)
-      } else {
-        flush()
-        group = null
-      }
-    }
-    flush()
-    return { summary: summarizeToolActivity(allCalls), workRuns: runs, subagentGroups: groups }
-  }, [items])
+  const layout = useMemo(() => layoutTurnSteps(items), [items])
+  const { summary, subagentGroups } = layout
   // Subagents stay in the transcript when the turn folds: a closed turn
   // shows its subagent groups, in launch order, under its header. They move
   // there once the steps have folded away, so a group never shows twice.
@@ -146,44 +69,22 @@ function TurnActivityComponent({
   useEffect(() => {
     if (open) setStepsFolded(false)
   }, [open])
-  // A long agent turn renders only its latest steps: every step stays mounted
-  // while the turn is open, and hundreds of them cost hundreds of MB of DOM.
-  const turnKey = items[0]?.key ?? ''
-  const [stepLimit, setStepLimit] = useState(
-    () => expandedStepLimits.get(turnKey) ?? TURN_STEP_WINDOW
-  )
+  const stepWindow = useTurnStepWindow(items[0]?.key ?? '')
   // A Background row in the status pill shows a card of this turn.
   const { sessionId } = useSubagentSurface()
   const revealNonce = useToolCallReveal(sessionId, (id) =>
     items.some((item) => item.kind === 'tool' && item.tool.toolCallId === id)
   )
   const stepCount = items.length
+  const { reveal } = stepWindow
   // A new step must not reopen a turn the reader folded while a reveal is pending.
   const revealedNonce = useRef<number | null>(null)
   useEffect(() => {
     if (revealNonce === null || revealNonce === revealedNonce.current) return
     revealedNonce.current = revealNonce
     setOpen(true)
-    setStepLimit((limit) => Math.max(limit, stepCount))
-  }, [revealNonce, stepCount])
-  const showEarlierSteps = (): void => {
-    const next = stepLimit + TURN_STEP_PAGE
-    expandedStepLimits.set(turnKey, next)
-    setStepLimit(next)
-  }
-  const { hiddenSteps, hiddenKeys } = useMemo(() => {
-    const stepKeys = items
-      .filter((item) => {
-        const run = workRuns.get(item.key)
-        if (run) return run.items[0] === item
-        const group = subagentGroups.get(item.key)
-        if (group) return group.key === item.key
-        return item.kind === 'thought-group' || item.kind === 'message'
-      })
-      .map((item) => item.key)
-    const hidden = Math.max(0, stepKeys.length - stepLimit)
-    return { hiddenSteps: hidden, hiddenKeys: new Set(stepKeys.slice(0, hidden)) }
-  }, [items, workRuns, subagentGroups, stepLimit])
+    reveal(stepCount)
+  }, [revealNonce, stepCount, reveal])
   const label =
     active && statusLine
       ? statusLine
@@ -224,87 +125,15 @@ function TurnActivityComponent({
       <CollapsibleContent forceMount>
         <CollapseExpandMotion open={open} motion="chat" onExitComplete={() => setStepsFolded(true)}>
           <div className="min-w-0 pb-1 pl-4">
-            {hiddenSteps > 0 ? (
-              <button
-                type="button"
-                onClick={showEarlierSteps}
-                className={cn(
-                  'flex w-full cursor-pointer items-center text-left text-xs text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
-                  CHAT_ROW_MIN_H
-                )}
-              >
-                Show {hiddenSteps} earlier {hiddenSteps === 1 ? 'step' : 'steps'}
-              </button>
-            ) : null}
-            {items.map((item, index) => {
-              if (hiddenKeys.has(item.key)) return null
-              const group = subagentGroups.get(item.key)
-              if (group) {
-                if (group.key !== item.key) return null
-                return (
-                  <RowReveal
-                    key={item.key}
-                    animate={enter.animate(item.key)}
-                    staggerIndex={enter.staggerIndex(item.key)}
-                  >
-                    <SubagentGroup calls={group.calls} parentTurn={parentTurn} />
-                  </RowReveal>
-                )
-              }
-              const run = workRuns.get(item.key)
-              if (run) {
-                // Only a run's first item renders — as the group's disclosure;
-                // the rest live inside it.
-                if (run.items[0] !== item) return null
-                return (
-                  <WorkRunGroup
-                    key={item.key}
-                    items={run.items}
-                    summary={run.summary}
-                    // Lets a still-streaming thought inside the run keep streaming.
-                    isLiveTail={active && run.items[run.items.length - 1] === lastItem}
-                    failed={run.failed}
-                    enter={enter}
-                    filePathContext={filePathContext}
-                  />
-                )
-              }
-              if (item.kind === 'thought-group') {
-                return (
-                  <RowReveal
-                    key={item.key}
-                    animate={enter.animate(item.key)}
-                    staggerIndex={enter.staggerIndex(item.key)}
-                  >
-                    <ThoughtGroup
-                      messages={item.messages}
-                      isLiveTail={active && index === items.length - 1}
-                    />
-                  </RowReveal>
-                )
-              }
-              // Every tool sits in a run above. CAP-2 / worktree progress: switch
-              // markers and worktree rows never reach the turn bucket
-              // (groupTurnActivity emits them top-level), but guard the render
-              // so the type stays exhaustive.
-              if (
-                item.kind === 'tool' ||
-                item.kind === 'switch' ||
-                item.kind === 'worktree' ||
-                item.kind === 'reload'
-              )
-                return null
-              return (
-                <ChatMessage
-                  key={item.key}
-                  message={item.message}
-                  showHeader={false}
-                  isLast={active && index === items.length - 1}
-                  animateEnter={enter.animate(item.message.id)}
-                  filePathContext={filePathContext}
-                />
-              )
-            })}
+            <TurnSteps
+              items={items}
+              layout={layout}
+              stepWindow={stepWindow}
+              active={active}
+              parentTurn={parentTurn}
+              enter={enter}
+              filePathContext={filePathContext}
+            />
           </div>
         </CollapseExpandMotion>
       </CollapsibleContent>
