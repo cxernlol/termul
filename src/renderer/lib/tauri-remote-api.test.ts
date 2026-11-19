@@ -33,6 +33,22 @@ describe('remoteServerApi', () => {
     expect(result).toEqual(ipc)
   })
 
+  it('start() sends no args by default, so the host stays view-only', async () => {
+    mockInvoke.mockResolvedValueOnce({ success: true, data: null })
+
+    await remoteServerApi.start()
+
+    expect(mockInvoke).toHaveBeenCalledWith('remote_server_start', undefined)
+  })
+
+  it('start({ allowWrites: true }) asks the host for full control', async () => {
+    mockInvoke.mockResolvedValueOnce({ success: true, data: null })
+
+    await remoteServerApi.start({ allowWrites: true })
+
+    expect(mockInvoke).toHaveBeenCalledWith('remote_server_start', { allowWrites: true })
+  })
+
   it('stop() calls the remote_server_stop command', async () => {
     const ipc: IpcResult<RemoteStatus> = {
       success: true,

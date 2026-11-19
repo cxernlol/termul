@@ -705,11 +705,23 @@ export interface RemoteStatus {
   bindHost: string | null
   /** Ephemeral `https://*.trycloudflare.com` tunnel URL (QR-encoded). */
   tunnelUrl: string | null
+  /**
+   * `true` while remote clients have full control (prompt agents, run
+   * terminals, edit files); `false` when view-only or stopped.
+   */
+  allowWrites: boolean
+}
+
+/** Options for starting the desktop-hosted shared-live server. */
+export interface RemoteServerStartOptions {
+  bindMode?: RemoteBindMode
+  /** Give remote clients full control. Omitted or `false` → view-only. */
+  allowWrites?: boolean
 }
 
 // Remote terminal server control API
 export interface RemoteServerApi {
-  start: (options?: { bindMode?: RemoteBindMode }) => Promise<IpcResult<RemoteStatus>>
+  start: (options?: RemoteServerStartOptions) => Promise<IpcResult<RemoteStatus>>
   stop: () => Promise<IpcResult<RemoteStatus>>
   status: () => Promise<IpcResult<RemoteStatus>>
 }

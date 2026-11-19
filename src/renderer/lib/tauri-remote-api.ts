@@ -1,7 +1,7 @@
 import type {
   IpcResult,
-  RemoteBindMode,
   RemoteServerApi,
+  RemoteServerStartOptions,
   RemoteStatus
 } from '@shared/types/ipc.types'
 import type { ProjectSummary } from '@shared/types/web-projects.types'
@@ -27,10 +27,18 @@ const IPC_COMMANDS = {
 } as const
 
 export const remoteServerApi: RemoteServerApi = {
-  /** Start the embedded server on the chosen bind mode (OS-assigned port). */
-  async start(options?: { bindMode?: RemoteBindMode }): Promise<IpcResult<RemoteStatus>> {
-    const bindMode = options?.bindMode
-    return invokeIpc<RemoteStatus>(IPC_COMMANDS.START, bindMode ? { bindMode } : undefined)
+  /**
+   * Start the embedded server on the chosen bind mode (OS-assigned port).
+   * `allowWrites` gives remote clients full control; omitted → view-only.
+   */
+  async start(options?: RemoteServerStartOptions): Promise<IpcResult<RemoteStatus>> {
+    const args: { bindMode?: string; allowWrites?: boolean } = {}
+    if (options?.bindMode) args.bindMode = options.bindMode
+    if (options?.allowWrites) args.allowWrites = true
+    return invokeIpc<RemoteStatus>(
+      IPC_COMMANDS.START,
+      Object.keys(args).length > 0 ? args : undefined
+    )
   },
 
   /** Stop the embedded server and disconnect all web clients. */

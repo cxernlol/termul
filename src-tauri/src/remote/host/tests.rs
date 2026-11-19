@@ -66,7 +66,12 @@ fn remote_status_stopped_is_all_none() {
 #[test]
 fn remote_status_running_localhost_uses_loopback_url() {
     let addr: SocketAddr = "127.0.0.1:5123".parse().unwrap();
-    let s = RemoteStatus::running(addr, RemoteBindMode::Localhost, None);
+    let s = RemoteStatus::running(
+        addr,
+        RemoteBindMode::Localhost,
+        None,
+        RemoteAccess::ViewOnly,
+    );
     assert!(s.running);
     assert_eq!(s.url.as_deref(), Some("http://127.0.0.1:5123"));
     assert_eq!(s.port, Some(5123));
@@ -82,6 +87,7 @@ fn remote_status_running_carries_tunnel_url() {
         addr,
         RemoteBindMode::Localhost,
         Some("https://foo-bar.trycloudflare.com".to_string()),
+        RemoteAccess::ViewOnly,
     );
     assert_eq!(
         s.tunnel_url.as_deref(),
@@ -95,7 +101,7 @@ fn remote_status_running_all_has_no_url() {
     // address, so `url` is `None` (the UI shows "use this machine's LAN
     // IP:{port}"). Don't fabricate a loopback URL the phone can't reach.
     let addr: SocketAddr = "0.0.0.0:8080".parse().unwrap();
-    let s = RemoteStatus::running(addr, RemoteBindMode::All, None);
+    let s = RemoteStatus::running(addr, RemoteBindMode::All, None, RemoteAccess::ViewOnly);
     assert!(s.running);
     assert_eq!(s.url, None, "0.0.0.0 must not fabricate a loopback URL");
     assert_eq!(s.port, Some(8080));
@@ -1155,4 +1161,123 @@ async fn shared_live_boundary_is_any_registered_cross_drive_project() {
     let _ = state.stop().await;
     // dir_a / dir_b are removed by the TempDirGuard RAII guards on drop,
     // even if an assertion above panicked.
+}
+
+#[test]
+fn remote_access_maps_the_allow_writes_flag() {
+    assert_eq!(RemoteAccess::default(), RemoteAccess::ViewOnly);
+    assert_eq!(
+        RemoteAccess::from_allow_writes(false),
+        RemoteAccess::ViewOnly
+    );
+    assert_eq!(
+        RemoteAccess::from_allow_writes(true),
+        RemoteAccess::FullControl
+    );
+    assert!(!RemoteAccess::ViewOnly.allows_writes());
+    assert!(RemoteAccess::FullControl.allows_writes());
+    assert!(!RemoteStatus::stopped().allow_writes);
+}
+
+/// `POST /projects/default` for an unknown project: a write route that a
+/// view-only host refuses `FORBIDDEN` before the lookup, and a full-control
+/// host lets through to the lookup (`NOT_FOUND`). Returns the reply `code`.
+async fn set_default_project_code(base: &str, token: &str) -> String {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .expect("build reqwest client");
+    let body: serde_json::Value = client
+        .post(format!("{base}/projects/default"))
+        .bearer_auth(token)
+        .json(&serde_json::json!({ "projectId": "no-such-project" }))
+        .send()
+        .await
+        .expect("request completes")
+        .json()
+        .await
+        .expect("json reply");
+    assert_eq!(body["success"], serde_json::json!(false), "{body}");
+    body["code"].as_str().unwrap_or_default().to_string()
+}
+
+async fn start_shared_live(
+    state: &RemoteServerState,
+    data: &SharedLiveData,
+    tunnel_planned: bool,
+    access: RemoteAccess,
+) -> RemoteStatus {
+    let (acp, pty, relay, registry) = lifecycle_fixtures();
+    state
+        .start_with_access(
+            acp,
+            pty,
+            relay,
+            registry,
+            RemoteBindMode::Localhost,
+            tunnel_planned,
+            false,
+            data,
+            None,
+            None,
+            access,
+        )
+        .await
+        .expect("start")
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_view_only_shared_live_host_refuses_writes_even_with_the_token() {
+    let (data, data_dir) = shared_live_fixture();
+    let state = RemoteServerState::new();
+    let status = start_shared_live(&state, &data, true, RemoteAccess::ViewOnly).await;
+    assert!(!status.allow_writes);
+    assert!(!state.status().allow_writes);
+    let base = status.url.expect("loopback url");
+    let token = persisted_token(data_dir.path());
+    assert_eq!(set_default_project_code(&base, &token).await, "FORBIDDEN");
+    let _ = state.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_full_control_shared_live_host_admits_writes_with_the_token() {
+    let (data, data_dir) = shared_live_fixture();
+    let state = RemoteServerState::new();
+    let status = start_shared_live(&state, &data, true, RemoteAccess::FullControl).await;
+    assert!(status.allow_writes);
+    assert!(
+        state.status().allow_writes,
+        "status() keeps reporting the access level"
+    );
+    let base = status.url.expect("loopback url");
+    let token = persisted_token(data_dir.path());
+    assert_eq!(
+        set_default_project_code(&base, &token).await,
+        "NOT_FOUND",
+        "the write guard lets the request through to the project lookup"
+    );
+    let _ = state.stop().await;
+    assert!(
+        !state.status().allow_writes,
+        "a stopped host reports no write access"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn full_control_requires_the_token_even_on_loopback_without_a_tunnel() {
+    let (data, data_dir) = shared_live_fixture();
+    let state = RemoteServerState::new();
+    let status = start_shared_live(&state, &data, false, RemoteAccess::FullControl).await;
+    let api = format!("{}/projects", status.url.expect("loopback url"));
+    assert_eq!(
+        http_status(&api, None).await,
+        reqwest::StatusCode::UNAUTHORIZED,
+        "a host that admits writes is never ungated"
+    );
+    let token = persisted_token(data_dir.path());
+    assert_eq!(
+        http_status(&api, Some(&token)).await,
+        reqwest::StatusCode::OK
+    );
+    let _ = state.stop().await;
 }

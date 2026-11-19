@@ -20,6 +20,10 @@ use tauri::State;
 /// required on HTTP, `/ws` and `/terminal/ws`, and the URL in the status
 /// (QR / copy link) carries it in the `#token=` fragment. The desktop's single
 /// web store (`shared_live_data`) is reused across stop/start cycles.
+///
+/// `allow_writes` (default `false`) chooses the remote access level: view-only,
+/// or full control (remote clients may prompt agents, run terminals and edit
+/// files). It is fixed for the life of the server.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn remote_server_start(
@@ -32,7 +36,11 @@ pub async fn remote_server_start(
     acp_install_store: State<'_, HostAcpInstallStore>,
     shared_live_data: State<'_, remote::SharedLiveData>,
     bind_mode: Option<String>,
+    allow_writes: Option<bool>,
 ) -> Result<IpcResult<remote::RemoteStatus>, String> {
+    // Omitted → view-only. Full control is an explicit desktop-user opt-in.
+    let access = remote::RemoteAccess::from_allow_writes(allow_writes.unwrap_or(false));
+    log::info!("remote_server_start: access={}", access.as_str());
     // Default to localhost only when the caller omits the bind mode; an
     // explicit-but-unrecognized value (e.g. a typo of "all") is an error — do
     // not silently downgrade to localhost (the phone would silently fail to
@@ -54,7 +62,7 @@ pub async fn remote_server_start(
     // `ACP_INSTALL_UNAVAILABLE`.
     let acp_install = acp_install_store.store().map(Arc::clone);
     let started = remote_state
-        .start(
+        .start_with_access(
             acp_manager.inner().clone(),
             pty_manager.inner().clone(),
             ws_relay.inner().clone(),
@@ -67,6 +75,7 @@ pub async fn remote_server_start(
             shared_live_data.inner(),
             acp_catalog,
             acp_install,
+            access,
         )
         .await;
     match started {

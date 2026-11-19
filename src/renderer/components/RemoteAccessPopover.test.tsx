@@ -45,7 +45,8 @@ const RUNNING: RemoteStatus = {
   bindHost: '127.0.0.1',
   // The host appends the bearer token as a `#token=` fragment (the form
   // web-auth-token.ts reads); the QR and copy-link carry it verbatim.
-  tunnelUrl: 'https://foo-bar.trycloudflare.com#token=abc123'
+  tunnelUrl: 'https://foo-bar.trycloudflare.com#token=abc123',
+  allowWrites: false
 }
 
 function renderPopover(): ReturnType<typeof render> {
@@ -61,8 +62,10 @@ function renderPopover(): ReturnType<typeof render> {
 async function openPopover(): Promise<HTMLElement> {
   const trigger = screen.getByLabelText('Remote terminal access')
   await fireEvent.click(trigger)
-  return screen.findByRole('switch')
+  return screen.findByRole('switch', { name: 'Toggle remote terminal access' })
 }
+
+const FULL_CONTROL_LABEL = 'Allow remote devices full control'
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -147,5 +150,42 @@ describe('RemoteAccessPopover', () => {
       expect(stopMock).toHaveBeenCalledTimes(1)
     })
     expect(setStatus).toHaveBeenCalledWith({ ...RUNNING, running: false })
+  })
+
+  it('starts with full control when the user opts in first', async () => {
+    startMock.mockResolvedValueOnce({ success: true, data: { ...RUNNING, allowWrites: true } })
+    renderPopover()
+
+    const toggle = await openPopover()
+    const fullControl = screen.getByRole('switch', { name: FULL_CONTROL_LABEL })
+    expect(fullControl.getAttribute('aria-checked')).toBe('false')
+    await fireEvent.click(fullControl)
+    expect(fullControl.getAttribute('aria-checked')).toBe('true')
+    await fireEvent.click(toggle)
+
+    await waitFor(() => {
+      expect(startMock).toHaveBeenCalledWith({ allowWrites: true })
+    })
+  })
+
+  it('locks the access level while sharing runs and shows the running level', async () => {
+    vi.mocked(useRemoteStatus).mockReturnValue({ ...RUNNING, allowWrites: true })
+    renderPopover()
+    await openPopover()
+
+    const fullControl = screen.getByRole('switch', { name: FULL_CONTROL_LABEL })
+    expect(fullControl.getAttribute('aria-checked')).toBe('true')
+    expect(fullControl).toBeDisabled()
+    expect(screen.getByText('Turn remote access off to change this.')).toBeDefined()
+    expect(screen.getByText(/Anyone who has it can control this machine/)).toBeDefined()
+  })
+
+  it('warns that a view-only link lets the holder watch, not control', async () => {
+    vi.mocked(useRemoteStatus).mockReturnValue(RUNNING)
+    renderPopover()
+    await openPopover()
+
+    expect(screen.getByText(/Anyone who has it can watch your live sessions/)).toBeDefined()
+    expect(screen.queryByText(/can control this machine/)).toBeNull()
   })
 })

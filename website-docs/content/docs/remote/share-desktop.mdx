@@ -7,7 +7,9 @@ description: Open your live desktop sessions on a phone with a QR code.
 
 The desktop app can share your live chats and terminals with a phone or another browser. You turn sharing on from the tool strip at the right edge of the window, then scan a QR code. The link works on any network, so your phone doesn't need to be on the same Wi-Fi as your computer.
 
-A shared link is view-only. On the other device you can watch your chats and terminals as they run. You can't send prompts, answer approvals, open terminals or change files from it. To do those things from another device, [run troupe-server](/docs/remote/server) instead.
+A shared link is view-only unless you choose otherwise. On the other device you can watch your chats and terminals as they run. You can't send prompts, answer approvals, open terminals or change files from it.
+
+To do those things from the other device too, turn on **Allow full control** before you start sharing. See [Give the other device full control](#give-the-other-device-full-control). You can also [run troupe-server](/docs/remote/server) instead.
 
 ## Before you start
 
@@ -23,13 +25,20 @@ Troupe doesn't install `cloudflared` for you. Install it yourself, then make sur
 ## Start sharing
 
 1. At the bottom of the tool strip on the right edge of the window, click the monitor icon (**Remote terminal access**). The **Remote Agent Access** popover opens.
-2. Turn on **Enable remote access**.
-3. Wait a few seconds. The popover shows **Starting tunnel…** while `cloudflared` starts. Then a QR code appears.
-4. On your phone, scan the QR code with the camera. Troupe opens in the phone's browser.
+2. Optional: turn on **Allow full control** to let the other device prompt agents, run commands and edit files. Leave it off for a view-only link.
+3. Turn on **Enable remote access**.
+4. Wait a few seconds. The popover shows **Starting tunnel…** while `cloudflared` starts. Then a QR code appears.
+5. On your phone, scan the QR code with the camera. Troupe opens in the phone's browser.
 
 To send the link to another device instead, click **Copy link** and paste it there.
 
 While sharing is on, the monitor icon in the tool strip is highlighted.
+
+## Give the other device full control
+
+With **Allow full control** on, anyone who opens the link can do everything you can do in the desktop app: send prompts, answer approvals, open terminals and run commands, and change files on your computer.
+
+You choose this before you turn sharing on. While sharing is on, the switch is locked and shows the current level. To change it, turn off **Enable remote access**, change **Allow full control**, and turn sharing on again. The new link has a new address.
 
 ## Keep the link private
 
@@ -38,7 +47,7 @@ The link has two parts:
 - The address, for example `https://<random-words>.trycloudflare.com`. It is random and changes each time you turn sharing off and on.
 - An access token after `#token=` at the end. The token is what lets a device in.
 
-Anyone who has the full link can watch your sessions. Share it only with your own devices.
+Anyone who has the full link can watch your sessions. With **Allow full control** on, they can also control your computer. Share it only with your own devices.
 
 The token stays the same each time you turn sharing on. Troupe saves it in a file named `web-auth-token` in the app's data folder (`com.termul-manager.app`). To make old links stop working, turn sharing off, delete that file, and turn sharing on again. Troupe then creates a new token.
 

@@ -17,17 +17,23 @@ import { useRemoteStatus, useRemoteStatusStore } from '@/stores/remote-status-st
  * phone can reach on any network. That URL is rendered as a QR — scan to open.
  * No bind selector, no URL text row: the QR is the connect UI.
  *
- * Security posture (until Epic 2 ships a real token): cloudflared provides edge
- * TLS; the random ephemeral URL is the only gate. The warning below makes that
- * explicit and tells the user to toggle off to rotate.
+ * Security posture: cloudflared provides edge TLS and the shared link carries
+ * the bearer token. Remote clients are view-only unless the user turns on
+ * "Allow full control" before sharing; the level is fixed while sharing runs
+ * (toggle off and on to change it, which also rotates the link). The warning
+ * below names what the link grants.
  */
 export function RemoteAccessPopover(): React.JSX.Element {
   const remoteStatus = useRemoteStatus()
   const [remoteBusy, setRemoteBusy] = useState(false)
   const [remoteError, setRemoteError] = useState<string | null>(null)
   const [copiedUrl, setCopiedUrl] = useState(false)
+  // The access level the next start asks for. While sharing runs, the switch
+  // shows the running host's level instead (fixed until it is restarted).
+  const [allowWritesChoice, setAllowWritesChoice] = useState(false)
 
   const isRunning = remoteStatus?.running ?? false
+  const allowWrites = isRunning ? (remoteStatus?.allowWrites ?? false) : allowWritesChoice
   // The QR encodes the public tunnel URL only — never the localhost `url`.
   const tunnelUrl = remoteStatus?.tunnelUrl ?? null
   // Track whether a tunnel URL was ever seen this session so the popover can
@@ -43,7 +49,11 @@ export function RemoteAccessPopover(): React.JSX.Element {
     setRemoteBusy(true)
     setRemoteError(null)
     try {
-      const result = enable ? await remoteServerApi.start() : await remoteServerApi.stop()
+      const result = enable
+        ? await (allowWritesChoice
+            ? remoteServerApi.start({ allowWrites: true })
+            : remoteServerApi.start())
+        : await remoteServerApi.stop()
       if (result.success) {
         useRemoteStatusStore.getState().setStatus(result.data)
         // Browsers read the project list, the MCP servers and chat history
@@ -105,6 +115,23 @@ export function RemoteAccessPopover(): React.JSX.Element {
             />
           </div>
 
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex-1 min-w-0">
+              <div className="text-sm text-foreground">Allow full control</div>
+              <div className="text-xs text-muted-foreground mt-0.5">
+                {isRunning
+                  ? 'Turn remote access off to change this.'
+                  : 'Let remote devices prompt agents, run commands, and edit files. Off: view only.'}
+              </div>
+            </div>
+            <Switch
+              checked={allowWrites}
+              disabled={remoteBusy || isRunning}
+              onCheckedChange={setAllowWritesChoice}
+              aria-label="Allow remote devices full control"
+            />
+          </div>
+
           {remoteError && (
             <div className="flex items-start gap-2 text-sm text-destructive bg-destructive/10 border border-destructive/30 rounded-md px-3 py-2">
               <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
@@ -123,9 +150,10 @@ export function RemoteAccessPopover(): React.JSX.Element {
               <div className="flex items-start gap-2 text-xs text-warning bg-warning/10 border border-warning/30 rounded-md px-3 py-2">
                 <ShieldAlert className="w-4 h-4 mt-0.5 shrink-0" />
                 <span>
-                  This link carries your access token (after the #) — anyone who has it can drive
-                  your live agent, so share it only with devices you trust. The tunnel address is
-                  random and changes each time you toggle off and on.
+                  {allowWrites
+                    ? 'This link carries your access token (after the #). Anyone who has it can control this machine: prompt your agents, run commands, and edit files. Share it only with devices you trust.'
+                    : 'This link carries your access token (after the #). Anyone who has it can watch your live sessions, so share it only with devices you trust.'}{' '}
+                  The tunnel address is random and changes each time you toggle off and on.
                 </span>
               </div>
               <Button

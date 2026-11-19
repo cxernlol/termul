@@ -22,8 +22,10 @@ use crate::web::ws::AppState;
 /// A loopback peer (e.g. a `localhost` browser on the standalone server, no
 /// opt-in) is admitted regardless of `allow_remote_writes`, so `/health`
 /// reports `true` for it — matching what its `/worktree/*` writes would face.
-/// Desktop shared-live sets `shared_live_writes_denied`, so it reports `false`
-/// for every peer (writes are genuinely denied there).
+/// Desktop shared-live sets `shared_live_writes_denied` when sharing is
+/// view-only, so it reports `false` for every peer (writes are genuinely
+/// denied there); sharing with full control clears it, so tunnelled
+/// (loopback) peers report `true`.
 ///
 /// `setupRequired` (gh-1105) is always `false` here: the normal-mode router
 /// registers no `/setup/*` routes, so advertising `true` would mount the

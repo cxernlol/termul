@@ -30,6 +30,12 @@
 //! `app_data_dir` and rides the shared URL's `#token=` fragment, so a scanning
 //! device connects without a manual entry.
 //!
+//! ## Remote access level
+//!
+//! Remote clients are view-only by default. The desktop user can start
+//! sharing with [`RemoteAccess::FullControl`], which lifts the shared-live
+//! write denial and always requires the bearer token.
+//!
 //! ## One host per durable path (AD-14)
 //!
 //! The shared-live host never opens a store of its own and never touches the
@@ -103,6 +109,47 @@ impl RemoteBindMode {
     }
 }
 
+/// What a shared-live remote client may do. Chosen by the desktop user when
+/// sharing starts and fixed for the life of that server (changing it means
+/// stopping and starting again, which also rotates the tunnel URL).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RemoteAccess {
+    /// Remote clients may read and watch, never mutate host state (the
+    /// default — the CWE-306 guard denies every write route).
+    #[default]
+    ViewOnly,
+    /// Remote clients holding the bearer token may do everything the desktop
+    /// can: prompt agents, run terminals, edit files. Always token-gated.
+    FullControl,
+}
+
+impl RemoteAccess {
+    /// Map the renderer's `allowWrites` flag.
+    #[must_use]
+    pub const fn from_allow_writes(allow_writes: bool) -> Self {
+        if allow_writes {
+            Self::FullControl
+        } else {
+            Self::ViewOnly
+        }
+    }
+
+    /// `true` when remote clients may mutate host state.
+    #[must_use]
+    pub const fn allows_writes(self) -> bool {
+        matches!(self, Self::FullControl)
+    }
+
+    /// Stable label for logs.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ViewOnly => "view_only",
+            Self::FullControl => "full_control",
+        }
+    }
+}
+
 /// Whether the shared-live host must require the bearer token (AD-3): it is
 /// ungated only on loopback with no tunnel advertised and no browser
 /// automation host registered. Pages in browser tabs can reach loopback, so
@@ -150,6 +197,9 @@ pub struct RemoteStatus {
     /// carries the bearer token in the fragment (`#token=<token>`), so it is a
     /// secret — never log it (`Debug` redacts it).
     pub tunnel_url: Option<String>,
+    /// `true` while running in [`RemoteAccess::FullControl`]: remote clients
+    /// may mutate host state. `false` when view-only or stopped.
+    pub allow_writes: bool,
 }
 
 impl std::fmt::Debug for RemoteStatus {
@@ -161,6 +211,7 @@ impl std::fmt::Debug for RemoteStatus {
             .field("bind_mode", &self.bind_mode)
             .field("bind_host", &self.bind_host)
             .field("tunnel_url", &self.tunnel_url.as_ref().map(|_| "***"))
+            .field("allow_writes", &self.allow_writes)
             .finish()
     }
 }
@@ -174,10 +225,16 @@ impl RemoteStatus {
             bind_mode: None,
             bind_host: None,
             tunnel_url: None,
+            allow_writes: false,
         }
     }
 
-    fn running(addr: SocketAddr, bind_mode: RemoteBindMode, tunnel_url: Option<String>) -> Self {
+    fn running(
+        addr: SocketAddr,
+        bind_mode: RemoteBindMode,
+        tunnel_url: Option<String>,
+        access: RemoteAccess,
+    ) -> Self {
         // The desktop-hosted server always binds localhost (the cloudflared
         // quick-tunnel targets it), so `url` is a concrete loopback URL — kept
         // for "open on this machine" diagnostics. The phone-reachable address
@@ -194,6 +251,7 @@ impl RemoteStatus {
             bind_mode: Some(bind_mode.as_str().to_string()),
             bind_host: Some(bind_mode.display_host().to_string()),
             tunnel_url,
+            allow_writes: access.allows_writes(),
         }
     }
 }
@@ -207,6 +265,8 @@ struct RemoteServer {
     serve_handle: Option<tokio::task::JoinHandle<()>>,
     addr: SocketAddr,
     bind_mode: RemoteBindMode,
+    /// What remote clients may do, fixed at start.
+    access: RemoteAccess,
     /// Ephemeral trycloudflare URL (set when the quick-tunnel came up). Stored
     /// bare; `status()` appends the token fragment when the host is gated.
     tunnel_url: Option<String>,
@@ -301,6 +361,10 @@ impl RemoteServerState {
     ///
     /// `data.store` is the desktop's single already-opened web store; this
     /// host never opens one, so stop/start cycles reuse the same instance.
+    ///
+    /// Remote clients are view-only; see [`start_with_access`](Self::start_with_access).
+    /// Test convenience: the desktop command always names the access level.
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub async fn start(
         &self,
@@ -314,6 +378,44 @@ impl RemoteServerState {
         data: &SharedLiveData,
         acp_catalog: Option<Arc<AcpCatalogService>>,
         acp_install: Option<Arc<AcpInstallService>>,
+    ) -> Result<RemoteStatus, String> {
+        self.start_with_access(
+            acp,
+            pty,
+            ws_relay,
+            registry,
+            requested_bind_mode,
+            tunnel_planned,
+            browser_host_registered,
+            data,
+            acp_catalog,
+            acp_install,
+            RemoteAccess::ViewOnly,
+        )
+        .await
+    }
+
+    /// [`start`](Self::start) with an explicit [`RemoteAccess`].
+    ///
+    /// [`RemoteAccess::FullControl`] lifts the shared-live write denial so a
+    /// remote client can drive the desktop, and always requires the bearer
+    /// token — even on an ungated-eligible loopback host — because a
+    /// tunnelled request arrives from loopback and would otherwise be
+    /// indistinguishable from a local caller.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn start_with_access(
+        &self,
+        acp: Arc<AcpManager>,
+        pty: Arc<PtyManager>,
+        ws_relay: Arc<WsRelaySink>,
+        registry: Arc<ProjectRegistry>,
+        requested_bind_mode: RemoteBindMode,
+        tunnel_planned: bool,
+        browser_host_registered: bool,
+        data: &SharedLiveData,
+        acp_catalog: Option<Arc<AcpCatalogService>>,
+        acp_install: Option<Arc<AcpInstallService>>,
+        access: RemoteAccess,
     ) -> Result<RemoteStatus, String> {
         // The built-in cloudflared quick-tunnel forwards to localhost, so the
         // desktop-hosted server always binds localhost regardless of the
@@ -334,8 +436,11 @@ impl RemoteServerState {
         // an exposed host is never open even for an instant. The token lives
         // under the desktop's `app_data_dir` (never the service-account dir)
         // and is never logged — only its source path.
-        let requires_token =
-            shared_live_requires_token(requested_bind_mode, tunnel_planned, browser_host_registered);
+        let requires_token = shared_live_requires_token(
+            requested_bind_mode,
+            tunnel_planned,
+            browser_host_registered,
+        ) || access.allows_writes();
         let web_auth: Option<Arc<WebAuth>> =
             match auth::resolve_shared_live(requires_token, &data.data_dir)
                 .map_err(|e| format!("Failed to start remote server: {e}"))?
@@ -388,9 +493,10 @@ impl RemoteServerState {
             // The shared-live store is the desktop's single instance, passed to
             // `serve_router` below; this path override is never consulted.
             store_file: None,
-            // Desktop shared-live LAN clients stay view-only for mutations
-            // (CWE-306 guard stays on); only the standalone `termul-server`
-            // honors the `--allow-remote-writes` opt-in.
+            // The `--allow-remote-writes` opt-in admits NON-loopback peers;
+            // the desktop host binds loopback and the tunnel arrives from
+            // loopback, so it stays off. Desktop write access is decided by
+            // `access` (the shared-live deny flag passed to `serve_router`).
             allow_remote_writes: false,
             // The bearer token reaches `serve_router` as the resolved
             // `WebAuth` (see `web_auth` above), not through the config.
@@ -441,9 +547,11 @@ impl RemoteServerState {
             acp_install,
             Arc::clone(&data.store),
             // Desktop shared-live: the cloudflared tunnel forwards public
-            // traffic to a loopback source, so the guard denies ALL writes
-            // before peer evaluation regardless of allow_remote_writes.
-            true,
+            // traffic to a loopback source, so view-only access denies ALL
+            // writes before peer evaluation regardless of
+            // allow_remote_writes. Full control lifts the denial; tunnelled
+            // peers are then loopback and pass, behind the bearer token.
+            !access.allows_writes(),
             // Bearer gate: `Some` whenever the host advertises a tunnel or
             // binds beyond loopback (AD-3); `None` only for loopback-only.
             web_auth.clone(),
@@ -455,11 +563,14 @@ impl RemoteServerState {
         .await
         .map_err(|e| format!("Failed to start remote server: {}", e))?;
 
-        let status = RemoteStatus::running(addr, bind_mode, None);
+        let status = RemoteStatus::running(addr, bind_mode, None, access);
         info!(
-            "Shared-live web server sharing desktop AcpManager on http://{}",
-            addr
+            access = access.as_str(),
+            "Shared-live web server sharing desktop AcpManager on http://{}", addr
         );
+        if access.allows_writes() {
+            warn!("Shared-live web server grants FULL CONTROL to remote clients holding the token");
+        }
 
         let mut slot = self.inner.lock().unwrap();
         if slot.is_some() {
@@ -476,6 +587,7 @@ impl RemoteServerState {
             serve_handle: Some(serve_handle),
             addr,
             bind_mode,
+            access,
             // Tunnel URL + watchdog are attached after
             // `cloudflared::start_quick_tunnel` resolves in
             // `remote_server_start` — keeps this method testable without a real
@@ -571,7 +683,7 @@ impl RemoteServerState {
             Some(auth) => auth.share_url(url),
             None => url.to_string(),
         });
-        RemoteStatus::running(server.addr, server.bind_mode, shared_url)
+        RemoteStatus::running(server.addr, server.bind_mode, shared_url, server.access)
     }
 
     /// Attach a started cloudflared quick-tunnel (URL + live child) to the
