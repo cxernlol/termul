@@ -539,8 +539,9 @@ fn validate_owner_protected(
 
 /// Windows owner-protection: read the DACL from the OPEN handle
 /// (`GetSecurityInfo`, so the check cannot be raced by a path swap) and walk
-/// its ACEs — every allow-ACE must resolve to the file's owner, SYSTEM, or
-/// the Administrators group (the principals a Windows host cannot function
+/// its ACEs — every allow-ACE must resolve to the file's owner (its concrete
+/// SID or the OWNER RIGHTS SID), SYSTEM, or the Administrators group (the
+/// principals a Windows host cannot function
 /// without; an attacker who already IS an administrator needs no token
 /// file). Any other grantee means another local principal can read the
 /// bearer token. Deny/audit ACEs never GRANT access, so they cannot widen
@@ -557,8 +558,9 @@ fn validate_owner_protected(
     use windows_sys::Win32::Security::Authorization::{GetSecurityInfo, SE_FILE_OBJECT};
     use windows_sys::Win32::Security::{
         AclSizeInformation, EqualSid, GetAce, GetAclInformation, WinBuiltinAdministratorsSid,
-        WinLocalSystemSid, ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, ACL_SIZE_INFORMATION,
-        DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
+        WinCreatorOwnerRightsSid, WinLocalSystemSid, ACCESS_ALLOWED_ACE, ACE_HEADER, ACL,
+        ACL_SIZE_INFORMATION, DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION,
+        PSECURITY_DESCRIPTOR, PSID,
     };
 
     // ACCESS_ALLOWED_ACE_TYPE (0) — windows-sys exposes the constant under
@@ -599,6 +601,11 @@ fn validate_owner_protected(
         }
         let mut system = well_known_sid(WinLocalSystemSid)?;
         let mut administrators = well_known_sid(WinBuiltinAdministratorsSid)?;
+        // OWNER RIGHTS (S-1-3-4) is the trustee `create_owner_only_file`
+        // writes (`OW` in its SDDL). It resolves to the file's owner at
+        // access-check time, so it grants nobody but the owner — without it
+        // the validator rejects every token file this app creates.
+        let mut owner_rights = well_known_sid(WinCreatorOwnerRightsSid)?;
         let mut info: ACL_SIZE_INFORMATION = unsafe { std::mem::zeroed() };
         // SAFETY: `dacl` is a live ACL inside the security descriptor above;
         // `info` is a valid ACL_SIZE_INFORMATION out-buffer.
@@ -635,6 +642,7 @@ fn validate_owner_protected(
             // well-known SID buffers).
             let trusted = unsafe {
                 EqualSid(sid, owner) != 0
+                    || EqualSid(sid, owner_rights.as_mut_ptr() as PSID) != 0
                     || EqualSid(sid, system.as_mut_ptr() as PSID) != 0
                     || EqualSid(sid, administrators.as_mut_ptr() as PSID) != 0
             };

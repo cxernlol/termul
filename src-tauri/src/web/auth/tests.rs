@@ -341,7 +341,10 @@ fn create_owner_only_file_applies_dacl_at_creation() {
     let path = dir.0.join(WEB_AUTH_TOKEN_FILE);
     let token = WebAuthToken::new("t0ken").expect("non-empty");
     persist_token(&path, &token).expect("first create");
-    let on_disk = std::fs::read_to_string(&path).expect("token file exists");
+    // Read back through the real validator (not a plain read): the DACL
+    // written at creation must pass the owner-protection check, or every
+    // relaunch refuses the app's own token.
+    let on_disk = load_token_file(&path).expect("own token file must validate");
     assert_eq!(on_disk.trim(), "t0ken");
     let err = persist_token(&path, &token).expect_err("second create must fail");
     assert_eq!(
