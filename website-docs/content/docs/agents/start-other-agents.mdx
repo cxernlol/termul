@@ -1,0 +1,68 @@
+---
+title: Let an agent start other agents
+description: Have a chat's agent hand parts of a task to your other installed agents, such as Codex or Gemini CLI, and follow them as subagents in the same chat.
+---
+
+A chat's agent can hand part of a task to another agent you installed, for example Codex or Gemini CLI. The other agent runs as a subagent of the chat. You follow its work, answer its approvals, and stop it from the chat you are in, so you don't need a second chat or copy and paste.
+
+Every agent in Troupe has the tools for this. Ask for it in your prompt, for example "Ask Codex to review the cart changes and tell me what it finds". The agent can also decide to use it itself.
+
+## How it works
+
+1. The agent picks one of your agents and writes its task. The task has to stand on its own, because the other agent does not get this chat's conversation. A task can be up to 8,000 characters.
+2. Troupe starts the other agent in the background. It shows up as a subagent row in the chat, with its own icon. See [Follow subagents](/docs/agents/follow-the-work#follow-subagents).
+3. When the subagent wants to run a step that needs your OK, the request appears in this chat. See [Approvals from subagents](/docs/agents/approvals#approvals-from-subagents).
+4. When the subagent ends, its result shows on its row and in its panel. The agent reads the result and carries on with your task.
+
+The agent can start several subagents and let them work at the same time, up to the limit you set. A subagent can start subagents of its own when **Max depth** allows it.
+
+## Where a subagent works
+
+By default, each subagent works in its own Git worktree, a separate copy of the project. The copy starts from the current state of the agent that starts it, uncommitted changes and new files included. For a subagent started by the chat's agent, that is the chat's folder. For a subagent started by another subagent, it is that subagent's workspace, so it sees that subagent's edits rather than newer changes in the chat's folder. Untracked files that Git ignores, such as a local `.env`, are not copied, so the subagent may miss settings the chat has. Files that Git already tracks are copied even when `.gitignore` matches them. The subagent works in the copy, so its edits go there and not to the chat's files. Troupe does not block writes outside the copy, though, so an agent that writes to a full path elsewhere can still change other files. Creating the copy doesn't change your files or what you staged. The one exception: if the project's `.gitignore` does not list `.termul/` yet, Troupe adds it.
+
+A worktree needs a Git repository. In a folder that is not one, the subagent can't start in a worktree, and the agent can start it in the chat's folder instead. In a repository with no commits yet, the worktree starts empty, without the project's files. Make a first commit, or have the agent start the subagent in the chat's folder.
+
+- The worktree is in the project's `.termul/worktrees` folder, on a branch named `troupe/sub/` followed by the subagent's ID.
+- The subagent's row shows a chip such as "worktree · troupe/sub/sub-9f2c1a3b4d5e".
+- The **Workspace** section of its panel shows the folder, the branch, and what the copy started from, for example "main @ 1a2b3c4, with uncommitted changes".
+- When the subagent ends, the panel shows how much it changed, for example "3 files changed, +42 −7", next to the branch. The count includes new files the subagent did not commit.
+
+The worktree stays after the subagent ends, so you can review its changes, merge its branch, or copy what you want. At startup, Troupe removes subagent worktrees, and their branches, in which nothing changed for 7 days.
+
+The agent can also start a subagent in its own workspace instead of a new copy, for example when the subagent needs ignored files. Its chip then reads "shared", and the **Workspace** section says "Runs in the chat's own folder." A shared subagent started by the chat's agent edits the same files as the chat. One started by a subagent that runs in a worktree works in that worktree, so it doesn't see ignored files that exist only in the chat's folder.
+
+## Stop a subagent
+
+Click **Stop** in the subagent's panel. The work it did so far stays in its workspace. See [Stop one subagent](/docs/agents/follow-the-work#stop-one-subagent).
+
+When you close the chat, or the chat's agent stops, Troupe also stops the subagents it started, including ones that were still starting.
+
+## Choose what agents may do
+
+Open Settings with `Ctrl+,` (`Cmd+,` on macOS) and click **Agent chats**. The **Sub-agents** group has these settings:
+
+| Setting | What it does | Default |
+| --- | --- | --- |
+| **Let agents start other agents** | Turns the feature on or off. When it is off, an agent can't start other agents. | On |
+| **Max running sub-agents** | How many subagents one chat can run at the same time, from 1 to 8. When a chat already runs that many, the agent can start another one after one ends. | 4 |
+| **Max depth** | How many levels of subagents can start their own subagents, from 1 to 4. With 1, subagents can't start more. | 2 |
+
+Below it, **Agents they can use** lists the agents installed on this computer, each with a switch. Turn an agent off to keep chats from starting it as a subagent. Agents are allowed until you turn them off. When no agent is installed, the list says **No agents yet**.
+
+The settings are kept on the computer that runs Troupe. In the browser version, the group shows and changes the server's settings.
+
+## Tools the agent uses
+
+Troupe gives every agent these tools. You don't call them yourself, but you may see them in the chat's steps:
+
+| Tool | What it does |
+| --- | --- |
+| `subagent_list_agents` | Lists the agents the chat may start, and the limits from Settings. |
+| `subagent_start` | Starts an agent on a task, in a worktree or in the chat's folder. It can give the subagent a title and ask for a model, when the agent offers a choice. |
+| `subagent_wait` | Waits up to 4 minutes for a subagent to end, then returns its result. If it is still working, the agent can wait again. |
+| `subagent_status` | Reports the chat's subagents without waiting. |
+| `subagent_stop` | Stops a subagent. |
+
+A subagent can't start when the feature is off, the agent is turned off or not installed, the chat already runs the most subagents it may, or it would go deeper than **Max depth**. The agent then gets the reason and can tell you.
+
+To hand work to a separate chat that you can open and talk to instead, see [Let an agent start worker chats](/docs/agents/chat-history#let-an-agent-start-worker-chats).

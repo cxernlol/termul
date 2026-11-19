@@ -6,6 +6,7 @@
     "write-a-prompt",
     "approvals",
     "follow-the-work",
+    "start-other-agents",
     "chat-history",
     "switch-agents"
   ]
