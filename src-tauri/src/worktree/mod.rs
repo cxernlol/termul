@@ -1,6 +1,6 @@
 mod archive;
 mod conflict;
-mod git;
+pub(crate) mod git;
 mod launch;
 mod launch_registry;
 mod manager;

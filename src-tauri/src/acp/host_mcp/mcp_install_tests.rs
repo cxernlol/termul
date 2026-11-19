@@ -652,3 +652,60 @@ fn two_saves_at_once_keep_both_servers() {
     let saved = stored_list(&store)["data"].as_array().cloned().unwrap_or_default();
     assert_eq!(saved.len(), 16, "{saved:?}");
 }
+
+/// An orchestrated child runs on a private session no client subscribes to:
+/// its install card shows on its chat as the child's agent, is answered from
+/// the chat, and stays open when the chat's turn ends.
+#[test]
+fn a_child_install_card_shows_on_its_chat_and_is_answered_from_there() {
+    let harness = harness(Vec::new(), ALL_RUNNERS);
+    harness
+        .server
+        .route_cards_to_chat(&harness.token, "chat-root");
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    runtime.block_on(async {
+        let frame = frame(
+            &harness,
+            json!({
+                "kind": "import",
+                "json": r#"{"mcpServers":{"echo":{"command":"echo","args":["hi"]}}}"#,
+            }),
+        );
+        let port = harness.port;
+        let call = tokio::spawn(async move { send(port, &frame).await });
+        let request_id = wait_for_install(&harness.server, &harness.sink).await;
+        let card = latest_card(&harness.sink);
+        assert_eq!(card["sessionId"], "chat-root");
+        assert_eq!(card["agentId"], "agent-1");
+        assert_eq!(
+            harness.server.answer_mcp_install(
+                &request_id,
+                "sess-real",
+                McpInstallDecision::Decline
+            ),
+            Err(super::mcp_install::McpInstallAnswerError::SessionMismatch),
+            "the child's private session is not where the card is answered"
+        );
+
+        harness.server.cancel_asks_for_session("chat-root");
+        assert_eq!(harness.server.open_mcp_install_ids(), std::slice::from_ref(&request_id));
+
+        harness
+            .server
+            .answer_mcp_install(&request_id, "chat-root", McpInstallDecision::Decline)
+            .unwrap();
+        let reply = call.await.unwrap();
+        assert_eq!(reply["result"]["outcome"], "declined");
+    });
+    let resolved = harness
+        .sink
+        .events
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|(kind, _)| kind == "acp:mcp_install_resolved")
+        .map(|(_, payload)| payload.clone())
+        .expect("resolved card");
+    assert_eq!(resolved["sessionId"], "chat-root");
+    assert_eq!(resolved["outcome"], "declined");
+}

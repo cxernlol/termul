@@ -411,7 +411,7 @@ async fn a_one_shot_session_gets_no_termul_mcp_server_but_a_chat_session_does() 
     let OneShotRequest { config, cwd, .. } = mock.request(None, &env);
     let spawned = mock
         .manager
-        .spawn_private(config, None, vec![])
+        .spawn_private(config, None, &crate::acp::claude_agent::LaunchChat::None, vec![])
         .await
         .expect("agent spawns");
     mock.manager

@@ -667,7 +667,7 @@ fn without_a_host_the_browser_tool_is_advertised_fail_closed() {
     }
 }
 
-const HOST_TOOLS: [&str; 18] = [
+const HOST_TOOLS: [&str; 23] = [
     "ask_user",
     "mcp_install",
     "automation_apply_ops",
@@ -686,6 +686,11 @@ const HOST_TOOLS: [&str; 18] = [
     "send_to_chat",
     "set_session_title",
     "start_chat",
+    "subagent_list_agents",
+    "subagent_start",
+    "subagent_status",
+    "subagent_stop",
+    "subagent_wait",
 ];
 
 pub(super) type ClientWriter = tokio::io::WriteHalf<tokio::io::DuplexStream>;
@@ -764,6 +769,12 @@ async fn tools_list_carries_figcraft_tools_by_name_with_the_canvas_tag() {
             .filter(|name| !HOST_TOOLS.contains(name))
             .collect();
         canvas.sort_unstable();
+        for name in HOST_TOOLS.iter().filter(|name| name.starts_with("subagent_")) {
+            assert!(
+                tools.iter().any(|tool| tool["name"] == *name),
+                "{name} is advertised"
+            );
+        }
         let mut upstream = figcraft_mcp::TOOL_NAMES.to_vec();
         upstream.sort_unstable();
         assert_eq!(canvas, upstream);

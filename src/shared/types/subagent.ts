@@ -32,6 +32,7 @@ export type SubagentSource =
   | 'opencode-task'
   | 'gemini-agent'
   | 'tool-heuristic'
+  | 'orchestrated'
 
 export type SubagentEndReason = 'completed' | 'cancelled' | 'failed' | 'unexplained'
 
@@ -61,6 +62,31 @@ export interface SubagentUsage {
   totalTokens?: number
   toolUses?: number
   durationMs?: number
+}
+
+/**
+ * The agent an orchestrated subagent runs as: its own host agent process, not
+ * the chat's agent. `name` is the launch-config name ("Codex"); `configId`
+ * resolves the renderer glyph (persisted agent config -> templateId ->
+ * bundled `acp:` glyph); `agentId` matches the permission request's `agentId`
+ * so the renderer can label an approval card with the asking child.
+ */
+export interface SubagentAgent {
+  name: string
+  configId?: string
+  agentId: string
+}
+
+/** Where an orchestrated subagent works. */
+export interface SubagentWorkspace {
+  mode: 'shared' | 'worktree'
+  /** The worktree's path, kept after settle (the worktree survives). */
+  path?: string
+  branch?: string
+  /** "main @ 42be01e, with uncommitted changes". */
+  base?: string
+  /** "3 files changed, +42 -7" at settle (worktree runs). */
+  diffStat?: string
 }
 
 export interface SubagentCaps {
@@ -105,6 +131,10 @@ interface SubagentFields {
   endedAt?: number
   model?: string
   usage?: SubagentUsage
+  /** The agent an orchestrated subagent runs as; absent on other records. */
+  agent?: SubagentAgent
+  /** Where an orchestrated subagent works; absent on other records. */
+  workspace?: SubagentWorkspace
   /** File that receives a background subagent's output, when the agent names one. */
   outputFile?: string
   caps: SubagentCaps

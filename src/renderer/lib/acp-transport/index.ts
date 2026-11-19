@@ -38,7 +38,10 @@ export {
   isOutcomeUncertainError,
   isTransientAcpTransportError,
   parseVisibleAt,
-  type SessionCursor
+  type SessionCursor,
+  type SubagentSettingsAgentView,
+  type SubagentSettingsInput,
+  type SubagentSettingsView
 } from './types'
 export { resolveWsUrl, WsAcpTransport } from './ws-transport'
 

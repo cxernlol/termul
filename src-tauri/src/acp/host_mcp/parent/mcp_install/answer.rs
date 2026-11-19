@@ -29,7 +29,7 @@ impl HostPlanServer {
                 McpInstallAnswerError::NotFound
             });
         };
-        if open.session_id != session_id {
+        if open.card_session_id != session_id {
             return Err(McpInstallAnswerError::SessionMismatch);
         }
         if open.answered {

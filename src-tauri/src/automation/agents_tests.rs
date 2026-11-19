@@ -67,7 +67,12 @@ fn a_corrupt_file_starts_empty_and_is_kept_aside() {
     std::fs::write(&path, b"{not json").unwrap();
     let registry = AgentRegistry::open(path);
     assert!(registry.list().is_empty());
-    let backups = std::fs::read_dir(dir.path())
+    registry.reload();
+    assert_eq!(corrupt_backups(dir.path()), 1);
+}
+
+fn corrupt_backups(dir: &std::path::Path) -> usize {
+    std::fs::read_dir(dir)
         .unwrap()
         .filter(|e| {
             e.as_ref()
@@ -76,8 +81,29 @@ fn a_corrupt_file_starts_empty_and_is_kept_aside() {
                 .to_string_lossy()
                 .contains(".corrupt-")
         })
-        .count();
-    assert_eq!(backups, 1);
+        .count()
+}
+
+#[test]
+fn a_reload_keeps_the_last_good_agents_and_backs_up_each_corrupt_file_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(FILE_NAME);
+    AgentRegistry::open(path.clone()).record(&config(Some("claude"), "Claude Code", "claude"));
+    let reader = AgentRegistry::open(path.clone());
+
+    std::fs::write(&path, b"{not json").unwrap();
+    reader.reload();
+    reader.reload();
+    assert_eq!(reader.resolve("claude").unwrap().command, "claude");
+    assert_eq!(corrupt_backups(dir.path()), 1);
+
+    std::fs::write(&path, b"{still not json").unwrap();
+    reader.reload();
+    assert_eq!(corrupt_backups(dir.path()), 2);
+
+    std::fs::write(&path, br#"{"schema_version":1,"agents":{}}"#).unwrap();
+    reader.reload();
+    assert!(reader.list().is_empty());
 }
 
 #[cfg(unix)]

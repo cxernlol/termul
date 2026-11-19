@@ -59,7 +59,8 @@ import {
   AcpTransportError,
   COMMAND_ACCEPTED_CODE,
   COMMAND_IN_PROGRESS_CODE,
-  type CommandCallOptions
+  type CommandCallOptions,
+  type SubagentSettingsView
 } from '@/lib/acp-transport/types'
 import type { AcpRuntimeAvailability } from '@/lib/agents/supported-acp-agents'
 
@@ -229,6 +230,9 @@ export function createInvokeAcpTransport(): AcpTransport {
       invoke<{ secs: number; source: 'default' | 'setting' | 'env' | 'operator' }>(
         'acp_get_agent_idle_window'
       ),
+    getSubagentSettings: () => invoke<SubagentSettingsView>('acp_get_subagent_settings'),
+    setSubagentSettings: (input) =>
+      invoke<SubagentSettingsView>('acp_set_subagent_settings', { input }),
     fetchRegistrySnapshot: () =>
       invoke<AcpRegistrySnapshot>('acp_fetch_registry_snapshot', { forceRefresh: true }),
     probeMcpServer: (server) => invoke<ProbeResult>('acp_probe_mcp_server', { server }),

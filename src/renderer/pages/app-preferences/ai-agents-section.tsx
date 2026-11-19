@@ -21,6 +21,7 @@ import {
   AGENT_IDLE_WINDOW_OPTIONS,
   formatAgentIdleWindow
 } from '@/types/settings'
+import { SubagentSettingsGroup } from './subagent-settings-group'
 
 interface AiAgentsSectionProps {
   acpTurnTimeoutSecs: number | null
@@ -151,6 +152,7 @@ export function AiAgentsSection({
           </SettingsNotice>
         ) : null}
       </SettingsGroup>
+      <SubagentSettingsGroup />
       <SettingsGroup title="Time limits">
         {isDesktop ? (
           <SettingsCard>

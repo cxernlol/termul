@@ -20,6 +20,8 @@ fn record(state: SubagentState, stop: Option<SubagentStop>) -> Subagent {
         model: None,
         usage: None,
         output_file: None,
+        agent: None,
+        workspace: None,
         caps: SubagentCaps {
             stop,
             transcript: SubagentTranscript::Live,
@@ -129,6 +131,7 @@ fn every_activity_and_source_uses_the_shared_names() {
         SubagentSource::OpencodeTask,
         SubagentSource::GeminiAgent,
         SubagentSource::ToolHeuristic,
+        SubagentSource::Orchestrated,
     ]
     .into_iter()
     .map(|source| serde_json::to_value(source).expect("serialize"))
@@ -143,7 +146,8 @@ fn every_activity_and_source_uses_the_shared_names() {
             "cursor-task",
             "opencode-task",
             "gemini-agent",
-            "tool-heuristic"
+            "tool-heuristic",
+            "orchestrated"
         ]
     );
     assert_eq!(
@@ -195,4 +199,76 @@ fn counts_accept_only_finite_non_negative_numbers() {
     assert_eq!(count(&json!("5")), None);
     assert_eq!(bounded_text(Some(&json!("  hi  ")), 1), Some("h"));
     assert_eq!(bounded_text(Some(&json!("   ")), 10), None);
+}
+
+#[test]
+fn an_orchestrated_record_carries_agent_and_workspace_fields() {
+    let mut orchestrated = record(SubagentState::Running, Some(SubagentStop::SessionCancel));
+    orchestrated.source = SubagentSource::Orchestrated;
+    orchestrated.background = true;
+    orchestrated.agent = Some(SubagentAgent {
+        name: "Codex".to_string(),
+        config_id: Some("acp-registry:codex-acp".to_string()),
+        agent_id: "agent-9".to_string(),
+    });
+    orchestrated.workspace = Some(SubagentWorkspace {
+        mode: SubagentWorkspaceMode::Worktree,
+        path: Some("/repo/.termul/worktrees/sub-9f2c1a".to_string()),
+        branch: Some("troupe/sub/sub-9f2c1a".to_string()),
+        base: Some("main @ 42be01e, with uncommitted changes".to_string()),
+        diff_stat: Some("3 files changed, +42 -7".to_string()),
+    });
+    let value = serde_json::to_value(&orchestrated).expect("serialize");
+    assert_eq!(value["source"], "orchestrated");
+    assert_eq!(
+        value["agent"],
+        json!({
+            "name": "Codex",
+            "configId": "acp-registry:codex-acp",
+            "agentId": "agent-9",
+        })
+    );
+    assert_eq!(
+        value["workspace"],
+        json!({
+            "mode": "worktree",
+            "path": "/repo/.termul/worktrees/sub-9f2c1a",
+            "branch": "troupe/sub/sub-9f2c1a",
+            "base": "main @ 42be01e, with uncommitted changes",
+            "diffStat": "3 files changed, +42 -7",
+        })
+    );
+    let back: Subagent = serde_json::from_value(value).expect("deserialize");
+    assert_eq!(back, orchestrated);
+}
+
+#[test]
+fn orchestrated_fields_stay_optional_on_the_wire() {
+    let mut minimal = record(SubagentState::Running, None);
+    minimal.source = SubagentSource::Orchestrated;
+    minimal.agent = Some(SubagentAgent {
+        name: "Gemini CLI".to_string(),
+        config_id: None,
+        agent_id: "agent-2".to_string(),
+    });
+    minimal.workspace = Some(SubagentWorkspace {
+        mode: SubagentWorkspaceMode::Shared,
+        path: None,
+        branch: None,
+        base: None,
+        diff_stat: None,
+    });
+    let value = serde_json::to_value(&minimal).expect("serialize");
+    assert_eq!(
+        value["agent"],
+        json!({ "name": "Gemini CLI", "agentId": "agent-2" })
+    );
+    assert_eq!(value["workspace"], json!({ "mode": "shared" }));
+    let back: Subagent = serde_json::from_value(value).expect("deserialize");
+    assert_eq!(back, minimal);
+
+    let native = record(SubagentState::Running, None);
+    let value = serde_json::to_value(&native).expect("serialize");
+    assert!(value.get("agent").is_none());
+    assert!(value.get("workspace").is_none());
 }

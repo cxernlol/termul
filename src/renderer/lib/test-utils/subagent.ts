@@ -5,9 +5,11 @@
 import {
   SUBAGENT_META_KEY,
   type Subagent,
+  type SubagentAgent,
   type SubagentCaps,
   type SubagentId,
-  type SubagentState
+  type SubagentState,
+  type SubagentWorkspace
 } from '@shared/types/subagent'
 import type { ToolCall } from '@/lib/acp-api'
 
@@ -30,6 +32,45 @@ export function subagentRecord(overrides: SubagentRecordOverrides = {}): Subagen
     ...fields,
     ...state
   }
+}
+
+/** An orchestrated run's child agent identity unless overridden. */
+export function subagentAgent(overrides: Partial<SubagentAgent> = {}): SubagentAgent {
+  return {
+    name: 'Codex',
+    configId: 'acp-registry:codex-acp',
+    agentId: 'agent-codex',
+    ...overrides
+  }
+}
+
+/**
+ * A running orchestrated Codex run in its worktree unless overridden: the
+ * host's own orchestrator started it, so it stops, streams, and reports
+ * usage.
+ */
+export function orchestratedSubagentRecord(
+  overrides: SubagentRecordOverrides & {
+    agent?: Partial<SubagentAgent>
+    workspace?: Partial<SubagentWorkspace>
+  } = {}
+): Subagent {
+  const { agent, workspace, caps, ...rest } = overrides
+  return subagentRecord({
+    source: 'orchestrated',
+    title: 'Implement the retry fix',
+    background: true,
+    agent: subagentAgent(agent),
+    workspace: {
+      mode: 'worktree',
+      path: '/work/.termul/worktrees/sub-retry-fix',
+      branch: 'troupe/sub/retry-fix',
+      base: 'main @ 42be01e, with uncommitted changes',
+      ...workspace
+    },
+    caps: { stop: 'session-cancel', liveProgress: true, ...caps },
+    ...rest
+  })
 }
 
 /** An idle record's state for `reason`. */

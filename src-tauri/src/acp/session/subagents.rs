@@ -44,6 +44,31 @@ impl SubagentRoutes {
         self.children.get(session_id)
     }
 
+    /// Insert the route of an orchestrated child session, built entirely
+    /// from `origin` (the engine supplies every id; no parent walk, unlike
+    /// [`Self::register`]). A repeated seed for the same child is a no-op
+    /// that returns the existing route.
+    pub(super) fn seed(
+        &mut self,
+        origin: &crate::acp::manager::ChildOrigin,
+        child: &str,
+    ) -> ChildRoute {
+        if let Some(existing) = self.children.get(child) {
+            return existing.clone();
+        }
+        let route = ChildRoute {
+            root_session_id: origin.root_session_id.clone(),
+            parent_session_id: origin.parent_session_id.clone(),
+            dispatch_id: origin.dispatch_id.clone(),
+            parent_dispatch_id: origin.parent_dispatch_id.clone(),
+            ended: false,
+        };
+        self.evict_if_full();
+        self.children.insert(child.to_string(), route.clone());
+        self.order.push(child.to_string());
+        route
+    }
+
     /// The chat session for `session_id`: its root when it is a child,
     /// otherwise itself.
     pub(super) fn root_of<'a>(&'a self, session_id: &'a str) -> &'a str {
@@ -140,6 +165,16 @@ impl super::DriverState {
         self.subagents.register(parent, child)
     }
 
+    /// Seed the route of an orchestrated child session from the origin the
+    /// engine supplied at `session/new` time.
+    pub(crate) fn seed_child_route(
+        &mut self,
+        origin: &crate::acp::manager::ChildOrigin,
+        session_id: &str,
+    ) -> ChildRoute {
+        self.subagents.seed(origin, session_id)
+    }
+
     /// Mark a running native subagent session ended.
     pub(crate) fn end_subagent(&mut self, child: &str) -> Option<ChildRoute> {
         self.subagents.mark_ended(child)
@@ -166,5 +201,25 @@ impl super::DriverState {
     /// appears in the chat the user sees.
     pub(crate) fn chat_session_for(&self, session_id: &str) -> String {
         self.subagents.root_of(session_id).to_string()
+    }
+
+    /// Whether a prompt parked under `parked` belongs to `session_id`. An
+    /// orchestrated child's prompts are parked under its chat, which lives
+    /// on another connection; on its own private connection that chat key
+    /// names this child alone, so draining the child drains them too.
+    pub(crate) fn parked_for(&self, session_id: &str, parked: &str) -> bool {
+        if parked == session_id {
+            return true;
+        }
+        let root = self.subagents.root_of(session_id);
+        root != session_id && parked == root && !self.session_roots.contains_key(root)
+    }
+
+    /// Whether `session_id` runs headless, locked out of the client's file
+    /// and terminal methods: its chat (itself, or the chat an orchestrated
+    /// child is routed under) is ephemeral. An orchestrated child is
+    /// ephemeral itself but works for a chat, like the chat's own agent.
+    pub(crate) fn is_headless(&self, session_id: &str) -> bool {
+        self.is_ephemeral(&self.chat_session_for(session_id))
     }
 }

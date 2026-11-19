@@ -275,6 +275,12 @@ export const WS_REQUEST_TYPES = [
   // persists on file-backed hosts, publishes the project state to every
   // `projects` watcher).
   'set_default_project',
+  // Orchestrated sub-agents (acp-subagent-orchestrator): `get` reads the
+  // settings view `{ enabled, maxRunning, maxDepth, agents: [{ agentId,
+  // name, allowed }] }`; `set` writes a partial of it (an omitted field keeps
+  // its value) and answers the new view. One host engine serves every chat.
+  'subagent_settings_get',
+  'subagent_settings_set',
   // Claude Accounts (ADR-0004): list `{}` → `ClaudeAccountsSnapshot`; choose
   // the Default `{ accountId }` → `{}` or a Project Account `{ projectId,
   // accountId | null, expectedAccountId? }` → `{ applied }`, where
@@ -453,6 +459,8 @@ export const WS_COMMAND_CLASSES: Readonly<
   update_project: ['idempotent', null],
   remove_project: ['idempotent', null],
   set_default_project: ['idempotent', null],
+  subagent_settings_get: ['read', null],
+  subagent_settings_set: ['idempotent', null],
   record_agent_switch: ['command', 'payload'],
   mark_chat_read: ['idempotent', null],
   watch: ['read', null],

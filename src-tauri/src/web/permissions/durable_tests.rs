@@ -180,6 +180,36 @@ async fn releasing_an_agent_drops_its_sessions_and_only_its_own() {
     assert_eq!(rdz.release_agent(&AgentId("a1".to_string())), 0);
 }
 
+/// A chat and its orchestrated subagent share the chat's queue, each as its
+/// own agent. A release scoped to one agent drops only that agent's tickets,
+/// outstanding or queued, and promotes the other agent's next one.
+#[tokio::test(start_paused = true)]
+async fn an_agent_scoped_release_keeps_the_other_agents_tickets() {
+    let chat = AgentId("chat-agent".to_string());
+    let child = AgentId("child-agent".to_string());
+    let rdz = permissions();
+    ask(&rdz, "perm-chat", "chat-agent", "chat");
+    ask(&rdz, "perm-child", "child-agent", "chat");
+    ask(&rdz, "perm-chat-2", "chat-agent", "chat");
+
+    assert_eq!(rdz.release_turn("chat", "turn-1", Some(&chat)), 2);
+    assert!(rdz.is_outstanding("perm-child"), "the child's queued ticket is promoted");
+    assert_eq!(rdz.queued_count_for_session("chat"), 0);
+    for id in ["perm-chat", "perm-chat-2"] {
+        assert_eq!(answer(&rdz, id).await, Err(RespondError::AlreadyResolved), "{id}");
+    }
+
+    ask(&rdz, "perm-chat-3", "chat-agent", "chat");
+    assert_eq!(rdz.release_agent_session("chat", &chat), 1, "a turn cancel");
+    assert!(rdz.is_outstanding("perm-child"), "the child's outstanding ticket stays");
+
+    ask(&rdz, "perm-chat-4", "chat-agent", "chat");
+    assert_eq!(rdz.release_agent(&child), 1);
+    assert!(rdz.is_outstanding("perm-chat-4"), "the chat's queued ticket is promoted");
+    assert_eq!(answer(&rdz, "perm-child").await, Err(RespondError::AlreadyResolved));
+    assert_eq!(rdz.release_agent(&child), 0);
+}
+
 #[tokio::test(start_paused = true)]
 async fn questions_are_released_by_session_and_by_agent() {
     let rdz = questions();

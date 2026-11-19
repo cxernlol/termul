@@ -3,7 +3,7 @@
  * turn's subagent calls and derive each row's status, title, tokens, and
  * duration. No React/store dependency, so it is directly unit-testable.
  */
-import type { SubagentEndReason } from '@shared/types/subagent'
+import type { Subagent, SubagentEndReason } from '@shared/types/subagent'
 import type { ContentBlock, ToolCall } from '@/lib/acp-api'
 import {
   describeToolCall,
@@ -200,6 +200,35 @@ export function subagentType(toolCall: ToolCall): string | undefined {
   return toolCall.subagent?.role ?? toolCall.subagent?.description
 }
 
+/**
+ * The workspace chip of an orchestrated run: "worktree · troupe/sub/sub-9f2c1a"
+ * (the mode, then the branch when the host names one). Undefined for records
+ * without a workspace.
+ */
+export function subagentWorkspaceChip(toolCall: ToolCall): string | undefined {
+  const workspace = toolCall.subagent?.workspace
+  if (!workspace) return undefined
+  return [workspace.mode, workspace.branch].filter(Boolean).join(' · ')
+}
+
+/**
+ * The chat's active orchestrated record whose child agent asks, when a
+ * permission request is one of its approvals: matched by the request's
+ * `agentId`, which the child host agent sent. The renderer-side join that
+ * labels the approval card with the asking child.
+ */
+export function askingOrchestratedSubagent(
+  toolCalls: readonly ToolCall[] | undefined,
+  agentId: string
+): Subagent | undefined {
+  for (const call of toolCalls ?? []) {
+    const record = call.subagent
+    if (record?.agent?.agentId !== agentId) continue
+    if (record.activity === 'running' || record.activity === 'requires_action') return record
+  }
+  return undefined
+}
+
 /** `42s`, `3m 05s`, `1h 02m`. Negative/NaN clamp to `0s`. */
 export function formatSubagentElapsed(ms: number): string {
   const total = Number.isFinite(ms) && ms > 0 ? Math.floor(ms / 1000) : 0
@@ -239,11 +268,14 @@ function lastLine(text: string | undefined): string | undefined {
 /**
  * The subagent's final answer, once. A foreground dispatch returns it as the
  * call's result; a background launch returns only a receipt, so its answer is
- * the text it streamed, if any.
+ * the text it streamed, if any. An orchestrated run is background-marked but
+ * its settle card carries the result as the call's content, which wins.
  */
 export function subagentResultText(toolCall: ToolCall): string | undefined {
   const streamed = toolCall.subagentText?.trim() ? toolCall.subagentText : undefined
-  if (toolCall.subagent?.background) return streamed
+  if (toolCall.subagent?.background && toolCall.subagent.source !== 'orchestrated') {
+    return streamed
+  }
   const text = (toolCall.content ?? [])
     .flatMap((item) => {
       const block =
@@ -267,10 +299,18 @@ export function subagentToolCount(
 
 export type SubagentDetailTone = 'muted' | 'destructive'
 
+/** "Codex · gpt-5.5" for an orchestrated run; empty for every other record. */
+function identityParts(record: Subagent | undefined): string[] {
+  if (!record?.agent) return []
+  return [record.agent.name, record.model].filter((part): part is string => part !== undefined)
+}
+
 /**
- * The row's one detail line: latest progress while running (its newest tool
- * call, else its newest line of text), the error or first line of the result
- * once settled. Undefined when the agent reported nothing to show.
+ * The row's one detail line: who runs it and what it is doing. An
+ * orchestrated run leads with its child agent and model. While running that
+ * is its newest tool call, else its newest line of text; once settled it is
+ * the error or first line of the result. Undefined when the agent reported
+ * nothing to show.
  */
 export function subagentDetail(
   toolCall: ToolCall,
@@ -278,6 +318,7 @@ export function subagentDetail(
   childCalls: readonly ToolCall[]
 ): { text: string; tone: SubagentDetailTone } | undefined {
   const record = toolCall.subagent
+  const identity = identityParts(record)
   if (status === 'running') {
     const latest = childCalls[childCalls.length - 1]
     const count = subagentToolCount(toolCall, childCalls)
@@ -288,14 +329,16 @@ export function subagentDetail(
           return `${verb} ${primary}`.trim()
         })()
       : lastLine(toolCall.subagentText)
-    const text = [progress, tools].filter(Boolean).join(' · ')
+    const text = [...identity, progress, tools].filter(Boolean).join(' · ')
     return text ? { text, tone: 'muted' } : undefined
   }
   if (status === 'failed') {
     const error = record?.activity === 'idle' ? firstLine(record.end.error) : undefined
-    const text = error ?? firstLine(subagentResultText(toolCall))
+    const text = [...identity, error ?? firstLine(subagentResultText(toolCall))]
+      .filter(Boolean)
+      .join(' · ')
     return text ? { text, tone: 'destructive' } : undefined
   }
-  const text = firstLine(subagentResultText(toolCall))
+  const text = [...identity, firstLine(subagentResultText(toolCall))].filter(Boolean).join(' · ')
   return text ? { text, tone: 'muted' } : undefined
 }

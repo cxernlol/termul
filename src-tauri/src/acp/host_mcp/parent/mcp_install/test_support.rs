@@ -46,6 +46,7 @@ impl HostPlanServer {
             request_id.to_string(),
             OpenMcpInstall {
                 session_id: session_id.to_string(),
+                card_session_id: session_id.to_string(),
                 sender,
                 answered: false,
                 shown_at: Instant::now(),

@@ -118,7 +118,9 @@ import {
   type CommandCallOptions,
   parseVisibleAt,
   type ReopenCallOptions,
-  type SessionCursor
+  type SessionCursor,
+  type SubagentSettingsInput,
+  type SubagentSettingsView
 } from './types'
 import { WatchClient } from './watch-client'
 import { SessionResubscribeRetry, type SessionRetryMode } from './ws-session-retry'
@@ -1012,6 +1014,14 @@ export class WsAcpTransport implements AcpTransport {
       )
     }
     return res.data
+  }
+
+  async getSubagentSettings(): Promise<SubagentSettingsView> {
+    return this.request<SubagentSettingsView>('subagent_settings_get', {})
+  }
+
+  async setSubagentSettings(input: SubagentSettingsInput): Promise<SubagentSettingsView> {
+    return this.request<SubagentSettingsView>('subagent_settings_set', input)
   }
 
   /** `fetch_acp_registry_snapshot`: the host's registry check (desktop: `acp_fetch_registry_snapshot`). */

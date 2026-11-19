@@ -6,15 +6,18 @@ import {
   subagentToolCall
 } from '@/lib/test-utils/subagent'
 import {
+  askingOrchestratedSubagent,
   countSubagents,
   formatSubagentElapsed,
   formatTokens,
   runningBackgroundSubagents,
   selectCurrentTurnSubagents,
+  subagentDetail,
   subagentDurationMs,
   subagentStatus,
   subagentTitle,
-  subagentType
+  subagentType,
+  subagentWorkspaceChip
 } from './subagent-strip'
 
 /** A dispatch call; the record mirrors the call (running while pending). */
@@ -280,5 +283,91 @@ describe('Codex rows', () => {
       null
     )
     expect(picked.map((t) => t.toolCallId)).toEqual(['spawn-1'])
+  })
+})
+
+describe('orchestrated runs', () => {
+  it('details lead with the child agent and model, before progress or result', () => {
+    const running = subagentToolCall(
+      {
+        model: 'gpt-5.5',
+        agent: { name: 'Codex', configId: 'acp-registry:codex-acp', agentId: 'agent-c' },
+        usage: { toolUses: 6 }
+      },
+      { toolCallId: 'sub-1', status: 'in_progress' }
+    )
+    const latest = {
+      toolCallId: 'c1',
+      title: 'Edit',
+      kind: 'edit',
+      rawInput: { path: 'src/net/retry.ts' },
+      status: 'in_progress',
+      parentToolCallId: 'sub-1'
+    } as ToolCall
+    expect(subagentDetail(running, 'running', [latest])?.text).toBe(
+      'Codex · gpt-5.5 · Editing retry.ts · 6 tools'
+    )
+
+    const done = subagentToolCall(
+      {
+        model: 'gpt-5.5',
+        agent: { name: 'Codex', configId: 'acp-registry:codex-acp', agentId: 'agent-c' },
+        state: endedState(),
+        usage: { toolUses: 7 }
+      },
+      {
+        toolCallId: 'sub-2',
+        status: 'completed',
+        content: [{ type: 'content', content: { type: 'text', text: 'Fixed.\nAll pass.' } }]
+      }
+    )
+    expect(subagentDetail(done, 'done', [])?.text).toBe('Codex · gpt-5.5 · Fixed.')
+
+    const plain = subagentToolCall(
+      { usage: { toolUses: 6 } },
+      { toolCallId: 'sub-3', status: 'in_progress' }
+    )
+    expect(subagentDetail(plain, 'running', [latest])?.text).toBe('Editing retry.ts · 6 tools')
+  })
+
+  it('the workspace chip shows the mode, then the branch', () => {
+    expect(
+      subagentWorkspaceChip(
+        subagentToolCall({
+          workspace: { mode: 'worktree', branch: 'troupe/sub/retry-fix' }
+        })
+      )
+    ).toBe('worktree · troupe/sub/retry-fix')
+    expect(subagentWorkspaceChip(subagentToolCall({ workspace: { mode: 'shared' } }))).toBe(
+      'shared'
+    )
+    expect(
+      subagentWorkspaceChip(
+        subagentToolCall({ workspace: { mode: 'worktree', path: '/w/.termul/worktrees/sub-1' } })
+      )
+    ).toBe('worktree')
+    expect(subagentWorkspaceChip(subagentToolCall())).toBeUndefined()
+  })
+
+  it('finds the active record whose child agent a permission request names', () => {
+    const waiting = subagentToolCall(
+      {
+        agent: { name: 'Codex', agentId: 'agent-c' },
+        state: { activity: 'requires_action' }
+      },
+      { toolCallId: 'sub-w' }
+    )
+    const settled = subagentToolCall(
+      {
+        agent: { name: 'Gemini CLI', agentId: 'agent-g' },
+        state: endedState()
+      },
+      { toolCallId: 'sub-d' }
+    )
+    const calls = [waiting, settled]
+    expect(askingOrchestratedSubagent(calls, 'agent-c')).toBe(waiting.subagent)
+    expect(askingOrchestratedSubagent(calls, 'agent-g')).toBeUndefined()
+    expect(askingOrchestratedSubagent(calls, 'agent-other')).toBeUndefined()
+    expect(askingOrchestratedSubagent(undefined, 'agent-c')).toBeUndefined()
   })
 })

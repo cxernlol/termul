@@ -35,10 +35,44 @@ pub fn agent_key(config: &AgentConfig) -> String {
     }
 }
 
+/// The registry file's agents, or `None` when the file could not be read.
+/// A missing file is empty. Corrupt bytes are copied aside once and read
+/// as `None`; `backed_up` holds the last bytes copied, so reloading the same
+/// corrupt file never piles up backups.
+fn load(
+    path: &std::path::Path,
+    backed_up: &mut Option<Vec<u8>>,
+) -> Option<BTreeMap<String, AgentConfig>> {
+    match std::fs::read(path) {
+        Ok(bytes) => match serde_json::from_slice::<RegistryFile>(&bytes) {
+            Ok(file) => Some(file.agents),
+            Err(_) if backed_up.as_deref() == Some(bytes.as_slice()) => None,
+            Err(error) => {
+                let backup = atomic_file::backup_corrupt(path, &bytes);
+                log::warn!(
+                    "[Automation] known-agents file is corrupt ({error}); ignored (backup: {})",
+                    backup.is_ok()
+                );
+                if backup.is_ok() {
+                    *backed_up = Some(bytes);
+                }
+                None
+            }
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(BTreeMap::new()),
+        Err(error) => {
+            log::warn!("[Automation] known-agents file unreadable: {error}");
+            None
+        }
+    }
+}
+
 pub struct AgentRegistry {
     /// `None` keeps the registry in memory only (tests).
     path: Option<PathBuf>,
     agents: Mutex<BTreeMap<String, AgentConfig>>,
+    /// The corrupt bytes last copied aside, so `reload` copies them once.
+    backed_up: Mutex<Option<Vec<u8>>>,
 }
 
 impl AgentRegistry {
@@ -46,28 +80,29 @@ impl AgentRegistry {
     /// copied aside and the registry starts empty, so a corrupt file never
     /// blocks boot.
     pub fn open(path: PathBuf) -> Self {
-        let agents = match std::fs::read(&path) {
-            Ok(bytes) => match serde_json::from_slice::<RegistryFile>(&bytes) {
-                Ok(file) => file.agents,
-                Err(error) => {
-                    let backup = atomic_file::backup_corrupt(&path, &bytes);
-                    log::warn!(
-                        "[Automation] known-agents file is corrupt ({error}); starting empty (backup: {})",
-                        backup.is_ok()
-                    );
-                    BTreeMap::new()
-                }
-            },
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
-            Err(error) => {
-                log::warn!("[Automation] known-agents file unreadable: {error}");
-                BTreeMap::new()
-            }
-        };
+        let mut backed_up = None;
+        let agents = load(&path, &mut backed_up).unwrap_or_default();
         log::info!("[Automation] known agents loaded: {}", agents.len());
         Self {
             path: Some(path),
             agents: Mutex::new(agents),
+            backed_up: Mutex::new(backed_up),
+        }
+    }
+
+    /// Re-read the file, for a reader whose copy another registry on the
+    /// same file writes to (the subagent orchestrator reads what the spawn
+    /// path records). In-memory registries keep their entries, and a file
+    /// that cannot be read keeps the last good copy.
+    pub fn reload(&self) {
+        let Some(path) = &self.path else {
+            return;
+        };
+        // Read under the cache lock, so an older read never lands after a
+        // newer one.
+        let mut agents = self.agents.lock();
+        if let Some(loaded) = load(path, &mut self.backed_up.lock()) {
+            *agents = loaded;
         }
     }
 
@@ -75,6 +110,7 @@ impl AgentRegistry {
         Self {
             path: None,
             agents: Mutex::new(BTreeMap::new()),
+            backed_up: Mutex::new(None),
         }
     }
 

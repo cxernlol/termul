@@ -294,6 +294,35 @@ const ALL_APP_PREF_SEARCH_INDEX: SettingsSearchEntry[] = [
   },
   {
     categoryId: 'ai-agents',
+    label: 'Let agents start other agents',
+    description: 'An agent chat can hand parts of a task to your other installed agents.',
+    keywords: [
+      'subagent',
+      'sub-agent',
+      'delegate',
+      'orchestrator',
+      'codex',
+      'gemini',
+      'child agent'
+    ],
+    anchorId: rowId('subagent-enabled')
+  },
+  {
+    categoryId: 'ai-agents',
+    label: 'Max running sub-agents',
+    description: 'Per chat. Extra requests wait until one finishes.',
+    keywords: ['subagent', 'sub-agent', 'limit', 'parallel', 'capacity'],
+    anchorId: rowId('subagent-max-running')
+  },
+  {
+    categoryId: 'ai-agents',
+    label: 'Max depth',
+    description: 'How many levels of sub-agents can start their own sub-agents.',
+    keywords: ['subagent', 'sub-agent', 'depth', 'nesting', 'levels'],
+    anchorId: rowId('subagent-max-depth')
+  },
+  {
+    categoryId: 'ai-agents',
     label: 'If an answer goes quiet',
     description: 'Cancel an answer that stops sending updates.',
     keywords: ['timeout', 'idle', 'silent', 'turn'],

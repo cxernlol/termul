@@ -1588,3 +1588,36 @@ fn read_chat_project_name_comes_from_the_registry_and_falls_back_to_the_id() {
     let no_registry = read_chat::names(&read_chat_metadata(Some("project-b")), None);
     assert_eq!(no_registry.project, None);
 }
+
+/// An orchestrated child runs on a private session no client subscribes to:
+/// its `ask_user` question shows on its chat as the child's agent, the chat's
+/// turn end leaves it waiting, and the answer by question id still reaches
+/// the child's parked call.
+#[test]
+fn a_child_ask_user_shows_on_its_chat_and_is_answered_from_there() {
+    let sink = Arc::new(QuestionSink::default());
+    let server = HostPlanServer::start(vec![sink.clone()], None);
+    let (port, token, provisional) = server.register_session("child-agent");
+    server.route_cards_to_chat(&token, "chat-root");
+    server.bind_session(&token, "sess-child");
+    server.begin_turn("child-agent", "sess-child");
+
+    let runtime = Runtime::new().unwrap();
+    runtime.block_on(async {
+        let frame = ask_frame(&token, &provisional, "Ship it?");
+        let call = tokio::spawn(async move { connect_and_send(port, &frame).await });
+        let question_id = wait_for_open_ask(&server).await;
+
+        server.cancel_asks_for_session("chat-root");
+        assert_eq!(server.open_ask_ids(), std::slice::from_ref(&question_id), "the chat's turn end keeps it");
+        assert!(server.answer_ask(&question_id, Some(vec!["Yes".to_string()])));
+
+        let reply = call.await.unwrap();
+        assert_eq!(reply["result"]["answers"], serde_json::json!(["Yes"]));
+    });
+
+    let payloads = sink.payloads.lock().unwrap();
+    assert_eq!(payloads.len(), 1, "exactly one question event");
+    assert_eq!(payloads[0]["sessionId"], "chat-root");
+    assert_eq!(payloads[0]["agentId"], "child-agent");
+}

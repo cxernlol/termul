@@ -34,11 +34,13 @@ impl HostPlanServer {
     /// Park an `ask_user` call: show the question panel and wait for the
     /// answer, a cancel, or the child hanging up (`hung_up` resolves). The
     /// agent's tool call stays open for as long as the user takes, so there is
-    /// no timeout here.
+    /// no timeout here. The call belongs to `session_id`'s turn; its panel
+    /// shows on `card_session_id`, the chat of an orchestrated child.
     pub(super) async fn ask_user(
         &self,
         agent_id: &str,
         session_id: &str,
+        card_session_id: &str,
         input: TermulAskUserInput,
         hung_up: impl Future<Output = ()>,
     ) -> FrameReply {
@@ -70,7 +72,7 @@ impl HostPlanServer {
         };
         let event = AskUserQuestionEvent {
             agent_id: AgentId(agent_id.to_string()),
-            session_id: SessionId(session_id.to_string()),
+            session_id: SessionId(card_session_id.to_string()),
             question_id: question_id.clone(),
             question,
             options: input
@@ -88,13 +90,14 @@ impl HostPlanServer {
         };
         events::fan_out(
             &self.sinks,
-            Some(session_id),
+            Some(card_session_id),
             events::EVENT_QUESTION_REQUEST,
             &event,
         );
         log::info!(
-            "[host-mcp] ask_user waiting for the user in session {}",
-            crate::logging::redact_session_id(session_id)
+            "[host-mcp] ask_user waiting for the user in session {} (card on {})",
+            crate::logging::redact_session_id(session_id),
+            crate::logging::redact_session_id(card_session_id)
         );
 
         // The user can take a long time. A configured idle timeout would
@@ -121,7 +124,7 @@ impl HostPlanServer {
                     };
                 }
                 () = &mut hung_up => {
-                    self.withdraw_ask(agent_id, session_id, &question_id);
+                    self.withdraw_ask(agent_id, card_session_id, &question_id);
                     break AskOutcome::Cancelled;
                 }
                 () = tokio::time::sleep(heartbeat) => {
@@ -145,7 +148,8 @@ impl HostPlanServer {
     }
 
     /// The agent's MCP client gave up on a parked `ask_user` call, so nobody
-    /// reads its answer: drop it and take its question off every client.
+    /// reads its answer: drop it and take its question off every client of
+    /// `session_id`, the session its panel shows on.
     fn withdraw_ask(&self, agent_id: &str, session_id: &str, question_id: &str) {
         if self.pending_asks.lock().remove(question_id).is_none() {
             return;

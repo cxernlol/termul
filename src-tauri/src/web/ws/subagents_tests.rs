@@ -32,3 +32,53 @@ async fn a_payload_without_the_subagent_is_refused() {
         .message
         .contains("want agentId, rootSessionId, subagentId"));
 }
+
+fn settings_patch(payload: Value) -> SubagentSettingsPayload {
+    serde_json::from_value(payload).expect("the payload parses")
+}
+
+#[test]
+fn a_settings_patch_keeps_every_omitted_field() {
+    let mut merged = crate::acp::orchestrator::OrchestratorSettings {
+        enabled: true,
+        max_running: 4,
+        max_depth: 2,
+        agents: [("codex".to_string(), false)].into_iter().collect(),
+    };
+    merge_settings(
+        &mut merged,
+        settings_patch(json!({
+            "maxDepth": 3,
+            "agents": [{ "agentId": "gemini", "allowed": false }],
+        })),
+    );
+    assert!(merged.enabled);
+    assert_eq!(merged.max_running, 4);
+    assert_eq!(merged.max_depth, 3);
+    assert_eq!(merged.agents.get("codex"), Some(&false));
+    assert_eq!(merged.agents.get("gemini"), Some(&false));
+}
+
+#[test]
+fn a_settings_patch_turns_an_agent_back_on() {
+    let mut merged = crate::acp::orchestrator::OrchestratorSettings {
+        agents: [("codex".to_string(), false)].into_iter().collect(),
+        ..Default::default()
+    };
+    merge_settings(
+        &mut merged,
+        settings_patch(json!({
+            "enabled": false,
+            "agents": [{ "agentId": "codex", "allowed": true }],
+        })),
+    );
+    assert!(!merged.enabled);
+    assert_eq!(merged.agents.get("codex"), Some(&true));
+}
+
+#[test]
+fn a_settings_set_with_an_unknown_field_is_a_validation_error() {
+    let reply = handle_subagent_settings_set("s1".to_string(), &json!({ "maxRuning": 3 }));
+    let error = reply.err.expect("refused");
+    assert_eq!(error.code, "VALIDATION_ERROR");
+}

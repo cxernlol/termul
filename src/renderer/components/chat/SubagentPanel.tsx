@@ -1,10 +1,12 @@
+import type { Subagent, SubagentWorkspace } from '@shared/types/subagent'
 import { useReducedMotion } from 'framer-motion'
 import { type ReactNode, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { ArrowLeft, Clock, Square, X } from '@/components/icons'
+import { ArrowLeft, Clock, FileDiff, Folder, GitBranch, Square, X } from '@/components/icons'
 import { Button } from '@/components/ui/button'
 import { IconActionButton } from '@/components/ui/icon-action-button'
 import type { ToolCall } from '@/lib/acp-api'
 import { getAgentById } from '@/lib/agents/custom-agents'
+import type { FilePathResolutionContext } from '@/lib/file-path-links'
 import { cn } from '@/lib/utils'
 import { AgentProse } from './chat-agent-prose'
 import { SubagentGroup } from './SubagentGroup'
@@ -82,6 +84,97 @@ function TaskPrompt({ prompt }: { prompt: string }): React.JSX.Element {
   )
 }
 
+/** Where an orchestrated run works: its worktree's path and branch, or the chat's own folder. */
+function WorkspaceSection({ workspace }: { workspace: SubagentWorkspace }): React.JSX.Element {
+  return (
+    <Section title="Workspace">
+      <div className="flex flex-col gap-1.5 text-xs">
+        {workspace.path && (
+          <div className="flex min-w-0 items-center gap-2 text-muted-foreground">
+            <Folder size={14} className="shrink-0" aria-hidden="true" />
+            <span className="min-w-0 truncate font-mono text-foreground">{workspace.path}</span>
+          </div>
+        )}
+        {workspace.branch && (
+          <div className="flex min-w-0 items-center gap-2 text-muted-foreground">
+            <GitBranch size={14} className="shrink-0" aria-hidden="true" />
+            <span className="whitespace-nowrap font-mono text-foreground">{workspace.branch}</span>
+          </div>
+        )}
+        {workspace.base && <p className="pl-[22px] text-muted-foreground">{workspace.base}</p>}
+        {!workspace.path && !workspace.branch && !workspace.base && (
+          <p className="text-muted-foreground">Runs in the chat's own folder.</p>
+        )}
+      </div>
+    </Section>
+  )
+}
+
+/** "3 files changed, +42 -7" split into its parts; null when the shape is not the host's. */
+function diffStatParts(
+  diffStat: string
+): { files: string; added?: string; removed?: string } | null {
+  const match = /^(.*),\s*\+(\d+)(?:\s+-(\d+))?$/.exec(diffStat)
+  return match ? { files: match[1], added: match[2], removed: match[3] } : null
+}
+
+/**
+ * The settled worktree run's changes: the diff stat with its additions and
+ * removals in their tones, and the branch the work sits on. Raw text when the
+ * stat does not parse into parts.
+ */
+function DiffSummary({
+  diffStat,
+  branch
+}: {
+  diffStat: string
+  branch?: string
+}): React.JSX.Element {
+  const parts = diffStatParts(diffStat)
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-border px-3 py-2 text-xs text-muted-foreground">
+      {parts ? (
+        <>
+          <span className="flex items-center gap-1.5">
+            <FileDiff size={14} className="shrink-0" aria-hidden="true" />
+            <span className="text-foreground">{parts.files}</span>
+          </span>
+          <span className="tabular-nums">
+            <span className="text-success">+{parts.added}</span>
+            {parts.removed && <span className="text-destructive"> &minus;{parts.removed}</span>}
+          </span>
+        </>
+      ) : (
+        <span className="flex items-center gap-1.5">
+          <FileDiff size={14} className="shrink-0" aria-hidden="true" />
+          <span className="text-foreground">{diffStat}</span>
+        </span>
+      )}
+      {branch && (
+        <span className="flex min-w-0 items-center gap-1.5">
+          <GitBranch size={14} className="shrink-0" aria-hidden="true" />
+          <span className="truncate font-mono text-foreground">{branch}</span>
+        </span>
+      )}
+    </div>
+  )
+}
+
+/**
+ * Paths a worktree run names resolve in its own checkout, so a relative link
+ * never opens the chat's copy of the same file.
+ */
+function useRecordFilePathContext(
+  record: Subagent | undefined
+): FilePathResolutionContext | undefined {
+  const { filePathContext } = useSubagentSurface()
+  const path = record?.workspace?.path
+  return useMemo(
+    () => (path ? { cwd: path, projectRoot: path } : filePathContext),
+    [path, filePathContext]
+  )
+}
+
 type ActivitySegment =
   | { kind: 'tool'; toolCall: ToolCall }
   | { kind: 'subagents'; key: string; calls: ToolCall[] }
@@ -109,7 +202,7 @@ function Activity({
   parentTurn: ParentTurn
   agentName: string
 }): React.JSX.Element {
-  const { filePathContext } = useSubagentSurface()
+  const filePathContext = useRecordFilePathContext(toolCall.subagent)
   const hidden = Math.max(0, childCalls.length - MAX_SUBAGENT_ACTIVITY_ROWS)
   const segments = useMemo(
     () => activitySegments(hidden > 0 ? childCalls.slice(hidden) : childCalls),
@@ -155,8 +248,8 @@ function Outcome({
   agentName: string
 }): React.JSX.Element {
   const reduced = useReducedMotion() ?? false
-  const { filePathContext } = useSubagentSurface()
   const record = toolCall.subagent
+  const filePathContext = useRecordFilePathContext(record)
   const prose = (text: string, streaming: boolean) => (
     <AgentProse
       text={text}
@@ -190,15 +283,22 @@ function Outcome({
 
   const result = subagentResultText(toolCall)
   const error = record?.activity === 'idle' ? record.end.error?.trim() : undefined
+  // A settled worktree run keeps its diff summary next to the result; the
+  // worktree survives, so the changes are where the user can find them.
+  const diff =
+    record?.workspace?.mode === 'worktree' && record.workspace.diffStat ? (
+      <DiffSummary diffStat={record.workspace.diffStat} branch={record.workspace.branch} />
+    ) : null
   if (!result && !error) {
     return (
       <>
         <Missing>
-          {record?.background
+          {record?.background && record.source !== 'orchestrated'
             ? `This subagent ran in the background and reported to ${agentName}, not to this chat.`
             : 'The subagent returned no result.'}
         </Missing>
         {outputLine}
+        {diff}
       </>
     )
   }
@@ -209,6 +309,7 @@ function Outcome({
       )}
       {result && prose(result, false)}
       {outputLine}
+      {diff}
     </Section>
   )
 }
@@ -306,7 +407,9 @@ export function SubagentPanel({
   const toolCount = subagentToolCount(toolCall, childCalls)
   const totalTokens = record?.usage?.totalTokens
   const meta = [
-    subagentType(toolCall),
+    // An orchestrated run leads with its child agent ("Codex"), a reported
+    // record with its role or stated purpose.
+    record?.agent?.name ?? subagentType(toolCall),
     record?.model,
     toolCount ? `${toolCount} ${toolCount === 1 ? 'tool' : 'tools'}` : undefined,
     totalTokens !== undefined ? formatTokens(totalTokens) : undefined
@@ -345,7 +448,11 @@ export function SubagentPanel({
       </div>
       <div className="flex items-center gap-3 border-b border-border px-4 pb-3">
         <span ref={avatarRef} data-subagent-morph="" className="relative z-10 inline-flex shrink-0">
-          <SubagentAvatar status={status} waiting={isSubagentWaiting(toolCall, status)} />
+          <SubagentAvatar
+            agent={record?.agent}
+            status={status}
+            waiting={isSubagentWaiting(toolCall, status)}
+          />
         </span>
         <div className="flex min-w-0 flex-1 flex-col">
           {renderTitle ? (
@@ -374,6 +481,7 @@ export function SubagentPanel({
         ) : (
           <Missing>{agentName} did not share the task it gave this subagent.</Missing>
         )}
+        {record?.workspace && <WorkspaceSection workspace={record.workspace} />}
         <Activity
           toolCall={toolCall}
           childCalls={childCalls}

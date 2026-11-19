@@ -201,7 +201,7 @@ pub(super) async fn deliver_cursor_task(
 
 /// Fan routed `session/update` params out through the typed notification
 /// path.
-async fn deliver_routed(
+pub(super) async fn deliver_routed(
     state: &Mutex<DriverState>,
     persistence: Option<&Arc<SessionPersistence>>,
     sinks: &[Arc<dyn EventSink>],
@@ -251,6 +251,9 @@ pub(super) fn route_session_update(
         _ => {
             let mut state = state.lock();
             if let Some(route) = state.subagent_route(session_id) {
+                // The update is re-addressed to the chat below; an orchestrated
+                // child's own turn is keyed by its session, so nudge that one.
+                state.signal_idle(session_id);
                 if kind == "config_option_update" {
                     return child_config(&mut state, session_id, update);
                 }
@@ -602,6 +605,117 @@ fn change(state: &mut DriverState, child: &str, edit: impl FnOnce(&mut Subagent)
         .flatten();
     let title = (before.title != after.title).then_some(after.title.as_str());
     SessionRoute::Claimed(vec![record_update(&after, status, title)])
+}
+
+/// Upsert the orchestrated `record` into its chat's records and build the
+/// card updates that carry it: the dispatch `tool_call` announce for a
+/// record the chat has not seen, a `tool_call_update` for a change, and the
+/// `content` blocks of a settle result. Registers no route: the orchestrated
+/// child's route lives on the child's own driver.
+pub(super) fn orchestrated_updates(
+    state: &mut DriverState,
+    record: Subagent,
+    content: Option<&str>,
+    now_ms: u64,
+) -> Vec<Value> {
+    let mut after = record;
+    if after.state.is_idle() && after.ended_at.is_none() {
+        after.ended_at = Some(now_ms);
+    }
+    let root = after.root_session_id.clone();
+    let dispatch = after.dispatch_tool_call_id.clone();
+    let before = state.subagent_records().record(&root, &dispatch).cloned();
+    // A run never resumes: a working snapshot that lands after the settle
+    // card (a change card queued before it) is stale.
+    if before
+        .as_ref()
+        .is_some_and(|before| before.state.is_idle() && !after.state.is_idle())
+    {
+        return Vec::new();
+    }
+    state
+        .subagent_records()
+        .upsert(
+            &root,
+            &dispatch,
+            || subagents::DispatchEntry {
+                record: after.clone(),
+                view: subagents::ToolView::default(),
+            },
+            |entry| entry.record = after.clone(),
+        );
+    let Some(before) = before else {
+        let mut meta = Map::new();
+        meta.insert(SUBAGENT_META_KEY.to_string(), after.meta_value());
+        if let Some(parent) = &after.parent_id {
+            meta.insert(
+                "claudeCode".to_string(),
+                json!({ "parentToolUseId": format!("termul-subagent:{parent}") }),
+            );
+        }
+        let mut announce = json!({
+            "sessionUpdate": "tool_call",
+            "toolCallId": dispatch,
+            "title": after.title,
+            "kind": "think",
+            "status": card_status(&after.state).unwrap_or("in_progress"),
+            "_meta": meta,
+        });
+        // A settle for a record the chat no longer holds (evicted, or the
+        // chat reloaded) re-announces the card; it keeps the result.
+        if let Some(content) = content {
+            announce["content"] = result_content(content);
+        }
+        return vec![json!({ "sessionId": root, "update": announce })];
+    };
+    let status = card_status(&after.state).filter(|status| card_status(&before.state) != Some(*status));
+    let Some(content) = content else {
+        return if before != after {
+            vec![record_update(&after, status, None)]
+        } else {
+            Vec::new()
+        };
+    };
+    let mut update = json!({
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": dispatch,
+        "content": result_content(content),
+    });
+    if let Some(status) = status {
+        update["status"] = json!(status);
+    }
+    update["_meta"] = json!({ SUBAGENT_META_KEY: after.meta_value() });
+    vec![json!({ "sessionId": root, "update": update })]
+}
+
+/// Settle the orchestrated runs this dying agent parented and deliver
+/// their cards from its own teardown, before the session writers close.
+/// Every exit (stop, idle reap, crash, EOF, process shutdown) runs it; the
+/// agent's command channel is gone by then, so the engine cannot send them.
+pub(super) fn settle_orphaned_runs(
+    runtime: &tokio::runtime::Runtime,
+    state: &Mutex<DriverState>,
+    persistence: Option<&Arc<SessionPersistence>>,
+    sinks: &[Arc<dyn EventSink>],
+    agent_id: &AgentId,
+) {
+    let Some(engine) = crate::acp::orchestrator::installed() else {
+        return;
+    };
+    for (record, content) in engine.on_agent_gone(agent_id) {
+        let now = crate::acp::session_persistence::now_millis();
+        let updates = orchestrated_updates(&mut state.lock(), record, content.as_deref(), now);
+        if let Err(error) =
+            runtime.block_on(deliver_routed(state, persistence, sinks, agent_id, updates))
+        {
+            log::warn!("[acp] {agent_id}: an orphaned subagent's settle card failed: {error}");
+        }
+    }
+}
+
+/// The card content that carries a run's result text.
+fn result_content(text: &str) -> Value {
+    json!([{ "type": "content", "content": { "type": "text", "text": text } }])
 }
 
 /// Keep the child route's work flag (the idle reaper's evidence) in step

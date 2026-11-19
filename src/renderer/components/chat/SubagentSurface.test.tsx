@@ -5,6 +5,7 @@ import type { ToolCall } from '@/lib/acp-api'
 import type { FilePathResolutionContext } from '@/lib/file-path-links'
 import {
   endedState,
+  orchestratedSubagentRecord,
   type SubagentRecordOverrides,
   subagentToolCall
 } from '@/lib/test-utils/subagent'
@@ -25,6 +26,12 @@ vi.mock('framer-motion', async () => {
 })
 
 vi.mock('@/lib/log-api', () => ({ logFrontendError: vi.fn() }))
+
+const openFilePathFromTerminal = vi.hoisted(() => vi.fn(() => Promise.resolve({ ok: true })))
+vi.mock('@/lib/file-path-links', async () => ({
+  ...(await vi.importActual<typeof import('@/lib/file-path-links')>('@/lib/file-path-links')),
+  openFilePathFromTerminal
+}))
 
 function prose({
   text,
@@ -405,6 +412,22 @@ describe('subagents in the transcript', () => {
     expect(result).toHaveAttribute('data-project-root', '/proj')
   })
 
+  it('says a background subagent with no result reported to the agent, not this chat', () => {
+    renderChat({
+      toolCalls: [
+        dispatch(
+          'a',
+          { title: 'Watch the build', background: true, state: endedState() },
+          { status: 'completed' }
+        )
+      ]
+    })
+    fireEvent.click(row(/^Watch the build/))
+    expect(panel()).toHaveTextContent(
+      'This subagent ran in the background and reported to The agent, not to this chat.'
+    )
+  })
+
   it('opens a full-height bottom sheet on the phone and closes it with system Back', () => {
     mobileRef.current = true
     renderChat({ toolCalls: [dispatch('a', { title: 'Audit auth flow' })] })
@@ -542,5 +565,156 @@ describe('opening the subagent panel', () => {
     view.update({ toolCalls: [] })
     expect(screen.queryByTestId('subagent-panel')).toBeNull()
     expect(animate).not.toHaveBeenCalled()
+  })
+})
+
+describe('orchestrated subagents in the transcript', () => {
+  const CODEX_CONFIG = {
+    id: 'acp-registry:codex-acp',
+    name: 'Codex',
+    command: 'codex',
+    args: [],
+    env: {},
+    templateId: 'codex-acp'
+  }
+
+  function orchestrated(
+    id: string,
+    record: Parameters<typeof orchestratedSubagentRecord>[0] = {},
+    call: Partial<ToolCall> = {}
+  ): ToolCall {
+    seq += 1
+    return {
+      toolCallId: id,
+      title: 'Task',
+      kind: 'think',
+      status: 'in_progress',
+      seq,
+      timestamp: 1_200,
+      ...call,
+      subagent: orchestratedSubagentRecord({ ...record, dispatchToolCallId: id })
+    }
+  }
+
+  beforeEach(() => {
+    mobileRef.current = false
+    seq = 10
+    useOverlayStackStore.setState({ stack: [] })
+    useAcpStore.setState({ agentConfigs: [CODEX_CONFIG] })
+  })
+  afterEach(async () => {
+    cleanup()
+    await act(() => new Promise((resolve) => setTimeout(resolve, 0)))
+    useAcpStore.setState({ toolCalls: {}, agentConfigs: [] })
+  })
+
+  it('runs the row on the child identity: its glyph, agent, model and workspace chip', () => {
+    renderChat({
+      toolCalls: [
+        orchestrated('sub-1', {
+          model: 'gpt-5.5',
+          usage: { toolUses: 6 }
+        }),
+        child('sub-1', 'c1')
+      ]
+    })
+
+    const card = row(/^Implement the retry fix.*Working/)
+    expect(card.querySelector('[data-subagent-avatar] svg')).not.toBeNull()
+    expect(card).toHaveTextContent('worktree · troupe/sub/retry-fix')
+    // The workspace chip replaces the role and background chips.
+    expect(card).not.toHaveTextContent('background')
+    expect(card).toHaveTextContent('Codex · gpt-5.5 · Read refresh.rs · 6 tools')
+  })
+
+  it('docks the panel with the child identity, its workspace and the diff summary', () => {
+    renderChat({
+      toolCalls: [
+        orchestrated(
+          'sub-1',
+          {
+            model: 'gpt-5.5',
+            usage: { toolUses: 6 },
+            state: endedState(),
+            workspace: { diffStat: '3 files changed, +42 -7' }
+          },
+          {
+            status: 'completed',
+            rawOutput: { text: 'Done. Committed on the branch below; nothing merged.' }
+          }
+        )
+      ]
+    })
+    fireEvent.click(row(/^Implement the retry fix.*Done/))
+
+    expect(panel()).toHaveTextContent('Codex · gpt-5.5 · 6 tools')
+    expect(within(panel()).getByRole('heading', { name: 'Workspace' })).toBeVisible()
+    expect(within(panel()).getByText('/work/.termul/worktrees/sub-retry-fix')).toBeVisible()
+    expect(within(panel()).getByText('main @ 42be01e, with uncommitted changes')).toBeVisible()
+
+    const result = within(panel()).getByRole('heading', { name: 'Result' }).closest('section')
+    expect(result).toHaveTextContent('3 files changed')
+    expect(result?.querySelector('.text-success')).toHaveTextContent('+42')
+    expect(result?.querySelector('.text-destructive')).toHaveTextContent('−7')
+    // The branch shows twice: in the Workspace section and the diff summary.
+    expect(within(panel()).getAllByText('troupe/sub/retry-fix')).toHaveLength(2)
+  })
+
+  it('says a stopped run returned no result, not that it reported to the agent', () => {
+    renderChat({
+      toolCalls: [orchestrated('sub-1', { state: endedState('cancelled') }, { status: 'failed' })]
+    })
+    fireEvent.click(row(/^Implement the retry fix/))
+    expect(panel()).toHaveTextContent('The subagent returned no result.')
+    expect(panel()).not.toHaveTextContent('ran in the background')
+  })
+
+  it('resolves the result and activity paths in the run worktree, not the chat checkout', () => {
+    openFilePathFromTerminal.mockClear()
+    const worktree = '/work/.termul/worktrees/sub-retry-fix'
+    renderChat({
+      toolCalls: [
+        orchestrated(
+          'sub-1',
+          { state: endedState() },
+          { status: 'completed', rawOutput: { text: 'Wrote [Report](./report.md).' } }
+        ),
+        child('sub-1', 'c1')
+      ],
+      filePathContext: { cwd: '/work', projectRoot: '/work' }
+    })
+    fireEvent.click(row(/^Implement the retry fix/))
+
+    const result = within(panel()).getByTestId('agent-prose')
+    expect(result).toHaveTextContent('Wrote [Report](./report.md).')
+    expect(result).toHaveAttribute('data-cwd', worktree)
+    expect(result).toHaveAttribute('data-project-root', worktree)
+
+    fireEvent.click(within(panel()).getByRole('button', { name: 'Open file' }))
+    expect(openFilePathFromTerminal).toHaveBeenCalledWith('src/auth/refresh.rs', {
+      cwd: worktree,
+      projectRoot: worktree
+    })
+  })
+
+  it('keeps the chat file-path context for a run in the chat folder', () => {
+    renderChat({
+      toolCalls: [
+        orchestrated(
+          'sub-1',
+          {
+            state: endedState(),
+            workspace: { mode: 'shared', path: undefined, branch: undefined }
+          },
+          { status: 'completed', rawOutput: { text: 'Edited src/foo.ts.' } }
+        )
+      ],
+      filePathContext: { cwd: '/work/sub', projectRoot: '/work' }
+    })
+    fireEvent.click(row(/^Implement the retry fix/))
+
+    const result = within(panel()).getByTestId('agent-prose')
+    expect(result).toHaveAttribute('data-cwd', '/work/sub')
+    expect(result).toHaveAttribute('data-project-root', '/work')
   })
 })

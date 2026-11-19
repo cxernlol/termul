@@ -114,7 +114,7 @@ fn request_of_turn(id: &str, session: &str, turn: &str) -> Value {
 fn a_request_of_an_ended_turn_is_dropped_and_reads_already_resolved() {
     let rdz = permissions();
     rdz.register_event(&request_of_turn("perm-1", "sess-1", "turn-1"));
-    assert_eq!(rdz.release_turn("sess-1", "turn-1"), 1);
+    assert_eq!(rdz.release_turn("sess-1", "turn-1", None), 1);
 
     // Registered after its turn's release (separate emits raced).
     rdz.register_event(&request_of_turn("perm-late", "sess-1", "turn-1"));
@@ -140,7 +140,7 @@ fn a_request_of_an_ended_turn_is_dropped_and_reads_already_resolved() {
 fn a_session_remembers_only_its_latest_ended_turns() {
     let rdz = permissions();
     for n in 0..=ENDED_TURNS_PER_SESSION {
-        rdz.release_turn("sess-1", &format!("turn-{n}"));
+        rdz.release_turn("sess-1", &format!("turn-{n}"), None);
     }
     rdz.register_event(&request_of_turn("perm-old", "sess-1", "turn-0"));
     rdz.register_event(&request_of_turn("perm-new", "sess-1", "turn-1"));

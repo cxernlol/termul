@@ -33,7 +33,11 @@ use crate::mcp_catalog::{
 
 /// One install waiting on the card.
 pub(super) struct OpenMcpInstall {
+    /// The session whose turn the call belongs to.
     pub session_id: String,
+    /// The session the card shows on and is answered from: the chat of an
+    /// orchestrated child, else `session_id`.
+    pub card_session_id: String,
     sender: mpsc::UnboundedSender<McpInstallDecision>,
     /// A decline or an approve was accepted. A later answer is rejected
     /// until the loop reopens the card after a refused commit.
@@ -96,6 +100,7 @@ impl HostPlanServer {
         &self,
         agent_id: &str,
         session_id: &str,
+        card_session_id: &str,
         request: FormRequest,
         hung_up: impl Future<Output = ()>,
     ) -> FrameReply {
@@ -139,6 +144,7 @@ impl HostPlanServer {
             request_id.clone(),
             OpenMcpInstall {
                 session_id: session_id.to_string(),
+                card_session_id: card_session_id.to_string(),
                 sender: tx,
                 answered: false,
                 shown_at: Instant::now(),
@@ -146,7 +152,7 @@ impl HostPlanServer {
         );
         self.emit_card(
             agent_id,
-            session_id,
+            card_session_id,
             &request_id,
             &form,
             planned.as_ref(),
@@ -174,7 +180,7 @@ impl HostPlanServer {
                         self.drop_plan(&installer, &caller, planned.as_ref()).await;
                         break self.finish_terminal(
                             agent_id,
-                            session_id,
+                            card_session_id,
                             &request_id,
                             "cancelled",
                             CANCELLED_MESSAGE,
@@ -183,7 +189,7 @@ impl HostPlanServer {
                     match decision {
                         McpInstallDecision::Decline => {
                             self.drop_plan(&installer, &caller, planned.as_ref()).await;
-                            break self.finish_terminal(agent_id, session_id, &request_id, "declined", declined_message());
+                            break self.finish_terminal(agent_id, card_session_id, &request_id, "declined", declined_message());
                         }
                         McpInstallDecision::Cancelled => {
                             self.drop_plan(&installer, &caller, planned.as_ref()).await;
@@ -193,7 +199,7 @@ impl HostPlanServer {
                             );
                             break self.finish_terminal(
                                 agent_id,
-                                session_id,
+                                card_session_id,
                                 &request_id,
                                 "cancelled",
                                 CANCELLED_MESSAGE,
@@ -203,12 +209,12 @@ impl HostPlanServer {
                             match self.plan_for(&installer, &request, &caller, inputs, planned.as_ref()).await {
                                 PlanFor::Ready(next) => {
                                     planned = Some(next);
-                                    self.emit_card(agent_id, session_id, &request_id, &form, planned.as_ref(), None);
+                                    self.emit_card(agent_id, card_session_id, &request_id, &form, planned.as_ref(), None);
                                 }
-                                PlanFor::Reply(reply) => break self.reply_and_close(agent_id, session_id, &request_id, reply),
+                                PlanFor::Reply(reply) => break self.reply_and_close(agent_id, card_session_id, &request_id, reply),
                                 PlanFor::Stay(_) => {
                                     planned = None;
-                                    self.emit_card(agent_id, session_id, &request_id, &form, None, Some(FIELD_ERROR));
+                                    self.emit_card(agent_id, card_session_id, &request_id, &form, None, Some(FIELD_ERROR));
                                 }
                             }
                         }
@@ -218,12 +224,12 @@ impl HostPlanServer {
                                 match self.plan_for(&installer, &request, &caller, inputs, planned.as_ref()).await {
                                     PlanFor::Ready(next) => {
                                         planned = Some(next);
-                                        self.emit_card(agent_id, session_id, &request_id, &form, planned.as_ref(), Some(REVIEW_AGAIN));
+                                        self.emit_card(agent_id, card_session_id, &request_id, &form, planned.as_ref(), Some(REVIEW_AGAIN));
                                     }
-                                    PlanFor::Reply(reply) => break self.reply_and_close(agent_id, session_id, &request_id, reply),
+                                    PlanFor::Reply(reply) => break self.reply_and_close(agent_id, card_session_id, &request_id, reply),
                                     PlanFor::Stay(_) => {
                                         planned = None;
-                                        self.emit_card(agent_id, session_id, &request_id, &form, None, Some(FIELD_ERROR));
+                                        self.emit_card(agent_id, card_session_id, &request_id, &form, None, Some(FIELD_ERROR));
                                     }
                                 }
                                 self.reopen_install_answer(&request_id);
@@ -233,7 +239,7 @@ impl HostPlanServer {
                                 plan.plan_id == plan_id && plan.digest == launch_digest
                             });
                             if !matches {
-                                self.emit_card(agent_id, session_id, &request_id, &form, planned.as_ref(), Some(STALE_REVIEW));
+                                self.emit_card(agent_id, card_session_id, &request_id, &form, planned.as_ref(), Some(STALE_REVIEW));
                                 self.reopen_install_answer(&request_id);
                                 continue;
                             }
@@ -247,22 +253,22 @@ impl HostPlanServer {
                                 secret_values,
                             }, &caller).await {
                                 Ok(committed) => {
-                                    break self.finish_installed(&installer, agent_id, session_id, &request_id, committed).await;
+                                    break self.finish_installed(&installer, agent_id, card_session_id, &request_id, committed).await;
                                 }
                                 Err(error) if error.code == "VALIDATION_ERROR" => {
-                                    self.emit_card(agent_id, session_id, &request_id, &form, planned.as_ref(), Some(FIELD_ERROR));
+                                    self.emit_card(agent_id, card_session_id, &request_id, &form, planned.as_ref(), Some(FIELD_ERROR));
                                     self.reopen_install_answer(&request_id);
                                 }
                                 Err(error) if error.code == "MCP_PLAN_EXPIRED" || error.code == "MCP_PLAN_NOT_FOUND" => {
                                     match self.plan_for(&installer, &request, &caller, inputs, planned.as_ref()).await {
                                         PlanFor::Ready(next) => {
                                             planned = Some(next);
-                                            self.emit_card(agent_id, session_id, &request_id, &form, planned.as_ref(), Some(EXPIRED_REVIEW));
+                                            self.emit_card(agent_id, card_session_id, &request_id, &form, planned.as_ref(), Some(EXPIRED_REVIEW));
                                         }
-                                        PlanFor::Reply(reply) => break self.reply_and_close(agent_id, session_id, &request_id, reply),
+                                        PlanFor::Reply(reply) => break self.reply_and_close(agent_id, card_session_id, &request_id, reply),
                                         PlanFor::Stay(_) => {
                                             planned = None;
-                                            self.emit_card(agent_id, session_id, &request_id, &form, None, Some(FIELD_ERROR));
+                                            self.emit_card(agent_id, card_session_id, &request_id, &form, None, Some(FIELD_ERROR));
                                         }
                                     }
                                     self.reopen_install_answer(&request_id);
@@ -273,7 +279,7 @@ impl HostPlanServer {
                                     }
                                     self.emit_resolved(&Resolved {
                                         agent_id,
-                                        session_id,
+                                        session_id: card_session_id,
                                         request_id: &request_id,
                                         outcome: "error",
                                         name: None,
@@ -295,7 +301,7 @@ impl HostPlanServer {
                     );
                     break self.finish_terminal(
                         agent_id,
-                        session_id,
+                        card_session_id,
                         &request_id,
                         "cancelled",
                         CANCELLED_MESSAGE,

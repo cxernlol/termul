@@ -279,3 +279,129 @@ async fn a_cancelled_question_releases_only_its_own_ticket() {
     assert_eq!(late["err"]["code"], "already_resolved", "{late}");
     assert!(question_outstanding(&host, "q-2"), "another question of the session survives");
 }
+
+/// The private agent an orchestrated subagent runs as. Its approvals are
+/// raised under the chat's session, as itself.
+const CHILD_AGENT: &str = "child-1";
+
+/// A chat's turn ending or being cancelled releases the chat's own approvals
+/// only: the subagent's stays outstanding and answerable while its run waits
+/// on it. The subagent's agent going (every settle of its run kills it)
+/// releases its approval and promotes the chat's next one.
+#[tokio::test(start_paused = true)]
+async fn a_subagent_approval_outlives_the_chat_turn_and_ends_with_its_agent() {
+    let host = host_with(|acp, sessions| {
+        acp.install_test_agent_with_sessions(AgentId(TICKET_AGENT.to_string()), sessions);
+        acp.install_test_agent_with_sessions(AgentId(CHILD_AGENT.to_string()), HashSet::new());
+    });
+    let mut conn = host.connect();
+    conn.authenticate().await;
+    permission_request(&host, "perm-chat", TICKET_AGENT, SESSION);
+    permission_request(&host, "perm-child", CHILD_AGENT, SESSION);
+
+    host.relay.emit(&AcpEvent {
+        sid: Some(SESSION.to_string()),
+        type_: "acp:prompt_complete",
+        payload: json!({"agentId": TICKET_AGENT, "sessionId": SESSION, "turnId": "turn-1"}),
+    });
+    let late = respond(&mut conn, "r1", "perm-chat").await;
+    assert_eq!(
+        late["err"]["code"], "already_resolved",
+        "the chat's own approval ends with its turn: {late}"
+    );
+    assert!(outstanding(&host, "perm-child"), "the subagent's approval outlives the chat's turn");
+    let pending = host
+        .relay
+        .rendezvous()
+        .expect("permission rendezvous")
+        .pending_requests(SESSION);
+    assert_eq!(pending.len(), 1, "{pending:?}");
+    assert_eq!(
+        pending[0]["requestId"], "perm-child",
+        "a resubscribing client still gets the subagent's approval"
+    );
+
+    permission_request(&host, "perm-chat-2", TICKET_AGENT, SESSION);
+    let cancelled = conn
+        .request("c1", "cancel_prompt", json!({"agentId": TICKET_AGENT, "sessionId": SESSION}))
+        .await;
+    assert_eq!(cancelled["ok"], true, "{cancelled}");
+    let late_queued = respond(&mut conn, "r2", "perm-chat-2").await;
+    assert_eq!(late_queued["err"]["code"], "already_resolved", "{late_queued}");
+    assert!(
+        outstanding(&host, "perm-child"),
+        "a stop of the chat's turn keeps the subagent's approval"
+    );
+
+    permission_request(&host, "perm-chat-3", TICKET_AGENT, SESSION);
+    let killed = conn.request("k1", "kill_agent", json!({"agentId": CHILD_AGENT})).await;
+    assert_eq!(killed["ok"], true, "{killed}");
+    let late_child = respond(&mut conn, "r3", "perm-child").await;
+    assert_eq!(late_child["err"]["code"], "already_resolved", "{late_child}");
+    assert!(outstanding(&host, "perm-chat-3"), "the chat's queued approval is promoted");
+}
+
+/// A question, an elicitation and an MCP install card from `agent` in the
+/// chat, ids suffixed `-<who>`.
+fn raise_prompts(host: &Host, agent: &str, who: &str) {
+    question_request(host, &format!("q-{who}"), agent, SESSION);
+    for (type_, request_id) in [
+        ("acp:elicitation_request", format!("elicit-{who}")),
+        ("acp:mcp_install_request", format!("mcp-{who}")),
+    ] {
+        host.relay.emit(&AcpEvent {
+            sid: Some(SESSION.to_string()),
+            type_,
+            payload: json!({"agentId": agent, "sessionId": SESSION, "requestId": request_id}),
+        });
+    }
+}
+
+/// The request ids of the chat's listed elicitations and install cards.
+fn listed_prompts(host: &Host) -> Vec<String> {
+    host.relay
+        .elicitations()
+        .pending_requests(SESSION)
+        .into_iter()
+        .chain(host.relay.mcp_installs().pending_requests(SESSION))
+        .map(|request| request["requestId"].as_str().unwrap_or_default().to_string())
+        .collect()
+}
+
+/// A chat's turn ending or being cancelled releases the chat's own
+/// questions, elicitations and install cards only: a subagent's stay listed
+/// and answerable while its run waits on them, until its agent goes.
+#[tokio::test(start_paused = true)]
+async fn subagent_prompts_outlive_the_chat_turn_and_end_with_its_agent() {
+    let host = host_with(|acp, sessions| {
+        acp.install_test_agent_with_sessions(AgentId(TICKET_AGENT.to_string()), sessions);
+        acp.install_test_agent_with_sessions(AgentId(CHILD_AGENT.to_string()), HashSet::new());
+    });
+    let mut conn = host.connect();
+    conn.authenticate().await;
+    raise_prompts(&host, TICKET_AGENT, "chat");
+    raise_prompts(&host, CHILD_AGENT, "child");
+
+    host.relay.emit(&AcpEvent {
+        sid: Some(SESSION.to_string()),
+        type_: "acp:prompt_complete",
+        payload: json!({"agentId": TICKET_AGENT, "sessionId": SESSION, "turnId": "turn-1"}),
+    });
+    assert!(!question_outstanding(&host, "q-chat"), "the chat's own question ends with its turn");
+    assert!(question_outstanding(&host, "q-child"), "the subagent's question outlives it");
+    assert_eq!(listed_prompts(&host), ["elicit-child", "mcp-child"]);
+
+    raise_prompts(&host, TICKET_AGENT, "chat-2");
+    let cancelled = conn
+        .request("c1", "cancel_prompt", json!({"agentId": TICKET_AGENT, "sessionId": SESSION}))
+        .await;
+    assert_eq!(cancelled["ok"], true, "{cancelled}");
+    assert!(!question_outstanding(&host, "q-chat-2"));
+    assert!(question_outstanding(&host, "q-child"), "a stop of the chat's turn keeps it");
+    assert_eq!(listed_prompts(&host), ["elicit-child", "mcp-child"]);
+
+    let killed = conn.request("k1", "kill_agent", json!({"agentId": CHILD_AGENT})).await;
+    assert_eq!(killed["ok"], true, "{killed}");
+    assert!(!question_outstanding(&host, "q-child"));
+    assert!(listed_prompts(&host).is_empty(), "{:?}", listed_prompts(&host));
+}

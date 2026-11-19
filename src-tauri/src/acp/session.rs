@@ -437,7 +437,7 @@ impl DriverState {
         let ids: Vec<String> = self
             .pending_elicitations
             .iter()
-            .filter(|(_, item)| item.session_id == session_id)
+            .filter(|(_, item)| self.parked_for(session_id, &item.session_id))
             .map(|(id, _)| id.clone())
             .collect();
         ids.into_iter()
@@ -453,7 +453,7 @@ impl DriverState {
         let ids: Vec<String> = self
             .pending_questions
             .iter()
-            .filter(|(_, q)| q.session_id == session_id)
+            .filter(|(_, q)| self.parked_for(session_id, &q.session_id))
             .map(|(id, _)| id.clone())
             .collect();
         ids.into_iter()
@@ -475,7 +475,7 @@ impl DriverState {
         let ids: Vec<String> = self
             .pending_permissions
             .iter()
-            .filter(|(_, p)| p.session_id == session_id)
+            .filter(|(_, p)| self.parked_for(session_id, &p.session_id))
             .map(|(id, _)| id.clone())
             .collect();
         let drained: Vec<PendingPermission> = ids
@@ -484,7 +484,7 @@ impl DriverState {
             .collect();
         for permission in &drained {
             self.background_commands
-                .permission_cancelled(session_id, &permission.tool_call_id);
+                .permission_cancelled(&permission.session_id, &permission.tool_call_id);
         }
         drained
     }
@@ -508,11 +508,15 @@ impl DriverState {
         self.ephemeral_sessions.insert(session_id);
     }
 
-    /// A native subagent session takes the mark of the chat it belongs to.
+    /// A native subagent session takes the mark of the chat it belongs to;
+    /// an orchestrated child, whose chat lives on another connection, keeps
+    /// its own.
     #[must_use]
     pub(crate) fn is_ephemeral(&self, session_id: &str) -> bool {
-        self.ephemeral_sessions
-            .contains(self.subagents.root_of(session_id))
+        self.ephemeral_sessions.contains(session_id)
+            || self
+                .ephemeral_sessions
+                .contains(self.subagents.root_of(session_id))
     }
 
     /// Stash the durable registration metadata for a backend-ephemeral session
@@ -578,10 +582,12 @@ impl DriverState {
     }
 
     /// Look up the canonicalized workspace root for a session, if known. A
-    /// native subagent session uses the root of the chat it belongs to.
+    /// native subagent session uses the root of the chat it belongs to; an
+    /// orchestrated child keeps its own (its worktree).
     pub(crate) fn session_root(&self, session_id: &str) -> Option<PathBuf> {
         self.session_roots
-            .get(self.subagents.root_of(session_id))
+            .get(session_id)
+            .or_else(|| self.session_roots.get(self.subagents.root_of(session_id)))
             .cloned()
     }
 

@@ -198,6 +198,37 @@ export interface AgentIdleWindowStatus {
   source: 'default' | 'setting' | 'env' | 'operator'
 }
 
+/** One launchable agent in the sub-agent orchestrator's settings view. */
+export interface SubagentSettingsAgentView {
+  agentId: string
+  name: string
+  allowed: boolean
+}
+
+/**
+ * The orchestrator's settings view (`subagent_settings_get` reply):
+ * `{ enabled, maxRunning, maxDepth, agents }`. `agents` lists the launchable
+ * agents with their `allowed` switch.
+ */
+export interface SubagentSettingsView {
+  enabled: boolean
+  maxRunning: number
+  maxDepth: number
+  agents: SubagentSettingsAgentView[]
+}
+
+/**
+ * A `subagent_settings_set` call: every field optional, an omitted field
+ * keeps its value. `agents` carries allow toggles keyed by `agentId`; an
+ * omitted agent keeps its setting. The reply is the new full view.
+ */
+export interface SubagentSettingsInput {
+  enabled?: boolean
+  maxRunning?: number
+  maxDepth?: number
+  agents?: Array<{ agentId: string; allowed: boolean }>
+}
+
 export interface AcpTransport {
   installRegistryBinary(
     request: InstallAcpRegistryBinaryRequest
@@ -259,6 +290,17 @@ export interface AcpTransport {
    * `setting`, or `default`.
    */
   getAgentIdleWindow(): Promise<AgentIdleWindowStatus>
+  /**
+   * The orchestrator's sub-agent settings (`subagent_settings_get`), a read
+   * every carrier shares. Failures throw {@link AcpTransportError}
+   * (`unsupported` until the host lands the route).
+   */
+  getSubagentSettings(): Promise<SubagentSettingsView>
+  /**
+   * Change the sub-agent settings (`subagent_settings_set`, convergent): the
+   * omitted fields keep their values; the reply is the new full view.
+   */
+  setSubagentSettings(input: SubagentSettingsInput): Promise<SubagentSettingsView>
   fetchRegistrySnapshot(reason: RegistryCheckReason): Promise<AcpRegistrySnapshot>
   /**
    * On-demand MCP client probe (Troupe's own rmcp client connection — NOT the

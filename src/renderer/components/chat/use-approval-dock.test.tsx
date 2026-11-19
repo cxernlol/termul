@@ -14,7 +14,9 @@ vi.mock('@/lib/log-api', () => ({ logFrontendError }))
 vi.mock('sonner', () => ({ toast: { error: vi.fn() } }))
 vi.mock('@/stores/acp-store', () => ({
   useAcpStore: (s: (state: Record<string, unknown>) => unknown) =>
-    s({ respondPermission, answerQuestion })
+    s({ respondPermission, answerQuestion, toolCalls: {} }),
+  useAgentTemplateId: vi.fn(() => null),
+  useAgentIcon: vi.fn(() => null)
 }))
 
 import { AskUserQuestion } from './AskUserQuestion'

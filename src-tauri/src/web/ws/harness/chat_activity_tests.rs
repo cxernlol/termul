@@ -416,7 +416,7 @@ async fn released_tickets_stop_needing_you() {
         activity(&watcher.peer).get(SESSION),
         Some(&record(false, true, false, Value::Null))
     );
-    host.relay.release_session_tickets(SESSION);
+    host.relay.release_session_tickets(SESSION, None);
     watcher.peer.read_for(Duration::from_millis(50)).await;
     assert_eq!(
         activity(&watcher.peer).get(SESSION),

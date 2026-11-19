@@ -138,6 +138,8 @@ fn title_frame_round_trips_with_kind_and_title() {
         automation_input: None,
         read_chat: None,
         mcp_install: None,
+        subagent_tool: None,
+        subagent_input: None,
         start_chat: None,
         send_to_chat: None,
     };
@@ -469,6 +471,8 @@ fn title_frame_carries_the_optional_branch_slug() {
         automation_input: None,
         read_chat: None,
         mcp_install: None,
+        subagent_tool: None,
+        subagent_input: None,
         start_chat: None,
         send_to_chat: None,
     };

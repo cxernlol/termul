@@ -93,8 +93,8 @@ describe('web-protocol.types — event/request type registries (AC2)', () => {
     expect(WS_REQUEST_TYPES).toContain('get_session_payload')
   })
 
-  it('exports exactly 86 request types including chat MCP install approval', () => {
-    expect(WS_REQUEST_TYPES).toHaveLength(86)
+  it('exports exactly 88 request types including chat MCP install approval', () => {
+    expect(WS_REQUEST_TYPES).toHaveLength(88)
     const expected = [
       'send_prompt',
       'cancel_prompt',
@@ -170,6 +170,9 @@ describe('web-protocol.types — event/request type registries (AC2)', () => {
       'unwatch',
       // Explicit host-default project change.
       'set_default_project',
+      // Orchestrated sub-agents: the settings view read and its write.
+      'subagent_settings_get',
+      'subagent_settings_set',
       // Claude Accounts: view, choose, add, rename, remove and link sign-in.
       'list_claude_accounts',
       'list_claude_usage',

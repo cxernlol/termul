@@ -185,6 +185,10 @@ pub use acp::{
 // + `host_mcp::child::run()` through this re-export (the `acp` module itself is
 // private). See `acp/host_mcp/mod.rs` + spec `spec-acp-host-todo-plan-tool.md`.
 pub use acp::host_mcp;
+// Subagent orchestrator: the binaries install the engine at startup
+// (`lib.rs` desktop setup, `server_main.rs`) through this re-export; the
+// `acp` module itself is private.
+pub use acp::orchestrator;
 // Local-only Claude admin CLI for the standalone `termul-server`
 // (`termul-server claude ...`): same re-export pattern as `host_mcp` — the
 // `acp` module is private, so `server_main.rs` reaches `claude_admin::run()`
@@ -1810,6 +1814,24 @@ pub fn run() {
                 let registry = Arc::clone(&project_registry);
                 Arc::new(move |project_id| registry.canonical_root(project_id))
             };
+            // The subagent orchestrator: one engine per process, reached
+            // through `acp::orchestrator::installed` by the host MCP tools,
+            // the stop interception and the chat/agent lifecycle hooks. The
+            // shared-live web server reuses the desktop's engine.
+            let sweep_roots: Vec<std::path::PathBuf> = project_registry
+                .snapshot()
+                .projects
+                .into_iter()
+                .filter(|project| !project.is_archived)
+                .filter_map(|project| project.path.map(std::path::PathBuf::from))
+                .collect();
+            acp::orchestrator::install(
+                Arc::clone(&acp_manager),
+                app_data_dir.clone(),
+                acp_install_service.clone(),
+                sweep_roots,
+                tauri::async_runtime::handle().inner().clone(),
+            );
             // `mcp_tool` nodes call the host's one MCP server list.
             let mcp_store = handle.state::<remote::SharedLiveData>().store.clone();
             crate::acp::host_mcp::mcp_install::install_live(Arc::clone(&mcp_store));

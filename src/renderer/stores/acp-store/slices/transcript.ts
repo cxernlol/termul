@@ -31,6 +31,7 @@ import { splitReadOnlyGuard } from '@/lib/github-handoff/read-only-guard'
 import { logFrontendError } from '@/lib/log-api'
 import { markPlanTool, planEventHasList, plansAfterToolCall } from '@/lib/plan-session'
 import { wireBlocksToDisplay } from '@/lib/skills-wire-reverse'
+import { dismissSettledChildApprovals } from '../child-approvals'
 import { forgetComposerSession } from '../composer-options'
 import {
   acceptsSessionTranscriptEvents,
@@ -1475,6 +1476,7 @@ export const createTranscriptSlice: StateCreator<AcpState, [], [], TranscriptSli
     // CAP-3 replay contract: drop events the installed payload already covers,
     // unless the open turn's attach replay re-delivers them in full.
     if (isHistoryCoveredToolEvent(e.sessionId, eventSeq)) return
+    dismissSettledChildApprovals(get, set, e.sessionId, e.toolCall)
     const replaySeq = liveTurnReplaySeq(e.sessionId, eventSeq)
     const session = get().sessions[e.sessionId]
     const useCoalesce = !session?.replaying
@@ -1557,6 +1559,7 @@ export const createTranscriptSlice: StateCreator<AcpState, [], [], TranscriptSli
     // (the restored card already reflects the persisted update), unless the
     // open turn's attach replay re-delivers them in full.
     if (isHistoryCoveredToolEvent(e.sessionId, eventSeq)) return
+    dismissSettledChildApprovals(get, set, e.sessionId, e.update)
     const session = get().sessions[e.sessionId]
     const useCoalesce = !session?.replaying
     const apply = (s: AcpState): Partial<AcpState> => {

@@ -32,6 +32,7 @@ pub mod mcp_install;
 pub mod parent;
 pub mod presence;
 pub mod read_chat;
+pub mod subagent_tools;
 pub mod worker_chats;
 
 #[cfg(test)]
@@ -93,7 +94,8 @@ plain text. When the user gives you a Troupe chat ID or a copied chat reference,
 with the `read_chat` tool. To run a task in a parallel chat (a managed Claude chat goes on \
 the account with the most room), call `start_chat`, then use `read_chat` and `send_to_chat`. \
 To install an MCP server from a link, a registry name, or \
-JSON, read it with your own tools and call `mcp_install`. The user approves on a card in the chat.";
+JSON, read it with your own tools and call `mcp_install`. The user approves on a card in the chat. \
+Delegate to another agent with `subagent_start` and `subagent_wait`.";
 
 /// The context budget Claude Code gives a server's `instructions`: it keeps
 /// this many UTF-16 code units (`CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH`,
@@ -210,6 +212,9 @@ pub enum FrameKind {
     SendToChat,
     /// `list_started_chats`: the caller's worker chats and their status.
     ListStartedChats,
+    /// A `subagent_*` tool call, answered by the host orchestrator engine
+    /// for the calling chat.
+    Subagent,
 }
 
 /// One option the agent offers in an `ask_user` question.
@@ -423,6 +428,12 @@ pub struct FrameRequest {
     /// The chat and message of a `SendToChat` frame.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub send_to_chat: Option<worker_chats::SendToChatInput>,
+    /// The tool a `Subagent` frame serves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent_tool: Option<subagent_tools::SubagentTool>,
+    /// A `Subagent` frame's tool arguments, parsed by the parent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent_input: Option<serde_json::Value>,
 }
 
 /// Parent reply frame (one per connection). `result` carries the browser

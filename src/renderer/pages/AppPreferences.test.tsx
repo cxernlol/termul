@@ -25,7 +25,11 @@ vi.mock('@/lib/api', () => ({
     setSessionNewTimeout: vi.fn().mockResolvedValue({ success: true }),
     setSessionReopenTimeout: vi.fn().mockResolvedValue({ success: true }),
     setAgentIdleWindow: vi.fn().mockResolvedValue(undefined),
-    getAgentIdleWindow: vi.fn().mockResolvedValue({ secs: 1800, source: 'default' })
+    getAgentIdleWindow: vi.fn().mockResolvedValue({ secs: 1800, source: 'default' }),
+    getSubagentSettings: vi
+      .fn()
+      .mockResolvedValue({ enabled: true, maxRunning: 4, maxDepth: 2, agents: [] }),
+    setSubagentSettings: vi.fn()
   },
   logApi: {
     revealLogDir: vi.fn(),

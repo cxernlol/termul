@@ -1,3 +1,4 @@
+import type { SubagentAgent } from '@shared/types/subagent'
 import { memo } from 'react'
 import { AgentIcon } from '@/components/agents/AgentIcon'
 import { Bot, Check, ChevronRight, X } from '@/components/icons'
@@ -6,12 +7,15 @@ import { Spinner } from '@/components/ui/spinner'
 import type { ToolCall } from '@/lib/acp-api'
 import { getAgentById } from '@/lib/agents/custom-agents'
 import { cn } from '@/lib/utils'
+import { useAgentIcon, useAgentTemplateId } from '@/stores/acp-store'
+import { AgentGlyph } from './AgentGlyph'
 import {
   type SubagentCounts,
   type SubagentStatus,
   subagentDetail,
   subagentTitle,
-  subagentType
+  subagentType,
+  subagentWorkspaceChip
 } from './subagent-strip'
 import { useSubagentChildCalls, useSubagentSurface } from './subagent-surface-context'
 import { SubagentElapsed } from './subagent-time'
@@ -110,16 +114,35 @@ export function SubagentStatusLabel({
   )
 }
 
-/** The chat's agent icon in a round well, with a status dot when `status` is given. */
+/**
+ * The child agent's own glyph: the persisted config the record's `configId`
+ * names (its templateId -> the bundled `acp:` catalog icon, or its custom
+ * icon), else the config behind the child's live agent id. Falls back to the
+ * generic `Bot` when neither resolves.
+ */
+function SubagentChildGlyph({ agent }: { agent: SubagentAgent }): React.JSX.Element {
+  const templateId = useAgentTemplateId(agent.agentId, agent.configId)
+  const icon = useAgentIcon(agent.agentId, agent.configId)
+  return <AgentGlyph templateId={templateId} icon={icon} size={16} />
+}
+
+/**
+ * The chat's agent icon in a round well, with a status dot when `status` is
+ * given. An orchestrated run carries its own child agent, whose icon replaces
+ * the chat's.
+ */
 export function SubagentAvatar({
+  agent,
   status,
   waiting = false,
   size = 'md',
   className
 }: {
-  status?: SubagentStatus
+  /** The orchestrated run's child agent, when the record names one. */
+  agent?: SubagentAgent
   /** The subagent waits on the user: the dot stays warning. */
   waiting?: boolean
+  status?: SubagentStatus
   size?: 'sm' | 'md'
   className?: string
 }): React.JSX.Element {
@@ -134,7 +157,9 @@ export function SubagentAvatar({
         className
       )}
     >
-      {agentId && getAgentById(agentId) ? (
+      {agent ? (
+        <SubagentChildGlyph agent={agent} />
+      ) : agentId && getAgentById(agentId) ? (
         <AgentIcon agentId={agentId} className="size-4" />
       ) : (
         <Bot size={16} className="text-muted-foreground" />
@@ -233,7 +258,12 @@ function SubagentRowComponent({
   const { open, openId, opensDialog } = useSubagentSurface()
   const childCalls = useSubagentChildCalls(toolCall.toolCallId)
   const title = subagentTitle(toolCall)
-  const type = subagentType(toolCall)
+  // An orchestrated run shows the child agent in its detail line and the
+  // workspace chip here; the role/purpose and background chips belong to the
+  // agent-reported records.
+  const agent = toolCall.subagent?.agent
+  const type = agent ? undefined : subagentType(toolCall)
+  const workspaceChip = agent ? subagentWorkspaceChip(toolCall) : undefined
   const detail = subagentDetail(toolCall, status, childCalls)
   const selected = openId === toolCall.toolCallId && surface === 'card'
 
@@ -264,12 +294,13 @@ function SubagentRowComponent({
             : 'hover:bg-foreground/[0.03]'
       )}
     >
-      <SubagentAvatar status={status} waiting={isSubagentWaiting(toolCall, status)} />
+      <SubagentAvatar agent={agent} status={status} waiting={isSubagentWaiting(toolCall, status)} />
       <span className="flex min-w-0 flex-1 flex-col">
         <span className="flex min-w-0 items-center gap-2 overflow-hidden">
           <span className="min-w-0 truncate text-sm font-medium text-foreground">{title}</span>
           {type && <SubagentTypeChip type={type} className={NARROW_HIDDEN} />}
-          {toolCall.subagent?.background && (
+          {workspaceChip && <SubagentTypeChip type={workspaceChip} className={NARROW_HIDDEN} />}
+          {!agent && toolCall.subagent?.background && (
             <SubagentTypeChip type="background" className={NARROW_HIDDEN} />
           )}
         </span>

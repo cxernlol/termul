@@ -345,6 +345,8 @@ pub(crate) fn new_entry(
             model: None,
             usage: None,
             output_file: None,
+            agent: None,
+            workspace: None,
             caps,
         },
         view: ToolView::default(),

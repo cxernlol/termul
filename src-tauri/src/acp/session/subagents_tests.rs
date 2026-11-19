@@ -84,3 +84,98 @@ fn a_full_table_evicts_an_ended_route_first() {
     assert!(routes.route("agent-0").is_some());
     assert!(routes.route("agent-new").is_some());
 }
+
+fn origin(root: &str, parent: &str, parent_dispatch: Option<&str>) -> crate::acp::manager::ChildOrigin {
+    crate::acp::manager::ChildOrigin {
+        root_session_id: root.to_string(),
+        parent_session_id: parent.to_string(),
+        parent_dispatch_id: parent_dispatch.map(str::to_string),
+        dispatch_id: "termul-subagent:sub-9f2c1a".to_string(),
+        depth: 1,
+    }
+}
+
+#[test]
+fn a_seeded_child_routes_to_the_engine_supplied_chat() {
+    let mut state = DriverState::default();
+    let route = state.seed_child_route(&origin("chat-1", "chat-1", None), "sess-child");
+    assert_eq!(route.root_session_id, "chat-1");
+    assert_eq!(route.parent_session_id, "chat-1");
+    assert_eq!(route.dispatch_id, "termul-subagent:sub-9f2c1a");
+    assert_eq!(route.parent_dispatch_id, None);
+    assert!(!route.ended);
+    assert_eq!(state.chat_session_for("sess-child"), "chat-1");
+    assert_eq!(state.chat_session_for("chat-1"), "chat-1");
+}
+
+#[test]
+fn a_seeded_nested_child_carries_its_parents_dispatch() {
+    let mut state = DriverState::default();
+    let nested = state.seed_child_route(
+        &origin("chat-1", "sess-parent", Some("termul-subagent:sub-parent1")),
+        "sess-child",
+    );
+    assert_eq!(nested.root_session_id, "chat-1");
+    assert_eq!(nested.parent_session_id, "sess-parent");
+    assert_eq!(
+        nested.parent_dispatch_id.as_deref(),
+        Some("termul-subagent:sub-parent1")
+    );
+    // No parent walk: seeding never derives anything from sess-parent.
+    assert!(state.subagent_route("sess-parent").is_none());
+}
+
+#[test]
+fn a_repeated_seed_keeps_the_first_route() {
+    let mut state = DriverState::default();
+    state.seed_child_route(&origin("chat-1", "chat-1", None), "sess-child");
+    let again = state.seed_child_route(&origin("chat-9", "chat-9", None), "sess-child");
+    assert_eq!(again.root_session_id, "chat-1");
+}
+
+#[test]
+fn an_orchestrated_child_works_for_its_chat_while_a_headless_session_stays_locked() {
+    let mut state = DriverState::new();
+    state.mark_ephemeral("oneshot".to_string());
+    assert!(state.is_headless("oneshot"), "a one-shot session has no chat");
+
+    state.mark_ephemeral("sess-child".to_string());
+    state.seed_child_route(&origin("chat-1", "chat-1", None), "sess-child");
+    assert!(
+        !state.is_headless("sess-child"),
+        "an orchestrated child reaches files and terminals for its chat"
+    );
+}
+
+#[test]
+fn an_orchestrated_child_keeps_its_own_root_mark_and_parked_prompts() {
+    // The child's private connection: its chat is not a session here.
+    let mut state = DriverState::new();
+    state.set_session_root("sess-child".to_string(), "/repo/wt".into());
+    state.mark_ephemeral("sess-child".to_string());
+    state.seed_child_route(&origin("chat-1", "chat-1", None), "sess-child");
+    assert_eq!(
+        state.session_root("sess-child"),
+        Some(std::path::PathBuf::from("/repo/wt")),
+        "the child works in its own worktree"
+    );
+    assert!(state.is_ephemeral("sess-child"), "the child keeps its own mark");
+    assert!(!state.is_headless("sess-child"));
+    assert!(
+        state.parked_for("sess-child", "chat-1"),
+        "a prompt parked under the foreign chat is the child's"
+    );
+}
+
+#[test]
+fn a_native_child_uses_its_chats_root_and_never_drains_the_chat() {
+    let mut state = DriverState::new();
+    state.set_session_root("chat-1".to_string(), "/repo".into());
+    state.register_subagent("chat-1", "sess-native");
+    assert_eq!(
+        state.session_root("sess-native"),
+        Some(std::path::PathBuf::from("/repo"))
+    );
+    assert!(!state.parked_for("sess-native", "chat-1"));
+    assert!(state.parked_for("chat-1", "chat-1"));
+}

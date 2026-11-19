@@ -37,6 +37,7 @@ import { subagentStatus } from '@/components/chat/subagent-strip'
 import type { ToolCall } from '@/lib/acp-api'
 import {
   endedState,
+  orchestratedSubagentRecord,
   subagentMeta,
   subagentRecord,
   subagentToolCall
@@ -154,6 +155,40 @@ describe('parseSubagentControl', () => {
   })
 })
 
+describe('parseSubagent orchestrated fields', () => {
+  it('reads an orchestrated record with its agent and workspace', () => {
+    const record = orchestratedSubagentRecord({ dispatchToolCallId: 'tc-9' })
+    expect(parseSubagent('tc-9', subagentMeta(record))).toEqual(record)
+  })
+
+  it('drops a malformed agent or workspace field, keeping the record, and warns once', () => {
+    const badAgent = subagentMeta({
+      ...orchestratedSubagentRecord(),
+      agent: { name: 'Codex', agentId: 7 } as never
+    })
+    const parsed = parseSubagent('tc-1', badAgent)
+    expect(parsed).toBeDefined()
+    expect(parsed?.agent).toBeUndefined()
+    expect(parsed?.source).toBe('orchestrated')
+    expect(parsed?.workspace?.mode).toBe('worktree')
+
+    const badWorkspace = subagentMeta({
+      ...orchestratedSubagentRecord(),
+      workspace: { mode: 'elsewhere' } as never
+    })
+    const parsedWorkspace = parseSubagent('tc-1', badWorkspace)
+    expect(parsedWorkspace?.agent?.name).toBe('Codex')
+    expect(parsedWorkspace?.workspace).toBeUndefined()
+
+    expect(warnings().map((entry) => entry.message)).toEqual([
+      'Dropped malformed termul/subagent.agent on tool call tc-1: bad agentId',
+      'Dropped malformed termul/subagent.workspace on tool call tc-1: bad mode'
+    ])
+    parseSubagent('tc-1', badAgent)
+    expect(warnings()).toHaveLength(2)
+  })
+})
+
 describe('subagent record ingest', () => {
   beforeEach(() => {
     _resetCoalesceForTesting()
@@ -247,6 +282,24 @@ describe('cancelRunningSubagents', () => {
       activity: 'idle',
       end: { reason: 'unexplained' },
       endedAt: 20
+    })
+  })
+
+  it('ends orchestrated runs when the chat agent goes: no settle card can arrive', () => {
+    const child = subagentToolCall(
+      {
+        source: 'orchestrated',
+        background: true,
+        caps: { stop: 'session-cancel', liveProgress: true },
+        agent: { name: 'Codex', agentId: 'agent-c' }
+      },
+      { toolCallId: 'sub-1', status: 'in_progress' }
+    )
+    const ended = cancelRunningSubagents({ toolCalls: { s1: [child] }, messages: {} }, ['s1'], 30)
+    expect(ended.s1[0]?.subagent).toMatchObject({
+      activity: 'idle',
+      end: { reason: 'unexplained' },
+      endedAt: 30
     })
   })
 })

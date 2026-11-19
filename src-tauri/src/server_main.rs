@@ -482,6 +482,27 @@ fn main() -> ExitCode {
         ) {
             warn!("troupe-server: could not import the per-project MCP server lists: {error}");
         }
+        // The subagent orchestrator: one engine per process, reached
+        // through `acp::orchestrator::installed` by the host MCP tools, the
+        // stop interception and the chat/agent lifecycle hooks. Same state
+        // dir as the automation service, so both read one known-agents
+        // registry.
+        let sweep_roots: Vec<std::path::PathBuf> = registry
+            .snapshot()
+            .projects
+            .into_iter()
+            // Archived projects keep their worktrees for review, as on the
+            // desktop.
+            .filter(|project| !project.is_archived)
+            .filter_map(|project| project.path.map(std::path::PathBuf::from))
+            .collect();
+        termul_manager_lib::orchestrator::install(
+            Arc::clone(&acp),
+            cfg.service_account_state_dir(),
+            acp_install.clone(),
+            sweep_roots,
+            tokio::runtime::Handle::current(),
+        );
         // The standalone binary owns its interactive PTYs and kills them only
         // after Axum drains. Desktop shared-live passes its existing manager and
         // never reaches that cleanup path.

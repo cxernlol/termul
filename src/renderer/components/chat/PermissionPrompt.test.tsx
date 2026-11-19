@@ -1,5 +1,7 @@
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { ToolCall } from '@/lib/acp-api'
+import { orchestratedSubagentRecord } from '@/lib/test-utils/subagent'
 import type { PendingPermission } from '@/stores/acp-store'
 
 const { mobileRef, respondPermission, toastError, logFrontendError } = vi.hoisted(() => ({
@@ -9,14 +11,22 @@ const { mobileRef, respondPermission, toastError, logFrontendError } = vi.hoiste
   logFrontendError: vi.fn(async () => {})
 }))
 
+const toolCallsRef = { current: {} as Record<string, ToolCall[]> }
+
 vi.mock('@/hooks/use-mobile-web-shell', () => ({
   useMobileWebShell: () => mobileRef.current
 }))
 vi.mock('@/lib/log-api', () => ({ logFrontendError }))
 vi.mock('sonner', () => ({ toast: { error: toastError } }))
 vi.mock('@/stores/acp-store', () => ({
-  useAcpStore: (selector: (s: { respondPermission: typeof respondPermission }) => unknown) =>
-    selector({ respondPermission })
+  useAcpStore: (
+    selector: (s: {
+      respondPermission: typeof respondPermission
+      toolCalls: Record<string, ToolCall[]>
+    }) => unknown
+  ) => selector({ respondPermission, toolCalls: toolCallsRef.current }),
+  useAgentTemplateId: vi.fn(() => 'codex-acp'),
+  useAgentIcon: vi.fn(() => null)
 }))
 
 import { PermissionPrompt } from './PermissionPrompt'
@@ -45,6 +55,7 @@ const MIXED_OPTIONS = [
 describe('PermissionPrompt', () => {
   beforeEach(() => {
     mobileRef.current = false
+    toolCallsRef.current = {}
     respondPermission.mockReset().mockResolvedValue(undefined)
     toastError.mockReset()
     logFrontendError.mockClear()
@@ -344,6 +355,62 @@ describe('PermissionPrompt', () => {
       })
 
       expect(toastError).toHaveBeenCalledWith('Could not send the permission response. Try again.')
+    })
+  })
+
+  describe('asking orchestrated child', () => {
+    const childRun = (record: Parameters<typeof orchestratedSubagentRecord>[0] = {}): ToolCall => ({
+      toolCallId: 'sub-1',
+      title: 'Task',
+      kind: 'think',
+      status: 'in_progress',
+      subagent: orchestratedSubagentRecord({ ...record, dispatchToolCallId: 'sub-1' })
+    })
+
+    const childPermission = (): PendingPermission =>
+      permission('req-1', {
+        agentId: 'agent-codex',
+        toolCall: { title: 'bun test src/retry' }
+      })
+
+    it('labels the approval with the asking child and its worktree', () => {
+      toolCallsRef.current = { s1: [childRun()] }
+      render(<PermissionPrompt permission={childPermission()} />)
+
+      const heading = screen.getByRole('heading', { name: /Approval needed/ })
+      expect(heading).toHaveTextContent('Approval needed')
+      expect(heading).toHaveTextContent('Implement the retry fix')
+      expect(screen.getByTestId('permission-prompt')).toHaveTextContent(
+        'Codex sub-agent wants to run bun test src/retry in its worktree.'
+      )
+    })
+
+    it('drops the worktree tail for a shared workspace', () => {
+      toolCallsRef.current = {
+        s1: [
+          childRun({
+            workspace: { mode: 'shared', path: undefined, branch: undefined, base: undefined }
+          })
+        ]
+      }
+      render(<PermissionPrompt permission={childPermission()} />)
+
+      expect(screen.getByTestId('permission-prompt')).toHaveTextContent(
+        'Codex sub-agent wants to run bun test src/retry.'
+      )
+    })
+
+    it('keeps the plain agent wording when no running child matches', () => {
+      toolCallsRef.current = {
+        s1: [childRun({ state: { activity: 'idle', end: { reason: 'completed' } } })]
+      }
+      render(<PermissionPrompt permission={childPermission()} />)
+
+      const heading = screen.getByRole('heading', { name: /Approval needed/ })
+      expect(heading).not.toHaveTextContent('·')
+      expect(screen.getByTestId('permission-prompt')).toHaveTextContent(
+        'The agent is waiting for permission to run'
+      )
     })
   })
 })

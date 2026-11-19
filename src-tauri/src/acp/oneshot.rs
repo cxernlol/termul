@@ -127,7 +127,12 @@ impl OneShotSession {
         let agent_name = config.name.clone();
         let collector = Arc::new(ReplyCollector::default());
         let spawned = manager
-            .spawn_private(config, project_id.as_deref(), vec![collector.clone()])
+            .spawn_private(
+                config,
+                project_id.as_deref(),
+                &crate::acp::claude_agent::LaunchChat::None,
+                vec![collector.clone()],
+            )
             .await
             .map_err(|error| {
                 log::warn!("[acp-oneshot] {agent_name} spawn failed: {error}");

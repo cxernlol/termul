@@ -32,7 +32,10 @@ import { invoke } from '@tauri-apps/api/core'
 import {
   type AgentIdleWindowStatus,
   type CommandCallOptions,
-  getAcpTransport
+  getAcpTransport,
+  type SubagentSettingsAgentView,
+  type SubagentSettingsInput,
+  type SubagentSettingsView
 } from '@/lib/acp-transport'
 import type { AcpRuntimeAvailability } from '@/lib/agents/supported-acp-agents'
 import { type CommandRun, runCommand } from '@/lib/command-engine'
@@ -47,7 +50,12 @@ import { isTauriContext } from '@/lib/tauri-runtime'
 import { randomUUID } from '@/lib/uuid'
 import { webServerMcpOAuth } from '@/lib/web-server-api'
 
-export type { AgentIdleWindowStatus }
+export type {
+  AgentIdleWindowStatus,
+  SubagentSettingsAgentView,
+  SubagentSettingsInput,
+  SubagentSettingsView
+}
 
 // --- Identifiers -----------------------------------------------------------
 
@@ -1638,6 +1646,18 @@ export async function acpGetAgentIdleWindow(): Promise<AgentIdleWindowStatus> {
   return getAcpTransport().getAgentIdleWindow()
 }
 
+// The sub-agent orchestrator's settings view (every carrier's one engine).
+export async function acpGetSubagentSettings(): Promise<SubagentSettingsView> {
+  return getAcpTransport().getSubagentSettings()
+}
+
+// Change the sub-agent settings; the reply is the new full view.
+export async function acpSetSubagentSettings(
+  input: SubagentSettingsInput
+): Promise<SubagentSettingsView> {
+  return getAcpTransport().setSubagentSettings(input)
+}
+
 // --- Event subscription ----------------------------------------------------
 
 /**
@@ -1686,6 +1706,8 @@ export const acpApi = {
   setSessionReopenTimeout: acpSetSessionReopenTimeout,
   setAgentIdleWindow: acpSetAgentIdleWindow,
   getAgentIdleWindow: acpGetAgentIdleWindow,
+  getSubagentSettings: acpGetSubagentSettings,
+  setSubagentSettings: acpSetSubagentSettings,
   installRegistryBinary: acpInstallRegistryBinary,
   installAcpAgent: acpInstallAcpAgent,
   probeRuntime: acpProbeRuntime,

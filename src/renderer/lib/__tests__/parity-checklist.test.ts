@@ -3640,3 +3640,50 @@ describe('Sidebar V2 shell parity (tool strip, palette Chats, Projects menu)', (
     expect(read('sidebar', 'use-rail-import-chats.tsx')).not.toMatch(/isTauriContext/)
   })
 })
+
+// Orchestrated sub-agents (acp-subagent-orchestrator): one host engine, one
+// settings view, every carrier. The renderer facade and the `/ws` request
+// names below are shared by the desktop Channel carrier and the browser, so
+// both reach the same engine the host installs in both binaries; the stop
+// interception and the UpsertSubagent card arm are the manager seams it owns.
+describe('Orchestrated sub-agents parity', () => {
+  const SRC_TAURI = join(LIB_DIR, '..', '..', '..', 'src-tauri', 'src')
+  const read = (...parts: string[]): string => readFileSync(join(SRC_TAURI, ...parts), 'utf-8')
+
+  it('the settings facade and the transport send the /ws requests on every carrier', () => {
+    const acpApi = readFileSync(join(LIB_DIR, 'acp-api.ts'), 'utf-8')
+    expect(acpApi).toMatch(/getAcpTransport\(\)\.getSubagentSettings\(\)/)
+    expect(acpApi).toMatch(/getAcpTransport\(\)\.setSubagentSettings\(input\)/)
+    const ws = readFileSync(join(LIB_DIR, 'acp-transport', 'ws-transport.ts'), 'utf-8')
+    expect(ws).toMatch(/this\.request<SubagentSettingsView>\('subagent_settings_get', \{\}\)/)
+    expect(ws).toMatch(/this\.request<SubagentSettingsView>\('subagent_settings_set', input\)/)
+    // The desktop Channel carrier inherits the /ws requests: no override.
+    expect(
+      readFileSync(join(LIB_DIR, 'acp-transport', 'desktop-transport.ts'), 'utf-8')
+    ).not.toMatch(/SubagentSettings/)
+  })
+
+  it('the host routes the settings requests to the engine and classes them', () => {
+    const dispatch = read('web', 'ws', 'dispatch.rs')
+    expect(dispatch).toMatch(/"subagent_settings_get" => handle_subagent_settings_get\(id\)/)
+    expect(dispatch).toMatch(
+      /"subagent_settings_set" => handle_subagent_settings_set\(id, &req\.payload\)/
+    )
+    expect(read('web', 'ws', 'subagents.rs')).toMatch(/orchestrator::installed\(\)/)
+    const classes = read('web', 'command_ledger', 'class.rs')
+    expect(classes).toContain('("subagent_settings_get", CommandClass::read()),')
+    expect(classes).toContain('("subagent_settings_set", CommandClass::idempotent()),')
+  })
+
+  it('both binaries install the one engine, and the host-mcp parent arm reaches it', () => {
+    expect(read('acp', 'orchestrator', 'mod.rs')).toMatch(/pub fn installed\(\)/)
+    expect(read('lib.rs')).toMatch(/orchestrator::install\(/)
+    expect(read('server_main.rs')).toMatch(/orchestrator::install\(/)
+    expect(read('acp', 'host_mcp', 'parent', 'subagents.rs')).toMatch(/orchestrator::installed\(\)/)
+  })
+
+  it('the manager owns the two seams: the UpsertSubagent card arm and the stop interception', () => {
+    expect(read('acp', 'manager', 'command_loop.rs')).toMatch(/AcpCommand::UpsertSubagent/)
+    expect(read('acp', 'manager', 'mod.rs')).toMatch(/stop_from_ui\(/)
+  })
+})

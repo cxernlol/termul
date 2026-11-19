@@ -293,6 +293,15 @@ impl QuestionRendezvous {
         self.release_where(|ticket| ticket.session_id == session_id)
     }
 
+    /// Drop the tickets `agent_id` raised in `session_id`, and only those: a
+    /// turn of that agent ended. An orchestrated subagent's, raised under its
+    /// chat as its own agent, end with its run. Returns how many.
+    pub fn release_agent_session(&self, session_id: &str, agent_id: &AgentId) -> usize {
+        self.release_where(|ticket| {
+            ticket.session_id == session_id && ticket.agent_id == *agent_id
+        })
+    }
+
     /// Drop every ticket of an agent that disconnected or crashed. Returns
     /// how many tickets were released.
     pub fn release_agent(&self, agent_id: &AgentId) -> usize {

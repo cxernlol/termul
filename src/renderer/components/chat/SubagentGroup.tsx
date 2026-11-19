@@ -90,6 +90,7 @@ function SubagentGroupComponent({
           {members.slice(0, MAX_AVATARS).map(({ toolCall, status }, i) => (
             <SubagentAvatar
               key={toolCall.toolCallId}
+              agent={toolCall.subagent?.agent}
               status={status}
               waiting={isSubagentWaiting(toolCall, status)}
               size="sm"

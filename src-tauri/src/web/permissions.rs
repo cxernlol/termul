@@ -18,9 +18,11 @@
 //! - an answer ([`PermissionRendezvous::try_respond`], first answer wins),
 //! - an answer given elsewhere ([`PermissionRendezvous::settle`], used by the
 //!   desktop `acp_respond_permission` command), or
-//! - a lifecycle release ([`PermissionRendezvous::release_session`] on turn
-//!   end or session close, [`PermissionRendezvous::release_agent`] on agent
-//!   death), called from [`crate::web::sink::WsRelaySink::emit`].
+//! - a lifecycle release ([`PermissionRendezvous::release_turn`] on turn
+//!   end, [`PermissionRendezvous::release_agent_session`] on turn cancel,
+//!   [`PermissionRendezvous::release_session`] on session close,
+//!   [`PermissionRendezvous::release_agent`] on agent death), called from
+//!   [`crate::web::sink::WsRelaySink::emit`] and the ACP manager.
 //!
 //! Any client may answer by `request_id`, with or without a subscription, for
 //! as long as the ticket exists. Answered and released ids are remembered in a
@@ -42,8 +44,12 @@
 //!
 //! At most one ticket per session is outstanding; the rest wait in a FIFO
 //! queue. Every answer promotes the next queued ticket. A lifecycle release
-//! drops the whole session queue instead: the driver has already cancelled
-//! every parked responder of the session, so there is nothing left to promote.
+//! drops the tickets whose responders the driver already cancelled: a turn
+//! end, a turn cancel or an agent death drops the tickets of that agent and
+//! promotes another agent's, and a session close drops the whole queue. Two
+//! agents share a session queue when an orchestrated subagent raises its
+//! approvals under its chat: those end with the subagent's run, not with
+//! the chat's turn.
 //!
 //! # Wiring
 //!
@@ -269,6 +275,34 @@ impl State {
         }
         ids
     }
+
+    /// Drop the tickets `agent_id` raised in `session_id` (queued and
+    /// outstanding) and promote the next one of another agent. Returns the
+    /// ids.
+    fn release_agent_session(&mut self, session_id: &str, agent_id: &AgentId) -> Vec<String> {
+        let Some(queue) = self.sessions.get_mut(session_id) else {
+            return Vec::new();
+        };
+        let mut ids = Vec::new();
+        queue.queued.retain(|ticket| {
+            let theirs = ticket.agent_id == *agent_id;
+            if theirs {
+                ids.push(ticket.request_id.clone());
+            }
+            !theirs
+        });
+        let outstanding = queue.outstanding.clone();
+        if self
+            .tickets
+            .get(&outstanding)
+            .is_some_and(|ticket| ticket.agent_id == *agent_id)
+        {
+            self.settle(&outstanding);
+            ids.push(outstanding);
+        }
+        ids
+    }
+
 }
 
 /// Server-side permission rendezvous (Story 1.7).
@@ -594,15 +628,40 @@ impl PermissionRendezvous {
         released.len()
     }
 
-    /// Drop every ticket of a session whose turn `turn_id` ended, like
-    /// [`Self::release_session`], and remember the turn as ended under the
-    /// same lock, so a request of that turn registered afterwards is dropped
-    /// rather than kept as a ticket nothing releases. Returns how many
-    /// tickets were released.
-    pub fn release_turn(&self, session_id: &str, turn_id: &str) -> usize {
+    /// Drop the tickets `agent_id` raised in `session_id`, and only those: a
+    /// turn of that agent was cancelled. An orchestrated subagent raises its
+    /// approvals under its chat's session as its own agent; they belong to
+    /// its run, not to the chat's turn, and stay until the run's agent goes.
+    /// Returns how many tickets were released.
+    pub fn release_agent_session(&self, session_id: &str, agent_id: &AgentId) -> usize {
+        let mut state = self.state.lock();
+        let released = state.release_agent_session(session_id, agent_id);
+        let mut resolved = self.resolved.lock();
+        for id in &released {
+            resolved.record(id);
+        }
+        released.len()
+    }
+
+    /// Drop the tickets of a session whose turn `turn_id` ended: those of
+    /// `agent_id`, the agent whose turn it was (see
+    /// [`Self::release_agent_session`]), or all of them when the turn end
+    /// names no agent. The turn is remembered as ended under the same lock,
+    /// so a request of that turn registered afterwards is dropped rather
+    /// than kept as a ticket nothing releases. Returns how many tickets were
+    /// released.
+    pub fn release_turn(
+        &self,
+        session_id: &str,
+        turn_id: &str,
+        agent_id: Option<&AgentId>,
+    ) -> usize {
         let mut state = self.state.lock();
         state.end_turn(session_id, turn_id);
-        let released = state.release_session(session_id);
+        let released = match agent_id {
+            Some(agent_id) => state.release_agent_session(session_id, agent_id),
+            None => state.release_session(session_id),
+        };
         let mut resolved = self.resolved.lock();
         for id in &released {
             resolved.record(id);
@@ -616,20 +675,28 @@ impl PermissionRendezvous {
         self.state.lock().ended_turns.remove(session_id);
     }
 
-    /// Drop every ticket of an agent that disconnected, crashed or was killed.
-    /// Returns how many tickets were released.
+    /// Drop every ticket of an agent that disconnected, crashed or was killed,
+    /// and only its own: another agent's ticket queued in the same session
+    /// (a chat and its orchestrated subagent) is promoted instead. Returns
+    /// how many tickets were released.
     pub fn release_agent(&self, agent_id: &AgentId) -> usize {
         let mut state = self.state.lock();
         let sessions: Vec<String> = state
-            .tickets
-            .values()
-            .filter(|ticket| ticket.agent_id == *agent_id)
-            .map(|ticket| ticket.session_id.clone())
+            .sessions
+            .iter()
+            .filter(|(_, queue)| {
+                queue.queued.iter().any(|ticket| ticket.agent_id == *agent_id)
+                    || state
+                        .tickets
+                        .get(&queue.outstanding)
+                        .is_some_and(|ticket| ticket.agent_id == *agent_id)
+            })
+            .map(|(session_id, _)| session_id.clone())
             .collect();
         let mut resolved = self.resolved.lock();
         let mut count = 0;
         for session_id in sessions {
-            let released = state.release_session(&session_id);
+            let released = state.release_agent_session(&session_id, agent_id);
             for id in &released {
                 resolved.record(id);
             }

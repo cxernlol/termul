@@ -30,6 +30,35 @@ pub(super) fn worktree_add_args<'a>(
     args
 }
 
+/// Variables that point git at a repository other than its working directory.
+/// A host started from a git hook or a `GIT_DIR=… troupe` shell inherits
+/// them, and `current_dir` does not override them.
+const REPOSITORY_LOCATION_ENV: [&str; 8] = [
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_NAMESPACE",
+    "GIT_PREFIX",
+];
+
+/// A git command with the inherited repository-location variables cleared,
+/// so the repository is the one at `cwd`; a caller's own variables (the
+/// snapshot's temporary `GIT_INDEX_FILE`) are set after this. `-c` must
+/// precede the subcommand: pinning `color.ui=false` keeps a user
+/// `color.ui=always` config from ANSI-wrapping the `fatal:`/`error:` line
+/// prefixes that `parse_git_stderr` classifies on.
+fn git_command(git: &str) -> std::process::Command {
+    let mut cmd = quiet_command(git);
+    for key in REPOSITORY_LOCATION_ENV {
+        cmd.env_remove(key);
+    }
+    cmd.arg("-c").arg("color.ui=false");
+    cmd
+}
+
 /// What a finished git process produced, for callers that read the exit code
 /// themselves (`git merge-tree` exits 1 for a merge that has conflicts).
 pub(super) struct GitOutput {
@@ -45,11 +74,7 @@ pub(super) struct GitOutput {
 /// passed as-is; callers normalize path operands (see `WorktreeManager::create`).
 pub(super) fn run_git_output(args: &[&str], cwd: Option<&str>) -> Result<GitOutput, WorktreeError> {
     let git = which_git()?;
-    let mut cmd = quiet_command(&git);
-    // `-c` must precede the subcommand. Pinning `color.ui=false` keeps a user
-    // `color.ui=always` config from ANSI-wrapping the `fatal:`/`error:` line
-    // prefixes that `parse_git_stderr` classifies on.
-    cmd.arg("-c").arg("color.ui=false");
+    let mut cmd = git_command(&git);
     cmd.args(args);
     if let Some(dir) = cwd {
         cmd.current_dir(crate::path_validation::git_path(dir).as_ref());
@@ -68,6 +93,37 @@ pub(super) fn run_git_output(args: &[&str], cwd: Option<&str>) -> Result<GitOutp
         stdout: String::from_utf8_lossy(&output.stdout).to_string(),
         stderr: String::from_utf8_lossy(&output.stderr).to_string(),
     })
+}
+
+/// Run a git command with extra environment variables (the subagent
+/// snapshot's temporary `GIT_INDEX_FILE`) and return its trimmed stdout on
+/// success. Same invocation rules as [`run_git_output`]: `color.ui=false`
+/// pinned, `cwd` path-normalized. The caller owns judging success; the
+/// error text is the bounded stderr line.
+pub(crate) fn run_git_env_success(
+    args: &[&str],
+    cwd: Option<&str>,
+    env: &[(&str, &str)],
+) -> Result<String, String> {
+    let git = which_git().map_err(|error| error.to_string())?;
+    let mut cmd = git_command(&git);
+    cmd.args(args);
+    if let Some(dir) = cwd {
+        cmd.current_dir(crate::path_validation::git_path(dir).as_ref());
+    }
+    for (key, value) in env {
+        cmd.env(key, value);
+    }
+    let output = cmd.output().map_err(|error| error.to_string())?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let first = stderr.lines().find(|line| !line.trim().is_empty());
+        let text = first.unwrap_or_default().trim();
+        let bounded: String = text.chars().take(200).collect();
+        Err(bounded)
+    }
 }
 
 /// Run a git command and return (stdout, stderr, success).
@@ -115,9 +171,7 @@ pub(super) fn run_git_streaming(
 ) -> Result<(String, String), WorktreeError> {
     let git = which_git()?;
 
-    let mut cmd = quiet_command(&git);
-    // See `run_git` — `-c` must precede the subcommand.
-    cmd.arg("-c").arg("color.ui=false");
+    let mut cmd = git_command(&git);
     cmd.args(args);
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());

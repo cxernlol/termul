@@ -289,6 +289,8 @@ pub(super) async fn route_request(req: WsRequest, env: &HandlerEnv) -> WsReply {
         }
         "cancel_prompt" => handle_cancel_prompt(id, &req.payload, acp).await,
         "stop_subagent" => handle_stop_subagent(id, &req.payload, acp).await,
+        "subagent_settings_get" => handle_subagent_settings_get(id),
+        "subagent_settings_set" => handle_subagent_settings_set(id, &req.payload),
         "set_mode" => handle_set_mode(id, &req.payload, acp).await,
         "set_model" => handle_set_model(id, &req.payload, acp).await,
         "set_config_option" => handle_set_config_option(id, &req.payload, acp).await,

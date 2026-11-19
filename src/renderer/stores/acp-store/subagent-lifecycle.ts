@@ -11,6 +11,7 @@ import {
   SUBAGENT_CONTROL_META_KEY,
   SUBAGENT_META_KEY,
   type Subagent,
+  type SubagentAgent,
   type SubagentCaps,
   type SubagentControl,
   type SubagentEnd,
@@ -18,7 +19,8 @@ import {
   type SubagentId,
   type SubagentSource,
   type SubagentState,
-  type SubagentUsage
+  type SubagentUsage,
+  type SubagentWorkspace
 } from '@shared/types/subagent'
 import { runningBackgroundSubagents } from '@/components/chat/subagent-strip'
 import { asRecord } from '@/components/chat/tool-call-summary'
@@ -34,7 +36,8 @@ const SOURCES: ReadonlySet<string> = new Set<SubagentSource>([
   'cursor-task',
   'opencode-task',
   'gemini-agent',
-  'tool-heuristic'
+  'tool-heuristic',
+  'orchestrated'
 ])
 const END_REASONS: ReadonlySet<string> = new Set<SubagentEndReason>([
   'completed',
@@ -46,6 +49,10 @@ const TRANSCRIPTS: ReadonlySet<string> = new Set<SubagentCaps['transcript']>([
   'live',
   'final',
   'none'
+])
+const WORKSPACE_MODES: ReadonlySet<string> = new Set<SubagentWorkspace['mode']>([
+  'shared',
+  'worktree'
 ])
 const USAGE_FIELDS = [
   'inputTokens',
@@ -127,7 +134,48 @@ function parseUsage(value: unknown): SubagentUsage | undefined {
   return usage
 }
 
-function parseSubagentRecord(value: unknown): Subagent {
+function parseAgent(value: unknown): SubagentAgent {
+  const raw = asRecord(value) ?? fail('agent')
+  return {
+    name: requiredString(raw, 'name'),
+    configId: optionalString(raw, 'configId'),
+    agentId: requiredString(raw, 'agentId')
+  }
+}
+
+function parseWorkspace(value: unknown): SubagentWorkspace {
+  const raw = asRecord(value) ?? fail('workspace')
+  return {
+    mode: oneOf<SubagentWorkspace['mode']>(WORKSPACE_MODES, raw.mode, 'mode'),
+    path: optionalString(raw, 'path'),
+    branch: optionalString(raw, 'branch'),
+    base: optionalString(raw, 'base'),
+    diffStat: optionalString(raw, 'diffStat')
+  }
+}
+
+/**
+ * An optional object field with its own parse: malformed drops just the field
+ * (warned once per call, like a dropped record), never the record it rides —
+ * an orchestrated row keeps its title and status without its identity.
+ */
+function parseOptionalField<T>(
+  toolCallId: string,
+  field: string,
+  value: unknown,
+  parse: (value: unknown) => T
+): T | undefined {
+  if (value === undefined || value === null) return undefined
+  try {
+    return parse(value)
+  } catch (error) {
+    if (!(error instanceof Malformed)) throw error
+    warnOnce(toolCallId, `${SUBAGENT_META_KEY}.${field}`, error.message)
+    return undefined
+  }
+}
+
+function parseSubagentRecord(toolCallId: string, value: unknown): Subagent {
   const raw = asRecord(value) ?? fail('record')
   const { background } = raw
   if (typeof background !== 'boolean') fail('background')
@@ -146,6 +194,8 @@ function parseSubagentRecord(value: unknown): Subagent {
     endedAt: optionalNumber(raw, 'endedAt'),
     model: optionalString(raw, 'model'),
     usage: parseUsage(raw.usage),
+    agent: parseOptionalField(toolCallId, 'agent', raw.agent, parseAgent),
+    workspace: parseOptionalField(toolCallId, 'workspace', raw.workspace, parseWorkspace),
     outputFile: optionalString(raw, 'outputFile'),
     caps: parseCaps(raw.caps),
     ...parseState(raw)
@@ -202,7 +252,9 @@ function parseMetaEntry<T>(
 
 /** The subagent record a tool call or update carries, if valid. */
 export function parseSubagent(toolCallId: string, meta: unknown): Subagent | undefined {
-  return parseMetaEntry(toolCallId, meta, SUBAGENT_META_KEY, parseSubagentRecord)
+  return parseMetaEntry(toolCallId, meta, SUBAGENT_META_KEY, (value) =>
+    parseSubagentRecord(toolCallId, value)
+  )
 }
 
 /** The subagent control marker a tool call or update carries, if valid. */
@@ -239,6 +291,9 @@ export function isSubagentActive(subagent: Subagent): boolean {
  * end: one its source reports live, or a background launch that never
  * reported one. Ends those records as `unexplained`. Returns the same map when
  * nothing was running.
+ *
+ * Orchestrated runs end here too: when the chat's agent goes, the host stops
+ * their children, and no settle card can reach this chat without its agent.
  */
 export function cancelRunningSubagents(
   state: Pick<AcpState, 'toolCalls' | 'messages'>,

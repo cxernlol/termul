@@ -150,6 +150,7 @@ pub(super) async fn run_command_loop(
                 runtime_agent_id,
                 project_id,
                 ephemeral,
+                child_origin,
                 worktree_path,
                 worktree_branch,
                 additional_directories,
@@ -275,6 +276,13 @@ pub(super) async fn run_command_loop(
                                         session_id.0.clone(),
                                         registration,
                                     );
+                                }
+                                // Seed an orchestrated child's route the
+                                // moment the session id is known, before any
+                                // child event can be dispatched: the engine
+                                // supplies every id, so no parent walk.
+                                if let Some(origin) = &child_origin {
+                                    state.seed_child_route(origin, &session_id.0);
                                 }
                             }
 
@@ -1278,6 +1286,41 @@ pub(super) async fn run_command_loop(
                     Err(refusal) => Err(refusal),
                 };
                 let _ = reply.send(result);
+            }
+
+            AcpCommand::UpsertSubagent {
+                record,
+                content,
+                reply,
+            } => {
+                let slot = reply_slot(reply);
+                let task_slot = slot.clone();
+                let req_state = driver_state.clone();
+                let req_persistence = persistence.clone();
+                let req_sinks = sinks.clone();
+                let req_agent_id = agent_id.clone();
+                spawn_request(&cx, slot, async move {
+                    let now = crate::acp::session_persistence::now_millis();
+                    let updates = {
+                        let mut state = req_state.lock();
+                        super::native_subagents::orchestrated_updates(
+                            &mut state,
+                            record,
+                            content.as_deref(),
+                            now,
+                        )
+                    };
+                    let result = super::native_subagents::deliver_routed(
+                        &req_state,
+                        req_persistence.as_ref(),
+                        &req_sinks,
+                        &req_agent_id,
+                        updates,
+                    )
+                    .await
+                    .map_err(|e| e.to_string());
+                    send_reply(&task_slot, result);
+                });
             }
 
             AcpCommand::SetMode {

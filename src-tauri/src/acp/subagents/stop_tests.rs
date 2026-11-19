@@ -22,6 +22,8 @@ fn record(state: SubagentState, stop: Option<SubagentStop>) -> Subagent {
         model: None,
         usage: None,
         output_file: None,
+        agent: None,
+        workspace: None,
         caps: SubagentCaps {
             stop,
             transcript: SubagentTranscript::Live,

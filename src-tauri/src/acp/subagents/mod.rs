@@ -73,6 +73,49 @@ pub(crate) enum SubagentSource {
     OpencodeTask,
     GeminiAgent,
     ToolHeuristic,
+    /// The host's own orchestrator started the agent as a subagent.
+    Orchestrated,
+}
+
+/// The agent an orchestrated subagent runs as: its launch-config name,
+/// the config id the renderer resolves the child's icon by, and the host
+/// agent id, which matches a permission request's `agentId` so the
+/// renderer can label an approval card with the asking child.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SubagentAgent {
+    /// Launch-config name ("Codex").
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_id: Option<String>,
+    pub agent_id: String,
+}
+
+/// Where an orchestrated subagent works.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum SubagentWorkspaceMode {
+    /// The parent chat's own folder.
+    Shared,
+    /// A fresh git worktree branched from the parent's current state.
+    Worktree,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SubagentWorkspace {
+    pub mode: SubagentWorkspaceMode,
+    /// The worktree's path, kept after settle (the worktree survives).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    /// "main @ 42be01e, with uncommitted changes".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
+    /// "3 files changed, +42 -7" at settle (worktree runs).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff_stat: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -188,6 +231,14 @@ pub(crate) struct Subagent {
     /// File that receives a background subagent's output.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_file: Option<String>,
+    /// The agent an orchestrated subagent runs as. Absent on every
+    /// non-orchestrated record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<SubagentAgent>,
+    /// Where an orchestrated subagent works. Absent on every
+    /// non-orchestrated record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<SubagentWorkspace>,
     pub caps: SubagentCaps,
 }
 

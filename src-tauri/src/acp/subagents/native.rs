@@ -50,6 +50,8 @@ pub(crate) fn new_record(
         model: None,
         usage: None,
         output_file: None,
+        agent: None,
+        workspace: None,
         caps: SubagentCaps {
             stop: None,
             transcript: SubagentTranscript::Live,
