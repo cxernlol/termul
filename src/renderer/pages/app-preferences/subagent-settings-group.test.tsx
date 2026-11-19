@@ -18,6 +18,15 @@ vi.mock('@/lib/api', () => ({
 }))
 vi.mock('@/lib/log-api', () => ({ logFrontendError }))
 vi.mock('sonner', () => ({ toast: { error: toastError } }))
+vi.mock('@/components/automations/canvas/inspector/sources', () => ({
+  useAgentModels: (agentId: string) =>
+    agentId === 'acp-registry:codex-acp'
+      ? [
+          { modelId: 'gpt-5.1', name: 'GPT-5.1' },
+          { modelId: 'gpt-5.1-mini', name: 'GPT-5.1 mini' }
+        ]
+      : []
+}))
 vi.mock('@/stores/acp-store', () => ({
   useAgentTemplateId: vi.fn(() => 'codex-acp'),
   useAgentIcon: vi.fn(() => null)
@@ -28,9 +37,9 @@ const VIEW: SubagentSettingsView = {
   maxRunning: 4,
   maxDepth: 2,
   agents: [
-    { agentId: 'acp-registry:claude-acp', name: 'Claude Code', allowed: true },
-    { agentId: 'acp-registry:codex-acp', name: 'Codex', allowed: true },
-    { agentId: 'acp-registry:opencode', name: 'OpenCode', allowed: false }
+    { agentId: 'acp-registry:claude-acp', name: 'Claude Code', allowed: true, model: 'opus-4' },
+    { agentId: 'acp-registry:codex-acp', name: 'Codex', allowed: true, model: null },
+    { agentId: 'acp-registry:opencode', name: 'OpenCode', allowed: false, model: null }
   ]
 }
 
@@ -118,6 +127,48 @@ describe('SubagentSettingsGroup', () => {
         'data-state',
         'checked'
       )
+    )
+  })
+
+  it('offers a default model under each allowed agent only', async () => {
+    render(<SubagentSettingsGroup />)
+    await waitFor(() => screen.getByRole('switch', { name: 'Codex' }))
+
+    const models = screen.getAllByRole('combobox', { name: 'Default model' })
+    expect(models.map((select) => select.textContent)).toEqual(['opus-4', 'Default'])
+    expect(models[0]).toHaveAccessibleDescription(
+      'Run this agent once in a chat to list its models.'
+    )
+    expect(models[1]).toHaveAccessibleDescription('Used when the calling agent does not pick one.')
+  })
+
+  it('saves the picked default model, and Default clears it', async () => {
+    setSettings.mockResolvedValueOnce(
+      view({
+        agents: VIEW.agents.map((a) =>
+          a.agentId === 'acp-registry:codex-acp' ? { ...a, model: 'gpt-5.1-mini' } : a
+        )
+      })
+    )
+    render(<SubagentSettingsGroup />)
+    await waitFor(() => screen.getByRole('switch', { name: 'Codex' }))
+
+    const codex = () => screen.getAllByRole('combobox', { name: 'Default model' })[1]
+    fireEvent.keyDown(codex(), { key: 'Enter' })
+    fireEvent.click(screen.getByRole('option', { name: 'GPT-5.1 mini' }))
+    await waitFor(() =>
+      expect(setSettings).toHaveBeenCalledWith({
+        models: [{ agentId: 'acp-registry:codex-acp', model: 'gpt-5.1-mini' }]
+      })
+    )
+    await waitFor(() => expect(codex()).toHaveTextContent('GPT-5.1 mini'))
+
+    fireEvent.keyDown(codex(), { key: 'Enter' })
+    fireEvent.click(screen.getByRole('option', { name: 'Default' }))
+    await waitFor(() =>
+      expect(setSettings).toHaveBeenLastCalledWith({
+        models: [{ agentId: 'acp-registry:codex-acp', model: null }]
+      })
     )
   })
 

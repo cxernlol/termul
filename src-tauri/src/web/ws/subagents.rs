@@ -49,7 +49,7 @@ pub(super) async fn handle_stop_subagent(
 }
 
 /// The orchestrator's settings view: the gates plus every launchable agent
-/// with its allow switch.
+/// with its allow switch and default model.
 fn settings_view(engine: &crate::acp::orchestrator::OrchestratorEngine) -> Value {
     let settings = engine.settings_view();
     let agents: Vec<Value> = engine
@@ -60,6 +60,7 @@ fn settings_view(engine: &crate::acp::orchestrator::OrchestratorEngine) -> Value
                 "agentId": agent.agent_id,
                 "name": agent.name,
                 "allowed": agent.allowed,
+                "model": agent.default_model,
             })
         })
         .collect();
@@ -95,6 +96,14 @@ pub(super) struct AgentAllowPayload {
     allowed: bool,
 }
 
+/// One default model of a `subagent_settings_set` call; `null` clears it.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct AgentModelPayload {
+    agent_id: String,
+    model: Option<String>,
+}
+
 /// `subagent_settings_set`: a partial of the view; an omitted field keeps
 /// its value.
 #[derive(Debug, Deserialize)]
@@ -108,6 +117,8 @@ pub(super) struct SubagentSettingsPayload {
     max_depth: Option<u8>,
     #[serde(default)]
     agents: Option<Vec<AgentAllowPayload>>,
+    #[serde(default)]
+    models: Option<Vec<AgentModelPayload>>,
 }
 
 /// Apply the payload's fields over `settings`.
@@ -125,8 +136,32 @@ fn merge_settings(
         settings.max_depth = max_depth;
     }
     for agent in patch.agents.unwrap_or_default() {
-        settings.agents.insert(agent.agent_id, agent.allowed);
+        settings
+            .agents
+            .insert(agent.agent_id.trim().to_string(), agent.allowed);
     }
+    for agent in patch.models.unwrap_or_default() {
+        let key = agent.agent_id.trim().to_string();
+        match agent.model {
+            Some(model) => settings.models.insert(key, model),
+            None => settings.models.remove(&key),
+        };
+    }
+}
+
+/// Merge `patch` into the settings, each agent under the key the listing
+/// and `subagent_start` use, so a bare installed id is not saved unread.
+fn apply_settings_patch(
+    engine: &crate::acp::orchestrator::OrchestratorEngine,
+    mut patch: SubagentSettingsPayload,
+) -> Result<crate::acp::orchestrator::OrchestratorSettings, String> {
+    for agent in patch.agents.iter_mut().flatten() {
+        agent.agent_id = engine.canonical_agent(agent.agent_id.trim());
+    }
+    for agent in patch.models.iter_mut().flatten() {
+        agent.agent_id = engine.canonical_agent(agent.agent_id.trim());
+    }
+    engine.update_settings(|settings| merge_settings(settings, patch))
 }
 
 /// `subagent_settings_set` → merge into the current settings, persist, and
@@ -145,7 +180,7 @@ pub(super) fn handle_subagent_settings_set(id: String, payload: &Value) -> WsRep
     let Some(engine) = crate::acp::orchestrator::installed() else {
         return no_engine(id);
     };
-    match engine.update_settings(|settings| merge_settings(settings, parsed)) {
+    match apply_settings_patch(&engine, parsed) {
         Ok(_) => WsReply::ok(id, Some(settings_view(&engine))),
         Err(error) => WsReply::err_with_code(id, "VALIDATION_ERROR", error),
     }

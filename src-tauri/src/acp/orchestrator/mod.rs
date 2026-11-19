@@ -23,6 +23,8 @@ mod sinks;
 mod worktree;
 
 pub use engine::OrchestratorEngine;
+#[cfg(test)]
+pub(crate) use engine::engine_with_installed;
 #[allow(unused_imports)]
 pub use run::{
     AgentListing, CallerRef, RunId, RunLookupError, RunState, RunSummary, StartError, StartRequest,

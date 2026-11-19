@@ -561,8 +561,8 @@ The class column is the request's command class, defined in `src-tauri/src/web/c
 | `send_prompt` | command | Starts a prompt turn. `turnId` is the `command_id`. The reply is the stop reason or a receipt. |
 | `cancel_prompt` | idempotent | Cancels the running turn of a session. |
 | `stop_subagent` | idempotent | Stops one subagent of a chat: `session/cancel` for its child session when the agent offers a stop. Replies `{ outcome: "sent" \| "already_ended" }`; `not_found` or `unsupported` otherwise. |
-| `subagent_settings_get` | read | The orchestrated sub-agent settings: `{ enabled, maxRunning, maxDepth, agents: [{ agentId, name, allowed }] }`. Open to view-only peers; `unsupported` on a host without the engine. |
-| `subagent_settings_set` | idempotent | Merges a partial of that view (an omitted field keeps its value; `agents` carries `{ agentId, allowed }` toggles) and replies the new view. `VALIDATION_ERROR` for an unknown field or an out-of-bounds value. |
+| `subagent_settings_get` | read | The orchestrated sub-agent settings: `{ enabled, maxRunning, maxDepth, agents: [{ agentId, name, allowed, model }] }`, where `model` is the agent's default sub-agent model or `null`. Open to view-only peers; `unsupported` on a host without the engine. |
+| `subagent_settings_set` | idempotent | Merges a partial of that view (an omitted field keeps its value; `agents` carries `{ agentId, allowed }` toggles, `models` carries `{ agentId, model }` defaults where `null` clears) and replies the new view. `VALIDATION_ERROR` for an unknown field or an out-of-bounds value. |
 | `set_config_option` | idempotent | Sets one session config option. |
 | `set_mode` | idempotent | Sets the session mode. |
 | `set_model` | idempotent | Sets the session model. |

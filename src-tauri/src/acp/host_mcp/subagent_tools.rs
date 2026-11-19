@@ -58,7 +58,8 @@ pub struct SubagentStartInput {
     /// name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
-    /// The model id to ask the agent for, when it offers a choice.
+    /// The model id to ask the agent for, when it offers a choice. Absent:
+    /// the agent's `defaultModel` from `subagent_list_agents`, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
 }
@@ -96,9 +97,10 @@ pub const WAIT_MIN_MS: u64 = 1_000;
 pub const WAIT_MAX_MS: u64 = 240_000;
 
 pub const LIST_AGENTS_DESCRIPTION: &str = "List the installed agents you can start as \
-subagents, and the limits that apply. Returns JSON {agents: [{agentId, name, allowed}], \
-enabled, maxRunning, maxDepth}. Only agents with allowed true can be started, and only while \
-enabled is true; the user changes both in Preferences.";
+subagents, and the limits that apply. Returns JSON {agents: [{agentId, name, allowed, \
+defaultModel}], enabled, maxRunning, maxDepth}. Only agents with allowed true can be started, \
+and only while enabled is true; the user changes both in Preferences. defaultModel is the model \
+a start without `model` asks for (null: the agent's own default).";
 
 pub const START_DESCRIPTION: &str = "Start another installed agent (Codex, Gemini CLI, ...) as \
 a subagent on a task, in the background. `agent` is an agentId from subagent_list_agents; \

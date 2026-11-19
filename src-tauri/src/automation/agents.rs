@@ -73,6 +73,8 @@ pub struct AgentRegistry {
     agents: Mutex<BTreeMap<String, AgentConfig>>,
     /// The corrupt bytes last copied aside, so `reload` copies them once.
     backed_up: Mutex<Option<Vec<u8>>>,
+    /// Whether `open` read the file (a missing file reads as empty).
+    loaded: bool,
 }
 
 impl AgentRegistry {
@@ -81,12 +83,15 @@ impl AgentRegistry {
     /// blocks boot.
     pub fn open(path: PathBuf) -> Self {
         let mut backed_up = None;
-        let agents = load(&path, &mut backed_up).unwrap_or_default();
+        let read = load(&path, &mut backed_up);
+        let loaded = read.is_some();
+        let agents = read.unwrap_or_default();
         log::info!("[Automation] known agents loaded: {}", agents.len());
         Self {
             path: Some(path),
             agents: Mutex::new(agents),
             backed_up: Mutex::new(backed_up),
+            loaded,
         }
     }
 
@@ -111,6 +116,7 @@ impl AgentRegistry {
             path: None,
             agents: Mutex::new(BTreeMap::new()),
             backed_up: Mutex::new(None),
+            loaded: true,
         }
     }
 
@@ -144,6 +150,12 @@ impl AgentRegistry {
 
     pub fn resolve(&self, agent_id: &str) -> Option<AgentConfig> {
         self.agents.lock().get(agent_id).cloned()
+    }
+
+    /// Whether `open` read the file, so an empty registry means no agents
+    /// rather than an unreadable or corrupt file.
+    pub fn loaded(&self) -> bool {
+        self.loaded
     }
 
     pub fn contains(&self, agent_id: &str) -> bool {

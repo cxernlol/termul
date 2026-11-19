@@ -10,16 +10,22 @@ use serde::{Deserialize, Serialize};
 use crate::acp::atomic_file;
 
 pub const FILE_NAME: &str = "subagent-settings.json";
-const SCHEMA_VERSION: u32 = 1;
+/// 2 added `models`. The payload denies unknown fields, so a v1 host must
+/// read a v2 file as newer (read-only), not as corrupt.
+const SCHEMA_VERSION: u32 = 2;
 pub const DEFAULT_MAX_RUNNING: u32 = 4;
 pub const DEFAULT_MAX_DEPTH: u8 = 2;
 
 /// Bound validation, shared by `set_settings` and the WS route.
 pub const MAX_RUNNING_BOUNDS: (u32, u32) = (1, 8);
 pub const MAX_DEPTH_BOUNDS: (u8, u8) = (1, 4);
+/// A model id's length bound, as `subagent_start` checks its `model`.
+pub const MAX_MODEL_CHARS: usize = 512;
 
 /// The orchestrator settings. `agents` maps a launch key to whether it is
-/// allowed; an absent key is allowed.
+/// allowed; an absent key is allowed. `models` maps a launch key to the
+/// model its sub-agents start with when the start names none; an absent
+/// key keeps the agent's own default.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct OrchestratorSettings {
@@ -29,6 +35,8 @@ pub struct OrchestratorSettings {
     pub max_depth: u8,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub agents: BTreeMap<String, bool>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub models: BTreeMap<String, String>,
 }
 
 impl Default for OrchestratorSettings {
@@ -38,6 +46,7 @@ impl Default for OrchestratorSettings {
             max_running: DEFAULT_MAX_RUNNING,
             max_depth: DEFAULT_MAX_DEPTH,
             agents: BTreeMap::new(),
+            models: BTreeMap::new(),
         }
     }
 }
@@ -139,6 +148,26 @@ impl SettingsStore {
         self.update(|settings| *settings = input)
     }
 
+    /// Apply `edit` in memory, then save it when it changed anything. A
+    /// failed save keeps the edit for this run. A file from a newer host is
+    /// never written.
+    pub(crate) fn apply_and_save(
+        &self,
+        edit: impl FnOnce(&mut OrchestratorSettings),
+    ) -> Result<(), String> {
+        let _writer = self.writer.lock();
+        let mut next = self.get();
+        edit(&mut next);
+        if next == self.get() {
+            return Ok(());
+        }
+        *self.settings.lock() = next.clone();
+        match (&self.path, self.newer_schema) {
+            (Some(path), None) => persist(path, &next),
+            _ => Ok(()),
+        }
+    }
+
     /// Apply `edit` to the current settings, then validate and persist the
     /// result as one write. A refused edit leaves the settings unchanged.
     pub(crate) fn update(
@@ -179,11 +208,28 @@ fn validate(input: OrchestratorSettings) -> Result<OrchestratorSettings, String>
     if input.agents.keys().any(|key| key.trim().is_empty()) {
         return Err("an agent allow key must not be blank".to_string());
     }
+    if input.models.keys().any(|key| key.trim().is_empty()) {
+        return Err("an agent model key must not be blank".to_string());
+    }
+    if input
+        .models
+        .values()
+        .any(|model| model.trim().is_empty() || model.chars().count() > MAX_MODEL_CHARS)
+    {
+        return Err(format!(
+            "a default model must be 1 to {MAX_MODEL_CHARS} characters"
+        ));
+    }
     Ok(OrchestratorSettings {
         agents: input
             .agents
             .into_iter()
             .map(|(key, allowed)| (key.trim().to_string(), allowed))
+            .collect(),
+        models: input
+            .models
+            .into_iter()
+            .map(|(key, model)| (key.trim().to_string(), model))
             .collect(),
         ..input
     })

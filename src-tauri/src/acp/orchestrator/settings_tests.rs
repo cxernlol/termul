@@ -17,6 +17,7 @@ fn a_missing_file_loads_the_defaults() {
             max_running: DEFAULT_MAX_RUNNING,
             max_depth: DEFAULT_MAX_DEPTH,
             agents: Default::default(),
+            models: Default::default(),
         }
     );
 }
@@ -31,11 +32,42 @@ fn a_saved_settings_file_round_trips() {
             max_running: 2,
             max_depth: 3,
             agents: [("codex".to_string(), false)].into(),
+            models: [("codex".to_string(), "gpt-5.1-mini".to_string())].into(),
         })
         .expect("saved");
     assert!(!saved.enabled);
     let reloaded = SettingsStore::open(dir.path()).get();
     assert_eq!(reloaded, saved);
+    let file: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.path().join(FILE_NAME)).expect("file"))
+            .expect("json");
+    assert_eq!(file["schema_version"], 2);
+    assert_eq!(file["models"]["codex"], "gpt-5.1-mini");
+}
+
+#[test]
+fn a_version_1_file_still_loads() {
+    let dir = dir();
+    std::fs::write(
+        dir.path().join(FILE_NAME),
+        br#"{"schema_version":1,"enabled":false,"maxRunning":3,"maxDepth":1,"agents":{"acp-registry:cursor":false}}"#,
+    )
+    .expect("write");
+    let store = SettingsStore::open(dir.path());
+    assert_eq!(
+        store.get(),
+        OrchestratorSettings {
+            enabled: false,
+            max_running: 3,
+            max_depth: 1,
+            agents: [("acp-registry:cursor".to_string(), false)].into(),
+            models: Default::default(),
+        }
+    );
+    store
+        .update(|settings| settings.enabled = true)
+        .expect("a v1 file is writable");
+    assert!(corrupt_backups(dir.path()).is_empty());
 }
 
 #[test]
@@ -66,7 +98,7 @@ fn corrupt_backups(dir: &Path) -> Vec<PathBuf> {
 fn a_newer_file_loads_the_defaults_and_is_never_overwritten() {
     let dir = dir();
     let path = dir.path().join(FILE_NAME);
-    let newer = br#"{"schema_version":2,"futureField":true}"#;
+    let newer = br#"{"schema_version":3,"futureField":true}"#;
     std::fs::write(&path, newer).expect("write");
     let store = SettingsStore::open(dir.path());
     assert_eq!(store.get(), OrchestratorSettings::default());
@@ -134,6 +166,7 @@ fn an_in_memory_store_never_writes() {
             max_running: 8,
             max_depth: 4,
             agents: Default::default(),
+            models: Default::default(),
         })
         .expect("saved");
     assert_eq!(store.get().max_running, 8);
@@ -166,6 +199,22 @@ fn set_validates_the_bounds() {
             ..OrchestratorSettings::default()
         })
         .expect_err("blank key");
+    assert!(error.contains("blank"), "{error}");
+    for model in [" ".to_string(), "m".repeat(MAX_MODEL_CHARS + 1)] {
+        let error = store
+            .set(OrchestratorSettings {
+                models: [("codex".to_string(), model)].into(),
+                ..OrchestratorSettings::default()
+            })
+            .expect_err("bad model");
+        assert_eq!(error, "a default model must be 1 to 512 characters");
+    }
+    let error = store
+        .set(OrchestratorSettings {
+            models: [(" ".to_string(), "gpt-5.1".to_string())].into(),
+            ..OrchestratorSettings::default()
+        })
+        .expect_err("blank model key");
     assert!(error.contains("blank"), "{error}");
     assert_eq!(store.get(), OrchestratorSettings::default());
 }

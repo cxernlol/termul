@@ -22,6 +22,7 @@ def send(obj):
     sys.stdout.flush()
 
 hung = None
+model = None
 for line in sys.stdin:
     line = line.strip()
     if not line:
@@ -35,7 +36,13 @@ for line in sys.stdin:
         send({"jsonrpc": "2.0", "id": rid, "result": {"sessionId": "child-1"}})
     elif method == "session/prompt":
         task = msg["params"]["prompt"][0].get("text", "")
-        if task == "finish":
+        if task == "report-model":
+            send({"jsonrpc": "2.0", "method": "session/update", "params": {
+                "sessionId": "child-1",
+                "update": {"sessionUpdate": "agent_message_chunk",
+                           "content": {"type": "text", "text": "model=%s" % model}}}})
+            send({"jsonrpc": "2.0", "id": rid, "result": {"stopReason": "end_turn"}})
+        elif task == "finish":
             send({"jsonrpc": "2.0", "method": "session/update", "params": {
                 "sessionId": "child-1",
                 "update": {"sessionUpdate": "agent_message_chunk",
@@ -43,6 +50,9 @@ for line in sys.stdin:
             send({"jsonrpc": "2.0", "id": rid, "result": {"stopReason": "end_turn"}})
         else:
             hung = rid
+    elif method == "session/set_config_option":
+        model = msg["params"].get("value")
+        send({"jsonrpc": "2.0", "id": rid, "result": {"configOptions": []}})
     elif method == "session/cancel":
         if hung is not None:
             send({"jsonrpc": "2.0", "id": hung, "result": {"stopReason": "cancelled"}})
@@ -506,6 +516,7 @@ async fn the_listing_names_the_registry_agent_and_its_allowance() {
             agent_id: "mock-sub".to_string(),
             name: "Mock Sub".to_string(),
             allowed: true,
+            default_model: None,
         }]
     );
     let mut disallowed = OrchestratorSettings::default();
@@ -735,4 +746,347 @@ async fn a_timed_out_waiter_is_not_kept() {
         1,
         "each wait drops the registrations of callers that left"
     );
+}
+
+/// An engine whose known-agents registry holds `registry` and whose
+/// install manifest lists the catalog agents `installed` (bare registry
+/// ids, as the install service keys them).
+pub(crate) async fn engine_with_installed(
+    registry: &[AgentConfig],
+    installed: &[&str],
+) -> (Arc<OrchestratorEngine>, tempfile::TempDir) {
+    engine_with_saved_switches(registry, installed, &[]).await
+}
+
+/// [`engine_with_installed`] over a settings file that already holds the
+/// allow `switches`, as an earlier host saved them.
+async fn engine_with_saved_switches(
+    registry: &[AgentConfig],
+    installed: &[&str],
+    switches: &[(&str, bool)],
+) -> (Arc<OrchestratorEngine>, tempfile::TempDir) {
+    let data = tempfile::tempdir().expect("data dir");
+    let agents: serde_json::Map<String, serde_json::Value> = switches
+        .iter()
+        .map(|(key, allowed)| (key.to_string(), json!(allowed)))
+        .collect();
+    std::fs::write(
+        data.path().join(crate::acp::orchestrator::settings::FILE_NAME),
+        json!({
+            "schema_version": 1,
+            "enabled": true,
+            "maxRunning": 4,
+            "maxDepth": 2,
+            "agents": agents,
+        })
+        .to_string(),
+    )
+    .expect("settings");
+    let known: serde_json::Map<String, serde_json::Value> = registry
+        .iter()
+        .map(|config| {
+            (
+                crate::automation::agents::agent_key(config),
+                serde_json::to_value(config).expect("config"),
+            )
+        })
+        .collect();
+    std::fs::write(
+        data.path().join(crate::automation::agents::FILE_NAME),
+        json!({"schema_version": 1, "agents": known}).to_string(),
+    )
+    .expect("registry");
+    engine_in(data, installed).await
+}
+
+/// An engine over the files already in `data`, whose install manifest lists
+/// the catalog agents `installed`.
+async fn engine_in(
+    data: tempfile::TempDir,
+    installed: &[&str],
+) -> (Arc<OrchestratorEngine>, tempfile::TempDir) {
+    let installs = data.path().join("installs");
+    std::fs::create_dir_all(&installs).expect("install root");
+    let manifest: serde_json::Map<String, serde_json::Value> = installed
+        .iter()
+        .map(|id| {
+            (
+                id.to_string(),
+                json!({
+                    "agentId": id,
+                    "version": "1.0.0",
+                    "platformTarget": "linux-x86_64",
+                    "sha256": "",
+                    "command": format!("/opt/{id}/bin/{id}"),
+                    "args": ["acp"],
+                    "installedAt": 1,
+                }),
+            )
+        })
+        .collect();
+    std::fs::write(
+        installs.join("installed.json"),
+        json!({"schemaVersion": 1, "agents": manifest}).to_string(),
+    )
+    .expect("manifest");
+    let catalog = crate::acp::AcpCatalogService::open(data.path().join("catalog"))
+        .await
+        .expect("catalog");
+    let install = crate::acp::install::AcpInstallService::open(installs, catalog)
+        .await
+        .expect("install service");
+    let engine = Arc::new(OrchestratorEngine::new(
+        Arc::new(crate::acp::manager::AcpManager::new(Vec::new())),
+        data.path().to_path_buf(),
+        Some(install),
+        Handle::current(),
+    ));
+    (engine, data)
+}
+
+fn registry_agent(id: &str, name: &str) -> AgentConfig {
+    AgentConfig {
+        config_id: Some(format!("acp-registry:{id}")),
+        name: name.to_string(),
+        command: format!("/opt/{id}/bin/{id}"),
+        args: vec!["acp".to_string()],
+        env: std::collections::HashMap::new(),
+        allow_terminal: false,
+    }
+}
+
+#[tokio::test]
+async fn an_installed_agent_the_registry_knows_is_listed_once() {
+    let (engine, _data) =
+        engine_with_installed(&[registry_agent("cursor", "Cursor")], &["cursor"]).await;
+    assert_eq!(
+        engine.list_agents(),
+        vec![crate::acp::orchestrator::AgentListing {
+            agent_id: "acp-registry:cursor".to_string(),
+            name: "Cursor".to_string(),
+            allowed: true,
+            default_model: None,
+        }]
+    );
+}
+
+#[tokio::test]
+async fn an_installed_agent_the_registry_lacks_is_listed_under_its_config_id() {
+    let (engine, _data) = engine_with_installed(&[], &["opencode"]).await;
+    assert_eq!(
+        engine.list_agents(),
+        vec![crate::acp::orchestrator::AgentListing {
+            agent_id: "acp-registry:opencode".to_string(),
+            name: "opencode".to_string(),
+            allowed: true,
+            default_model: None,
+        }]
+    );
+    let config = engine
+        .resolve_agent("acp-registry:opencode")
+        .expect("the listed key resolves");
+    assert_eq!(config.config_id.as_deref(), Some("acp-registry:opencode"));
+    assert_eq!(config.command, "/opt/opencode/bin/opencode");
+}
+
+/// Before the listing keyed installed agents by config id, an agent the
+/// registry lacked had one row under its bare id, so its switch saved the
+/// bare key. That block holds, also after a chat records the agent.
+#[tokio::test]
+async fn a_block_saved_under_an_installed_agents_bare_id_still_holds() {
+    let (engine, data) =
+        engine_with_saved_switches(&[], &["opencode"], &[("opencode", false)]).await;
+    let blocked = vec![crate::acp::orchestrator::AgentListing {
+        agent_id: "acp-registry:opencode".to_string(),
+        name: "opencode".to_string(),
+        allowed: false,
+        default_model: None,
+    }];
+    assert_eq!(engine.list_agents(), blocked);
+
+    crate::automation::agents::AgentRegistry::open(
+        data.path().join(crate::automation::agents::FILE_NAME),
+    )
+    .record(&registry_agent("opencode", "OpenCode"));
+    assert_eq!(
+        engine.list_agents(),
+        vec![crate::acp::orchestrator::AgentListing {
+            name: "OpenCode".to_string(),
+            ..blocked[0].clone()
+        }]
+    );
+    let caller = crate::acp::orchestrator::CallerRef {
+        agent: AgentId("agent-parent".to_string()),
+        session: SessionId(CHAT.to_string()),
+    };
+    let start = StartRequest {
+        agent: "opencode".to_string(),
+        ..request("finish")
+    };
+    assert_eq!(
+        engine.start(caller, start).await,
+        Err(crate::acp::orchestrator::StartError::AgentNotAllowed(
+            "acp-registry:opencode".to_string()
+        ))
+    );
+}
+
+/// A bare switch moves even when its agent is not installed at startup, so
+/// installing the agent later cannot lift the block.
+#[tokio::test]
+async fn a_bare_block_moves_when_its_agent_is_not_installed_yet() {
+    let (engine, _data) = engine_with_saved_switches(&[], &[], &[("opencode", false)]).await;
+    assert_eq!(
+        engine.settings_view().agents,
+        [("acp-registry:opencode".to_string(), false)].into_iter().collect()
+    );
+}
+
+/// A corrupt known-agents file reads as empty, which would make every saved
+/// key look like a bare row; the switches stay as saved.
+#[tokio::test]
+async fn bare_switches_stay_when_the_registry_cannot_be_read() {
+    let data = tempfile::tempdir().expect("data dir");
+    std::fs::write(data.path().join(crate::automation::agents::FILE_NAME), b"{not json")
+        .expect("registry");
+    let mut saved = OrchestratorSettings::default();
+    saved.agents.insert("my-agent".to_string(), false);
+    crate::acp::orchestrator::settings::SettingsStore::open(data.path())
+        .set(saved.clone())
+        .expect("settings");
+    let engine = OrchestratorEngine::new(
+        Arc::new(crate::acp::manager::AcpManager::new(Vec::new())),
+        data.path().to_path_buf(),
+        None,
+        Handle::current(),
+    );
+    assert_eq!(engine.settings_view().agents, saved.agents);
+}
+
+/// While an unreadable registry holds the move back, a bare block still
+/// refuses its installed agent, in the listing and at start.
+#[tokio::test]
+async fn a_bare_block_holds_while_the_registry_cannot_be_read() {
+    let data = tempfile::tempdir().expect("data dir");
+    std::fs::write(data.path().join(crate::automation::agents::FILE_NAME), b"{not json")
+        .expect("registry");
+    let mut saved = OrchestratorSettings::default();
+    saved.agents.insert("cursor".to_string(), false);
+    crate::acp::orchestrator::settings::SettingsStore::open(data.path())
+        .set(saved)
+        .expect("settings");
+    let (engine, _data) = engine_in(data, &["cursor"]).await;
+    assert_eq!(
+        engine.list_agents(),
+        vec![crate::acp::orchestrator::AgentListing {
+            agent_id: "acp-registry:cursor".to_string(),
+            name: "cursor".to_string(),
+            allowed: false,
+            default_model: None,
+        }]
+    );
+    let caller = crate::acp::orchestrator::CallerRef {
+        agent: AgentId("agent-parent".to_string()),
+        session: SessionId(CHAT.to_string()),
+    };
+    let start = StartRequest {
+        agent: "cursor".to_string(),
+        ..request("finish")
+    };
+    assert_eq!(
+        engine.start(caller, start).await,
+        Err(crate::acp::orchestrator::StartError::AgentNotAllowed(
+            "acp-registry:cursor".to_string()
+        ))
+    );
+}
+
+/// An agent the registry knows had its own row next to the bare duplicate,
+/// so a block saved on the duplicate never applied to it and is dropped.
+#[tokio::test]
+async fn a_bare_block_does_not_apply_to_an_agent_the_registry_knows() {
+    let (engine, _data) = engine_with_saved_switches(
+        &[registry_agent("cursor", "Cursor")],
+        &["cursor"],
+        &[("cursor", false)],
+    )
+    .await;
+    assert_eq!(
+        engine.list_agents(),
+        vec![crate::acp::orchestrator::AgentListing {
+            agent_id: "acp-registry:cursor".to_string(),
+            name: "Cursor".to_string(),
+            allowed: true,
+            default_model: None,
+        }]
+    );
+    assert_eq!(engine.settings_view().agents, Default::default());
+}
+
+#[tokio::test]
+async fn a_bare_installed_id_starts_under_its_config_id() {
+    let (engine, _data) =
+        engine_with_installed(&[registry_agent("cursor", "Cursor")], &["cursor"]).await;
+    let mut disallowed = OrchestratorSettings::default();
+    disallowed
+        .agents
+        .insert("acp-registry:cursor".to_string(), false);
+    engine.set_settings(disallowed).expect("settings");
+    let caller = crate::acp::orchestrator::CallerRef {
+        agent: AgentId("agent-parent".to_string()),
+        session: SessionId(CHAT.to_string()),
+    };
+    let bare = StartRequest {
+        agent: "cursor".to_string(),
+        ..request("finish")
+    };
+    assert_eq!(
+        engine.start(caller, bare).await,
+        Err(crate::acp::orchestrator::StartError::AgentNotAllowed(
+            "acp-registry:cursor".to_string()
+        ))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_start_without_a_model_asks_for_the_agents_default_model() {
+    let Some(test) = engine_test("report-model") else {
+        return;
+    };
+    let _serial = crate::acp::manager::real_loop_tests::TIMEOUT_TEST_LOCK
+        .lock()
+        .await;
+    let engine = test.engine.clone();
+    let caller = test.caller.clone();
+    let mut settings = OrchestratorSettings::default();
+    settings
+        .models
+        .insert("mock-sub".to_string(), "fast".to_string());
+    engine.set_settings(settings).expect("settings");
+    assert_eq!(
+        engine.list_agents()[0].default_model.as_deref(),
+        Some("fast")
+    );
+
+    let defaulted = engine
+        .start(caller.clone(), request("report-model"))
+        .await
+        .expect("run starts");
+    let settled = wait_settled(&engine, &caller, &defaulted.run).await;
+    assert_eq!(settled.result.as_deref(), Some("model=fast"));
+    assert_eq!(
+        engine.ledger.lock().runs[&defaulted.run].model.as_deref(),
+        Some("fast")
+    );
+
+    let explicit = StartRequest {
+        model: Some("deep".to_string()),
+        ..request("report-model")
+    };
+    let picked = engine
+        .start(caller.clone(), explicit)
+        .await
+        .expect("run starts");
+    let settled = wait_settled(&engine, &caller, &picked.run).await;
+    assert_eq!(settled.result.as_deref(), Some("model=deep"));
 }

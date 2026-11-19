@@ -1,8 +1,10 @@
-import { useCallback, useEffect, useState } from 'react'
+import { Fragment, useCallback, useEffect, useState } from 'react'
 import { toast } from 'sonner'
+import { useAgentModels } from '@/components/automations/canvas/inspector/sources'
 import { SettingsCard, SettingsGroup } from '@/components/settings/SettingsGroup'
 import { SettingsNotice } from '@/components/settings/SettingsNotice'
 import { SettingsRow, settingsDescriptionId } from '@/components/settings/SettingsRow'
+import { SettingsSelect } from '@/components/settings/SettingsSelect'
 import { SettingsStepper } from '@/components/settings/SettingsStepper'
 import { SettingsSwitchRow } from '@/components/settings/SettingsSwitchRow'
 import { Switch } from '@/components/ui/switch'
@@ -17,6 +19,8 @@ const MIN_RUNNING = 1
 const MAX_RUNNING = 8
 const MIN_DEPTH = 1
 const MAX_DEPTH = 4
+/** Radix Select needs a non-empty value; this one means "no model saved". */
+const DEFAULT_MODEL = '\u0000default'
 
 /**
  * The launchable agent's glyph: its persisted config's custom icon, else the
@@ -45,6 +49,49 @@ function AgentRowIcon({ agentId, name }: { agentId: string; name: string }): Rea
     >
       {name.charAt(0)}
     </span>
+  )
+}
+
+/**
+ * The model a sub-agent of `agent` starts with: the models its chats last
+ * reported, plus a saved id the agent no longer lists, so it stays visible.
+ */
+function DefaultModelRow({
+  agent,
+  onChange
+}: {
+  agent: SubagentSettingsAgentView
+  onChange: (model: string | null) => void
+}): React.JSX.Element {
+  const models = useAgentModels(agent.agentId)
+  const options = [
+    { value: DEFAULT_MODEL, label: 'Default' },
+    ...models.map((model) => ({ value: model.modelId, label: model.name }))
+  ]
+  if (agent.model !== null && !models.some((model) => model.modelId === agent.model)) {
+    options.push({ value: agent.model, label: agent.model })
+  }
+  const id = `subagent-model-${agent.agentId}`
+  return (
+    <SettingsRow
+      id={`${id}-row`}
+      htmlFor={id}
+      label="Default model"
+      description={
+        models.length === 0
+          ? 'Run this agent once in a chat to list its models.'
+          : 'Used when the calling agent does not pick one.'
+      }
+      indent
+    >
+      <SettingsSelect
+        id={id}
+        aria-describedby={settingsDescriptionId(id)}
+        options={options}
+        value={agent.model ?? DEFAULT_MODEL}
+        onValueChange={(next) => onChange(next === DEFAULT_MODEL ? null : next)}
+      />
+    </SettingsRow>
   )
 }
 
@@ -81,8 +128,9 @@ function AllowedAgentRow({
 /**
  * The "Sub-agents" and "Agents they can use" groups of the Agent chats
  * preferences: the orchestrator's enable switch, its caps, and the per-agent
- * allow list, all through the host's one settings view. A write applies the
- * view the host answers with, so the host stays the single source of truth.
+ * allow list with each allowed agent's default model, all through the host's
+ * one settings view. A write applies the view the host answers with, so the
+ * host stays the single source of truth.
  */
 export function SubagentSettingsGroup(): React.JSX.Element {
   const [view, setView] = useState<SubagentSettingsView | null>(null)
@@ -198,11 +246,18 @@ export function SubagentSettingsGroup(): React.JSX.Element {
             />
           ) : (
             view.agents.map((agent) => (
-              <AllowedAgentRow
-                key={agent.agentId}
-                agent={agent}
-                onToggle={(allowed) => write({ agents: [{ agentId: agent.agentId, allowed }] })}
-              />
+              <Fragment key={agent.agentId}>
+                <AllowedAgentRow
+                  agent={agent}
+                  onToggle={(allowed) => write({ agents: [{ agentId: agent.agentId, allowed }] })}
+                />
+                {agent.allowed && (
+                  <DefaultModelRow
+                    agent={agent}
+                    onChange={(model) => write({ models: [{ agentId: agent.agentId, model }] })}
+                  />
+                )}
+              </Fragment>
             ))
           )}
         </SettingsCard>

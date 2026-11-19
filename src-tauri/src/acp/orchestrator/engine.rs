@@ -29,6 +29,9 @@ use crate::web::EventSink;
 const SPAWN_BOUND: Duration = Duration::from_secs(120);
 /// `subagent_start` task length bound.
 const MAX_TASK_CHARS: usize = 8_000;
+/// The config id prefix the renderer saves a catalog agent under: the
+/// installed agent `x` is the registry's `acp-registry:x`.
+const REGISTRY_PREFIX: &str = "acp-registry:";
 
 pub struct OrchestratorEngine {
     pub(super) manager: Arc<AcpManager>,
@@ -46,51 +49,114 @@ impl OrchestratorEngine {
         installed: Option<Arc<AcpInstallService>>,
         handle: Handle,
     ) -> Self {
-        Self {
+        let engine = Self {
             registry: AgentRegistry::open(data_dir.join(agents::FILE_NAME)),
             installed,
             settings: SettingsStore::open(&data_dir),
             ledger: Mutex::new(RunLedger::new()),
             manager,
             handle,
+        };
+        engine.migrate_bare_switches();
+        engine
+    }
+
+    /// Switches were once saved under an installed agent's bare id: any key
+    /// without the config-id prefix that the registry lacks, since registry
+    /// keys are never removed. An agent the registry lacked had only that
+    /// row, so its switch moves to the config id. An agent the registry knew
+    /// also had its own row, which the bare switch never applied to, so that
+    /// switch is dropped. The move applies in memory even when it cannot be
+    /// saved, and a later registry record or install cannot lift a block.
+    /// An unreadable registry cannot tell the two apart, so the move waits
+    /// for a start that reads it.
+    fn migrate_bare_switches(&self) {
+        if !self.registry.loaded() {
+            log::warn!("[orchestrator] known agents unreadable; bare sub-agent switches kept");
+            return;
+        }
+        let moved = self.settings.apply_and_save(|settings| {
+            let bare: Vec<String> = settings
+                .agents
+                .keys()
+                .filter(|id| !id.starts_with(REGISTRY_PREFIX) && !self.registry.contains(id))
+                .cloned()
+                .collect();
+            for id in bare {
+                let Some(allowed) = settings.agents.remove(&id) else {
+                    continue;
+                };
+                let key = format!("{REGISTRY_PREFIX}{id}");
+                if !self.registry.contains(&key) {
+                    settings.agents.entry(key).or_insert(allowed);
+                }
+            }
+        });
+        if let Err(error) = moved {
+            log::warn!("[orchestrator] could not save the moved sub-agent switches: {error}");
         }
     }
 
     /// The launchable agents: the known-agents registry merged with the
-    /// installed overlay, deduped by key, `allowed` from the settings.
-    /// Command, args and env never leave the host.
+    /// installed overlay, one entry per config id, `allowed` and
+    /// `default_model` from the settings. Command, args and env never leave
+    /// the host.
     pub fn list_agents(&self) -> Vec<AgentListing> {
         let settings = self.settings.get();
         self.registry.reload();
-        let allowed = |key: &str| settings.agents.get(key).copied().unwrap_or(true);
+        let listing = |agent_id: String, name: String| AgentListing {
+            allowed: self.allowed(&settings, &agent_id),
+            default_model: settings.models.get(&agent_id).cloned(),
+            agent_id,
+            name,
+        };
         let mut agents: Vec<AgentListing> = self
             .registry
             .list()
             .into_iter()
-            .map(|known| {
-                let allowed = allowed(&known.agent_id);
-                AgentListing {
-                    agent_id: known.agent_id,
-                    name: known.name,
-                    allowed,
-                }
-            })
+            .map(|known| listing(known.agent_id, known.name))
             .collect();
         if let Some(installed) = &self.installed {
             for agent in installed.installed_agents() {
-                if agents.iter().any(|known| known.agent_id == agent.agent_id) {
-                    continue;
+                let key = format!("{REGISTRY_PREFIX}{}", agent.agent_id);
+                if !agents.iter().any(|known| known.agent_id == key) {
+                    agents.push(listing(key, agent.agent_id));
                 }
-                let listing_allowed = allowed(&agent.agent_id);
-                agents.push(AgentListing {
-                    agent_id: agent.agent_id.clone(),
-                    name: agent.agent_id,
-                    allowed: listing_allowed,
-                });
             }
         }
         agents.sort_by(|a, b| a.agent_id.cmp(&b.agent_id));
         agents
+    }
+
+    /// Whether the settings allow the listing key `key`. While an unreadable
+    /// registry holds back the move of bare switches, a bare block still
+    /// refuses its config id; the next start that reads the registry moves it.
+    fn allowed(&self, settings: &OrchestratorSettings, key: &str) -> bool {
+        settings.agents.get(key).copied().unwrap_or_else(|| {
+            self.registry.loaded()
+                || key
+                    .strip_prefix(REGISTRY_PREFIX)
+                    .and_then(|bare| settings.agents.get(bare))
+                    .copied()
+                    .unwrap_or(true)
+        })
+    }
+
+    /// The listing key `agent` names: a bare catalog id the registry does
+    /// not know is the installed agent's `acp-registry:` config id.
+    pub(crate) fn canonical_agent(&self, agent: &str) -> String {
+        self.registry.reload();
+        let installed = self.installed.as_ref().is_some_and(|installed| {
+            installed
+                .installed_agents()
+                .iter()
+                .any(|known| known.agent_id == agent)
+        });
+        if installed && !self.registry.contains(agent) {
+            format!("{REGISTRY_PREFIX}{agent}")
+        } else {
+            agent.to_string()
+        }
     }
 
     /// The run the caller's session belongs to (the spawning run of a
@@ -128,12 +194,13 @@ impl OrchestratorEngine {
             return Ok(config);
         }
         if let Some(installed) = &self.installed {
+            let registry_id = agent.strip_prefix(REGISTRY_PREFIX).unwrap_or(agent);
             if let Some(config) = installed
                 .installed_agents()
                 .into_iter()
-                .find(|known| known.agent_id == agent)
+                .find(|known| known.agent_id == registry_id)
                 .map(|known| AgentConfig {
-                    config_id: Some(known.agent_id.clone()),
+                    config_id: Some(format!("{REGISTRY_PREFIX}{}", known.agent_id)),
                     name: known.agent_id,
                     command: known.command,
                     args: known.args,
@@ -181,6 +248,7 @@ impl OrchestratorEngine {
         if agent.is_empty() || agent.len() > crate::acp::subagents::MAX_ID_CHARS {
             return Err(StartError::InvalidInput("agent"));
         }
+        let agent = self.canonical_agent(agent);
         let task_chars = req.task.chars().count();
         if task_chars == 0 || task_chars > MAX_TASK_CHARS {
             return Err(StartError::InvalidInput("task"));
@@ -199,8 +267,8 @@ impl OrchestratorEngine {
         {
             return Err(StartError::InvalidInput("model"));
         }
-        if !settings.agents.get(agent).copied().unwrap_or(true) {
-            return Err(StartError::AgentNotAllowed(agent.to_string()));
+        if !self.allowed(&settings, &agent) {
+            return Err(StartError::AgentNotAllowed(agent));
         }
         let (root, parent_run, parent_agent, depth) = self.caller_context(caller);
         if depth > settings.max_depth {
@@ -208,13 +276,18 @@ impl OrchestratorEngine {
                 max: settings.max_depth,
             });
         }
-        let config = self.resolve_agent(agent)?;
+        let config = self.resolve_agent(&agent)?;
+        let model = req
+            .model
+            .clone()
+            .or_else(|| settings.models.get(&agent).cloned());
         Ok(StartChecks {
             root,
             parent_run,
             parent_agent,
             depth,
             config,
+            model,
             settings,
         })
     }
@@ -326,6 +399,7 @@ impl OrchestratorEngine {
             parent_agent,
             depth,
             config,
+            model,
             ..
         } = checks;
         let agent_name = config.name.clone();
@@ -424,7 +498,7 @@ impl OrchestratorEngine {
             },
             title: req.title.clone().unwrap_or_else(|| agent_name.clone()),
             task: req.task.clone(),
-            model: req.model.clone(),
+            model: model.clone(),
             created_ms: now_millis(),
             workspace,
             base_commit,
@@ -483,7 +557,7 @@ impl OrchestratorEngine {
         }
         // Best-effort model switch: a refused switch keeps the agent's own
         // model, and the record then names none.
-        let mut model = req.model.clone();
+        let mut model = model;
         if let Some(requested) = model.clone() {
             if let Err(error) = self
                 .manager
@@ -708,9 +782,13 @@ struct StartChecks {
     parent_agent: AgentId,
     depth: u8,
     config: AgentConfig,
+    /// The start's model, else the settings' default for the agent.
+    model: Option<String>,
     settings: OrchestratorSettings,
 }
 
 #[cfg(test)]
 #[path = "engine_tests.rs"]
 mod engine_tests;
+#[cfg(test)]
+pub(crate) use engine_tests::engine_with_installed;

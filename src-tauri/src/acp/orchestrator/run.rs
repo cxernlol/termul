@@ -379,6 +379,8 @@ pub struct AgentListing {
     pub(crate) agent_id: String,
     pub(crate) name: String,
     pub(crate) allowed: bool,
+    /// The model a start that names none asks for.
+    pub(crate) default_model: Option<String>,
 }
 
 /// The caller of an engine operation, from the frame's session auth.
