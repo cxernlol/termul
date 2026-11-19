@@ -158,7 +158,7 @@ export function SubagentSettingsGroup(): React.JSX.Element {
             id="subagent-max-running"
             describes="subagent-max-running"
             label="Max running sub-agents"
-            description="Per chat. Extra requests wait until one finishes."
+            description="Per chat. Extra starts are refused until one finishes."
           >
             <SettingsStepper
               value={view.maxRunning}

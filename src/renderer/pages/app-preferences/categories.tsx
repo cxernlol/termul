@@ -310,7 +310,7 @@ const ALL_APP_PREF_SEARCH_INDEX: SettingsSearchEntry[] = [
   {
     categoryId: 'ai-agents',
     label: 'Max running sub-agents',
-    description: 'Per chat. Extra requests wait until one finishes.',
+    description: 'Per chat. Extra starts are refused until one finishes.',
     keywords: ['subagent', 'sub-agent', 'limit', 'parallel', 'capacity'],
     anchorId: rowId('subagent-max-running')
   },
